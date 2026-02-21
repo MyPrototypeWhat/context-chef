@@ -22,14 +22,20 @@ Unlike heavy orchestration frameworks (e.g., LangGraph), **ContextChef** doesn't
    - Token-budget-based history compression. Automatically summarizes ancient history using a low-cost model (e.g. `gpt-4o-mini`) while perfectly preserving recent short-term memory.
    - Dual-track token calculation: Uses a blazingly fast 0-dependency heuristic by default, but allows plugging in `tiktoken` for 100% precision.
 
-4. **Zod-to-XML Dynamic State**
-   - Enforce task state shapes using strong schemas at compile time.
-   - Automatically compiles JSON states into XML tags (`<dynamic_state><item>...</item></dynamic_state>`), which is proven to be strictly superior for LLM comprehension.
+4. **Pruner (Tool Guard)**
+   - Dynamically prunes the tool list injected into LLM context, preventing "tool hallucination" and conserving attention budget.
+   - Three filtering strategies: explicit allowlist (`allowOnly`), task-relevance matching (`pruneByTask`), and combined mode (`pruneByTaskAndAllowlist`) with `union` / `intersection` semantics.
+   - Tools with no tags are treated as universal utilities and always preserved.
 
-5. **Target Adapters & Graceful Degradation**
+5. **Governor (Output & State Governance)**
+   - Zod-to-XML: Enforce task state shapes using strong schemas at compile time. Automatically compiles JSON states into XML tags (`<dynamic_state>...</dynamic_state>`), which is proven to be strictly superior for LLM comprehension.
+   - EPHEMERAL_MESSAGE pattern: System-level instructions are wrapped in Claude Code's `<EPHEMERAL_MESSAGE>` format, clearly separating system directives from user content.
+   - Robust XML guardrails with cognitive anchoring: forces the model to recall format rules at the start of its `<thinking>` block.
+
+6. **Target Adapters & Graceful Degradation**
    - Write your prompt architecture once. Compile to `openai`, `anthropic`, or `gemini`.
    - Anthropic: Automatically injects `cache_control: { type: "ephemeral" }` breakpoints.
-   - Governor Prefill: If the target model (like OpenAI/o1) rejects `assistant` trailing messages, the Governor elegantly degrades the prefill into a strict XML adherence instruction appended to the final user/system prompt.
+   - OpenAI: If the target model rejects `assistant` trailing messages (prefill), the Governor elegantly degrades the prefill into a `[System Note]` appended to the final user/system prompt.
 
 ## Installation
 
@@ -39,7 +45,7 @@ npm install context-engineer zod
 
 ---
 
-## 💡 Production Best Practices
+## Production Best Practices
 
 ContextChef is unopinionated about your database, but it is highly opinionated about how you format data for LLMs. Here is how you should integrate it into a real-world Agent loop.
 
@@ -86,11 +92,18 @@ When your agent runs `npm install` or triggers a massive error stack trace, feed
 
 ContextChef's `Pointer` intercepts this data, saves it to disk, and replaces it with a short URI + the last 20 lines (which usually contains the actual Error anyway).
 
+```typescript
+// Offload large output before appending to history
+const safeLog = chef.processLargeOutput(rawTerminalOutput, 'log');
+// safeLog is either the original content (if small) or a truncated pointer with a context://vfs/ URI
+
+history.push({ role: 'tool', content: safeLog, tool_call_id: 'call_123' });
+```
+
 **How to integrate this with LLM Tools:**
-We do *not* automatically register a read tool to the LLM (to remain zero-invasion). You should register your own `read_vfs_file` tool to the LLM:
+We do *not* automatically register a read tool to the LLM (to remain zero-invasion). You should register your own `read_vfs_file` tool:
 
 ```json
-// Define this tool in your LLM request
 {
   "name": "read_vfs_file",
   "description": "If you see a truncated log with a context://vfs/ URI, use this tool to read the full file.",
@@ -101,14 +114,49 @@ We do *not* automatically register a read tool to the LLM (to remain zero-invasi
 }
 ```
 
-When the LLM decides it actually needs to read the full 50,000 lines, it will call your tool. You can easily resolve it using ContextChef:
+When the LLM calls this tool, resolve the URI via a standalone `Pointer` instance:
 
 ```typescript
-// When your agent receives a tool call for `read_vfs_file`:
-const fullContent = chef.pointer.resolve(args.uri);
-// Return `fullContent` to the LLM as a tool result
+import { Pointer } from 'context-engineer';
+const pointer = new Pointer({ storageDir: '.context_vfs' });
+
+// In your tool handler:
+const fullContent = pointer.resolve(args.uri);
+// Return fullContent to the LLM as a tool result
 ```
+
 This pattern ("Default Fold + Lazy Load") is exactly how elite coding agents like Devin and Cursor handle infinite terminal outputs.
+
+### 3. Preventing Tool Hallucination (Pruner)
+
+When your agent has 30+ tools registered but the current task only needs 3, the extra 27 tool schemas consume attention budget and increase the probability of hallucinated tool calls.
+
+ContextChef's `Pruner` lets you dynamically filter the tool list at each turn:
+
+```typescript
+const chef = new ContextChef();
+
+// Register your full tool catalog once
+chef.registerTools([
+  { name: 'read_file',   description: 'Read a file from disk',  tags: ['file', 'read'] },
+  { name: 'write_file',  description: 'Write to a file',        tags: ['file', 'write'] },
+  { name: 'run_bash',    description: 'Execute a shell command', tags: ['shell', 'execute'] },
+  { name: 'search_web',  description: 'Search the web',         tags: ['web', 'search'] },
+  { name: 'get_time',    description: 'Get current timestamp'   /* no tags = always kept */ },
+]);
+
+// At each agent turn, prune based on the current task
+const currentTask = "Read the auth.ts file and analyze the bug";
+const { tools, removed } = chef.tools().pruneByTask(currentTask);
+// tools:   [read_file, get_time]   (matched by 'read'/'file' tags + universal)
+// removed: [write_file, run_bash, search_web]
+
+// Pass only `tools` to your LLM SDK call
+const response = await openai.chat.completions.create({
+  messages: payload.messages,
+  tools: tools.map(t => ({ type: 'function', function: t })),
+});
+```
 
 ---
 
