@@ -1,5 +1,6 @@
 import { ITargetAdapter } from './ITargetAdapter';
 import { Message, TargetPayload } from '../types';
+import { Prompts } from '../prompts';
 
 export class OpenAIAdapter implements ITargetAdapter {
   compile(messages: Message[]): TargetPayload {
@@ -20,7 +21,7 @@ export class OpenAIAdapter implements ITargetAdapter {
            if (formattedMessages[i].role === 'user' || formattedMessages[i].role === 'system') {
                formattedMessages[i] = {
                  ...formattedMessages[i],
-                 content: formattedMessages[i].content + `\n\n[System Note: Please start your response directly with: ${prefillContent}]`
+                 content: formattedMessages[i].content + '\n\n' + Prompts.getPrefillEnforcement(prefillContent)
                };
                break;
            }

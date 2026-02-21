@@ -116,4 +116,17 @@ Wrap your final structured summary in <history_summary> tags.
 </ephemeral_message>
 </history_summary>
 `.trim(),
+
+  /**
+   * Used by Adapters (like OpenAI) that don't support native prefill.
+   * Forces the model to start its response with specific text using a system instruction.
+   */
+  getPrefillEnforcement: (prefillContent: string) => `
+<ephemeral_message type="prefill_enforcement">
+SYSTEM INSTRUCTION: Your response MUST start verbatim with the following text:
+"${prefillContent}"
+
+Do not output any introductory text or acknowledgement. Start directly with the text above.
+</ephemeral_message>
+`.trim(),
 };
