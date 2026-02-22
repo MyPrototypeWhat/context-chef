@@ -87,15 +87,17 @@
 
 ## D. 文档/配置
 
-- [ ] **D1. README 补充 Pruner 文档**
-  - 五大模块中 Pruner 未在 README 中提及
-  - 需要补充 Pruner 的用法示例和 API 说明
-  - 文件：`README.md`
+- [x] **D1. README 补充 Pruner 文档** ✅
+  - 已补充扁平模式 Pruner 用法示例
 
-- [ ] **D2. 设计方案 Phase 3 状态更新**
-  - Pruner 已实现，但与设计描述的"基于 DynamicState 自动裁切"存在差距
-  - 当前是手动 API 模式，需要在文档中明确说明设计决策
-  - 文件：`ContextChef_设计方案.md`
+- [x] **D2. 设计方案 Phase 3 状态更新** ✅
+  - 已更新为 Namespace + Lazy Loading 双层架构描述
+  - API 示例已包含 `registerNamespaces` / `registerToolkits` / `compile()` / `resolveNamespace()` / `extractToolkit()`
+
+- [ ] **D3. README 补充 Namespace + Lazy Loading 文档**
+  - README 目前只包含扁平模式 Pruner 的 Best Practice
+  - 需要补充双层架构的完整用法和 Agent Loop 集成示例
+  - 文件：`README.md`
 
 ---
 
