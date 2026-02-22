@@ -1,11 +1,11 @@
+import type { ChatCompletionMessageParam as SDKMessageParam } from 'openai/resources/chat/completions/completions';
 import { Prompts } from '../prompts';
 import type { Message, TargetPayload } from '../types';
 import type { ITargetAdapter } from './ITargetAdapter';
 
 export class OpenAIAdapter implements ITargetAdapter {
   compile(messages: Message[]): TargetPayload {
-    // We deeply clone the messages to prevent reference mutations leaking back to the core
-    const formattedMessages = messages.map((msg) => {
+    const formattedMessages: SDKMessageParam[] = messages.map((msg) => {
       const { _cache_breakpoint, ...cleanMsg } = msg;
       return JSON.parse(JSON.stringify(cleanMsg));
     });
@@ -14,20 +14,20 @@ export class OpenAIAdapter implements ITargetAdapter {
       const lastMsg = formattedMessages[formattedMessages.length - 1];
       if (
         lastMsg.role === 'assistant' &&
-        (!lastMsg.tool_calls || lastMsg.tool_calls.length === 0)
+        (!('tool_calls' in lastMsg) || !lastMsg.tool_calls || lastMsg.tool_calls.length === 0)
       ) {
-        // Pop the assistant message out of the array
         const popped = formattedMessages.pop();
-        const prefillContent = popped?.content;
+        const prefillContent = popped && 'content' in popped ? popped.content : undefined;
 
-        // Find the last user or system message and create a NEW copy with the appended note
-        if (prefillContent !== undefined) {
+        if (prefillContent !== undefined && typeof prefillContent === 'string') {
           for (let i = formattedMessages.length - 1; i >= 0; i--) {
-            if (formattedMessages[i].role === 'user' || formattedMessages[i].role === 'system') {
+            const m = formattedMessages[i];
+            if (m.role === 'user' || m.role === 'system') {
+              const currentContent = 'content' in m ? m.content : '';
               formattedMessages[i] = {
-                ...formattedMessages[i],
-                content: `${formattedMessages[i].content}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
-              };
+                ...m,
+                content: `${currentContent}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
+              } as SDKMessageParam;
               break;
             }
           }
@@ -35,6 +35,6 @@ export class OpenAIAdapter implements ITargetAdapter {
       }
     }
 
-    return { messages: formattedMessages };
+    return { messages: formattedMessages } as unknown as TargetPayload;
   }
 }

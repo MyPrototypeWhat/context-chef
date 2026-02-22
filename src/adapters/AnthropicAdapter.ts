@@ -1,86 +1,63 @@
 import type { Message, TargetPayload } from '../types';
 import type { ITargetAdapter } from './ITargetAdapter';
-
-interface AnthropicSystemBlock {
-  type: 'text';
-  text: string;
-  cache_control?: { type: 'ephemeral' };
-}
-
-interface AnthropicChatContentBlock {
-  type: 'text' | 'tool_result' | 'tool_use';
-  text?: string;
-  tool_use_id?: string;
-  content?: string;
-  id?: string;
-  name?: string;
-  input?: unknown;
-  cache_control?: { type: 'ephemeral' };
-}
-
-interface AnthropicChatMessage {
-  role: string;
-  content: AnthropicChatContentBlock[];
-}
+import type {
+  MessageParam as SDKMessageParam,
+  TextBlockParam as SDKTextBlockParam,
+  ToolUseBlockParam as SDKToolUseBlockParam,
+  ToolResultBlockParam as SDKToolResultBlockParam,
+  ContentBlockParam as SDKContentBlockParam,
+} from '@anthropic-ai/sdk/resources/messages/messages';
 
 export class AnthropicAdapter implements ITargetAdapter {
   compile(messages: Message[]): TargetPayload {
-    // Anthropic API separates `system` messages from `messages` array
-    const systemMessages: AnthropicSystemBlock[] = [];
-    const chatMessages: AnthropicChatMessage[] = [];
+    const systemMessages: SDKTextBlockParam[] = [];
+    const chatMessages: SDKMessageParam[] = [];
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        const sysObj: AnthropicSystemBlock = { type: 'text', text: msg.content };
-        // Anthropic Prompt Caching: Add ephemeral cache_control to marked breakpoints
+        const sysObj: SDKTextBlockParam = { type: 'text', text: msg.content };
         if (msg._cache_breakpoint) {
           sysObj.cache_control = { type: 'ephemeral' };
         }
         systemMessages.push(sysObj);
       } else {
-        const chatObj: AnthropicChatMessage = {
-          role: msg.role === 'tool' ? 'user' : msg.role, // Anthropic handles tools slightly differently
-          content: [],
-        };
+        const role: 'user' | 'assistant' =
+          msg.role === 'tool' ? 'user' : (msg.role as 'user' | 'assistant');
+        const content: SDKContentBlockParam[] = [];
 
-        // Handle tool calls / tool results specific mapping for Anthropic...
         if (msg.role === 'tool') {
-          chatObj.content.push({
+          const block: SDKToolResultBlockParam = {
             type: 'tool_result',
-            tool_use_id: msg.tool_call_id,
+            tool_use_id: msg.tool_call_id ?? '',
             content: msg.content,
-          });
+          };
+          content.push(block);
         } else if (msg.tool_calls) {
-          // Map tool calls
-          chatObj.content.push({ type: 'text', text: msg.content || '' });
+          content.push({ type: 'text', text: msg.content || '' } as SDKTextBlockParam);
           for (const tc of msg.tool_calls) {
-            chatObj.content.push({
+            const block: SDKToolUseBlockParam = {
               type: 'tool_use',
               id: tc.id,
               name: tc.function.name,
               input: JSON.parse(tc.function.arguments),
-            });
+            };
+            content.push(block);
           }
         } else {
-          chatObj.content.push({ type: 'text', text: msg.content });
+          const block: SDKTextBlockParam = { type: 'text', text: msg.content };
           if (msg._cache_breakpoint) {
-            // You can also put cache_control on regular messages
-            (
-              chatObj.content[chatObj.content.length - 1] as AnthropicChatContentBlock
-            ).cache_control = {
-              type: 'ephemeral',
-            };
+            block.cache_control = { type: 'ephemeral' };
           }
+          content.push(block);
         }
 
-        chatMessages.push(chatObj);
+        chatMessages.push({ role, content });
       }
     }
 
     return {
-      // We attach system here for easy destructuring by the user SDK
       system: systemMessages.length > 0 ? systemMessages : undefined,
       messages: chatMessages,
-    } as TargetPayload;
+    } as unknown as TargetPayload;
   }
 }
