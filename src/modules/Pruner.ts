@@ -1,5 +1,3 @@
-import { XmlGenerator } from '../utils/XmlGenerator';
-
 // ─── Core Types ───
 
 export interface ToolDefinition {
@@ -79,18 +77,16 @@ export class Pruner {
   }
 
   public allowOnly(names: string[]): PrunerResult {
-    const normalized = new Set(names.map(n => n.toLowerCase()));
-    return this._buildResult(
-      this.flatTools.filter(t => normalized.has(t.name.toLowerCase()))
-    );
+    const normalized = new Set(names.map((n) => n.toLowerCase()));
+    return this._buildResult(this.flatTools.filter((t) => normalized.has(t.name.toLowerCase())));
   }
 
   public pruneByTask(taskDescription: string): PrunerResult {
     const lowerTask = taskDescription.toLowerCase();
-    const relevant = this.flatTools.filter(tool => {
+    const relevant = this.flatTools.filter((tool) => {
       if (!tool.tags || tool.tags.length === 0) return true;
       const nameMatch = lowerTask.includes(tool.name.toLowerCase());
-      const tagMatch = tool.tags.some(tag => lowerTask.includes(tag.toLowerCase()));
+      const tagMatch = tool.tags.some((tag) => lowerTask.includes(tag.toLowerCase()));
       return nameMatch || tagMatch;
     });
     return this._buildResult(relevant);
@@ -98,17 +94,19 @@ export class Pruner {
 
   public pruneByTaskAndAllowlist(taskDescription: string, allowlist: string[]): PrunerResult {
     const lowerTask = taskDescription.toLowerCase();
-    const normalizedAllowlist = new Set(allowlist.map(n => n.toLowerCase()));
+    const normalizedAllowlist = new Set(allowlist.map((n) => n.toLowerCase()));
 
     const isRelevantByTask = (tool: ToolDefinition): boolean => {
       if (!tool.tags || tool.tags.length === 0) return true;
-      return lowerTask.includes(tool.name.toLowerCase()) ||
-        tool.tags.some(tag => lowerTask.includes(tag.toLowerCase()));
+      return (
+        lowerTask.includes(tool.name.toLowerCase()) ||
+        tool.tags.some((tag) => lowerTask.includes(tag.toLowerCase()))
+      );
     };
     const isInAllowlist = (tool: ToolDefinition): boolean =>
       normalizedAllowlist.has(tool.name.toLowerCase());
 
-    const relevant = this.flatTools.filter(tool => {
+    const relevant = this.flatTools.filter((tool) => {
       if (this.config.strategy === 'intersection') {
         return isRelevantByTask(tool) && isInAllowlist(tool);
       }
@@ -128,7 +126,7 @@ export class Pruner {
    * Each group becomes a single tool with an `action` enum and `args` object.
    */
   public registerNamespaces(groups: ToolGroup[]): this {
-    this.namespaces = groups.map(g => ({ ...g, tools: [...g.tools] }));
+    this.namespaces = groups.map((g) => ({ ...g, tools: [...g.tools] }));
     return this;
   }
 
@@ -140,7 +138,7 @@ export class Pruner {
    * The LLM can request full schemas via the `load_toolkit` virtual tool.
    */
   public registerToolkits(toolkits: ToolGroup[]): this {
-    this.lazyToolkits = toolkits.map(g => ({ ...g, tools: [...g.tools] }));
+    this.lazyToolkits = toolkits.map((g) => ({ ...g, tools: [...g.tools] }));
     return this;
   }
 
@@ -192,7 +190,7 @@ export class Pruner {
    * Checks if a tool call targets a namespace tool.
    */
   public isNamespaceCall(toolCall: { name: string }): boolean {
-    return this.namespaces.some(ns => ns.name === toolCall.name);
+    return this.namespaces.some((ns) => ns.name === toolCall.name);
   }
 
   /**
@@ -200,11 +198,11 @@ export class Pruner {
    * Returns the real ToolDefinition[] to inject into the next LLM request's tools array.
    */
   public extractToolkit(toolkitName: string): ToolDefinition[] {
-    const kit = this.lazyToolkits.find(
-      k => k.name.toLowerCase() === toolkitName.toLowerCase()
-    );
+    const kit = this.lazyToolkits.find((k) => k.name.toLowerCase() === toolkitName.toLowerCase());
     if (!kit) {
-      throw new Error(`Unknown toolkit: "${toolkitName}". Available: ${this.lazyToolkits.map(k => k.name).join(', ')}`);
+      throw new Error(
+        `Unknown toolkit: "${toolkitName}". Available: ${this.lazyToolkits.map((k) => k.name).join(', ')}`,
+      );
     }
     return [...kit.tools];
   }
@@ -219,22 +217,28 @@ export class Pruner {
    * });
    * // → { group: 'file_ops', toolName: 'read_file', args: { path: 'auth.ts' } }
    */
-  public resolveNamespace(toolCall: { name: string; arguments: string | Record<string, unknown> }): ResolvedToolCall {
-    const ns = this.namespaces.find(n => n.name === toolCall.name);
+  public resolveNamespace(toolCall: {
+    name: string;
+    arguments: string | Record<string, unknown>;
+  }): ResolvedToolCall {
+    const ns = this.namespaces.find((n) => n.name === toolCall.name);
     if (!ns) {
-      throw new Error(`"${toolCall.name}" is not a registered namespace. Available: ${this.namespaces.map(n => n.name).join(', ')}`);
+      throw new Error(
+        `"${toolCall.name}" is not a registered namespace. Available: ${this.namespaces.map((n) => n.name).join(', ')}`,
+      );
     }
 
-    const parsed = typeof toolCall.arguments === 'string'
-      ? JSON.parse(toolCall.arguments)
-      : toolCall.arguments;
+    const parsed =
+      typeof toolCall.arguments === 'string' ? JSON.parse(toolCall.arguments) : toolCall.arguments;
 
     const action = parsed.action as string;
     const args = (parsed.args ?? {}) as Record<string, unknown>;
 
-    const matchedTool = ns.tools.find(t => t.name === action);
+    const matchedTool = ns.tools.find((t) => t.name === action);
     if (!matchedTool) {
-      throw new Error(`Unknown action "${action}" in namespace "${ns.name}". Available: ${ns.tools.map(t => t.name).join(', ')}`);
+      throw new Error(
+        `Unknown action "${action}" in namespace "${ns.name}". Available: ${ns.tools.map((t) => t.name).join(', ')}`,
+      );
     }
 
     return { group: ns.name, toolName: matchedTool.name, args };
@@ -247,20 +251,22 @@ export class Pruner {
    * Sub-tool schemas are serialized into the description for LLM reference.
    */
   private _compileNamespaceTool(group: ToolGroup): ToolDefinition {
-    const actionEnum = group.tools.map(t => t.name);
-    const subToolDocs = group.tools.map(t => {
-      let doc = `- ${t.name}: ${t.description}`;
-      if (t.parameters) {
-        const params = Object.entries(t.parameters)
-          .map(([k, v]) => {
-            const info = v as Record<string, unknown>;
-            return `    - ${k} (${info.type ?? 'any'})${info.description ? ': ' + info.description : ''}`;
-          })
-          .join('\n');
-        if (params) doc += '\n' + params;
-      }
-      return doc;
-    }).join('\n');
+    const actionEnum = group.tools.map((t) => t.name);
+    const subToolDocs = group.tools
+      .map((t) => {
+        let doc = `- ${t.name}: ${t.description}`;
+        if (t.parameters) {
+          const params = Object.entries(t.parameters)
+            .map(([k, v]) => {
+              const info = v as Record<string, unknown>;
+              return `    - ${k} (${info.type ?? 'any'})${info.description ? `: ${info.description}` : ''}`;
+            })
+            .join('\n');
+          if (params) doc += `\n${params}`;
+        }
+        return doc;
+      })
+      .join('\n');
 
     return {
       name: group.name,
@@ -287,7 +293,7 @@ export class Pruner {
    * Builds the `load_toolkit` virtual tool definition.
    */
   private _buildLoaderTool(): ToolDefinition {
-    const kitNames = this.lazyToolkits.map(k => k.name);
+    const kitNames = this.lazyToolkits.map((k) => k.name);
     return {
       name: LOAD_TOOLKIT_NAME,
       description:
@@ -314,8 +320,8 @@ export class Pruner {
   private _buildDirectoryXml(): string {
     if (this.lazyToolkits.length === 0) return '';
 
-    const items = this.lazyToolkits.map(kit => {
-      const toolNames = kit.tools.map(t => t.name).join(', ');
+    const items = this.lazyToolkits.map((kit) => {
+      const toolNames = kit.tools.map((t) => t.name).join(', ');
       return `  <toolkit name="${kit.name}" tools="${toolNames}">${kit.description}</toolkit>`;
     });
 
@@ -323,10 +329,8 @@ export class Pruner {
   }
 
   private _buildResult(kept: ToolDefinition[]): PrunerResult {
-    const keptNames = new Set(kept.map(t => t.name));
-    const removed = this.flatTools
-      .filter(t => !keptNames.has(t.name))
-      .map(t => t.name);
+    const keptNames = new Set(kept.map((t) => t.name));
+    const removed = this.flatTools.filter((t) => !keptNames.has(t.name)).map((t) => t.name);
 
     return {
       tools: kept,

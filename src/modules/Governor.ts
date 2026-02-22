@@ -1,5 +1,5 @@
-import { Message } from '../types';
 import { Prompts } from '../prompts';
+import type { Message } from '../types';
 
 export interface GovernanceOptions {
   enforceXML?: { outputTag: string };
@@ -22,7 +22,7 @@ export class Governor {
       if (state.length > 0 && state[0].role === 'system') {
         state[0] = {
           ...state[0],
-          content: state[0].content + '\n\n' + instructions
+          content: `${state[0].content}\n\n${instructions}`,
         };
       } else {
         state.push({ role: 'system', content: instructions });

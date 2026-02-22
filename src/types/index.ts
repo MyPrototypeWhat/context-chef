@@ -29,7 +29,8 @@ export interface CompileOptions {
   target: TargetProvider;
 }
 
+/** Minimal message shape; adapters may return provider-specific formats */
 export interface TargetPayload {
-  messages: any[];
+  messages: Array<{ role?: string; content?: unknown; name?: string }>;
   // Future expansions: tools, tool_choice, etc.
 }

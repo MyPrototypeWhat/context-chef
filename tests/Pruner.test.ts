@@ -1,4 +1,4 @@
-import { Pruner, ToolDefinition, ToolGroup } from '../src/modules/Pruner';
+import { Pruner, type ToolDefinition, type ToolGroup } from '../src/modules/Pruner';
 
 // ─── Mock Data ───
 
@@ -6,7 +6,11 @@ const MOCK_TOOLS: ToolDefinition[] = [
   { name: 'read_file', description: 'Reads a file from disk', tags: ['file', 'read', 'disk'] },
   { name: 'write_file', description: 'Writes content to a file', tags: ['file', 'write', 'disk'] },
   { name: 'run_bash', description: 'Executes a shell command', tags: ['shell', 'execute', 'bash'] },
-  { name: 'search_web', description: 'Searches the web for information', tags: ['web', 'search', 'http'] },
+  {
+    name: 'search_web',
+    description: 'Searches the web for information',
+    tags: ['web', 'search', 'http'],
+  },
   { name: 'get_current_time', description: 'Returns the current timestamp' },
 ];
 
@@ -15,17 +19,37 @@ const MOCK_NAMESPACES: ToolGroup[] = [
     name: 'file_ops',
     description: 'File system operations',
     tools: [
-      { name: 'read_file', description: 'Read a file', parameters: { path: { type: 'string', description: 'File path' } } },
-      { name: 'write_file', description: 'Write to a file', parameters: { path: { type: 'string' }, content: { type: 'string' } } },
-      { name: 'search_files', description: 'Search files by pattern', parameters: { query: { type: 'string' } } },
+      {
+        name: 'read_file',
+        description: 'Read a file',
+        parameters: { path: { type: 'string', description: 'File path' } },
+      },
+      {
+        name: 'write_file',
+        description: 'Write to a file',
+        parameters: { path: { type: 'string' }, content: { type: 'string' } },
+      },
+      {
+        name: 'search_files',
+        description: 'Search files by pattern',
+        parameters: { query: { type: 'string' } },
+      },
     ],
   },
   {
     name: 'terminal',
     description: 'Shell command execution',
     tools: [
-      { name: 'run_bash', description: 'Execute a command', parameters: { command: { type: 'string' } } },
-      { name: 'kill_process', description: 'Kill a process', parameters: { pid: { type: 'number' } } },
+      {
+        name: 'run_bash',
+        description: 'Execute a command',
+        parameters: { command: { type: 'string' } },
+      },
+      {
+        name: 'kill_process',
+        description: 'Kill a process',
+        parameters: { pid: { type: 'number' } },
+      },
     ],
   },
 ];
@@ -35,15 +59,27 @@ const MOCK_TOOLKITS: ToolGroup[] = [
     name: 'Weather',
     description: 'Weather forecast and climate data',
     tools: [
-      { name: 'get_weather', description: 'Get current weather', parameters: { city: { type: 'string' } } },
-      { name: 'get_forecast', description: 'Get 7-day forecast', parameters: { city: { type: 'string' } } },
+      {
+        name: 'get_weather',
+        description: 'Get current weather',
+        parameters: { city: { type: 'string' } },
+      },
+      {
+        name: 'get_forecast',
+        description: 'Get 7-day forecast',
+        parameters: { city: { type: 'string' } },
+      },
     ],
   },
   {
     name: 'Database',
     description: 'SQL query and schema inspection',
     tools: [
-      { name: 'run_sql', description: 'Execute SQL query', parameters: { query: { type: 'string' } } },
+      {
+        name: 'run_sql',
+        description: 'Execute SQL query',
+        parameters: { query: { type: 'string' } },
+      },
     ],
   },
 ];
@@ -73,8 +109,8 @@ describe('Pruner — Flat Mode (Legacy)', () => {
     it('should return only the requested tools', () => {
       const result = pruner.allowOnly(['read_file', 'run_bash']);
       expect(result.tools).toHaveLength(2);
-      expect(result.tools.map(t => t.name)).toEqual(
-        expect.arrayContaining(['read_file', 'run_bash'])
+      expect(result.tools.map((t) => t.name)).toEqual(
+        expect.arrayContaining(['read_file', 'run_bash']),
       );
     });
 
@@ -99,22 +135,22 @@ describe('Pruner — Flat Mode (Legacy)', () => {
   describe('pruneByTask', () => {
     it('should keep tools whose tags match the task description', () => {
       const result = pruner.pruneByTask('I need to read a file from disk');
-      expect(result.tools.map(t => t.name)).toContain('read_file');
+      expect(result.tools.map((t) => t.name)).toContain('read_file');
     });
 
     it('should keep tools whose name appears in the task description', () => {
       const result = pruner.pruneByTask('Please use run_bash to execute the command');
-      expect(result.tools.map(t => t.name)).toContain('run_bash');
+      expect(result.tools.map((t) => t.name)).toContain('run_bash');
     });
 
     it('should always keep tools with no tags (universal utilities)', () => {
       const result = pruner.pruneByTask('paint a picture');
-      expect(result.tools.map(t => t.name)).toContain('get_current_time');
+      expect(result.tools.map((t) => t.name)).toContain('get_current_time');
     });
 
     it('should exclude irrelevant tools', () => {
       const result = pruner.pruneByTask('search the web for news');
-      const names = result.tools.map(t => t.name);
+      const names = result.tools.map((t) => t.name);
       expect(names).toContain('search_web');
       expect(names).not.toContain('run_bash');
       expect(names).not.toContain('write_file');
@@ -124,7 +160,7 @@ describe('Pruner — Flat Mode (Legacy)', () => {
   describe('pruneByTaskAndAllowlist', () => {
     it('should union: keep tools matching EITHER allowlist OR task (default)', () => {
       const result = pruner.pruneByTaskAndAllowlist('execute a bash script', ['read_file']);
-      const names = result.tools.map(t => t.name);
+      const names = result.tools.map((t) => t.name);
       expect(names).toContain('run_bash');
       expect(names).toContain('read_file');
       expect(names).toContain('get_current_time');
@@ -134,7 +170,7 @@ describe('Pruner — Flat Mode (Legacy)', () => {
       const prunerIntersect = new Pruner({ strategy: 'intersection' });
       prunerIntersect.registerTools(MOCK_TOOLS);
       const result = prunerIntersect.pruneByTaskAndAllowlist('read a file', ['read_file']);
-      const names = result.tools.map(t => t.name);
+      const names = result.tools.map((t) => t.name);
       expect(names).toContain('read_file');
       expect(names).not.toContain('write_file');
       expect(names).not.toContain('run_bash');
@@ -173,8 +209,10 @@ describe('Pruner — Namespace Mode (Layer 1)', () => {
     it('should include action enum with all sub-tool names', () => {
       const { tools } = pruner.compile();
       const fileOps = tools[0];
-      const params = fileOps.parameters as any;
-      expect(params.properties.action.enum).toEqual(['read_file', 'write_file', 'search_files']);
+      const params = fileOps.parameters as {
+        properties?: Record<string, { enum?: string[] }>;
+      };
+      expect(params.properties?.action?.enum).toEqual(['read_file', 'write_file', 'search_files']);
     });
 
     it('should include sub-tool documentation in the description', () => {
@@ -187,7 +225,7 @@ describe('Pruner — Namespace Mode (Layer 1)', () => {
 
     it('should have required action and args', () => {
       const { tools } = pruner.compile();
-      const params = tools[0].parameters as any;
+      const params = tools[0].parameters as { required?: string[] };
       expect(params.required).toEqual(['action', 'args']);
     });
 
@@ -239,17 +277,21 @@ describe('Pruner — Namespace Mode (Layer 1)', () => {
     });
 
     it('should throw for unknown namespace', () => {
-      expect(() => pruner.resolveNamespace({
-        name: 'unknown',
-        arguments: { action: 'foo' },
-      })).toThrow('not a registered namespace');
+      expect(() =>
+        pruner.resolveNamespace({
+          name: 'unknown',
+          arguments: { action: 'foo' },
+        }),
+      ).toThrow('not a registered namespace');
     });
 
     it('should throw for unknown action within a namespace', () => {
-      expect(() => pruner.resolveNamespace({
-        name: 'file_ops',
-        arguments: { action: 'delete_file' },
-      })).toThrow('Unknown action "delete_file"');
+      expect(() =>
+        pruner.resolveNamespace({
+          name: 'file_ops',
+          arguments: { action: 'delete_file' },
+        }),
+      ).toThrow('Unknown action "delete_file"');
     });
   });
 });
@@ -273,8 +315,10 @@ describe('Pruner — Lazy Loading (Layer 2)', () => {
 
     it('should have toolkit_name enum listing all available toolkits', () => {
       const { tools } = pruner.compile();
-      const params = tools[0].parameters as any;
-      expect(params.properties.toolkit_name.enum).toEqual(['Weather', 'Database']);
+      const params = tools[0].parameters as {
+        properties?: Record<string, { enum?: string[] }>;
+      };
+      expect(params.properties?.toolkit_name?.enum).toEqual(['Weather', 'Database']);
     });
 
     it('should generate a directory XML with toolkit names and descriptions', () => {
@@ -350,7 +394,7 @@ describe('Pruner — Combined Namespace + Lazy Loading', () => {
     const { tools } = pruner.compile();
     // 2 namespaces + 1 load_toolkit = 3
     expect(tools).toHaveLength(3);
-    expect(tools.map(t => t.name)).toEqual(['file_ops', 'terminal', 'load_toolkit']);
+    expect(tools.map((t) => t.name)).toEqual(['file_ops', 'terminal', 'load_toolkit']);
   });
 
   it('should generate directoryXml for lazy toolkits only', () => {

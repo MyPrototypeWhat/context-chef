@@ -1,26 +1,26 @@
 import { ContextChef } from '../src/index';
-import { Message } from '../src/types';
+import type { Message } from '../src/types';
 
 describe('ContextChef Async Features (pi-mono inspiration)', () => {
   it('should trigger Janitor compression when history exceeds limit', async () => {
     // Mock: returns a summary already wrapped in <history_summary> tags,
     // mirroring what a real LLM would output when given CONTEXT_COMPACTION_INSTRUCTION.
-    const mockCompressionModel = jest.fn().mockResolvedValue(
-      '<history_summary>MOCK_SUMMARY</history_summary>'
-    );
+    const mockCompressionModel = jest
+      .fn()
+      .mockResolvedValue('<history_summary>MOCK_SUMMARY</history_summary>');
 
     const chef = new ContextChef({
       janitor: {
         maxHistoryLimit: 5,
         preserveRecentCount: 2,
-        compressionModel: mockCompressionModel
-      }
+        compressionModel: mockCompressionModel,
+      },
     });
 
     // Create 6 messages (exceeds limit of 5)
     const history: Message[] = Array.from({ length: 6 }, (_, i) => ({
       role: 'user',
-      content: `Message ${i + 1}`
+      content: `Message ${i + 1}`,
     }));
 
     chef.useRollingHistory(history);
@@ -52,15 +52,12 @@ describe('ContextChef Async Features (pi-mono inspiration)', () => {
     const chef = new ContextChef({
       transformContext: async (messages: Message[]) => {
         // Example: An extension that injects a secret branch summary
-        return [
-          { role: 'system', content: 'Secret Extension Injected' },
-          ...messages
-        ];
-      }
+        return [{ role: 'system', content: 'Secret Extension Injected' }, ...messages];
+      },
     });
 
     chef.setTopLayer([{ role: 'system', content: 'Top Layer' }]);
-    
+
     const payload = await chef.compileAsync();
 
     expect(payload.messages.length).toBe(2);
@@ -71,12 +68,12 @@ describe('ContextChef Async Features (pi-mono inspiration)', () => {
   it('should execute synchronous transformContext in compile()', () => {
     const chef = new ContextChef({
       transformContext: (messages: Message[]) => {
-        return messages.map(m => ({ ...m, name: 'transformed_user' }));
-      }
+        return messages.map((m) => ({ ...m, name: 'transformed_user' }));
+      },
     });
 
     chef.useRollingHistory([{ role: 'user', content: 'Hello' }]);
-    
+
     const payload = chef.compile();
 
     expect(payload.messages.length).toBe(1);
@@ -85,11 +82,11 @@ describe('ContextChef Async Features (pi-mono inspiration)', () => {
 
   it('should throw if async transformContext is used with sync compile()', () => {
     const chef = new ContextChef({
-      transformContext: async (messages: Message[]) => messages
+      transformContext: async (messages: Message[]) => messages,
     });
 
     chef.useRollingHistory([{ role: 'user', content: 'Hello' }]);
-    
+
     expect(() => chef.compile()).toThrow('transformContext is async. Use compileAsync() instead.');
   });
 });

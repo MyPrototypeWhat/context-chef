@@ -1,22 +1,22 @@
-import { ITargetAdapter } from './ITargetAdapter';
-import { Message, TargetPayload } from '../types';
+import type { Message, TargetPayload } from '../types';
+import type { ITargetAdapter } from './ITargetAdapter';
 
 export class GeminiAdapter implements ITargetAdapter {
   compile(messages: Message[]): TargetPayload {
-    const formattedMessages = messages.map(msg => {
+    const formattedMessages = messages.map((msg) => {
       // Gemini uses a distinct parts/role schema
       const geminiRole = msg.role === 'assistant' ? 'model' : 'user';
 
-      const part: any = { text: msg.content };
+      const part: { text: string } = { text: msg.content };
 
       // Optional logic for Gemini tool formats
       if (msg.tool_calls) {
-         // handle tools
+        // handle tools
       }
 
       return {
         role: geminiRole,
-        parts: [part]
+        parts: [part],
       };
     });
 

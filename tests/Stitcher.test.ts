@@ -1,5 +1,5 @@
 import { Stitcher } from '../src/modules/Stitcher';
-import { Message } from '../src/types';
+import type { Message } from '../src/types';
 
 describe('Stitcher', () => {
   it('should deterministically order keys', () => {
@@ -15,20 +15,14 @@ describe('Stitcher', () => {
 
   it('should maintain static prefix hash across different histories', () => {
     const stitcher = new Stitcher();
-    
-    const topLayer: Message[] = [
-      { role: 'system', content: 'You are a helpful assistant' }
-    ];
+
+    const topLayer: Message[] = [{ role: 'system', content: 'You are a helpful assistant' }];
 
     // Scenario 1: User asks a simple question
-    const history1: Message[] = [
-      { role: 'user', content: 'What is 1+1?' }
-    ];
+    const history1: Message[] = [{ role: 'user', content: 'What is 1+1?' }];
 
     // Scenario 2: User asks a different question but Top Layer is same
-    const history2: Message[] = [
-      { role: 'user', content: 'What is the capital of France?' }
-    ];
+    const history2: Message[] = [{ role: 'user', content: 'What is the capital of France?' }];
 
     const payload1 = stitcher.compile([...topLayer, ...history1]);
     const payload2 = stitcher.compile([...topLayer, ...history2]);

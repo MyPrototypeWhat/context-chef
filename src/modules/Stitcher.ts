@@ -1,4 +1,4 @@
-import { Message } from '../types';
+import type { Message } from '../types';
 
 export type DynamicStatePlacement = 'system' | 'last_user';
 
@@ -20,22 +20,23 @@ export interface StitchOptions {
  *    strategy (system message vs last-user-message injection).
  */
 export class Stitcher {
-  public static orderKeysDeterministically(obj: any): any {
+  public static orderKeysDeterministically(obj: unknown): unknown {
     if (obj === null || typeof obj !== 'object') return obj;
     if (Array.isArray(obj)) return obj.map(Stitcher.orderKeysDeterministically);
-    const sortedObj: Record<string, any> = {};
-    const keys = Object.keys(obj).sort();
+    const sortedObj: Record<string, unknown> = {};
+    const keys = Object.keys(obj as object).sort();
+    const src = obj as Record<string, unknown>;
     for (const key of keys) {
       if (key !== '_cache_breakpoint') {
-         sortedObj[key] = Stitcher.orderKeysDeterministically(obj[key]);
+        sortedObj[key] = Stitcher.orderKeysDeterministically(src[key]);
       } else {
-         sortedObj[key] = obj[key];
+        sortedObj[key] = src[key];
       }
     }
     return sortedObj;
   }
 
-  public static stringifyPayload(payload: any): string {
+  public static stringifyPayload(payload: unknown): string {
     return JSON.stringify(Stitcher.orderKeysDeterministically(payload));
   }
 
@@ -63,12 +64,12 @@ export class Stitcher {
     if (lastUserIndex !== -1) {
       result[lastUserIndex] = {
         ...result[lastUserIndex],
-        content: result[lastUserIndex].content + stateBlock
+        content: result[lastUserIndex].content + stateBlock,
       };
     } else {
       result.push({
         role: 'user',
-        content: stateBlock.trim()
+        content: stateBlock.trim(),
       });
     }
 
@@ -89,7 +90,7 @@ export class Stitcher {
     }
 
     return {
-      messages: assembled.map(msg => Stitcher.orderKeysDeterministically(msg) as Message)
+      messages: assembled.map((msg) => Stitcher.orderKeysDeterministically(msg) as Message),
     };
   }
 }

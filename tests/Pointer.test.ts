@@ -1,6 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Pointer } from '../src/modules/Pointer';
-import * as fs from 'fs';
-import * as path from 'path';
 
 describe('Pointer (VFS)', () => {
   const TEST_DIR = path.join(process.cwd(), '.test_vfs');
@@ -9,7 +9,7 @@ describe('Pointer (VFS)', () => {
   beforeEach(() => {
     pointer = new Pointer({
       storageDir: TEST_DIR,
-      threshold: 50 // Very small threshold for testing
+      threshold: 50, // Very small threshold for testing
     });
   });
 
@@ -29,14 +29,17 @@ describe('Pointer (VFS)', () => {
   });
 
   it('should offload large content and return a truncated pointer', () => {
-    const lines = Array.from({ length: 50 }, (_, i) => `Line ${i + 1} of the long log file that goes on and on.`);
+    const lines = Array.from(
+      { length: 50 },
+      (_, i) => `Line ${i + 1} of the long log file that goes on and on.`,
+    );
     const largeText = lines.join('\n');
-    
+
     const result = pointer.process(largeText, 'log');
 
     expect(result.isOffloaded).toBe(true);
     expect(result.uri).toMatch(/^context:\/\/vfs\/log_.*\.txt$/);
-    
+
     // Check that it kept the last few lines
     expect(result.content).toContain('Line 50');
     // Check for the EPHEMERAL_MESSAGE VFS offload notice
@@ -51,7 +54,7 @@ describe('Pointer (VFS)', () => {
     expect(result.isOffloaded).toBe(true);
     expect(result.uri).toBeDefined();
 
-    const resolved = pointer.resolve(result.uri!);
+    const resolved = result.uri ? pointer.resolve(result.uri) : null;
     expect(resolved).toBe(largeText);
   });
 

@@ -1,6 +1,6 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as crypto from 'crypto';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Prompts } from '../prompts';
 
 export interface VFSConfig {
@@ -30,7 +30,7 @@ export class Pointer {
     this.config = {
       threshold: config.threshold ?? 5000,
       storageDir: config.storageDir ?? path.join(process.cwd(), '.context_vfs'),
-      uriScheme: config.uriScheme ?? 'context://vfs/'
+      uriScheme: config.uriScheme ?? 'context://vfs/',
     };
 
     if (!fs.existsSync(this.config.storageDir)) {
@@ -43,7 +43,11 @@ export class Pointer {
    * and returns a truncated string with a pointer URI.
    * If not, returns the original content.
    */
-  public process(content: string, type: 'log' | 'doc' = 'log', options?: ProcessOptions): VFSResult {
+  public process(
+    content: string,
+    type: 'log' | 'doc' = 'log',
+    options?: ProcessOptions,
+  ): VFSResult {
     const activeThreshold = options?.threshold ?? this.config.threshold;
 
     if (content.length <= activeThreshold) {
@@ -61,8 +65,8 @@ export class Pointer {
     let lastLines = '';
     // For logs, it's often useful to keep the last few lines
     if (type === 'log') {
-        const lines = content.split('\n');
-        lastLines = lines.slice(-20).join('\n');
+      const lines = content.split('\n');
+      lastLines = lines.slice(-20).join('\n');
     }
 
     const truncated = Prompts.getVFSOffloadReminder(activeThreshold, uri, lastLines);
@@ -70,7 +74,7 @@ export class Pointer {
     return {
       isOffloaded: true,
       content: truncated,
-      uri
+      uri,
     };
   }
 
@@ -78,11 +82,12 @@ export class Pointer {
    * Reads the full content back from a URI
    */
   public resolve(uri: string): string | null {
-    if (!uri.startsWith(this.config.uriScheme!)) {
+    const scheme = this.config.uriScheme;
+    if (!scheme || !uri.startsWith(scheme)) {
       return null;
     }
 
-    const filename = uri.slice(this.config.uriScheme!.length);
+    const filename = uri.slice(scheme.length);
     const filepath = path.join(this.config.storageDir, filename);
 
     if (fs.existsSync(filepath)) {

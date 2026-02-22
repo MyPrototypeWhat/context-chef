@@ -5,7 +5,8 @@ export const Prompts = {
    * The <EPHEMERAL_MESSAGE> wrapper is a signature Claude Code trick to inject system rules
    * into the user/assistant flow without the model "replying" to it.
    */
-  getXMLGuardrail: (outputTag: string) => `
+  getXMLGuardrail: (outputTag: string) =>
+    `
 The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.
 <EPHEMERAL_MESSAGE>
 CRITICAL OUTPUT FORMAT INSTRUCTIONS:
@@ -31,7 +32,8 @@ Recalling critical instructions: Output must be strictly within <${outputTag}> t
    * Used by Pointer to indicate content has been offloaded to VFS.
    * Directly implements Claude Code's exact "ephemeral message" anti-hallucination pattern.
    */
-  getVFSOffloadReminder: (threshold: number, uri: string, lastLines: string) => `
+  getVFSOffloadReminder: (threshold: number, uri: string, lastLines: string) =>
+    `
 The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.
 <EPHEMERAL_MESSAGE>
 Note: The output was too large (exceeds ${threshold} characters) and has been truncated and offloaded to VFS at URI: ${uri}. 
@@ -109,7 +111,8 @@ Wrap your final structured summary in <history_summary> tags.
   /**
    * Used by Janitor when compression fails or no model is provided.
    */
-  getFallbackCompressionSummary: (truncatedCount: number) => `
+  getFallbackCompressionSummary: (truncatedCount: number) =>
+    `
 <history_summary>
 <ephemeral_message type="history_truncated">
 [System: ${truncatedCount} older messages were truncated and compressed to respect context limits.]
@@ -121,7 +124,8 @@ Wrap your final structured summary in <history_summary> tags.
    * Used by Adapters (like OpenAI) that don't support native prefill.
    * Forces the model to start its response with specific text using a system instruction.
    */
-  getPrefillEnforcement: (prefillContent: string) => `
+  getPrefillEnforcement: (prefillContent: string) =>
+    `
 <ephemeral_message type="prefill_enforcement">
 SYSTEM INSTRUCTION: Your response MUST start verbatim with the following text:
 "${prefillContent}"

@@ -1,6 +1,6 @@
-import { Message } from '../types';
-import { TokenUtils } from '../utils/TokenUtils';
 import { Prompts } from '../prompts';
+import type { Message } from '../types';
+import { TokenUtils } from '../utils/TokenUtils';
 
 export interface JanitorConfig {
   /**
@@ -67,13 +67,14 @@ export class Janitor {
     // 1. Token-based compression (Recommended)
     if (this.config.maxHistoryTokens) {
       const totalTokens = this.getTokenCount(history);
-      
+
       if (totalTokens <= this.config.maxHistoryTokens) {
         return history;
       }
 
-      const preserveTarget = this.config.preserveRecentTokens ?? Math.floor(this.config.maxHistoryTokens * 0.7);
-      
+      const preserveTarget =
+        this.config.preserveRecentTokens ?? Math.floor(this.config.maxHistoryTokens * 0.7);
+
       let accumulatedTokens = 0;
       let splitIndex = history.length;
 
@@ -120,7 +121,7 @@ export class Janitor {
       try {
         const compressionMessages: Message[] = [
           ...toCompress,
-          { role: 'user', content: Prompts.CONTEXT_COMPACTION_INSTRUCTION }
+          { role: 'user', content: Prompts.CONTEXT_COMPACTION_INSTRUCTION },
         ];
         const summary = await this.config.compressionModel(compressionMessages);
         summaryText = summary;
@@ -131,7 +132,7 @@ export class Janitor {
 
     const summaryMessage: Message = {
       role: 'system',
-      content: summaryText
+      content: summaryText,
     };
 
     if (this.config.onCompress) {
@@ -141,4 +142,3 @@ export class Janitor {
     return [summaryMessage, ...toKeep];
   }
 }
-

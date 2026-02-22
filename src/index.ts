@@ -1,23 +1,30 @@
-import { Message, CompileOptions, TargetPayload } from './types';
-import { Stitcher, DynamicStatePlacement, StitchOptions } from './modules/Stitcher';
-import { Pointer, VFSConfig, ProcessOptions } from './modules/Pointer';
-import { Janitor, JanitorConfig } from './modules/Janitor';
-import { Governor, GovernanceOptions } from './modules/Governor';
-import { Pruner, PrunerConfig, ToolDefinition, ToolGroup, CompiledTools, ResolvedToolCall } from './modules/Pruner';
-import { AdapterFactory } from './adapters/AdapterFactory';
-import { XmlGenerator } from './utils/XmlGenerator';
-import { z } from 'zod';
+import type { z } from 'zod';
+import { getAdapter } from './adapters/AdapterFactory';
+import { GovernanceOptions, Governor } from './modules/Governor';
+import { Janitor, type JanitorConfig } from './modules/Janitor';
+import { Pointer, type ProcessOptions, type VFSConfig } from './modules/Pointer';
+import {
+  CompiledTools,
+  Pruner,
+  type PrunerConfig,
+  ResolvedToolCall,
+  ToolDefinition,
+  ToolGroup,
+} from './modules/Pruner';
+import { DynamicStatePlacement, Stitcher, type StitchOptions } from './modules/Stitcher';
+import type { CompileOptions, Message, TargetPayload } from './types';
+import { objectToXml } from './utils/XmlGenerator';
 
+export { AdapterFactory, getAdapter, ITargetAdapter } from './adapters/AdapterFactory';
+export { Governor } from './modules/Governor';
+export { Janitor, JanitorConfig } from './modules/Janitor';
+export { Pointer, ProcessOptions, VFSConfig } from './modules/Pointer';
+export { Pruner, PrunerConfig } from './modules/Pruner';
+export { Stitcher, StitchOptions } from './modules/Stitcher';
 export * from './prompts';
 export * from './types';
-export { Stitcher, StitchOptions } from './modules/Stitcher';
-export { Pointer, VFSConfig, ProcessOptions } from './modules/Pointer';
-export { Janitor, JanitorConfig } from './modules/Janitor';
-export { Governor } from './modules/Governor';
-export { Pruner, PrunerConfig } from './modules/Pruner';
-export { AdapterFactory, ITargetAdapter } from './adapters/AdapterFactory';
-export { XmlGenerator } from './utils/XmlGenerator';
 export { TokenUtils } from './utils/TokenUtils';
+export { XmlGenerator } from './utils/XmlGenerator';
 
 export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
@@ -26,7 +33,14 @@ export interface ChefConfig {
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
 }
 
-export { GovernanceOptions, ToolDefinition, ToolGroup, CompiledTools, ResolvedToolCall, DynamicStatePlacement };
+export {
+  GovernanceOptions,
+  ToolDefinition,
+  ToolGroup,
+  CompiledTools,
+  ResolvedToolCall,
+  DynamicStatePlacement,
+};
 
 export class ContextChef {
   private stitcher: Stitcher;
@@ -64,7 +78,10 @@ export class ContextChef {
    * Appends to or sets the rolling history.
    * In a real implementation, this would trigger the Janitor if threshold is reached.
    */
-  public useRollingHistory(history: Message[], options?: { windowSize?: string, strategy?: string }): this {
+  public useRollingHistory(
+    history: Message[],
+    _options?: { windowSize?: string; strategy?: string },
+  ): this {
     this.rollingHistory = [...history];
     // TODO: integrate Janitor compression logic here
     return this;
@@ -81,23 +98,25 @@ export class ContextChef {
    *   - `'system'`: Injects as a standalone system message at the bottom of the sandwich.
    *     Suitable for short conversations or global configuration that doesn't need recency boost.
    */
-  public setDynamicState<T>(schema: z.ZodType<T>, state: T, options?: { placement?: DynamicStatePlacement }): this {
+  public setDynamicState<T>(
+    schema: z.ZodType<T>,
+    state: T,
+    options?: { placement?: DynamicStatePlacement },
+  ): this {
     const parsedState = schema.parse(state);
-    const xml = XmlGenerator.objectToXml(parsedState, 'dynamic_state');
+    const xml = objectToXml(parsedState, 'dynamic_state');
 
     this.dynamicStatePlacement = options?.placement ?? 'last_user';
     this.rawDynamicXml = xml;
 
     if (this.dynamicStatePlacement === 'system') {
-      this.dynamicState = [
-        { role: 'system', content: `CURRENT TASK STATE:\n${xml}` }
-      ];
+      this.dynamicState = [{ role: 'system', content: `CURRENT TASK STATE:\n${xml}` }];
     } else {
       // For 'last_user', we don't create a standalone message here.
       // The injection happens during compile() when we have the full message array.
       this.dynamicState = [];
     }
-    
+
     return this;
   }
 
@@ -155,7 +174,11 @@ export class ContextChef {
   /**
    * Utility method to safely process large outputs via VFS before they hit history.
    */
-  public processLargeOutput(content: string, type: 'log' | 'doc' = 'log', options?: ProcessOptions): string {
+  public processLargeOutput(
+    content: string,
+    type: 'log' | 'doc' = 'log',
+    options?: ProcessOptions,
+  ): string {
     const result = this.pointer.process(content, type, options);
     return result.content;
   }
@@ -176,22 +199,22 @@ export class ContextChef {
    */
   public compile(options?: CompileOptions): TargetPayload {
     let messages = [...this.topLayer, ...this.rollingHistory, ...this.dynamicState];
-    
+
     // Sync transform hook execution (if provided and synchronous)
     if (this.transformContext) {
       const transformed = this.transformContext(messages);
       if (transformed instanceof Promise) {
-        throw new Error("transformContext is async. Use compileAsync() instead.");
+        throw new Error('transformContext is async. Use compileAsync() instead.');
       }
       messages = transformed;
     }
 
     // Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const rawPayload = this.stitcher.compile(messages, this.getStitchOptions());
-    
+
     const target = options?.target || 'openai';
-    const adapter = AdapterFactory.getAdapter(target);
-    
+    const adapter = getAdapter(target);
+
     return adapter.compile([...rawPayload.messages]);
   }
 
@@ -212,10 +235,10 @@ export class ContextChef {
 
     // 4. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const rawPayload = this.stitcher.compile(messages, this.getStitchOptions());
-    
+
     const target = options?.target || 'openai';
-    const adapter = AdapterFactory.getAdapter(target);
-    
+    const adapter = getAdapter(target);
+
     return adapter.compile([...rawPayload.messages]);
   }
 }
