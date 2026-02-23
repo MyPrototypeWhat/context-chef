@@ -2,33 +2,30 @@
 
 ## A. 功能性缺陷（会导致错误输出）
 
-- [ ] **A1. GeminiAdapter 补完**
-  - `system` 角色应映射到 Gemini 的 `systemInstruction` 字段，而非强制转为 `user`
-  - `tool` 角色的消息需要正确映射为 Gemini 的 `functionCall` / `functionResponse` 格式
-  - `_cache_breakpoint` 需要决定在 Gemini 上的行为（Gemini 目前不支持 prompt caching，可以静默忽略）
-  - Prefill 降级逻辑需要与 OpenAI 对齐（Gemini 同样不支持尾部 assistant 消息）
-  - 文件：`src/adapters/GeminiAdapter.ts`
+- [x] **A1. GeminiAdapter 补完** ✅
+  - `system` → 顶层 `systemInstruction` 字段
+  - `assistant` → `model` 角色
+  - `tool_calls` → `functionCall` parts（支持并行）
+  - `tool` 结果 → `functionResponse` parts（`role: "user"`）
+  - `_cache_breakpoint` 静默忽略（Gemini 使用独立的 CachedContent API）
+  - Prefill 降级与 OpenAI 对齐（尾部 model 消息 → 系统注入）
+  - 13 个测试覆盖：`tests/GeminiAdapter.test.ts`
 
-- [ ] **A2. AnthropicAdapter 保留 prefill**
-  - Anthropic 原生支持尾部 `assistant` 消息来触发预填充
-  - 当前实现把 `assistant` prefill 当普通消息处理，没有保留在末尾的特殊逻辑
-  - 需要确保尾部 `assistant` 消息在 Anthropic 编译时被正确保留
-  - 文件：`src/adapters/AnthropicAdapter.ts`
+- [x] **A2. AnthropicAdapter 保留 prefill** ✅ (确认无需修改)
+  - Anthropic 原生支持尾部 `assistant` 消息触发预填充
+  - 当前实现已正确将 assistant 消息直接传递，无需特殊逻辑
+  - OpenAI/Gemini 的降级逻辑正是因为它们不支持此特性
 
-- [ ] **A3. `useRollingHistory` options 参数是死代码**
-  - `windowSize` 和 `strategy` 被接口声明但从未使用
-  - 方法体内有 `// TODO: integrate Janitor compression logic here`
-  - 决策：要么实现这些参数的逻辑，要么从签名中移除
-  - 文件：`src/index.ts` L56
+- [x] **A3. `useRollingHistory` options 参数已清理** ✅
+  - 移除了未使用的 `_options?: { windowSize?: string; strategy?: string }` 参数
+  - 移除了过时的 TODO 注释
 
 ---
 
 ## B. 工程性缺陷（技术债）
 
-- [ ] **B1. Zod 从 devDependencies 移到 dependencies**
-  - `src/index.ts` 在运行时依赖 Zod，但 `package.json` 把它列为 devDependency
-  - 用户 `npm install context-engineer` 后运行会因缺少 Zod 崩溃
-  - 文件：`package.json`
+- [x] **B1. Zod 从 devDependencies 移到 dependencies** ✅
+  - 经检查，`package.json` 中 `zod` 已位于 `dependencies` 内，无需修改。
 
 - [ ] **B2. 公共 API 导出补全**
   - 当前只导出了 `ContextChef`、`GovernanceOptions`、`ToolDefinition`、`Prompts`
@@ -52,11 +49,10 @@
   - 考虑在 `TargetPayload` 中加入可选的 `tools` 字段，compile 时自动注入 Pruner 结果
   - 文件：`src/types/index.ts`, `src/index.ts`
 
-- [ ] **B5. Pointer 仅支持 Node.js**
+- [x] ~~**B5. Pointer 仅支持 Node.js**~~ ❌ (按讨论暂不考虑)
   - 依赖 `fs`、`path`、`crypto`，在浏览器/Edge 环境直接报错
   - 设计方案开头写着"专为前端和 Node.js 生态设计"
-  - 方案：抽象存储层接口，提供 Node 和 Browser（localStorage / IndexedDB）两套实现
-  - 文件：`src/modules/Pointer.ts`
+  - 方案：暂时放弃浏览器支持，将其作为 Node.js 库处理。
 
 - [ ] **B6. 运行一次 tsc 构建验证**
   - 所有测试都通过 ts-jest 即时编译运行
@@ -72,10 +68,9 @@
   - 需要覆盖：空 dynamicState + prefill、空 dynamicState + enforceXML、连续两次 applyGovernance
   - 新文件：`tests/Governor.test.ts`
 
-- [ ] **C2. GeminiAdapter 测试**
-  - 当前只有 OpenAI 和 Anthropic 的集成测试
-  - A1 补完后需要同步补测试
-  - 文件：`tests/index.test.ts` 或新建 `tests/adapters.test.ts`
+- [x] **C2. GeminiAdapter 测试** ✅
+  - 13 个测试覆盖：system 分离、角色映射、functionCall/functionResponse、并行调用、prefill 降级、cache_breakpoint 忽略、完整多轮对话
+  - 文件：`tests/GeminiAdapter.test.ts`
 
 - [ ] **C3. Janitor token-based 压缩测试**
   - `asyncFeatures.test.ts` 只测了 legacy 的 message count 模式（`maxHistoryLimit`）
@@ -97,22 +92,59 @@
 - [ ] **D3. README 补充 Namespace + Lazy Loading 文档**
   - README 目前只包含扁平模式 Pruner 的 Best Practice
   - 需要补充双层架构的完整用法和 Agent Loop 集成示例
-  - 文件：`README.md`
+    - 文件：`README.md`
+
+---
+
+## E. 架构迭代与优化 (Phase 4 / Phase 5 规划)
+
+根据前沿 Agent 平台（Cursor, Letta, Cline, Augment 等）的实践，规划以下架构演进方向：
+
+- [ ] **E1. 引入 AST / Semantic Context Injector (雷达模块钩子)**
+  - **背景**：Cursor/Augment 的核心在于"隐式上下文发现" (Dynamic Context Discovery)。当前 Dynamic State 需要显式传入，对于复杂代码库存在盲区。
+  - **方案**：不在库内实现沉重的 AST 或 VectorDB 分析，而是提供一个类似 `onBeforeCompile(context => {...})` 的 Hook 或中间件 API，允许开发者在最终编译前，注入外部检索引擎计算出的 `<related_snippets>`，实现零耗时 (Zero round-trip) 的认知扩展。
+
+- [ ] **E2. 原生 MCP (Model Context Protocol) 网关接入**
+  - **背景**：Cline/Roo Code 等前沿工具已全线拥抱 MCP，而 ContextChef 当前工具配置仍为静态对象。
+  - **方案**：将 Layer 2 (Lazy Loading Toolkits) 的概念与 MCP 融合。提供诸如 `chef.tools().registerMCPServer(client)` 的 API，让 `load_toolkit` 虚拟工具可以直接对接 MCP Server，实现能力的动态即插即用，同时保持核心库轻量（不内置 client，只提供注入点）。
+
+- [ ] **E3. 全局状态的时间旅行 (Snapshot & Restore)**
+  - **背景**：长程任务容易中途出错，IDE 插件 (如 Cline) 刚需 Undo/Redo 能力。
+  - **方案**：暴露 `chef.snapshot()` 和 `chef.restore(state)` 方法，因为 ContextChef 内部维护了统一的 IR (中间表示)，可以轻易地实现 AI 记忆的回滚与重放。
+
+- [ ] **E4. Janitor 的显式记忆 (Core Memory) 持久化**
+  - **背景**：目前 Janitor 仅对历史对话（L2 -> L1）进行模糊压缩。
+  - **方案**：借鉴 Letta，允许模型主动输出 `<update_core_memory>` 标签。Janitor 捕获该标签后，将其持久化到顶层的 `Static Base` (系统提示词) 中，使模型能够跨会话累积经验（如：记住项目代码规范）。
+
+- [ ] **E5. 支持流式解析与对象重组 (Streaming Parser Integration)**
+  - **背景**：Governor 采用 XML 约束包络（Envelope），传统解析需要等待闭合标签，导致极高的首字节体感延迟 (TTFB)，前沿应用极度依赖 Streaming。
+  - **方案**：
+    1. **解耦包络与负载**：由于开发者配置的 `outputTag` 是动态的（不仅限于 `<dynamic_state>` 或 `<thinking>`），我们需要一个泛型的底层 Stream Scanner 负责剥离外部的 XML 标签。
+    2. **引入成熟流解析库**：在剥离出目标内容后，若是 JSON 负载，则无缝接入 `zod-stream` 或 `stream-json`，实现边接收边校验的强类型 Partial Object 抛出；若是纯 XML 负载，则接入 `htmlparser2` 等成熟的流式 XML 解析器。
+
+- [ ] **E6. Reasoning Models (o1/o3-mini) 的 Adapter 专项优化**
+  - **背景**：OpenAI 的 o1 系列模型自带内部思维链，且不支持某些 Assistant prefill，强加复杂的 `<thinking>` 引导（如 `prompts.ts` line 24）反而会导致模型性能下降。
+  - **方案**：在 `AdapterFactory` 中为 o1/o3 建立特殊的适配逻辑，智能削减或剥离冗余的 XML Guardrails 引导提示，防止过度指令限制。
+
+- [ ] **E7. VFS 指针解析的按需摘要 (Optional Summary)**
+  - **背景**：Pointer 截断超大文件并返回 `context://...`，要求 LLM 主动再读，效率较低。
+  - **方案**：在转储文件的瞬间，如果开发者配置了快速模型，允许触发一次异步的轻量 summary 操作。截断信息更新为 `[Summary: ... + context://...]`，避免模型盲人摸象。若未配置，则优雅降级为现有的简单截断。
 
 ---
 
 ## 优先级建议
 
-| 优先级 | 项目 | 理由 |
-|:---:|:---|:---|
-| P0 | B1 (Zod 依赖) | 一行改动，不改就崩 |
-| P0 | B6 (tsc 构建) | 验证性工作，不做就不知道有没有隐藏炸弹 |
-| P1 | A1 (Gemini) | 三大 Adapter 之一是空壳，对外宣称支持但实际会出错 |
-| P1 | A2 (Anthropic prefill) | Anthropic 是预填充的原生支持者，不保留等于浪费了核心卖点 |
-| P1 | B2 (导出补全) | 不补的话库无法被正常引用 |
-| P2 | A3 (死代码清理) | 代码卫生 |
-| P2 | B3 (类型安全) | 提升开发体验 |
-| P2 | C1-C3 (测试) | 补齐覆盖率 |
-| P3 | B4 (tools 输出) | API 设计优化 |
-| P3 | B5 (浏览器支持) | 扩展运行环境 |
-| P3 | D1-D2 (文档) | 面向发布 |
+| 优先级 | 项目                       | 理由                                   |
+| :----: | :------------------------- | :------------------------------------- |
+| ~~P0~~ | ~~B1 (Zod 依赖)~~            | ✅ 已确认               |
+|   P0   | B6 (tsc 构建)              | 验证性工作，不做就不知道有没有隐藏炸弹 |
+| ~~P1~~ | ~~A1 (Gemini)~~            | ✅ 已完成                              |
+| ~~P1~~ | ~~A2 (Anthropic prefill)~~ | ✅ 已确认正确                          |
+|   P1   | B2 (导出补全)              | 不补的话库无法被正常引用               |
+| ~~P2~~ | ~~A3 (死代码清理)~~        | ✅ 已完成                              |
+|   P2   | B3 (类型安全)              | 提升开发体验                           |
+|   P2   | C1-C3 (测试)               | 补齐覆盖率                             |
+|   P3   | B4 (tools 输出)            | API 设计优化                           |
+| ~~P3~~ | ~~B5 (浏览器支持)~~        | ❌ 按讨论暂不考虑                       |
+|   P3   | D1-D2 (文档)               | 面向发布                               |
+|   P4   | E1-E7 (架构演进)           | Phase 4 / Phase 5 核心特性规划         |

@@ -5,7 +5,7 @@ export const Prompts = {
    * The <EPHEMERAL_MESSAGE> wrapper is a signature Claude Code trick to inject system rules
    * into the user/assistant flow without the model "replying" to it.
    */
-  getXMLGuardrail: (outputTag: string) =>
+  getXMLGuardrail: (outputTag: string, includeThinking: boolean = true) =>
     `
 The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.
 <EPHEMERAL_MESSAGE>
@@ -14,7 +14,9 @@ You are acting as an automated system component. Your final output MUST be machi
 
 1. You MUST enclose your final answer strictly within exactly one set of <${outputTag}> and </${outputTag}> tags.
 2. DO NOT output any text, explanation, or conversational filler outside of these tags.
-3. If you need to reason or plan, you MAY use <thinking> tags BEFORE your final <${outputTag}> output.
+${
+  includeThinking
+    ? `3. If you need to reason or plan, you MAY use <thinking> tags BEFORE your final <${outputTag}> output.
 4. ANY content outside of these designated XML tags will cause a system parsing failure.
 
 ALWAYS START your thought with recalling these instructions. In particular, the format for the start of your thought block must be:
@@ -24,7 +26,9 @@ Recalling critical instructions: Output must be strictly within <${outputTag}> t
 </thinking>
 <${outputTag}>
 ...
-</${outputTag}>
+</${outputTag}>`
+    : `3. ANY content outside of these designated XML tags will cause a system parsing failure.`
+}
 </EPHEMERAL_MESSAGE>
 `.trim(),
 
