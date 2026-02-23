@@ -130,6 +130,10 @@
   - **背景**：Pointer 截断超大文件并返回 `context://...`，要求 LLM 主动再读，效率较低。
   - **方案**：在转储文件的瞬间，如果开发者配置了快速模型，允许触发一次异步的轻量 summary 操作。截断信息更新为 `[Summary: ... + context://...]`，避免模型盲人摸象。若未配置，则优雅降级为现有的简单截断。
 
+- [ ] **E8. `onBeforeCompile` 生命周期钩子 (beforeContextCreated)**
+  - **背景**：Cursor 的 Dynamic Context Discovery 和 Augment 的 Context Engine 均证明，在 LLM 调用前零 round-trip 地注入语义相关上下文（代码片段、依赖图、文档摘要）能显著提升任务完成质量。当前 ContextChef 的 Dynamic State 完全依赖开发者显式传入，无法在编译阶段自动扩展上下文。
+  - **方案**：在 `compile()` / `compileAsync()` 的最终组装阶段之前，提供一个 `onBeforeCompile(context => { ... })` 异步钩子。开发者可在此回调中执行任意外部操作（RAG 向量检索、AST 分析、MCP 查询、Augment Context Engine 调用等），并返回需要注入的额外内容。ContextChef 将返回值自动编排到三明治模型的正确位置（如 Dynamic State 层的 `<implicit_context>` 标签内），保持 KV-Cache 稳定性不受影响。库本身不承担任何检索逻辑，只提供注入点。
+
 ---
 
 ## 优先级建议
@@ -147,4 +151,4 @@
 |   P3   | B4 (tools 输出)            | API 设计优化                           |
 | ~~P3~~ | ~~B5 (浏览器支持)~~        | ❌ 按讨论暂不考虑                       |
 |   P3   | D1-D2 (文档)               | 面向发布                               |
-|   P4   | E1-E7 (架构演进)           | Phase 4 / Phase 5 核心特性规划         |
+|   P4   | E1-E8 (架构演进)           | Phase 4 / Phase 5 核心特性规划         |
