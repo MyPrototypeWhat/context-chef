@@ -149,6 +149,6 @@
 |   P2   | B3 (类型安全)              | 提升开发体验                           |
 |   P2   | C1-C3 (测试)               | 补齐覆盖率                             |
 |   P3   | B4 (tools 输出)            | API 设计优化                           |
-| ~~P3~~ | ~~B5 (浏览器支持)~~        | ❌ 按讨论暂不考虑                       |
+| ~~P3~~ | ~~B5 (浏览器支持)~~        | ✅ 通过 VFSStorageAdapter 抽象已解决，开发者注入 `MemoryAdapter` / `IndexedDBAdapter` 即可。                       |
 |   P3   | D1-D2 (文档)               | 面向发布                               |
 |   P4   | E1-E8 (架构演进)           | Phase 4 / Phase 5 核心特性规划         |

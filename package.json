@@ -1,10 +1,19 @@
 {
   "name": "context-engineer",
   "version": "1.0.0",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
   "scripts": {
-    "build": "tsc",
+    "build": "tsdown",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "typecheck:compat": "tsc --noEmit --strict --esModuleInterop --target ES2022 --module CommonJS --moduleResolution node --skipLibCheck tests/type-compat.ts",
@@ -19,6 +28,16 @@
   "dependencies": {
     "zod": "^4.3.6"
   },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.20",
+    "@google/generative-ai": ">=0.1",
+    "openai": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": { "optional": true },
+    "@google/generative-ai": { "optional": true },
+    "openai": { "optional": true }
+  },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@biomejs/biome": "^2.4.4",
@@ -29,6 +48,7 @@
     "openai": "^6.22.0",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
+    "tsdown": "^0.20.3",
     "typescript": "^5.9.3"
   }
 }

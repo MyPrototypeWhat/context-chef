@@ -1,25 +1,20 @@
-import { Prompts } from '../prompts';
-import type { Message, TargetPayload } from '../types';
-import type { ITargetAdapter } from './ITargetAdapter';
 import type {
   Content as SDKContent,
-  Part as SDKPart,
-  TextPart as SDKTextPart,
   FunctionCallPart as SDKFunctionCallPart,
   FunctionResponsePart as SDKFunctionResponsePart,
+  Part as SDKPart,
+  TextPart as SDKTextPart,
 } from '@google/generative-ai';
+import { Prompts } from '../prompts';
+import type { GeminiPayload, Message } from '../types';
+import type { ITargetAdapter } from './ITargetAdapter';
 
-// Re-export our own public types (mirrors SDK but owned by us, won't leak into .d.ts consumers)
+// Re-export Gemini-specific types for consumers who want strong typing without importing the SDK
 export type GeminiTextPart = SDKTextPart;
 export type GeminiFunctionCallPart = SDKFunctionCallPart;
 export type GeminiFunctionResponsePart = SDKFunctionResponsePart;
 export type GeminiPart = SDKPart;
 export type GeminiContent = SDKContent;
-
-export interface GeminiPayload {
-  messages: GeminiContent[];
-  systemInstruction?: { parts: GeminiTextPart[] };
-}
 
 /**
  * Adapts ContextChef IR to Google Gemini's generateContent format.
@@ -33,7 +28,7 @@ export interface GeminiPayload {
  * - Prefill degradation follows the same pattern as OpenAI (Gemini doesn't support trailing model messages).
  */
 export class GeminiAdapter implements ITargetAdapter {
-  compile(messages: Message[]): TargetPayload {
+  compile(messages: Message[]): GeminiPayload {
     const systemParts: SDKTextPart[] = [];
     const contents: SDKContent[] = [];
 
@@ -112,7 +107,7 @@ export class GeminiAdapter implements ITargetAdapter {
               ...contents[i],
               parts: [
                 {
-                  text: firstPart.text + '\n\n' + Prompts.getPrefillEnforcement(prefillContent),
+                  text: `${firstPart.text}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
                 } as SDKTextPart,
               ],
             };
@@ -126,14 +121,12 @@ export class GeminiAdapter implements ITargetAdapter {
       }
     }
 
-    const payload: GeminiPayload = {
-      messages: contents,
-    };
+    const payload: GeminiPayload = { messages: contents };
 
     if (systemParts.length > 0) {
       payload.systemInstruction = { parts: systemParts };
     }
 
-    return payload as unknown as TargetPayload;
+    return payload;
   }
 }

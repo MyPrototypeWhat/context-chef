@@ -1,10 +1,10 @@
 import type { ChatCompletionMessageParam as SDKMessageParam } from 'openai/resources/chat/completions/completions';
 import { Prompts } from '../prompts';
-import type { Message, TargetPayload } from '../types';
+import type { Message, OpenAIPayload } from '../types';
 import type { ITargetAdapter } from './ITargetAdapter';
 
 export class OpenAIAdapter implements ITargetAdapter {
-  compile(messages: Message[]): TargetPayload {
+  compile(messages: Message[]): OpenAIPayload {
     const formattedMessages: SDKMessageParam[] = messages.map((msg) => {
       const { _cache_breakpoint, ...cleanMsg } = msg;
       return JSON.parse(JSON.stringify(cleanMsg));
@@ -35,6 +35,6 @@ export class OpenAIAdapter implements ITargetAdapter {
       }
     }
 
-    return { messages: formattedMessages } as unknown as TargetPayload;
+    return { messages: formattedMessages };
   }
 }

@@ -1,5 +1,5 @@
 import { GeminiAdapter } from '../src/adapters/GeminiAdapter';
-import type { Message } from '../src/types';
+import type { GeminiPayload, Message } from '../src/types';
 
 describe('GeminiAdapter', () => {
   const adapter = new GeminiAdapter();
@@ -337,12 +337,9 @@ describe('GeminiAdapter', () => {
       { role: 'user', content: 'Thanks! What about Paris?' },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{ role: string; parts: Array<Record<string, unknown>> }>;
-      systemInstruction: { parts: Array<{ text: string }> };
-    };
+    const result = adapter.compile([...messages]);
 
-    expect(result.systemInstruction.parts[0].text).toBe('You are a weather assistant.');
+    expect(result.systemInstruction?.parts[0]?.text).toBe('You are a weather assistant.');
     expect(result.messages).toHaveLength(5);
     expect(result.messages[0].role).toBe('user');
     expect(result.messages[1].role).toBe('model');   // functionCall

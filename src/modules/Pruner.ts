@@ -1,11 +1,8 @@
-// ─── Core Types ───
+import type { ToolDefinition } from '../types';
 
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters?: Record<string, unknown>;
-  tags?: string[];
-}
+export type { ToolDefinition };
+
+// ─── Core Types ───
 
 export interface ToolGroup {
   name: string;

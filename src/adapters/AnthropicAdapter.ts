@@ -1,15 +1,15 @@
-import type { Message, TargetPayload } from '../types';
-import type { ITargetAdapter } from './ITargetAdapter';
 import type {
+  ContentBlockParam as SDKContentBlockParam,
   MessageParam as SDKMessageParam,
   TextBlockParam as SDKTextBlockParam,
-  ToolUseBlockParam as SDKToolUseBlockParam,
   ToolResultBlockParam as SDKToolResultBlockParam,
-  ContentBlockParam as SDKContentBlockParam,
+  ToolUseBlockParam as SDKToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
+import type { AnthropicPayload, Message } from '../types';
+import type { ITargetAdapter } from './ITargetAdapter';
 
 export class AnthropicAdapter implements ITargetAdapter {
-  compile(messages: Message[]): TargetPayload {
+  compile(messages: Message[]): AnthropicPayload {
     const systemMessages: SDKTextBlockParam[] = [];
     const chatMessages: SDKMessageParam[] = [];
 
@@ -58,6 +58,6 @@ export class AnthropicAdapter implements ITargetAdapter {
     return {
       system: systemMessages.length > 0 ? systemMessages : undefined,
       messages: chatMessages,
-    } as unknown as TargetPayload;
+    };
   }
 }

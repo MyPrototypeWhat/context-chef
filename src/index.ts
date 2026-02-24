@@ -1,26 +1,33 @@
 import type { z } from 'zod';
 import { getAdapter } from './adapters/AdapterFactory';
-import { GovernanceOptions, Governor } from './modules/Governor';
+import { type GovernanceOptions, Governor } from './modules/Governor';
 import { Janitor, type JanitorConfig } from './modules/Janitor';
-import { Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter, FileSystemAdapter } from './modules/Pointer';
+import { Pointer, type ProcessOptions, type VFSConfig } from './modules/Pointer';
 import {
-  CompiledTools,
+  type CompiledTools,
   Pruner,
   type PrunerConfig,
-  ResolvedToolCall,
-  ToolDefinition,
-  ToolGroup,
+  type ResolvedToolCall,
+  type ToolGroup,
 } from './modules/Pruner';
-import { DynamicStatePlacement, Stitcher, type StitchOptions } from './modules/Stitcher';
-import type { CompileOptions, Message, TargetPayload } from './types';
+import { type DynamicStatePlacement, Stitcher, type StitchOptions } from './modules/Stitcher';
+import type {
+  AnthropicPayload,
+  CompileOptions,
+  GeminiPayload,
+  Message,
+  OpenAIPayload,
+  TargetPayload,
+  ToolDefinition,
+} from './types';
 import { objectToXml } from './utils/XmlGenerator';
 
-export { AdapterFactory, getAdapter, ITargetAdapter } from './adapters/AdapterFactory';
+export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/AdapterFactory';
 export { Governor } from './modules/Governor';
-export { Janitor, JanitorConfig } from './modules/Janitor';
-export { Pointer, ProcessOptions, VFSConfig, VFSStorageAdapter, FileSystemAdapter } from './modules/Pointer';
-export { Pruner, PrunerConfig } from './modules/Pruner';
-export { Stitcher, StitchOptions } from './modules/Stitcher';
+export { Janitor, type JanitorConfig } from './modules/Janitor';
+export { FileSystemAdapter, Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter } from './modules/Pointer';
+export { Pruner, type PrunerConfig } from './modules/Pruner';
+export { Stitcher, type StitchOptions } from './modules/Stitcher';
 export * from './prompts';
 export * from './types';
 export { TokenUtils } from './utils/TokenUtils';
@@ -33,9 +40,8 @@ export interface ChefConfig {
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
 }
 
-export {
+export type {
   GovernanceOptions,
-  ToolDefinition,
   ToolGroup,
   CompiledTools,
   ResolvedToolCall,
@@ -76,14 +82,10 @@ export class ContextChef {
 
   /**
    * Appends to or sets the rolling history.
-   * In a real implementation, this would trigger the Janitor if threshold is reached.
+   * Compression runs automatically on compileAsync() via the Janitor.
    */
-  public useRollingHistory(
-    history: Message[],
-    _options?: { windowSize?: string; strategy?: string },
-  ): this {
+  public useRollingHistory(history: Message[]): this {
     this.rollingHistory = [...history];
-    // TODO: integrate Janitor compression logic here
     return this;
   }
 
@@ -199,6 +201,16 @@ export class ContextChef {
   }
 
   /**
+   * Returns tools from the Pruner if any are registered.
+   * Namespace/lazy mode takes priority over flat mode.
+   */
+  private _getPrunerTools(): ToolDefinition[] {
+    const { tools } = this.pruner.compile();
+    if (tools.length > 0) return tools;
+    return this.pruner.getAllTools();
+  }
+
+  /**
    * Build the StitchOptions that tell the Stitcher how to handle dynamic state placement.
    */
   private getStitchOptions(): StitchOptions {
@@ -211,7 +223,12 @@ export class ContextChef {
   /**
    * Compiles the final deterministic payload ready for the LLM SDK.
    * Leverages TargetAdapters to conform strictly to provider requirements.
+   * Registered tools are automatically included in the returned payload.
    */
+  public compile(options: { target: 'openai' }): OpenAIPayload;
+  public compile(options: { target: 'anthropic' }): AnthropicPayload;
+  public compile(options: { target: 'gemini' }): GeminiPayload;
+  public compile(options?: CompileOptions): TargetPayload;
   public compile(options?: CompileOptions): TargetPayload {
     let messages = [...this.topLayer, ...this.rollingHistory, ...this.dynamicState];
 
@@ -227,15 +244,23 @@ export class ContextChef {
     // Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const rawPayload = this.stitcher.compile(messages, this.getStitchOptions());
 
-    const target = options?.target || 'openai';
+    const target = options?.target ?? 'openai';
     const adapter = getAdapter(target);
+    const adapterPayload = adapter.compile([...rawPayload.messages]);
 
-    return adapter.compile([...rawPayload.messages]);
+    const tools = this._getPrunerTools();
+    return tools.length > 0 ? { ...adapterPayload, tools } : adapterPayload;
   }
 
   /**
    * Async compilation for the final deterministic payload.
+   * Triggers Janitor compression if history exceeds configured token/message limits.
+   * Registered tools are automatically included in the returned payload.
    */
+  public async compileAsync(options: { target: 'openai' }): Promise<OpenAIPayload>;
+  public async compileAsync(options: { target: 'anthropic' }): Promise<AnthropicPayload>;
+  public async compileAsync(options: { target: 'gemini' }): Promise<GeminiPayload>;
+  public async compileAsync(options?: CompileOptions): Promise<TargetPayload>;
   public async compileAsync(options?: CompileOptions): Promise<TargetPayload> {
     // 1. Janitor: Compress history if needed
     const compressedHistory = await this.janitor.compress(this.rollingHistory);
@@ -251,9 +276,11 @@ export class ContextChef {
     // 4. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const rawPayload = this.stitcher.compile(messages, this.getStitchOptions());
 
-    const target = options?.target || 'openai';
+    const target = options?.target ?? 'openai';
     const adapter = getAdapter(target);
+    const adapterPayload = adapter.compile([...rawPayload.messages]);
 
-    return adapter.compile([...rawPayload.messages]);
+    const tools = this._getPrunerTools();
+    return tools.length > 0 ? { ...adapterPayload, tools } : adapterPayload;
   }
 }
