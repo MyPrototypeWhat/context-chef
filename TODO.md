@@ -52,7 +52,7 @@
 - [x] ~~**B5. Pointer 仅支持 Node.js**~~ ❌ (按讨论暂不考虑)
   - 依赖 `fs`、`path`、`crypto`，在浏览器/Edge 环境直接报错
   - 设计方案开头写着"专为前端和 Node.js 生态设计"
-  - 方案：暂时放弃浏览器支持，将其作为 Node.js 库处理。
+  - 方案：通过引入 `VFSStorageAdapter`，现已支持传入自定义适配器（如 `IndexedDBAdapter`），从而解决浏览器兼容性问题。此问题已**转化并解决**。
 
 - [ ] **B6. 运行一次 tsc 构建验证**
   - 所有测试都通过 ts-jest 即时编译运行

@@ -2,7 +2,7 @@ import type { z } from 'zod';
 import { getAdapter } from './adapters/AdapterFactory';
 import { GovernanceOptions, Governor } from './modules/Governor';
 import { Janitor, type JanitorConfig } from './modules/Janitor';
-import { Pointer, type ProcessOptions, type VFSConfig } from './modules/Pointer';
+import { Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter, FileSystemAdapter } from './modules/Pointer';
 import {
   CompiledTools,
   Pruner,
@@ -18,7 +18,7 @@ import { objectToXml } from './utils/XmlGenerator';
 export { AdapterFactory, getAdapter, ITargetAdapter } from './adapters/AdapterFactory';
 export { Governor } from './modules/Governor';
 export { Janitor, JanitorConfig } from './modules/Janitor';
-export { Pointer, ProcessOptions, VFSConfig } from './modules/Pointer';
+export { Pointer, ProcessOptions, VFSConfig, VFSStorageAdapter, FileSystemAdapter } from './modules/Pointer';
 export { Pruner, PrunerConfig } from './modules/Pruner';
 export { Stitcher, StitchOptions } from './modules/Stitcher';
 export * from './prompts';
@@ -173,6 +173,7 @@ export class ContextChef {
 
   /**
    * Utility method to safely process large outputs via VFS before they hit history.
+   * Throws an error if the configured VFS storage adapter is asynchronous.
    */
   public processLargeOutput(
     content: string,
@@ -180,6 +181,20 @@ export class ContextChef {
     options?: ProcessOptions,
   ): string {
     const result = this.pointer.process(content, type, options);
+    return result.content;
+  }
+
+  /**
+   * Async utility method to safely process large outputs via VFS.
+   * Required when using an asynchronous VFS storage adapter (like a database).
+   * Also safely supports synchronous adapters.
+   */
+  public async processLargeOutputAsync(
+    content: string,
+    type: 'log' | 'doc' = 'log',
+    options?: ProcessOptions,
+  ): Promise<string> {
+    const result = await this.pointer.processAsync(content, type, options);
     return result.content;
   }
 
