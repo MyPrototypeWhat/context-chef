@@ -10,7 +10,7 @@ import {
   type ResolvedToolCall,
   type ToolGroup,
 } from './modules/Pruner';
-import { type DynamicStatePlacement, Stitcher, type StitchOptions } from './modules/Stitcher';
+import { type DynamicStatePlacement, Stitcher } from './modules/Stitcher';
 import type {
   AnthropicPayload,
   CompileOptions,
@@ -33,11 +33,39 @@ export * from './types';
 export { TokenUtils } from './utils/TokenUtils';
 export { XmlGenerator } from './utils/XmlGenerator';
 
+/**
+ * Read-only snapshot of the current context, passed to the onBeforeCompile hook.
+ */
+export interface BeforeCompileContext {
+  topLayer: readonly Message[];
+  rollingHistory: readonly Message[];
+  dynamicState: readonly Message[];
+  rawDynamicXml: string;
+}
+
 export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
   janitor?: JanitorConfig;
   pruner?: PrunerConfig;
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  /**
+   * Lifecycle hook invoked before each compile(), after Janitor compression.
+   * Use this to inject externally-retrieved context (RAG results, AST snippets, MCP queries, etc.)
+   * without modifying the core message array directly.
+   *
+   * Return a string to inject as `<implicit_context>` alongside the dynamic state,
+   * or null/undefined to skip injection. The returned content is placed at the same position
+   * as dynamic state (last_user or system), preserving KV-Cache stability.
+   *
+   * @example
+   * const chef = new ContextChef({
+   *   onBeforeCompile: async (ctx) => {
+   *     const snippets = await vectorDB.search(ctx.rawDynamicXml);
+   *     return snippets.map(s => s.content).join('\n');
+   *   },
+   * });
+   */
+  onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
 }
 
 export type {
@@ -55,6 +83,7 @@ export class ContextChef {
   private governor: Governor;
   private pruner: Pruner;
   private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  private onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
 
   private topLayer: Message[] = [];
   private rollingHistory: Message[] = [];
@@ -69,6 +98,7 @@ export class ContextChef {
     this.governor = new Governor();
     this.pruner = new Pruner(config.pruner);
     this.transformContext = config.transformContext;
+    this.onBeforeCompile = config.onBeforeCompile;
   }
 
   /**
@@ -82,7 +112,7 @@ export class ContextChef {
 
   /**
    * Appends to or sets the rolling history.
-   * Compression runs automatically on compileAsync() via the Janitor.
+   * Compression runs automatically on compile() via the Janitor.
    */
   public useRollingHistory(history: Message[]): this {
     this.rollingHistory = [...history];
@@ -163,13 +193,13 @@ export class ContextChef {
    * Feeds an externally-reported token count into the Janitor.
    * Call this after each LLM response with the token usage reported by the API.
    * The caller decides which field to pass (e.g. input_tokens, prompt_tokens, total_tokens).
-   * On the next compileAsync(), this value is used alongside the local estimate —
+   * On the next compile(), this value is used alongside the local estimate —
    * whichever is higher triggers compression.
    *
    * @example
    * const response = await openai.chat.completions.create({ ... });
    * chef.feedTokenUsage(response.usage.prompt_tokens);
-   * const nextPayload = await chef.compileAsync({ target: 'openai' });
+   * const nextPayload = await chef.compile({ target: 'openai' });
    */
   public feedTokenUsage(tokenCount: number): this {
     this.janitor.feedTokenUsage(tokenCount);
@@ -228,70 +258,58 @@ export class ContextChef {
   }
 
   /**
-   * Build the StitchOptions that tell the Stitcher how to handle dynamic state placement.
-   */
-  private getStitchOptions(): StitchOptions {
-    return {
-      dynamicStateXml: this.rawDynamicXml || undefined,
-      placement: this.dynamicStatePlacement,
-    };
-  }
-
-  /**
    * Compiles the final deterministic payload ready for the LLM SDK.
+   * Triggers Janitor compression if history exceeds configured token/message limits.
    * Leverages TargetAdapters to conform strictly to provider requirements.
    * Registered tools are automatically included in the returned payload.
    */
-  public compile(options: { target: 'openai' }): OpenAIPayload;
-  public compile(options: { target: 'anthropic' }): AnthropicPayload;
-  public compile(options: { target: 'gemini' }): GeminiPayload;
-  public compile(options?: CompileOptions): TargetPayload;
-  public compile(options?: CompileOptions): TargetPayload {
-    let messages = [...this.topLayer, ...this.rollingHistory, ...this.dynamicState];
-
-    // Sync transform hook execution (if provided and synchronous)
-    if (this.transformContext) {
-      const transformed = this.transformContext(messages);
-      if (transformed instanceof Promise) {
-        throw new Error('transformContext is async. Use compileAsync() instead.');
-      }
-      messages = transformed;
-    }
-
-    // Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
-    const rawPayload = this.stitcher.compile(messages, this.getStitchOptions());
-
-    const target = options?.target ?? 'openai';
-    const adapter = getAdapter(target);
-    const adapterPayload = adapter.compile([...rawPayload.messages]);
-
-    const tools = this._getPrunerTools();
-    return tools.length > 0 ? { ...adapterPayload, tools } : adapterPayload;
-  }
-
-  /**
-   * Async compilation for the final deterministic payload.
-   * Triggers Janitor compression if history exceeds configured token/message limits.
-   * Registered tools are automatically included in the returned payload.
-   */
-  public async compileAsync(options: { target: 'openai' }): Promise<OpenAIPayload>;
-  public async compileAsync(options: { target: 'anthropic' }): Promise<AnthropicPayload>;
-  public async compileAsync(options: { target: 'gemini' }): Promise<GeminiPayload>;
-  public async compileAsync(options?: CompileOptions): Promise<TargetPayload>;
-  public async compileAsync(options?: CompileOptions): Promise<TargetPayload> {
+  public async compile(options: { target: 'openai' }): Promise<OpenAIPayload>;
+  public async compile(options: { target: 'anthropic' }): Promise<AnthropicPayload>;
+  public async compile(options: { target: 'gemini' }): Promise<GeminiPayload>;
+  public async compile(options?: CompileOptions): Promise<TargetPayload>;
+  public async compile(options?: CompileOptions): Promise<TargetPayload> {
     // 1. Janitor: Compress history if needed
     const compressedHistory = await this.janitor.compress(this.rollingHistory);
 
-    // 2. Sandwich assembly
-    let messages = [...this.topLayer, ...compressedHistory, ...this.dynamicState];
+    // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
+    let implicitContextXml = '';
+    if (this.onBeforeCompile) {
+      const injected = await this.onBeforeCompile({
+        topLayer: this.topLayer,
+        rollingHistory: compressedHistory,
+        dynamicState: this.dynamicState,
+        rawDynamicXml: this.rawDynamicXml,
+      });
+      if (injected) {
+        implicitContextXml = `<implicit_context>\n${injected}\n</implicit_context>`;
+      }
+    }
 
-    // 3. Transform hook
+    // 3. For system placement, append implicit_context directly to the dynamic state message
+    //    (Stitcher only handles last_user injection)
+    let dynamicState = this.dynamicState;
+    if (implicitContextXml && this.dynamicStatePlacement === 'system' && dynamicState.length > 0) {
+      dynamicState = dynamicState.map((msg) =>
+        msg.content.includes('CURRENT TASK STATE')
+          ? { ...msg, content: `${msg.content}\n${implicitContextXml}` }
+          : msg,
+      );
+    }
+
+    // 4. Sandwich assembly
+    let messages = [...this.topLayer, ...compressedHistory, ...dynamicState];
+
+    // 5. Transform hook
     if (this.transformContext) {
       messages = await this.transformContext(messages);
     }
 
-    // 4. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
-    const rawPayload = this.stitcher.compile(messages, this.getStitchOptions());
+    // 6. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
+    const stitchXml = [this.rawDynamicXml, implicitContextXml].filter(Boolean).join('\n');
+    const rawPayload = this.stitcher.compile(messages, {
+      dynamicStateXml: stitchXml || undefined,
+      placement: this.dynamicStatePlacement,
+    });
 
     const target = options?.target ?? 'openai';
     const adapter = getAdapter(target);

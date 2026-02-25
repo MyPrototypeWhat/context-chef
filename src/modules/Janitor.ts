@@ -26,10 +26,14 @@ export interface JanitorConfig {
   preserveRecentTokens?: number;
 
   /**
-   * A custom tokenizer function. If not provided, a fast heuristic estimator is used.
+   * A custom tokenizer function that receives the Message[] array directly.
+   * If not provided, a fast heuristic estimator is used.
    * You can plug in `js-tiktoken` or Anthropic's tokenizer here for exact calculations.
+   *
+   * @example
+   * tokenizer: (messages) => messages.reduce((sum, m) => sum + encode(m.content).length, 0)
    */
-  tokenizer?: (text: string) => number;
+  tokenizer?: (messages: Message[]) => number;
 
   /**
    * Async hook to call a low-cost LLM (e.g. gpt-4o-mini) to summarize the truncated messages.
@@ -67,8 +71,7 @@ export class Janitor {
    */
   private getTokenCount(messages: Message[]): number {
     if (this.config.tokenizer) {
-      // Serialize to string so the custom tokenizer can parse it
-      return this.config.tokenizer(JSON.stringify(messages));
+      return this.config.tokenizer(messages);
     }
     return TokenUtils.estimateObject(messages);
   }
@@ -77,13 +80,23 @@ export class Janitor {
    * Compresses the rolling history based on configured token budgets (or legacy message counts).
    */
   public async compress(history: Message[]): Promise<Message[]> {
-    if (history.length === 0) return history;
+    const splitIndex = this.evaluateBudget(history);
+    if (splitIndex === null) return history;
+    return this.executeCompression(history, splitIndex);
+  }
+
+  /**
+   * Evaluates token/message budgets and returns the split index for compression,
+   * or null if no compression is needed.
+   */
+  private evaluateBudget(history: Message[]): number | null {
+    if (history.length === 0) return null;
 
     // E10: Skip check once after a successful compression to avoid cascading re-compression
     // before the external token count refreshes.
     if (this._suppressNextCompression) {
       this._suppressNextCompression = false;
-      return history;
+      return null;
     }
 
     // 1. Token-based compression (Recommended)
@@ -94,7 +107,7 @@ export class Janitor {
       this._externalTokenUsage = null; // Consume and clear after use
 
       if (totalTokens <= this.config.maxHistoryTokens) {
-        return history;
+        return null;
       }
 
       const preserveTarget =
@@ -119,7 +132,7 @@ export class Janitor {
         splitIndex = history.length - 1;
       }
 
-      return this.executeCompression(history, splitIndex);
+      return splitIndex > 0 ? splitIndex : null;
     }
 
     // 2. Message count-based compression (Legacy fallback)
@@ -127,16 +140,14 @@ export class Janitor {
     if (limit && history.length > limit) {
       const preserveCount = this.config.preserveRecentCount ?? Math.floor(limit * 0.7);
       const splitIndex = Math.max(0, history.length - preserveCount);
-      return this.executeCompression(history, splitIndex);
+      return splitIndex > 0 ? splitIndex : null;
     }
 
     // No limits reached
-    return history;
+    return null;
   }
 
   private async executeCompression(history: Message[], splitIndex: number): Promise<Message[]> {
-    if (splitIndex <= 0) return history;
-
     const toCompress = history.slice(0, splitIndex);
     const toKeep = history.slice(splitIndex);
 
@@ -169,4 +180,5 @@ export class Janitor {
 
     return [summaryMessage, ...toKeep];
   }
+
 }

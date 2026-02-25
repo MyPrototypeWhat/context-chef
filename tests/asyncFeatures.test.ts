@@ -26,7 +26,7 @@ describe('ContextChef Async Features (pi-mono inspiration)', () => {
 
     chef.useRollingHistory(history);
 
-    const payload = await chef.compileAsync();
+    const payload = await chef.compile();
 
     // The janitor should preserve 2 messages, and replace the remaining 4 with 1 summary.
     // Total messages in rolling history = 1 summary + 2 preserved = 3.
@@ -59,14 +59,14 @@ describe('ContextChef Async Features (pi-mono inspiration)', () => {
 
     chef.setTopLayer([{ role: 'system', content: 'Top Layer' }]);
 
-    const payload = await chef.compileAsync();
+    const payload = await chef.compile();
 
     expect(payload.messages.length).toBe(2);
     expect(payload.messages[0].content).toBe('Secret Extension Injected');
     expect(payload.messages[1].content).toBe('Top Layer');
   });
 
-  it('should execute synchronous transformContext in compile()', () => {
+  it('should execute transformContext in compile()', async () => {
     const chef = new ContextChef({
       transformContext: (messages: Message[]) => {
         return messages.map((m) => ({ ...m, name: 'transformed_user' }));
@@ -75,20 +75,10 @@ describe('ContextChef Async Features (pi-mono inspiration)', () => {
 
     chef.useRollingHistory([{ role: 'user', content: 'Hello' }]);
 
-    const payload = chef.compile();
+    const payload = await chef.compile();
 
     expect(payload.messages.length).toBe(1);
     expect(payload.messages[0].name).toBe('transformed_user');
-  });
-
-  it('should throw if async transformContext is used with sync compile()', () => {
-    const chef = new ContextChef({
-      transformContext: async (messages: Message[]) => messages,
-    });
-
-    chef.useRollingHistory([{ role: 'user', content: 'Hello' }]);
-
-    expect(() => chef.compile()).toThrow('transformContext is async. Use compileAsync() instead.');
   });
 });
 
@@ -225,7 +215,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
     expect(result[0].content).toContain('older messages were truncated');
   });
 
-  it('integrates with ContextChef.compileAsync() via token budget', async () => {
+  it('integrates with ContextChef.compile() via token budget', async () => {
     const mockModel = jest.fn().mockResolvedValue('<history_summary>VIA_CHEF</history_summary>');
     const chef = new ContextChef({
       janitor: {
@@ -237,7 +227,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
     });
 
     chef.useRollingHistory(buildHistory(5));
-    const payload = await chef.compileAsync();
+    const payload = await chef.compile();
 
     expect(mockModel).toHaveBeenCalledTimes(1);
     expect(payload.messages[0].role).toBe('system');

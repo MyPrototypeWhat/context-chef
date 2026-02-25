@@ -32,10 +32,10 @@
 
 - [x] **B3. TargetPayload 类型安全** ✅
   - `OpenAIPayload`、`AnthropicPayload`、`GeminiPayload` 均已对接各 SDK 原生类型。
-  - `compile()` / `compileAsync()` 已添加完整重载，按 target 返回对应强类型。
+  - `compile()` 已添加完整重载，按 target 返回对应强类型。
 
 - [x] **B4. compile() 自动注入 tools** ✅
-  - `compile()` 和 `compileAsync()` 均已自动合并 Pruner 结果，无需手动拼装。
+  - `compile()` 已自动合并 Pruner 结果，无需手动拼装。
 
 - [x] ~~**B5. Pointer 仅支持 Node.js**~~ ❌ (按讨论暂不考虑)
   - 依赖 `fs`、`path`、`crypto`，在浏览器/Edge 环境直接报错
@@ -45,9 +45,11 @@
 - [x] **B6. tsc 构建验证** ✅
   - `tsc --noEmit` 零错误通过。
 
-- [ ] **B7. 同步 compile() 可选触发 Janitor 压缩**
-  - 目前只有 `compileAsync()` 走 Janitor，`compile()` 同步路径不会压缩历史。
-  - 方案：新增同步压缩开关；若 Janitor 依赖异步 `compressionModel` 则提示使用 `compileAsync()`。
+- [x] **B7. 统一 compile() 为异步，始终走 Janitor 压缩** ✅
+  - 砍掉同步 `compile()`，将 `compileAsync()` 重命名为 `compile()`
+  - 现在只有一个编译入口，始终走 Janitor 压缩
+  - Janitor 内部提取了 `evaluateBudget()` 共享预算检查逻辑
+  - 所有测试已适配 async/await
 
 ---
 
@@ -106,18 +108,15 @@
   - **背景**：目前 Janitor 仅对历史对话（L2 -> L1）进行模糊压缩。
   - **方案**：借鉴 Letta，允许模型主动输出 `<update_core_memory>` 标签。Janitor 捕获该标签后，将其持久化到顶层的 `Static Base` (系统提示词) 中，使模型能够跨会话累积经验（如：记住项目代码规范）。
 
-- [ ] **E9. Janitor 双信号 Token 触发 (`feedTokenUsage`)**
-  - **背景**：当前 Janitor 仅依赖本地 TokenUtils 启发式估算触发压缩，对 code-heavy 内容可能低估。
-  - **方案**：新增 `chef.feedTokenUsage(n)` 纯数值接口，三级 fallback 链：
-    1. 外部传入的 API token 用量（精确值，由调用方决定传哪个字段）
-    2. 用户注入的 tokenizer 函数（如 tiktoken）
-    3. 内置 TokenUtils 启发式估算（零依赖兜底）
+- [x] **E9. Janitor 双信号 Token 触发 (`feedTokenUsage`)** ✅
+  - `chef.feedTokenUsage(n)` 已实现，三级 fallback 链完整
   - Janitor 压缩触发条件：`max(feedTokenUsage, 本地估算) > maxHistoryTokens`
-  - 不绑定任何厂商字段名，完全由外部决定传入值的语义。
+  - 代码位于 `Janitor.ts:evaluateBudget()` 和 `index.ts:feedTokenUsage()`
 
-- [ ] **E10. Janitor 压缩冷却保护 (Suppress Next Compression)**
-  - **背景**：压缩后如果 token 估算未立即下降（摘要本身也有 token），可能在下一个 `compileAsync` 再次触发压缩，导致"摘要的摘要"信息雪崩。
-  - **方案**：压缩成功后设置 `_suppressNextCompression = true`，下一次 `compress()` 调用跳过检查，等 API 反馈刷新后再重新评估。
+- [x] **E10. Janitor 压缩冷却保护 (Suppress Next Compression)** ✅
+  - `_suppressNextCompression` 已实现，压缩成功后自动设置
+  - 下一次 `compress()` 跳过检查，防止连锁压缩
+  - 代码位于 `Janitor.ts:evaluateBudget()` 和 `executeCompression()`
 
 - [ ] **E5. 支持流式解析与对象重组 (Streaming Parser Integration)**
   - **背景**：Governor 采用 XML 约束包络（Envelope），传统解析需要等待闭合标签，导致极高的首字节体感延迟 (TTFB)，前沿应用极度依赖 Streaming。
@@ -160,8 +159,9 @@
 | ~~P2~~   | ~~B3 (类型安全)~~             | ✅ 已完成                             |
 | ~~P3~~   | ~~B4 (tools 输出)~~           | ✅ 已完成                             |
 | ~~P3~~   | ~~B5 (浏览器支持)~~           | ✅ 通过 VFSStorageAdapter 抽象已解决  |
+| ~~P2~~   | ~~B7 (compile 统一异步)~~     | ✅ 砍掉同步路径，统一为 async compile |
+| ~~P3~~   | ~~E9 (feedTokenUsage)~~       | ✅ 已实现                             |
+| ~~P3~~   | ~~E10 (压缩冷却保护)~~        | ✅ 已实现                             |
 | P2       | C1/C3 (测试)                  | 暂缓，功能稳定后补齐                  |
 | P3       | D3 (README Namespace 文档)    | 面向发布，README 仅有扁平模式文档     |
-| P3       | E9 (feedTokenUsage)           | 小改动，显著提升压缩触发准确性        |
-| P3       | E10 (压缩冷却保护)            | 小改动，防止连锁压缩导致信息雪崩      |
-| P4       | E1-E8 (架构演进)              | Phase 5 核心特性规划                  |
+| P4       | E1-E8, E11-E12 (架构演进)     | Phase 5 核心特性规划                  |

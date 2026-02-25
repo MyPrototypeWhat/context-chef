@@ -3,7 +3,7 @@ import { ContextChef } from '../src/index';
 import type { Message } from '../src/types';
 
 describe('ContextChef API', () => {
-  it('should compile with placement=system (legacy behavior)', () => {
+  it('should compile with placement=system (legacy behavior)', async () => {
     const chef = new ContextChef();
 
     const topLayer: Message[] = [
@@ -16,7 +16,7 @@ describe('ContextChef API', () => {
       todoList: z.array(z.string()),
     });
 
-    const payload = chef
+    const payload = await chef
       .setTopLayer(topLayer)
       .useRollingHistory(history)
       .setDynamicState(
@@ -55,7 +55,7 @@ describe('ContextChef API', () => {
     );
   });
 
-  it('should inject dynamic state into last user message by default (placement=last_user)', () => {
+  it('should inject dynamic state into last user message by default (placement=last_user)', async () => {
     const chef = new ContextChef();
 
     const topLayer: Message[] = [{ role: 'system', content: 'You are an expert.' }];
@@ -70,7 +70,7 @@ describe('ContextChef API', () => {
       todo: z.array(z.string()),
     });
 
-    const payload = chef
+    const payload = await chef
       .setTopLayer(topLayer)
       .useRollingHistory(history)
       .setDynamicState(TaskSchema, {
@@ -92,12 +92,12 @@ describe('ContextChef API', () => {
     expect(lastUserMsg.content).toContain('Use it to guide your next action.');
   });
 
-  it('should create a new user message if no user message exists in history (last_user fallback)', () => {
+  it('should create a new user message if no user message exists in history (last_user fallback)', async () => {
     const chef = new ContextChef();
 
     const TaskSchema = z.object({ task: z.string() });
 
-    const payload = chef
+    const payload = await chef
       .setTopLayer([{ role: 'system', content: 'You are an expert.' }])
       .setDynamicState(TaskSchema, { task: 'Initialize project' })
       .compile({ target: 'openai' });
@@ -134,11 +134,11 @@ describe('ContextChef API', () => {
     expect(processed2).toContain('context://vfs/log_');
   });
 
-  it('should compile Anthropic with cache control successfully', () => {
+  it('should compile Anthropic with cache control successfully', async () => {
     const chef = new ContextChef();
     const TaskSchema = z.object({ task: z.string() });
 
-    const payload = chef
+    const payload = await chef
       .setTopLayer([{ role: 'system', content: 'You are an expert.', _cache_breakpoint: true }])
       .useRollingHistory([{ role: 'user', content: 'Help me.' }])
       .setDynamicState(TaskSchema, { task: 'Fix bug' })

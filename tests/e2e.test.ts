@@ -125,7 +125,7 @@ const shouldRun = !!apiKey;
     });
 
     // 5. Compile the Payload for OpenAI
-    const payload = chef.compile({ target: 'openai' });
+    const payload = await chef.compile({ target: 'openai' });
     const toolsPayload = chef.tools().compile();
 
     // The messages array is an array of objects matching the SDK.
@@ -215,8 +215,8 @@ const shouldRun = !!apiKey;
 
     chef.setTopLayer(topLayer).useRollingHistory(history);
 
-    // compileAsync triggers the Janitor and yields the final compact payload.
-    const payload = await chef.compileAsync({ target: 'openai' });
+    // compile() triggers the Janitor and yields the final compact payload.
+    const payload = await chef.compile({ target: 'openai' });
 
     console.log('\\n[ContextChef] Final compacted payload compiled. Sending to LLM...');
     
