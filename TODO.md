@@ -27,37 +27,27 @@
 - [x] **B1. Zod 从 devDependencies 移到 dependencies** ✅
   - 经检查，`package.json` 中 `zod` 已位于 `dependencies` 内，无需修改。
 
-- [ ] **B2. 公共 API 导出补全**
-  - 当前只导出了 `ContextChef`、`GovernanceOptions`、`ToolDefinition`、`Prompts`
-  - 缺失导出：
-    - 五大模块：`Stitcher`, `Pointer`, `Janitor`, `Governor`, `Pruner`
-    - 核心类型：`Message`, `Role`, `ToolCall`, `TargetPayload`, `CompileOptions`, `TargetProvider`
-    - 配置类型：`ChefConfig`, `VFSConfig`, `JanitorConfig`, `PrunerConfig`
-    - 工具类：`XmlGenerator`, `TokenUtils`
-    - Adapter：`AdapterFactory`, `ITargetAdapter`
-  - 文件：`src/index.ts`
+- [x] **B2. 公共 API 导出补全** ✅
+  - 五大模块、全部类型、工具类、Adapter 均已从 `src/index.ts` 导出。
 
-- [ ] **B3. TargetPayload 类型过于宽松**
-  - 当前定义为 `messages: any[]`，完全丧失类型安全
-  - AnthropicAdapter 还通过 `as TargetPayload` 强转挂了一个 `system` 属性
-  - 方案：为每个 provider 定义独立的 payload 类型，通过泛型或联合类型让 `compile()` 返回正确类型
-  - 文件：`src/types/index.ts`, `src/adapters/*.ts`
+- [x] **B3. TargetPayload 类型安全** ✅
+  - `OpenAIPayload`、`AnthropicPayload`、`GeminiPayload` 均已对接各 SDK 原生类型。
+  - `compile()` / `compileAsync()` 已添加完整重载，按 target 返回对应强类型。
 
-- [ ] **B4. compile() 返回值不包含 tools**
-  - 设计方案要求编译后的 payload 同时包含 messages 和 tools
-  - 当前 Pruner 完全独立，用户需要手动拼装
-  - 考虑在 `TargetPayload` 中加入可选的 `tools` 字段，compile 时自动注入 Pruner 结果
-  - 文件：`src/types/index.ts`, `src/index.ts`
+- [x] **B4. compile() 自动注入 tools** ✅
+  - `compile()` 和 `compileAsync()` 均已自动合并 Pruner 结果，无需手动拼装。
 
 - [x] ~~**B5. Pointer 仅支持 Node.js**~~ ❌ (按讨论暂不考虑)
   - 依赖 `fs`、`path`、`crypto`，在浏览器/Edge 环境直接报错
   - 设计方案开头写着"专为前端和 Node.js 生态设计"
   - 方案：通过引入 `VFSStorageAdapter`，现已支持传入自定义适配器（如 `IndexedDBAdapter`），从而解决浏览器兼容性问题。此问题已**转化并解决**。
 
-- [ ] **B6. 运行一次 tsc 构建验证**
-  - 所有测试都通过 ts-jest 即时编译运行
-  - 从未验证 `tsc` 能否成功生成 `dist/` 产物
-  - 可能存在隐藏的类型错误
+- [x] **B6. tsc 构建验证** ✅
+  - `tsc --noEmit` 零错误通过。
+
+- [ ] **B7. 同步 compile() 可选触发 Janitor 压缩**
+  - 目前只有 `compileAsync()` 走 Janitor，`compile()` 同步路径不会压缩历史。
+  - 方案：新增同步压缩开关；若 Janitor 依赖异步 `compressionModel` 则提示使用 `compileAsync()`。
 
 ---
 
@@ -147,23 +137,31 @@
   - **背景**：Cursor 的 Dynamic Context Discovery 和 Augment 的 Context Engine 均证明，在 LLM 调用前零 round-trip 地注入语义相关上下文（代码片段、依赖图、文档摘要）能显著提升任务完成质量。当前 ContextChef 的 Dynamic State 完全依赖开发者显式传入，无法在编译阶段自动扩展上下文。
   - **方案**：在 `compile()` / `compileAsync()` 的最终组装阶段之前，提供一个 `onBeforeCompile(context => { ... })` 异步钩子。开发者可在此回调中执行任意外部操作（RAG 向量检索、AST 分析、MCP 查询、Augment Context Engine 调用等），并返回需要注入的额外内容。ContextChef 将返回值自动编排到三明治模型的正确位置（如 Dynamic State 层的 `<implicit_context>` 标签内），保持 KV-Cache 稳定性不受影响。库本身不承担任何检索逻辑，只提供注入点。
 
+- [ ] **E11. IR 支持 `thinking` 字段 + Adapter 映射（可选）**
+  - **背景**：目前 `<thinking>` 仅作为提示约束存在于 system 指令或 prefill 文本中，无法与模型原生思维通道对齐。
+  - **方案**：在 IR Message 中引入可选 `thinking` 字段，由 Adapter 映射到支持原生思维通道的模型；对不支持的模型可丢弃或降级为普通文本，从而避免思考内容混入可见输出。
+
+- [ ] **E12. MemoryStore 标准化接口 + 默认实现（InMemory/VFS）**
+  - **背景**：E4 需要持久化 Core Memory，但目前没有统一存储接口。
+  - **方案**：定义轻量 `MemoryStore` 接口，并提供 `InMemoryStore`、`VFSMemoryStore` 默认实现；允许开发者替换为 DB/向量库等。
+
 ---
 
 ## 优先级建议
 
-| 优先级 | 项目                       | 理由                                   |
-| :----: | :------------------------- | :------------------------------------- |
-| ~~P0~~ | ~~B1 (Zod 依赖)~~            | ✅ 已确认               |
-|   P0   | B6 (tsc 构建)              | 验证性工作，不做就不知道有没有隐藏炸弹 |
-| ~~P1~~ | ~~A1 (Gemini)~~            | ✅ 已完成                              |
-| ~~P1~~ | ~~A2 (Anthropic prefill)~~ | ✅ 已确认正确                          |
-|   P1   | B2 (导出补全)              | 不补的话库无法被正常引用               |
-| ~~P2~~ | ~~A3 (死代码清理)~~        | ✅ 已完成                              |
-|   P2   | B3 (类型安全)              | 提升开发体验                           |
-|   P2   | C1-C3 (测试)               | 补齐覆盖率                             |
-|   P3   | B4 (tools 输出)            | API 设计优化                           |
-| ~~P3~~ | ~~B5 (浏览器支持)~~        | ✅ 通过 VFSStorageAdapter 抽象已解决，开发者注入 `MemoryAdapter` / `IndexedDBAdapter` 即可。                       |
-|   P3   | D1-D2 (文档)               | 面向发布                               |
-|   P3   | E9 (feedTokenUsage)        | 小改动，显著提升压缩触发准确性         |
-|   P3   | E10 (压缩冷却保护)         | 小改动，防止连锁压缩导致信息雪崩       |
-|   P4   | E1-E8 (架构演进)           | Phase 4 / Phase 5 核心特性规划         |
+| 优先级   | 项目                          | 理由                                  |
+| :------: | :---------------------------- | :------------------------------------ |
+| ~~P0~~   | ~~B1 (Zod 依赖)~~             | ✅ 已确认                             |
+| ~~P0~~   | ~~B6 (tsc 构建)~~             | ✅ 零错误通过                         |
+| ~~P1~~   | ~~A1 (Gemini)~~               | ✅ 已完成                             |
+| ~~P1~~   | ~~A2 (Anthropic prefill)~~    | ✅ 已确认正确                         |
+| ~~P1~~   | ~~B2 (导出补全)~~             | ✅ 已完成                             |
+| ~~P2~~   | ~~A3 (死代码清理)~~           | ✅ 已完成                             |
+| ~~P2~~   | ~~B3 (类型安全)~~             | ✅ 已完成                             |
+| ~~P3~~   | ~~B4 (tools 输出)~~           | ✅ 已完成                             |
+| ~~P3~~   | ~~B5 (浏览器支持)~~           | ✅ 通过 VFSStorageAdapter 抽象已解决  |
+| P2       | C1/C3 (测试)                  | 暂缓，功能稳定后补齐                  |
+| P3       | D3 (README Namespace 文档)    | 面向发布，README 仅有扁平模式文档     |
+| P3       | E9 (feedTokenUsage)           | 小改动，显著提升压缩触发准确性        |
+| P3       | E10 (压缩冷却保护)            | 小改动，防止连锁压缩导致信息雪崩      |
+| P4       | E1-E8 (架构演进)              | Phase 5 核心特性规划                  |

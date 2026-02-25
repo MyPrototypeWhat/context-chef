@@ -45,7 +45,22 @@ export interface JanitorConfig {
 }
 
 export class Janitor {
+  /** Externally reported token count from the last API response (E9). */
+  private _externalTokenUsage: number | null = null;
+  /** Suppresses the next compression check after a successful compression (E10). */
+  private _suppressNextCompression = false;
+
   constructor(private config: JanitorConfig = {}) {}
+
+  /**
+   * Feeds an externally-reported token count (e.g. from the LLM API response) into the Janitor.
+   * This value takes priority over the local heuristic estimate when both are available.
+   * The caller decides which field to pass (input_tokens, prompt_tokens, total_tokens, etc.).
+   * The value is consumed on the next compress() call and then cleared.
+   */
+  public feedTokenUsage(tokenCount: number): void {
+    this._externalTokenUsage = tokenCount;
+  }
 
   /**
    * Get the token count using either the provided custom tokenizer or the fast heuristic.
@@ -64,9 +79,19 @@ export class Janitor {
   public async compress(history: Message[]): Promise<Message[]> {
     if (history.length === 0) return history;
 
+    // E10: Skip check once after a successful compression to avoid cascading re-compression
+    // before the external token count refreshes.
+    if (this._suppressNextCompression) {
+      this._suppressNextCompression = false;
+      return history;
+    }
+
     // 1. Token-based compression (Recommended)
     if (this.config.maxHistoryTokens) {
-      const totalTokens = this.getTokenCount(history);
+      const localEstimate = this.getTokenCount(history);
+      // E9: Use the max of external API-reported count and local estimate as the effective total.
+      const totalTokens = Math.max(localEstimate, this._externalTokenUsage ?? 0);
+      this._externalTokenUsage = null; // Consume and clear after use
 
       if (totalTokens <= this.config.maxHistoryTokens) {
         return history;
@@ -138,6 +163,9 @@ export class Janitor {
     if (this.config.onCompress) {
       await this.config.onCompress(summaryMessage, toCompress.length);
     }
+
+    // E10: Suppress the immediate next compression check to prevent cascading re-compression.
+    this._suppressNextCompression = true;
 
     return [summaryMessage, ...toKeep];
   }

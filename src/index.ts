@@ -160,6 +160,23 @@ export class ContextChef {
   }
 
   /**
+   * Feeds an externally-reported token count into the Janitor.
+   * Call this after each LLM response with the token usage reported by the API.
+   * The caller decides which field to pass (e.g. input_tokens, prompt_tokens, total_tokens).
+   * On the next compileAsync(), this value is used alongside the local estimate —
+   * whichever is higher triggers compression.
+   *
+   * @example
+   * const response = await openai.chat.completions.create({ ... });
+   * chef.feedTokenUsage(response.usage.prompt_tokens);
+   * const nextPayload = await chef.compileAsync({ target: 'openai' });
+   */
+  public feedTokenUsage(tokenCount: number): this {
+    this.janitor.feedTokenUsage(tokenCount);
+    return this;
+  }
+
+  /**
    * Returns the Pruner instance for direct access to all tool management strategies.
    *
    * @example

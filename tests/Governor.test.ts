@@ -1,5 +1,4 @@
 import { Governor } from '../src/modules/Governor';
-import type { GovernanceOptions } from '../src/modules/Governor';
 import type { Message } from '../src/types';
 
 describe('Governor', () => {
@@ -41,16 +40,8 @@ describe('Governor', () => {
       expect(sysMsg!.content).toContain('reply');
     });
 
-    it('includes <thinking> instruction by default', () => {
+    it('guardrail does not include <thinking> tag instructions', () => {
       const result = governor.applyGovernance([], { enforceXML: { outputTag: 'out' } });
-
-      expect(result[0].content).toContain('<thinking>');
-    });
-
-    it('omits <thinking> instruction when includeThinking is false', () => {
-      const result = governor.applyGovernance([], {
-        enforceXML: { outputTag: 'out', includeThinking: false },
-      });
 
       expect(result[0].content).not.toContain('<thinking>');
     });

@@ -1,11 +1,11 @@
 export const Prompts = {
   /**
    * Used by Governor to enforce strict XML output and behavior.
-   * Derived from Claude Code's "Doing tasks" and ephemeral message patterns.
-   * The <EPHEMERAL_MESSAGE> wrapper is a signature Claude Code trick to inject system rules
+   * Uses Claude Code's <EPHEMERAL_MESSAGE> wrapper pattern to inject system rules
    * into the user/assistant flow without the model "replying" to it.
+   * Uses Claude Code-style emphasis (CRITICAL, MUST, NEVER) for cognitive anchoring.
    */
-  getXMLGuardrail: (outputTag: string, includeThinking: boolean = true) =>
+  getXMLGuardrail: (outputTag: string) =>
     `
 The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.
 <EPHEMERAL_MESSAGE>
@@ -14,21 +14,7 @@ You are acting as an automated system component. Your final output MUST be machi
 
 1. You MUST enclose your final answer strictly within exactly one set of <${outputTag}> and </${outputTag}> tags.
 2. DO NOT output any text, explanation, or conversational filler outside of these tags.
-${
-  includeThinking
-    ? `3. If you need to reason or plan, you MAY use <thinking> tags BEFORE your final <${outputTag}> output.
-4. ANY content outside of these designated XML tags will cause a system parsing failure.
-
-ALWAYS START your thought with recalling these instructions. In particular, the format for the start of your thought block must be:
-<thinking>
-Recalling critical instructions: Output must be strictly within <${outputTag}> tags.
-...
-</thinking>
-<${outputTag}>
-...
-</${outputTag}>`
-    : `3. ANY content outside of these designated XML tags will cause a system parsing failure.`
-}
+3. ANY content outside of these designated XML tags will cause a system parsing failure.
 </EPHEMERAL_MESSAGE>
 `.trim(),
 
@@ -50,7 +36,7 @@ ${lastLines}
 
   /**
    * Used by Janitor as the default instruction for compressing rolling history.
-   * This is an EXACT copy of Claude Code's "system-prompt-context-compaction-summary.md" (~278 tokens).
+   * Based on Claude Code's "system-prompt-context-compaction-summary.md".
    * It provides a very short, aggressive compression prompt.
    */
   CONTEXT_COMPACTION_INSTRUCTION: `
@@ -76,7 +62,7 @@ User preferences or style requirements
 Domain-specific details that aren't obvious
 Any promises made to the user
 Be concise but complete—err on the side of including information that would prevent duplicate work or repeated mistakes. Write in a way that enables immediate resumption of the task.
-Wrap your summary in tags.
+Wrap your summary in <summary></summary> tags.
 `.trim(),
 
   /**
@@ -88,7 +74,7 @@ Wrap your summary in tags.
 Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
 
-Before providing your final summary, wrap your analysis in <thinking> tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
+Before providing your final summary, wrap your analysis in tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
 
 1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
  - The user's explicit requests and intents

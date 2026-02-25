@@ -120,7 +120,6 @@ const shouldRun = !!apiKey;
     chef.withGovernance({
       enforceXML: {
         outputTag: 'refactoring_plan',
-        includeThinking: false, // Turn off <thinking> requirement to let the model use tools naturally
       },
       // prefill removed for tool call test
     });

@@ -2,15 +2,8 @@ import { Prompts } from '../prompts';
 import type { Message } from '../types';
 
 export interface GovernanceOptions {
-  enforceXML?: { 
+  enforceXML?: {
     outputTag: string;
-    /** 
-     * Whether to instruct the model to use <thinking> tags before the output tag.
-     * Set to false if using a prefill that doesn't start with <thinking>, or if
-     * the model is a reasoning model that uses its own reasoning process.
-     * Defaults to true.
-     */
-    includeThinking?: boolean;
   };
   prefill?: string;
 }
@@ -25,8 +18,7 @@ export class Governor {
 
     if (options.enforceXML) {
       const tag = options.enforceXML.outputTag;
-      const includeThinking = options.enforceXML.includeThinking ?? true;
-      const instructions = Prompts.getXMLGuardrail(tag, includeThinking);
+      const instructions = Prompts.getXMLGuardrail(tag);
 
       // Combine with existing system message to avoid extra fragmentation
       if (state.length > 0 && state[0].role === 'system') {
