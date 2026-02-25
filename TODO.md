@@ -116,6 +116,19 @@
   - **背景**：目前 Janitor 仅对历史对话（L2 -> L1）进行模糊压缩。
   - **方案**：借鉴 Letta，允许模型主动输出 `<update_core_memory>` 标签。Janitor 捕获该标签后，将其持久化到顶层的 `Static Base` (系统提示词) 中，使模型能够跨会话累积经验（如：记住项目代码规范）。
 
+- [ ] **E9. Janitor 双信号 Token 触发 (`feedTokenUsage`)**
+  - **背景**：当前 Janitor 仅依赖本地 TokenUtils 启发式估算触发压缩，对 code-heavy 内容可能低估。
+  - **方案**：新增 `chef.feedTokenUsage(n)` 纯数值接口，三级 fallback 链：
+    1. 外部传入的 API token 用量（精确值，由调用方决定传哪个字段）
+    2. 用户注入的 tokenizer 函数（如 tiktoken）
+    3. 内置 TokenUtils 启发式估算（零依赖兜底）
+  - Janitor 压缩触发条件：`max(feedTokenUsage, 本地估算) > maxHistoryTokens`
+  - 不绑定任何厂商字段名，完全由外部决定传入值的语义。
+
+- [ ] **E10. Janitor 压缩冷却保护 (Suppress Next Compression)**
+  - **背景**：压缩后如果 token 估算未立即下降（摘要本身也有 token），可能在下一个 `compileAsync` 再次触发压缩，导致"摘要的摘要"信息雪崩。
+  - **方案**：压缩成功后设置 `_suppressNextCompression = true`，下一次 `compress()` 调用跳过检查，等 API 反馈刷新后再重新评估。
+
 - [ ] **E5. 支持流式解析与对象重组 (Streaming Parser Integration)**
   - **背景**：Governor 采用 XML 约束包络（Envelope），传统解析需要等待闭合标签，导致极高的首字节体感延迟 (TTFB)，前沿应用极度依赖 Streaming。
   - **方案**：
@@ -151,4 +164,6 @@
 |   P3   | B4 (tools 输出)            | API 设计优化                           |
 | ~~P3~~ | ~~B5 (浏览器支持)~~        | ✅ 通过 VFSStorageAdapter 抽象已解决，开发者注入 `MemoryAdapter` / `IndexedDBAdapter` 即可。                       |
 |   P3   | D1-D2 (文档)               | 面向发布                               |
+|   P3   | E9 (feedTokenUsage)        | 小改动，显著提升压缩触发准确性         |
+|   P3   | E10 (压缩冷却保护)         | 小改动，防止连锁压缩导致信息雪崩       |
 |   P4   | E1-E8 (架构演进)           | Phase 4 / Phase 5 核心特性规划         |
