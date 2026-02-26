@@ -95,13 +95,11 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
       content: `msg-${i + 1}`,
     }));
 
-  // Simple deterministic tokenizer: 100 tokens per message in the serialized array
-  // JSON.stringify of N messages is ~N * (some chars), so we just count occurrences
-  // of "msg-" as a proxy for message count — keeps tests simple
+  // Simple deterministic tokenizer: fixed cost per message.
+  // Tokenizer receives Message[] directly; we assign a flat cost per entry.
   const makeTokenizer = (tokensPerMsg: number) =>
-    (text: string): number => {
-      const count = (text.match(/"msg-/g) ?? []).length;
-      return count * tokensPerMsg;
+    (messages: Message[]): number => {
+      return messages.length * tokensPerMsg;
     };
 
   it('does NOT compress when total tokens are within budget', async () => {
@@ -160,7 +158,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
     expect(result.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('calls the custom tokenizer with the serialized message JSON', async () => {
+  it('calls the custom tokenizer with the Message[] array directly', async () => {
     const spy = jest.fn().mockReturnValue(999999); // always huge → always compress
     const mockModel = jest.fn().mockResolvedValue('<history_summary>X</history_summary>');
     const janitor = new Janitor({
@@ -173,11 +171,13 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
     const history = buildHistory(3);
     await janitor.compress(history);
 
-    // tokenizer must have been called with a JSON string
+    // tokenizer receives Message[] directly (not a JSON string)
     expect(spy).toHaveBeenCalled();
-    const firstCallArg = spy.mock.calls[0][0] as string;
-    expect(typeof firstCallArg).toBe('string');
-    expect(() => JSON.parse(firstCallArg)).not.toThrow();
+    const firstCallArg = spy.mock.calls[0][0] as Message[];
+    expect(Array.isArray(firstCallArg)).toBe(true);
+    expect(firstCallArg.length).toBeGreaterThan(0);
+    expect(firstCallArg[0]).toHaveProperty('role');
+    expect(firstCallArg[0]).toHaveProperty('content');
   });
 
   it('fires onCompress with the summary message and truncated count', async () => {

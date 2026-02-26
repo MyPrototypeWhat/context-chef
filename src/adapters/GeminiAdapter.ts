@@ -9,6 +9,13 @@ import { Prompts } from '../prompts';
 import type { GeminiPayload, Message } from '../types';
 import type { ITargetAdapter } from './ITargetAdapter';
 
+/**
+ * Gemini REST API supports thought parts ({ text, thought: true }) for multi-turn thinking,
+ * but SDK v0.24.1 hasn't added the field to TextPart yet.
+ * We extend TextPart locally so a single semantic cast suffices (no `as unknown as`).
+ */
+type GeminiThoughtTextPart = SDKTextPart & { thought: boolean };
+
 // Re-export Gemini-specific types for consumers who want strong typing without importing the SDK
 export type GeminiTextPart = SDKTextPart;
 export type GeminiFunctionCallPart = SDKFunctionCallPart;
@@ -57,6 +64,13 @@ export class GeminiAdapter implements ITargetAdapter {
 
       if (msg.role === 'assistant') {
         const parts: SDKPart[] = [];
+
+        // Prepend thinking as a thought part (Gemini REST API: { text, thought: true })
+        // SDK v0.24.1 TextPart lacks the `thought` field; cast via unknown to satisfy TS.
+        if (msg.thinking) {
+          parts.push({ text: msg.thinking.thinking, thought: true } as GeminiThoughtTextPart);
+        }
+        // redacted_thinking has no Gemini equivalent — silently discard
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           if (msg.content) {

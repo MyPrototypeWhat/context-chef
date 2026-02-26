@@ -6,7 +6,8 @@ import type { ITargetAdapter } from './ITargetAdapter';
 export class OpenAIAdapter implements ITargetAdapter {
   compile(messages: Message[]): OpenAIPayload {
     const formattedMessages: SDKMessageParam[] = messages.map((msg) => {
-      const { _cache_breakpoint, ...cleanMsg } = msg;
+      // Strip internal fields and thinking (Chat Completions does not accept reasoning input)
+      const { _cache_breakpoint, thinking, redacted_thinking, ...cleanMsg } = msg;
       return JSON.parse(JSON.stringify(cleanMsg));
     });
 

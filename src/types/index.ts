@@ -33,6 +33,23 @@ export interface ToolDefinition {
   tags?: string[];
 }
 
+/**
+ * Thinking content produced by a model during extended thinking mode.
+ * The `signature` field is required by Anthropic when echoing thinking back in multi-turn.
+ */
+export interface ThinkingContent {
+  thinking: string;
+  signature?: string;
+}
+
+/**
+ * Privacy-redacted thinking block (Anthropic-specific).
+ * The opaque `data` blob must be echoed verbatim in multi-turn conversations.
+ */
+export interface RedactedThinking {
+  data: string;
+}
+
 export interface Message {
   role: Role;
   content: string;
@@ -41,6 +58,18 @@ export interface Message {
   tool_call_id?: string;
   // Used internally to mark cache breakpoints before targeting
   _cache_breakpoint?: boolean;
+  /**
+   * Thinking/reasoning content produced by the model.
+   * - Anthropic: maps to ThinkingBlockParam (requires signature for multi-turn)
+   * - Gemini: maps to { text, thought: true } TextPart
+   * - OpenAI: discarded (Chat Completions does not accept reasoning input)
+   */
+  thinking?: ThinkingContent;
+  /**
+   * Redacted thinking block (Anthropic extended thinking with privacy filter).
+   * Must be echoed verbatim. Not applicable to OpenAI or Gemini.
+   */
+  redacted_thinking?: RedactedThinking;
 }
 
 export type TargetProvider = 'openai' | 'anthropic' | 'gemini';

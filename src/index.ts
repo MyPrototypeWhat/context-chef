@@ -29,6 +29,9 @@ export { FileSystemAdapter, Pointer, type ProcessOptions, type VFSConfig, type V
 export { Pruner, type PrunerConfig } from './modules/Pruner';
 export { Stitcher, type StitchOptions } from './modules/Stitcher';
 export * from './prompts';
+export { InMemoryStore } from './stores/InMemoryStore';
+export type { MemoryStore } from './stores/MemoryStore';
+export { VFSMemoryStore } from './stores/VFSMemoryStore';
 export * from './types';
 export { TokenUtils } from './utils/TokenUtils';
 export { XmlGenerator } from './utils/XmlGenerator';
