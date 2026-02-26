@@ -132,17 +132,25 @@
   - **背景**：Pointer 截断超大文件并返回 `context://...`，要求 LLM 主动再读，效率较低。
   - **方案**：在转储文件的瞬间，如果开发者配置了快速模型，允许触发一次异步的轻量 summary 操作。截断信息更新为 `[Summary: ... + context://...]`，避免模型盲人摸象。若未配置，则优雅降级为现有的简单截断。
 
-- [ ] **E8. `onBeforeCompile` 生命周期钩子 (beforeContextCreated)**
-  - **背景**：Cursor 的 Dynamic Context Discovery 和 Augment 的 Context Engine 均证明，在 LLM 调用前零 round-trip 地注入语义相关上下文（代码片段、依赖图、文档摘要）能显著提升任务完成质量。当前 ContextChef 的 Dynamic State 完全依赖开发者显式传入，无法在编译阶段自动扩展上下文。
-  - **方案**：在 `compile()` / `compileAsync()` 的最终组装阶段之前，提供一个 `onBeforeCompile(context => { ... })` 异步钩子。开发者可在此回调中执行任意外部操作（RAG 向量检索、AST 分析、MCP 查询、Augment Context Engine 调用等），并返回需要注入的额外内容。ContextChef 将返回值自动编排到三明治模型的正确位置（如 Dynamic State 层的 `<implicit_context>` 标签内），保持 KV-Cache 稳定性不受影响。库本身不承担任何检索逻辑，只提供注入点。
+- [x] **E8. `onBeforeCompile` 生命周期钩子 (beforeContextCreated)** ✅
+  - `ChefConfig.onBeforeCompile` 异步钩子，接收 `BeforeCompileContext` 只读快照
+  - 返回 string 自动包裹为 `<implicit_context>`，注入到 dynamic state 同一位置
+  - 支持 `last_user` 和 `system` 两种 placement 模式
+  - 返回 null/undefined 跳过注入；支持同步和异步回调
+  - 7 个测试覆盖：`tests/onBeforeCompile.test.ts`
 
-- [ ] **E11. IR 支持 `thinking` 字段 + Adapter 映射（可选）**
-  - **背景**：目前 `<thinking>` 仅作为提示约束存在于 system 指令或 prefill 文本中，无法与模型原生思维通道对齐。
-  - **方案**：在 IR Message 中引入可选 `thinking` 字段，由 Adapter 映射到支持原生思维通道的模型；对不支持的模型可丢弃或降级为普通文本，从而避免思考内容混入可见输出。
+- [x] **E11. IR 支持 `thinking` 字段 + Adapter 映射（可选）** ✅
+  - `Message` IR 新增 `thinking?: ThinkingContent` 和 `redacted_thinking?: RedactedThinking` 字段
+  - AnthropicAdapter：映射为 `ThinkingBlockParam` / `RedactedThinkingBlockParam`，prepend 在 text block 之前
+  - GeminiAdapter：`thinking` 和 `redacted_thinking` 均静默丢弃（`thought:true` 是响应输出字段，不可作为请求输入；多轮 thinking 回传依赖 SDK 管理的 `thoughtSignature`）
+  - OpenAIAdapter：`thinking` / `redacted_thinking` 静默丢弃（Chat Completions 不支持）
+  - 测试覆盖：`tests/thinking.test.ts`
 
-- [ ] **E12. MemoryStore 标准化接口 + 默认实现（InMemory/VFS）**
-  - **背景**：E4 需要持久化 Core Memory，但目前没有统一存储接口。
-  - **方案**：定义轻量 `MemoryStore` 接口，并提供 `InMemoryStore`、`VFSMemoryStore` 默认实现；允许开发者替换为 DB/向量库等。
+- [x] **E12. MemoryStore 标准化接口 + 默认实现（InMemory/VFS）** ✅
+  - `src/stores/MemoryStore.ts`：轻量 `MemoryStore` 接口（get/set/delete/keys，同步/异步均支持）
+  - `src/stores/InMemoryStore.ts`：内存实现，用于测试和短生命周期场景
+  - `src/stores/VFSMemoryStore.ts`：文件系统持久化，key 经 base64url 编码，跨进程重启可恢复
+  - 测试覆盖：`tests/MemoryStore.test.ts`
 
 ---
 
@@ -164,4 +172,5 @@
 | ~~P3~~   | ~~E10 (压缩冷却保护)~~        | ✅ 已实现                             |
 | P2       | C1/C3 (测试)                  | 暂缓，功能稳定后补齐                  |
 | P3       | D3 (README Namespace 文档)    | 面向发布，README 仅有扁平模式文档     |
-| P4       | E1-E8, E11-E12 (架构演进)     | Phase 5 核心特性规划                  |
+| ~~P4~~   | ~~E8, E11, E12 (架构演进)~~   | ✅ 已完成                             |
+| P4       | E1-E7 (架构演进)              | Phase 5 核心特性规划                  |
