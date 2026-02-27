@@ -74,6 +74,15 @@ export class Janitor {
   }
 
   /**
+   * Resets the Janitor's internal state (external token usage and compression suppression).
+   * Called when rolling history is explicitly cleared by the developer.
+   */
+  public reset(): void {
+    this._externalTokenUsage = null;
+    this._suppressNextCompression = false;
+  }
+
+  /**
    * Feeds an externally-reported token count (e.g. from the LLM API response) into the Janitor.
    * This value takes priority over the local heuristic estimate when both are available.
    * The caller decides which field to pass (input_tokens, prompt_tokens, total_tokens, etc.).

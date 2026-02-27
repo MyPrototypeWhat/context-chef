@@ -305,6 +305,18 @@ export class ContextChef {
   }
 
   /**
+   * Explicitly clears the rolling history and resets Janitor state.
+   * Use when the developer knows it's time to "start fresh" — e.g., user requests a new topic,
+   * or an Agent completes an independent sub-task phase.
+   * This provides more direct control than waiting for Janitor's automatic token-based compression.
+   */
+  public clearRollingHistory(): this {
+    this.rollingHistory = [];
+    this.janitor.reset();
+    return this;
+  }
+
+  /**
    * Captures an immutable snapshot of the current context state.
    * Use before risky operations (tool calls, branching) to enable rollback.
    *

@@ -218,27 +218,29 @@ describe('GeminiAdapter — thinking field', () => {
   // Gemini prefill degradation pops the trailing plain model message (1 text part).
   // Tests that inspect a model message add a user turn AFTER to prevent this.
 
-  it('maps thinking to a thought:true TextPart before the text part', () => {
-    // A model message with 2+ parts is NOT treated as prefill — no trailing user needed.
+  it('silently discards thinking field (thought:true is an output-only field in Gemini responses)', () => {
+    // thinking is discarded → becomes a plain 1-part model message → prefill degradation fires.
+    // Add a user turn after to keep the model message in place.
     const messages: Message[] = [
       {
         role: 'assistant',
         content: 'The answer is 7.',
         thinking: { thinking: 'Let me calculate...' },
       },
+      { role: 'user', content: 'ok' }, // prevent prefill degradation
     ];
     const result = gemini.compile(messages);
-    const modelMsg = result.messages[0];
-    expect(modelMsg.role).toBe('model');
+    const modelMsg = result.messages.find((m) => m.role === 'model');
+    expect(modelMsg).toBeDefined();
+    if (!modelMsg) return;
     const parts = modelMsg.parts as GeminiAssertPart[];
-    expect(parts).toHaveLength(2);
-    expect(parts[0].thought).toBe(true);
-    expect(parts[0].text).toBe('Let me calculate...');
-    expect(parts[1].text).toBe('The answer is 7.');
-    expect(parts[1].thought).toBeUndefined();
+    // Only the text part — thinking is silently discarded, no thought:true part
+    expect(parts).toHaveLength(1);
+    expect(parts[0].text).toBe('The answer is 7.');
+    expect(parts[0].thought).toBeUndefined();
   });
 
-  it('prepends thought part before functionCall parts', () => {
+  it('silently discards thinking when tool_calls are present', () => {
     // tool_calls → not a plain text message → no prefill degradation
     const messages: Message[] = [
       {
@@ -252,9 +254,10 @@ describe('GeminiAdapter — thinking field', () => {
     ];
     const result = gemini.compile(messages);
     const parts = result.messages[0].parts as GeminiAssertPart[];
-    expect(parts[0].thought).toBe(true);
-    expect(parts[0].text).toBe('I will call a tool.');
-    expect(parts[parts.length - 1]).toHaveProperty('functionCall');
+    // Only the functionCall part — thinking is silently discarded
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toHaveProperty('functionCall');
+    expect((parts[0] as GeminiAssertPart).thought).toBeUndefined();
   });
 
   it('silently discards redacted_thinking (no Gemini equivalent)', () => {
