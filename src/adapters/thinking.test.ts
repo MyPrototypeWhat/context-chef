@@ -14,10 +14,11 @@
  * must include a trailing user turn so the assistant message is NOT last.
  */
 
-import { AnthropicAdapter } from '../src/adapters/AnthropicAdapter';
-import { GeminiAdapter } from '../src/adapters/GeminiAdapter';
-import { OpenAIAdapter } from '../src/adapters/OpenAIAdapter';
-import type { Message } from '../src/types';
+import { describe, expect, it } from 'vitest';
+import { AnthropicAdapter } from './anthropicAdapter';
+import { GeminiAdapter } from './geminiAdapter';
+import { OpenAIAdapter } from './openAIAdapter';
+import type { Message } from '../types';
 
 // ─── Local inspection types (avoid as-unknown casts in assertions) ──────────
 

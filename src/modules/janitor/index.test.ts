@@ -1,12 +1,13 @@
-import { ContextChef } from '../src/index';
-import { Janitor } from '../src/modules/Janitor';
-import type { Message } from '../src/types';
+import { describe, it, expect, vi } from 'vitest';
+import { ContextChef } from '../../index';
+import type { Message } from '../../types';
+import { Janitor } from '.';
 
 describe('ContextChef Async Features (pi-mono inspiration)', () => {
   it('should trigger Janitor compression when history exceeds limit', async () => {
     // Mock: returns a summary already wrapped in <history_summary> tags,
     // mirroring what a real LLM would output when given CONTEXT_COMPACTION_INSTRUCTION.
-    const mockCompressionModel = jest
+    const mockCompressionModel = vi
       .fn()
       .mockResolvedValue('<history_summary>MOCK_SUMMARY</history_summary>');
 
@@ -97,13 +98,14 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
 
   // Simple deterministic tokenizer: fixed cost per message.
   // Tokenizer receives Message[] directly; we assign a flat cost per entry.
-  const makeTokenizer = (tokensPerMsg: number) =>
+  const makeTokenizer =
+    (tokensPerMsg: number) =>
     (messages: Message[]): number => {
       return messages.length * tokensPerMsg;
     };
 
   it('does NOT compress when total tokens are within budget', async () => {
-    const mockModel = jest.fn().mockResolvedValue('<history_summary>S</history_summary>');
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
     const janitor = new Janitor({
       maxHistoryTokens: 1000,
       preserveRecentTokens: 500,
@@ -119,7 +121,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
   });
 
   it('compresses when tokens exceed maxHistoryTokens', async () => {
-    const mockModel = jest.fn().mockResolvedValue('<history_summary>COMPRESSED</history_summary>');
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>COMPRESSED</history_summary>');
     const janitor = new Janitor({
       maxHistoryTokens: 30,
       preserveRecentTokens: 10, // keep last ~1 message (10 tokens each)
@@ -141,7 +143,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
   it('preserveRecentTokens defaults to 70% of maxHistoryTokens when omitted', async () => {
     // With 5 messages × 10 tokens = 50 total, maxHistoryTokens=40 triggers compression.
     // Default preserve = floor(40 * 0.7) = 28 tokens → keeps last 2 messages (2×10=20 ≤ 28).
-    const mockModel = jest.fn().mockResolvedValue('<history_summary>DEFAULT</history_summary>');
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>DEFAULT</history_summary>');
     const janitor = new Janitor({
       maxHistoryTokens: 40,
       // preserveRecentTokens NOT set — should default to 70%
@@ -159,8 +161,8 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
   });
 
   it('calls the custom tokenizer with the Message[] array directly', async () => {
-    const spy = jest.fn().mockReturnValue(999999); // always huge → always compress
-    const mockModel = jest.fn().mockResolvedValue('<history_summary>X</history_summary>');
+    const spy = vi.fn().mockReturnValue(999999); // always huge → always compress
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>X</history_summary>');
     const janitor = new Janitor({
       maxHistoryTokens: 100,
       preserveRecentTokens: 10,
@@ -181,7 +183,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
   });
 
   it('fires onCompress with the summary message and truncated count', async () => {
-    const onCompress = jest.fn();
+    const onCompress = vi.fn();
     const janitor = new Janitor({
       maxHistoryTokens: 30,
       preserveRecentTokens: 10,
@@ -216,7 +218,7 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
   });
 
   it('integrates with ContextChef.compile() via token budget', async () => {
-    const mockModel = jest.fn().mockResolvedValue('<history_summary>VIA_CHEF</history_summary>');
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>VIA_CHEF</history_summary>');
     const chef = new ContextChef({
       janitor: {
         maxHistoryTokens: 30,

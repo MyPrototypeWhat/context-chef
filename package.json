@@ -11,12 +11,14 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsdown",
-    "test": "jest",
-    "typecheck": "tsc --noEmit",
-    "typecheck:compat": "tsc --noEmit --strict --esModuleInterop --target ES2022 --module CommonJS --moduleResolution node --skipLibCheck tests/type-compat.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "typecheck:compat": "tsc --noEmit --strict --esModuleInterop --target ES2022 --module CommonJS --moduleResolution node --skipLibCheck tests/typeCompat.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write ."
@@ -34,21 +36,25 @@
     "openai": ">=4"
   },
   "peerDependenciesMeta": {
-    "@anthropic-ai/sdk": { "optional": true },
-    "@google/generative-ai": { "optional": true },
-    "openai": { "optional": true }
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@google/generative-ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@biomejs/biome": "^2.4.4",
     "@google/generative-ai": "^0.24.1",
-    "@types/jest": "^30.0.0",
     "@types/node": "^25.3.0",
-    "jest": "^30.2.0",
     "openai": "^6.22.0",
-    "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "tsdown": "^0.20.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

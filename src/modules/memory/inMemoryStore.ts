@@ -1,4 +1,4 @@
-import type { MemoryStore } from './MemoryStore';
+import type { MemoryStore } from './memoryStore';
 
 /**
  * In-process key-value store backed by a plain Map.
@@ -24,5 +24,16 @@ export class InMemoryStore implements MemoryStore {
 
   keys(): string[] {
     return Array.from(this.store.keys());
+  }
+
+  snapshot(): Record<string, string> {
+    return Object.fromEntries(this.store);
+  }
+
+  restore(data: Record<string, string>): void {
+    this.store.clear();
+    for (const [k, v] of Object.entries(data)) {
+      this.store.set(k, v);
+    }
   }
 }

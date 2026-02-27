@@ -1,16 +1,18 @@
 import type { z } from 'zod';
-import { getAdapter } from './adapters/AdapterFactory';
-import { type GovernanceOptions, Governor } from './modules/Governor';
-import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/Janitor';
-import { Pointer, type ProcessOptions, type VFSConfig } from './modules/Pointer';
+import { getAdapter } from './adapters/adapterFactory';
+import { type GovernanceOptions, Governor } from './modules/governor';
+import { Memory } from './modules/memory';
+import type { MemoryStore } from './modules/memory/memoryStore';
+import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
+import { Pointer, type ProcessOptions, type VFSConfig } from './modules/pointer';
 import {
   type CompiledTools,
   Pruner,
   type PrunerConfig,
   type ResolvedToolCall,
   type ToolGroup,
-} from './modules/Pruner';
-import { type DynamicStatePlacement, Stitcher } from './modules/Stitcher';
+} from './modules/pruner';
+import { type DynamicStatePlacement, Stitcher } from './modules/stitcher';
 import type {
   AnthropicPayload,
   CompileOptions,
@@ -20,21 +22,22 @@ import type {
   TargetPayload,
   ToolDefinition,
 } from './types';
-import { objectToXml } from './utils/XmlGenerator';
+import { objectToXml } from './utils/xmlGenerator';
 
-export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/AdapterFactory';
-export { Governor } from './modules/Governor';
-export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/Janitor';
-export { FileSystemAdapter, Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter } from './modules/Pointer';
-export { Pruner, type PrunerConfig } from './modules/Pruner';
-export { Stitcher, type StitchOptions } from './modules/Stitcher';
+export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
+export { Governor } from './modules/governor';
+export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
+export { FileSystemAdapter, Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter } from './modules/pointer';
+export { Pruner, type PrunerConfig } from './modules/pruner';
+export { Stitcher, type StitchOptions } from './modules/stitcher';
 export * from './prompts';
-export { InMemoryStore } from './stores/InMemoryStore';
-export type { MemoryStore } from './stores/MemoryStore';
-export { VFSMemoryStore } from './stores/VFSMemoryStore';
+export { InMemoryStore } from './modules/memory/inMemoryStore';
+export { Memory, type MemoryEntry } from './modules/memory';
+export type { MemoryStore } from './modules/memory/memoryStore';
+export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export * from './types';
-export { TokenUtils } from './utils/TokenUtils';
-export { XmlGenerator } from './utils/XmlGenerator';
+export { TokenUtils } from './utils/tokenUtils';
+export { XmlGenerator } from './utils/xmlGenerator';
 
 /**
  * Read-only snapshot of the current context, passed to the onBeforeCompile hook.
@@ -57,6 +60,7 @@ export interface ChefSnapshot {
   readonly dynamicStatePlacement: DynamicStatePlacement;
   readonly rawDynamicXml: string;
   readonly _janitor: JanitorSnapshot;
+  readonly _memoryStore?: Record<string, string>;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -65,6 +69,7 @@ export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
   janitor?: JanitorConfig;
   pruner?: PrunerConfig;
+  memoryStore?: MemoryStore;
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   /**
    * Lifecycle hook invoked before each compile(), after Janitor compression.
@@ -100,6 +105,7 @@ export class ContextChef {
   private janitor: Janitor;
   private governor: Governor;
   private pruner: Pruner;
+  private _memory: Memory | null;
   private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   private onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
 
@@ -115,6 +121,7 @@ export class ContextChef {
     this.janitor = new Janitor(config.janitor);
     this.governor = new Governor();
     this.pruner = new Pruner(config.pruner);
+    this._memory = config.memoryStore ? new Memory(config.memoryStore) : null;
     this.transformContext = config.transformContext;
     this.onBeforeCompile = config.onBeforeCompile;
   }
@@ -239,6 +246,21 @@ export class ContextChef {
   }
 
   /**
+   * Returns the Memory instance for direct access to core memory operations.
+   * Requires `memoryStore` to be configured in ChefConfig.
+   *
+   * @example
+   * await chef.memory().set('project_rules', 'Always use strict TypeScript');
+   * await chef.memory().extractAndApply(assistantResponse);
+   */
+  public memory(): Memory {
+    if (!this._memory) {
+      throw new Error('ContextChef: memory() requires a memoryStore in ChefConfig.');
+    }
+    return this._memory;
+  }
+
+  /**
    * Utility method to safely process large outputs via VFS before they hit history.
    * Throws an error if the configured VFS storage adapter is asynchronous.
    */
@@ -263,6 +285,13 @@ export class ContextChef {
   ): Promise<string> {
     const result = await this.pointer.processAsync(content, type, options);
     return result.content;
+  }
+
+  private async _getMemoryMessages(): Promise<Message[]> {
+    if (!this._memory) return [];
+    const xml = await this._memory.toXml();
+    if (!xml) return [];
+    return [{ role: 'system', content: xml }];
   }
 
   /**
@@ -292,6 +321,7 @@ export class ContextChef {
       dynamicStatePlacement: this.dynamicStatePlacement,
       rawDynamicXml: this.rawDynamicXml,
       _janitor: this.janitor.snapshotState(),
+      _memoryStore: this._memory?.snapshot() ?? undefined,
       label,
       createdAt: Date.now(),
     };
@@ -308,6 +338,9 @@ export class ContextChef {
     this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
     this.rawDynamicXml = snapshot.rawDynamicXml;
     this.janitor.restoreState(snapshot._janitor);
+    if (snapshot._memoryStore && this._memory) {
+      this._memory.restore(snapshot._memoryStore);
+    }
     return this;
   }
 
@@ -350,15 +383,18 @@ export class ContextChef {
       );
     }
 
-    // 4. Sandwich assembly
-    let messages = [...this.topLayer, ...compressedHistory, ...dynamicState];
+    // 4. Core Memory injection (between topLayer and history)
+    const memoryMessages = await this._getMemoryMessages();
 
-    // 5. Transform hook
+    // 5. Sandwich assembly
+    let messages = [...this.topLayer, ...memoryMessages, ...compressedHistory, ...dynamicState];
+
+    // 6. Transform hook
     if (this.transformContext) {
       messages = await this.transformContext(messages);
     }
 
-    // 6. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
+    // 7. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const stitchXml = [this.rawDynamicXml, implicitContextXml].filter(Boolean).join('\n');
     const rawPayload = this.stitcher.compile(messages, {
       dynamicStateXml: stitchXml || undefined,

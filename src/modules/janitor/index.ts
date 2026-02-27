@@ -1,6 +1,6 @@
-import { Prompts } from '../prompts';
-import type { Message } from '../types';
-import { TokenUtils } from '../utils/TokenUtils';
+import { Prompts } from '../../prompts';
+import type { Message } from '../../types';
+import { TokenUtils } from '../../utils/tokenUtils';
 
 export interface JanitorConfig {
   /**

@@ -8,7 +8,7 @@ import type {
   ToolUseBlockParam as SDKToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import type { AnthropicPayload, Message } from '../types';
-import type { ITargetAdapter } from './ITargetAdapter';
+import type { ITargetAdapter } from './iTargetAdapter';
 
 export class AnthropicAdapter implements ITargetAdapter {
   compile(messages: Message[]): AnthropicPayload {

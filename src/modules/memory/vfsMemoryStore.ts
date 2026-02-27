@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { MemoryStore } from './MemoryStore';
+import type { MemoryStore } from './memoryStore';
 
 /**
  * Persistent key-value store that writes each entry as a file under a

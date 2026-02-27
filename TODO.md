@@ -92,18 +92,19 @@
 
 根据前沿 Agent 平台（Cursor, Letta, Cline, Augment 等）的实践，规划以下架构演进方向：
 
-- [ ] **E1. 引入 AST / Semantic Context Injector (雷达模块钩子)**
-  - **背景**：Cursor/Augment 的核心在于"隐式上下文发现" (Dynamic Context Discovery)。当前 Dynamic State 需要显式传入，对于复杂代码库存在盲区。
-  - **方案**：不在库内实现沉重的 AST 或 VectorDB 分析，而是提供一个类似 `onBeforeCompile(context => {...})` 的 Hook 或中间件 API，允许开发者在最终编译前，注入外部检索引擎计算出的 `<related_snippets>`，实现零耗时 (Zero round-trip) 的认知扩展。
+- [x] **E1. 引入 AST / Semantic Context Injector (雷达模块钩子)** ✅ (已由 E8 `onBeforeCompile` 覆盖)
+  - E8 的 `onBeforeCompile` 钩子即为此方案的完整实现
+  - 开发者可在钩子中注入外部检索结果（RAG、AST snippets、MCP 查询等）
 
 - [ ] **E2. 原生 MCP (Model Context Protocol) 网关接入**
   - **背景**：Cline/Roo Code 等前沿工具已全线拥抱 MCP，而 ContextChef 当前工具配置仍为静态对象。
   - **方案**：将 Layer 2 (Lazy Loading Toolkits) 的概念与 MCP 融合。提供诸如 `chef.tools().registerMCPServer(client)` 的 API，让 `load_toolkit` 虚拟工具可以直接对接 MCP Server，实现能力的动态即插即用，同时保持核心库轻量（不内置 client，只提供注入点）。
 
-- [ ] **E3. 全局状态的时间旅行 (Snapshot & Restore)**
-  - **背景**：长程任务容易中途出错，IDE 插件 (如 Cline) 刚需 Undo/Redo 能力。
-  - **方案**：暴露 `chef.snapshot()` 和 `chef.restore(state)` 方法，因为 ContextChef 内部维护了统一的 IR (中间表示)，可以轻易地实现 AI 记忆的回滚与重放。
-  - **GCC 借鉴**：引入内置的 Milestone Snapshot Schema（类似 GCC 的 COMMIT），允许 Agent 在尝试复杂操作前自主通过 Tool 发起 `take_snapshot(reason)`，并在失败时调用 `revert_to_snapshot()`。这从被动的 IDE 级撤销，升级为了 Agent 自主的分支探索（Branching）。
+- [x] **E3. 全局状态的时间旅行 (Snapshot & Restore)** ✅
+  - `chef.snapshot(label?)` 捕获不可变快照（topLayer/rollingHistory/dynamicState/Janitor 状态）
+  - `chef.restore(snapshot)` 回滚到任意快照，支持 Agent 分支探索
+  - `ChefSnapshot` 接口含 `label` 和 `createdAt` 元数据
+  - 10 个测试覆盖：`tests/snapshot.test.ts`
 
 - [ ] **E4. Janitor 的显式记忆 (Core Memory) 持久化**
   - **背景**：目前 Janitor 仅对历史对话（L2 -> L1）进行模糊压缩。
@@ -126,9 +127,9 @@
     1. **解耦包络与负载**：由于开发者配置的 `outputTag` 是动态的（不仅限于 `<dynamic_state>` 或 `<thinking>`），我们需要一个泛型的底层 Stream Scanner 负责剥离外部的 XML 标签。
     2. **引入成熟流解析库**：在剥离出目标内容后，若是 JSON 负载，则无缝接入 `zod-stream` 或 `stream-json`，实现边接收边校验的强类型 Partial Object 抛出；若是纯 XML 负载，则接入 `htmlparser2` 等成熟的流式 XML 解析器。
 
-- [ ] **E6. Reasoning Models (o1/o3-mini) 的 Adapter 专项优化**
-  - **背景**：OpenAI 的 o1 系列模型自带内部思维链，且不支持某些 Assistant prefill，强加复杂的 `<thinking>` 引导（如 `prompts.ts` line 24）反而会导致模型性能下降。
-  - **方案**：在 `AdapterFactory` 中为 o1/o3 建立特殊的适配逻辑，智能削减或剥离冗余的 XML Guardrails 引导提示，防止过度指令限制。
+- [x] ~~**E6. Reasoning Models (o1/o3-mini) 的 Adapter 专项优化**~~ ❌ (按讨论移除)
+  - ContextChef 是上下文编排库，不应对模型做黑箱判断
+  - 是否添加 `<thinking>` 引导、prefill 等完全由用户自行决定
 
 - [ ] **E7. VFS 指针解析的按需摘要 (Optional Summary)**
   - **背景**：Pointer 截断超大文件并返回 `context://...`，要求 LLM 主动再读，效率较低。
@@ -154,6 +155,11 @@
   - `src/stores/VFSMemoryStore.ts`：文件系统持久化，key 经 base64url 编码，跨进程重启可恢复
   - 测试覆盖：`tests/MemoryStore.test.ts`
 
+- [ ] **E13. 暴露 Rolling History 清空接口 (API: clearRollingHistory)**
+  - **背景**：在多轮对话或长程任务中，开发者有时比大模型更清楚什么时候该“翻篇”（例如：用户明确要求“重头开始”或“换个话题”，或者 Agent 完成了一个独立的子任务阶段）。此时，硬性的 Token 阈值压缩反而显得多余。
+  - **方案**：提供一个 `chef.clearRollingHistory()` 接口，允许外层宿主（如 Agent Loop 所在的 Server）显式清空中层的 Rolling History。
+  - **LangChain 借鉴**：对应 LangChain Isolate 策略中“清除无用状态，防止上下文交叉干扰”的思想。这为开发者提供了比 Janitor 更直接的控制权。
+
 ---
 
 ## 优先级建议
@@ -175,4 +181,6 @@
 | P2       | C1/C3 (测试)                  | 暂缓，功能稳定后补齐                  |
 | P3       | D3 (README Namespace 文档)    | 面向发布，README 仅有扁平模式文档     |
 | ~~P4~~   | ~~E8, E11, E12 (架构演进)~~   | ✅ 已完成                             |
-| P4       | E1-E7 (架构演进)              | Phase 5 核心特性规划                  |
+| ~~P4~~   | ~~E1, E3, E6 (架构演进)~~     | ✅ E1=E8 已覆盖, E3 已完成, E6 已移除 |
+| P3       | E4 (Core Memory 持久化)       | 下一个目标，依赖 E12 MemoryStore      |
+| P4       | E2, E5, E7 (架构演进)         | Phase 5 剩余特性规划                  |

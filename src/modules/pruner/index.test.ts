@@ -1,4 +1,5 @@
-import { Pruner, type ToolDefinition, type ToolGroup } from '../src/modules/Pruner';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { Pruner, type ToolDefinition, type ToolGroup } from '.';
 
 // ─── Mock Data ───
 

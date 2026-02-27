@@ -1,7 +1,7 @@
 import type { ChatCompletionMessageParam as SDKMessageParam } from 'openai/resources/chat/completions/completions';
 import { Prompts } from '../prompts';
 import type { Message, OpenAIPayload } from '../types';
-import type { ITargetAdapter } from './ITargetAdapter';
+import type { ITargetAdapter } from './iTargetAdapter';
 
 export class OpenAIAdapter implements ITargetAdapter {
   compile(messages: Message[]): OpenAIPayload {

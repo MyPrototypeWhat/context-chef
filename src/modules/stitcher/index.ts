@@ -1,4 +1,4 @@
-import type { Message } from '../types';
+import type { Message } from '../../types';
 
 export type DynamicStatePlacement = 'system' | 'last_user';
 

@@ -1,5 +1,6 @@
-import { Stitcher } from '../src/modules/Stitcher';
-import type { Message } from '../src/types';
+import { describe, expect, it } from 'vitest';
+import type { Message } from '../../types';
+import { Stitcher } from '.';
 
 describe('Stitcher', () => {
   it('should deterministically order keys', () => {

@@ -1,5 +1,6 @@
-import { GeminiAdapter } from '../src/adapters/GeminiAdapter';
-import type { GeminiPayload, Message } from '../src/types';
+import { describe, expect, it } from 'vitest';
+import type { GeminiPayload, Message } from '../types';
+import { GeminiAdapter } from './geminiAdapter';
 
 describe('GeminiAdapter', () => {
   const adapter = new GeminiAdapter();
@@ -27,9 +28,7 @@ describe('GeminiAdapter', () => {
   });
 
   it('should omit systemInstruction when no system messages exist', () => {
-    const messages: Message[] = [
-      { role: 'user', content: 'Hello' },
-    ];
+    const messages: Message[] = [{ role: 'user', content: 'Hello' }];
 
     const result = adapter.compile([...messages]) as unknown as Record<string, unknown>;
     expect(result.systemInstruction).toBeUndefined();
@@ -172,11 +171,13 @@ describe('GeminiAdapter', () => {
       {
         role: 'assistant',
         content: '',
-        tool_calls: [{
-          id: 'call_1',
-          type: 'function' as const,
-          function: { name: 'get_weather', arguments: '{"city":"London"}' },
-        }],
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function' as const,
+            function: { name: 'get_weather', arguments: '{"city":"London"}' },
+          },
+        ],
       },
       {
         role: 'tool',
@@ -200,7 +201,10 @@ describe('GeminiAdapter', () => {
     expect(toolResultMsg.role).toBe('user');
     expect(toolResultMsg.parts[0].functionResponse).toBeDefined();
     expect(toolResultMsg.parts[0].functionResponse!.name).toBe('get_weather');
-    expect(toolResultMsg.parts[0].functionResponse!.response).toEqual({ temp: 15, unit: 'celsius' });
+    expect(toolResultMsg.parts[0].functionResponse!.response).toEqual({
+      temp: 15,
+      unit: 'celsius',
+    });
   });
 
   it('should wrap non-JSON tool result content in { result: ... }', () => {
@@ -222,7 +226,9 @@ describe('GeminiAdapter', () => {
       }>;
     };
 
-    expect(result.messages[0].parts[0].functionResponse!.response).toEqual({ result: 'File not found' });
+    expect(result.messages[0].parts[0].functionResponse!.response).toEqual({
+      result: 'File not found',
+    });
   });
 
   it('should use tool_call_id as fallback name when name is missing', () => {
@@ -281,7 +287,9 @@ describe('GeminiAdapter', () => {
     // The user message should now contain the prefill enforcement note
     const userMsg = result.messages[0];
     expect(userMsg.parts[0].text).toContain('Help me.');
-    expect(userMsg.parts[0].text).toContain('SYSTEM INSTRUCTION: Your response MUST start verbatim');
+    expect(userMsg.parts[0].text).toContain(
+      'SYSTEM INSTRUCTION: Your response MUST start verbatim',
+    );
     expect(userMsg.parts[0].text).toContain('<thinking>\n1. ');
   });
 
@@ -291,11 +299,13 @@ describe('GeminiAdapter', () => {
       {
         role: 'assistant',
         content: '',
-        tool_calls: [{
-          id: 'c1',
-          type: 'function' as const,
-          function: { name: 'get_weather', arguments: '{"city":"NYC"}' },
-        }],
+        tool_calls: [
+          {
+            id: 'c1',
+            type: 'function' as const,
+            function: { name: 'get_weather', arguments: '{"city":"NYC"}' },
+          },
+        ],
       },
     ];
 
@@ -321,11 +331,13 @@ describe('GeminiAdapter', () => {
       {
         role: 'assistant',
         content: '',
-        tool_calls: [{
-          id: 'call_1',
-          type: 'function' as const,
-          function: { name: 'get_weather', arguments: '{"city":"London"}' },
-        }],
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function' as const,
+            function: { name: 'get_weather', arguments: '{"city":"London"}' },
+          },
+        ],
       },
       {
         role: 'tool',
@@ -342,9 +354,9 @@ describe('GeminiAdapter', () => {
     expect(result.systemInstruction?.parts[0]?.text).toBe('You are a weather assistant.');
     expect(result.messages).toHaveLength(5);
     expect(result.messages[0].role).toBe('user');
-    expect(result.messages[1].role).toBe('model');   // functionCall
-    expect(result.messages[2].role).toBe('user');    // functionResponse
-    expect(result.messages[3].role).toBe('model');   // assistant response
-    expect(result.messages[4].role).toBe('user');    // follow-up
+    expect(result.messages[1].role).toBe('model'); // functionCall
+    expect(result.messages[2].role).toBe('user'); // functionResponse
+    expect(result.messages[3].role).toBe('model'); // assistant response
+    expect(result.messages[4].role).toBe('user'); // follow-up
   });
 });

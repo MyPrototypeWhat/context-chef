@@ -1,5 +1,5 @@
-import { Prompts } from '../prompts';
-import type { Message } from '../types';
+import { Prompts } from '../../prompts';
+import type { Message } from '../../types';
 
 export interface GovernanceOptions {
   enforceXML?: {

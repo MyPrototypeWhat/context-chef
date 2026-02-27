@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import type { BeforeCompileContext } from '../src/index';
 import { ContextChef } from '../src/index';

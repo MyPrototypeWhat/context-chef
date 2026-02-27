@@ -1,7 +1,8 @@
+import OpenAI from 'openai';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ContextChef } from '../src/index';
 import type { Message } from '../src/types';
-import OpenAI from 'openai';
 
 // To run this test locally, ensure your shell has these exported:
 // export OPENAI_API_KEY="sk-..."
@@ -16,7 +17,7 @@ const shouldRun = !!apiKey;
   let openai: OpenAI;
 
   beforeAll(() => {
-    openai = new OpenAI({ 
+    openai = new OpenAI({
       apiKey: apiKey!,
       baseURL: baseURL, // Will use default openai.com if undefined
     });
@@ -138,7 +139,9 @@ const shouldRun = !!apiKey;
     expect(lastMsg.role).toBe('system');
     expect(lastMsg.content).toContain('CRITICAL OUTPUT FORMAT INSTRUCTIONS');
 
-    const userMsg = messages.find((m) => m.role === 'user' && m.content.includes('<dynamic_state>'));
+    const userMsg = messages.find(
+      (m) => m.role === 'user' && m.content.includes('<dynamic_state>'),
+    );
     expect(userMsg).toBeDefined();
 
     console.log('\\n[ContextChef] Payload compiled successfully. Sending to LLM...');
@@ -171,7 +174,9 @@ const shouldRun = !!apiKey;
         (tc as any).function ? (tc as any).function.name : (tc as any).name,
       );
     } else {
-      console.warn('[ContextChef] Warning: Model returned null content and no tool_calls. This happens with some proxy endpoints or reasoning models. Treating as success since payload compilation and request succeeded.');
+      console.warn(
+        '[ContextChef] Warning: Model returned null content and no tool_calls. This happens with some proxy endpoints or reasoning models. Treating as success since payload compilation and request succeeded.',
+      );
     }
   }, 120000); // 120s timeout for API call
 
@@ -181,7 +186,9 @@ const shouldRun = !!apiKey;
       janitor: {
         maxHistoryTokens: 150,
         compressionModel: async (payloadToCompress: Message[]): Promise<string> => {
-          console.log('\\n[ContextChef] Janitor triggered compression. Sending to OpenAI for summary...');
+          console.log(
+            '\\n[ContextChef] Janitor triggered compression. Sending to OpenAI for summary...',
+          );
           const response = await openai.chat.completions.create({
             model: modelName,
             messages: payloadToCompress as any[],
@@ -203,7 +210,10 @@ const shouldRun = !!apiKey;
     const history: Message[] = [];
     for (let i = 0; i < 20; i++) {
       if (i === 10) {
-        history.push({ role: 'user', content: 'By the way, my cats name is "FLUFFY_PAWS". Do not forget it.' });
+        history.push({
+          role: 'user',
+          content: 'By the way, my cats name is "FLUFFY_PAWS". Do not forget it.',
+        });
         history.push({ role: 'assistant', content: 'Understood. I have noted the cats name.' });
       } else {
         history.push({ role: 'user', content: 'What is the weather today?' });
@@ -219,7 +229,7 @@ const shouldRun = !!apiKey;
     const payload = await chef.compile({ target: 'openai' });
 
     console.log('\\n[ContextChef] Final compacted payload compiled. Sending to LLM...');
-    
+
     // The history of 40+ messages should have been squashed into:
     // [TopLayer(1)] + [Summary(1)] + [Recent preserved messages(2)] + [Final question(1)] = approx 5 messages
     const messages = payload.messages as any[];
@@ -238,14 +248,16 @@ const shouldRun = !!apiKey;
     // 1. It compressed the middle history.
     // 2. The compression model (OpenAI) extracted the "FLUFFY_PAWS" into the summary.
     // 3. The final model (OpenAI) read the summary and answered the final question.
-    
-    // Note: Some endpoints/models have strict safety filters that refuse to summarize 
+
+    // Note: Some endpoints/models have strict safety filters that refuse to summarize
     // personal/chat history. We tolerate any non-crashing response to ensure CI stability.
     if (reply.content && reply.content.includes('FLUFFY_PAWS')) {
       console.log('[ContextChef] Success: Model correctly recalled the compressed context.');
       expect(reply.content).toContain('FLUFFY_PAWS');
     } else {
-      console.warn('[ContextChef] Warning: Model did not recall the password. It might be due to safety filters or poor summarization, but the ContextChef pipeline succeeded.');
+      console.warn(
+        '[ContextChef] Warning: Model did not recall the password. It might be due to safety filters or poor summarization, but the ContextChef pipeline succeeded.',
+      );
       expect(reply.content).toBeDefined(); // Just ensure we got *some* valid string back
     }
   }, 120000);

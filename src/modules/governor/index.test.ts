@@ -1,5 +1,6 @@
-import { Governor } from '../src/modules/Governor';
-import type { Message } from '../src/types';
+import { describe, beforeEach, it, expect } from 'vitest';
+import { Governor } from '.';
+import type { Message } from '../../types';
 
 describe('Governor', () => {
   let governor: Governor;

@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Prompts } from '../prompts';
+import { Prompts } from '../../prompts';
 
 export interface VFSStorageAdapter {
   write(filename: string, content: string): void | Promise<void>;

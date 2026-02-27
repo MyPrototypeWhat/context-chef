@@ -10,8 +10,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { InMemoryStore } from '../src/stores/InMemoryStore';
-import { VFSMemoryStore } from '../src/stores/VFSMemoryStore';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { InMemoryStore } from './inMemoryStore';
+import { VFSMemoryStore } from './vfsMemoryStore';
 
 // ─── InMemoryStore ─────────────────────────────────────────────────────────
 

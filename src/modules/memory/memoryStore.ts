@@ -15,4 +15,8 @@ export interface MemoryStore {
   set(key: string, value: string): void | Promise<void>;
   delete(key: string): boolean | Promise<boolean>;
   keys(): string[] | Promise<string[]>;
+  /** Optional: capture all entries for snapshot (e.g. InMemoryStore). */
+  snapshot?(): Record<string, string>;
+  /** Optional: restore all entries from a snapshot. */
+  restore?(data: Record<string, string>): void;
 }

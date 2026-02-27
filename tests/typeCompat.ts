@@ -28,7 +28,7 @@ import type {
   GeminiFunctionCallPart,
   GeminiFunctionResponsePart,
   GeminiTextPart,
-} from '../src/adapters/GeminiAdapter';
+} from '../src/adapters/geminiAdapter';
 
 type _G1 = AssertAssignable<GeminiTextPart, GeminiSDKTextPart>;
 type _G2 = AssertAssignable<GeminiFunctionCallPart, GeminiSDKFunctionCallPart>;

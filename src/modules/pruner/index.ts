@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../types';
+import type { ToolDefinition } from '../../types';
 
 export type { ToolDefinition };
 
