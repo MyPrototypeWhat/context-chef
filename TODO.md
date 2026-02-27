@@ -103,10 +103,12 @@
 - [ ] **E3. 全局状态的时间旅行 (Snapshot & Restore)**
   - **背景**：长程任务容易中途出错，IDE 插件 (如 Cline) 刚需 Undo/Redo 能力。
   - **方案**：暴露 `chef.snapshot()` 和 `chef.restore(state)` 方法，因为 ContextChef 内部维护了统一的 IR (中间表示)，可以轻易地实现 AI 记忆的回滚与重放。
+  - **GCC 借鉴**：引入内置的 Milestone Snapshot Schema（类似 GCC 的 COMMIT），允许 Agent 在尝试复杂操作前自主通过 Tool 发起 `take_snapshot(reason)`，并在失败时调用 `revert_to_snapshot()`。这从被动的 IDE 级撤销，升级为了 Agent 自主的分支探索（Branching）。
 
 - [ ] **E4. Janitor 的显式记忆 (Core Memory) 持久化**
   - **背景**：目前 Janitor 仅对历史对话（L2 -> L1）进行模糊压缩。
   - **方案**：借鉴 Letta，允许模型主动输出 `<update_core_memory>` 标签。Janitor 捕获该标签后，将其持久化到顶层的 `Static Base` (系统提示词) 中，使模型能够跨会话累积经验（如：记住项目代码规范）。
+  - **GCC 借鉴**：记忆结构支持类似 GCC 的分层模式：`main.md`（高优全局记忆）与 `commit.md`（当前分支/任务进度记忆），通过不同权重的注入点进入三明治模型。
 
 - [x] **E9. Janitor 双信号 Token 触发 (`feedTokenUsage`)** ✅
   - `chef.feedTokenUsage(n)` 已实现，三级 fallback 链完整
