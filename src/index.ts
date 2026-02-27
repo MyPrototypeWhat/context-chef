@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import { getAdapter } from './adapters/AdapterFactory';
 import { type GovernanceOptions, Governor } from './modules/Governor';
-import { Janitor, type JanitorConfig } from './modules/Janitor';
+import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/Janitor';
 import { Pointer, type ProcessOptions, type VFSConfig } from './modules/Pointer';
 import {
   type CompiledTools,
@@ -24,7 +24,7 @@ import { objectToXml } from './utils/XmlGenerator';
 
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/AdapterFactory';
 export { Governor } from './modules/Governor';
-export { Janitor, type JanitorConfig } from './modules/Janitor';
+export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/Janitor';
 export { FileSystemAdapter, Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter } from './modules/Pointer';
 export { Pruner, type PrunerConfig } from './modules/Pruner';
 export { Stitcher, type StitchOptions } from './modules/Stitcher';
@@ -44,6 +44,21 @@ export interface BeforeCompileContext {
   rollingHistory: readonly Message[];
   dynamicState: readonly Message[];
   rawDynamicXml: string;
+}
+
+/**
+ * An immutable snapshot of ContextChef's full internal state.
+ * Created by chef.snapshot() and consumed by chef.restore().
+ */
+export interface ChefSnapshot {
+  readonly topLayer: Message[];
+  readonly rollingHistory: Message[];
+  readonly dynamicState: Message[];
+  readonly dynamicStatePlacement: DynamicStatePlacement;
+  readonly rawDynamicXml: string;
+  readonly _janitor: JanitorSnapshot;
+  readonly label?: string;
+  readonly createdAt: number;
 }
 
 export interface ChefConfig {
@@ -258,6 +273,42 @@ export class ContextChef {
     const { tools } = this.pruner.compile();
     if (tools.length > 0) return tools;
     return this.pruner.getAllTools();
+  }
+
+  /**
+   * Captures an immutable snapshot of the current context state.
+   * Use before risky operations (tool calls, branching) to enable rollback.
+   *
+   * @example
+   * const snap = chef.snapshot('before tool execution');
+   * // ... risky operations ...
+   * chef.restore(snap); // roll back if needed
+   */
+  public snapshot(label?: string): ChefSnapshot {
+    return {
+      topLayer: this.topLayer.map((m) => ({ ...m })),
+      rollingHistory: this.rollingHistory.map((m) => ({ ...m })),
+      dynamicState: this.dynamicState.map((m) => ({ ...m })),
+      dynamicStatePlacement: this.dynamicStatePlacement,
+      rawDynamicXml: this.rawDynamicXml,
+      _janitor: this.janitor.snapshotState(),
+      label,
+      createdAt: Date.now(),
+    };
+  }
+
+  /**
+   * Restores ContextChef to a previously captured snapshot.
+   * All state — including Janitor compression flags — is rolled back.
+   */
+  public restore(snapshot: ChefSnapshot): this {
+    this.topLayer = snapshot.topLayer.map((m) => ({ ...m }));
+    this.rollingHistory = snapshot.rollingHistory.map((m) => ({ ...m }));
+    this.dynamicState = snapshot.dynamicState.map((m) => ({ ...m }));
+    this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
+    this.rawDynamicXml = snapshot.rawDynamicXml;
+    this.janitor.restoreState(snapshot._janitor);
+    return this;
   }
 
   /**

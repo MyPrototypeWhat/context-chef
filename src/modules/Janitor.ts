@@ -48,6 +48,11 @@ export interface JanitorConfig {
   onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
 }
 
+export interface JanitorSnapshot {
+  externalTokenUsage: number | null;
+  suppressNextCompression: boolean;
+}
+
 export class Janitor {
   /** Externally reported token count from the last API response (E9). */
   private _externalTokenUsage: number | null = null;
@@ -55,6 +60,18 @@ export class Janitor {
   private _suppressNextCompression = false;
 
   constructor(private config: JanitorConfig = {}) {}
+
+  public snapshotState(): JanitorSnapshot {
+    return {
+      externalTokenUsage: this._externalTokenUsage,
+      suppressNextCompression: this._suppressNextCompression,
+    };
+  }
+
+  public restoreState(state: JanitorSnapshot): void {
+    this._externalTokenUsage = state.externalTokenUsage;
+    this._suppressNextCompression = state.suppressNextCompression;
+  }
 
   /**
    * Feeds an externally-reported token count (e.g. from the LLM API response) into the Janitor.
