@@ -1,8 +1,7 @@
 import type { z } from 'zod';
 import { getAdapter } from './adapters/adapterFactory';
 import { type GovernanceOptions, Governor } from './modules/governor';
-import { Memory } from './modules/memory';
-import type { MemoryStore } from './modules/memory/memoryStore';
+import { Memory, type MemoryConfig } from './modules/memory';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
 import { Pointer, type ProcessOptions, type VFSConfig } from './modules/pointer';
 import {
@@ -13,6 +12,7 @@ import {
   type ToolGroup,
 } from './modules/pruner';
 import { type DynamicStatePlacement, Stitcher } from './modules/stitcher';
+import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
   CompileOptions,
@@ -32,7 +32,7 @@ export { Pruner, type PrunerConfig } from './modules/pruner';
 export { Stitcher, type StitchOptions } from './modules/stitcher';
 export * from './prompts';
 export { InMemoryStore } from './modules/memory/inMemoryStore';
-export { Memory, type MemoryEntry } from './modules/memory';
+export { Memory, type MemoryConfig, type MemoryEntry } from './modules/memory';
 export type { MemoryStore } from './modules/memory/memoryStore';
 export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export * from './types';
@@ -69,7 +69,7 @@ export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
   janitor?: JanitorConfig;
   pruner?: PrunerConfig;
-  memoryStore?: MemoryStore;
+  memory?: MemoryConfig;
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   /**
    * Lifecycle hook invoked before each compile(), after Janitor compression.
@@ -121,7 +121,7 @@ export class ContextChef {
     this.janitor = new Janitor(config.janitor);
     this.governor = new Governor();
     this.pruner = new Pruner(config.pruner);
-    this._memory = config.memoryStore ? new Memory(config.memoryStore) : null;
+    this._memory = config.memory ? new Memory(config.memory) : null;
     this.transformContext = config.transformContext;
     this.onBeforeCompile = config.onBeforeCompile;
   }
@@ -291,7 +291,9 @@ export class ContextChef {
     if (!this._memory) return [];
     const xml = await this._memory.toXml();
     if (!xml) return [];
-    return [{ role: 'system', content: xml }];
+    const keys = (await this._memory.getAll()).map((e) => e.key);
+    const content = Prompts.getCoreMemoryBlock(xml, keys, this._memory.allowedKeys);
+    return [{ role: 'system', content }];
   }
 
   /**

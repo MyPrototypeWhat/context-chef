@@ -5,11 +5,35 @@ export interface MemoryEntry {
   value: string;
 }
 
+export interface MemoryConfig {
+  store: MemoryStore;
+  /** When set, only these keys are accepted for update/delete. Unknown keys are silently skipped. */
+  allowedKeys?: string[];
+  /**
+   * Lifecycle hook fired before each memory write (update or delete).
+   * Return `true` to allow, `false` to reject.
+   * For deletes, `value` is `null`.
+   */
+  onMemoryUpdate?: (
+    key: string,
+    value: string | null,
+    oldValue: string | null,
+  ) => boolean | Promise<boolean>;
+}
+
 const UPDATE_RE = /<update_core_memory\s+key="([^"]+)">([\s\S]*?)<\/update_core_memory>/g;
 const DELETE_RE = /<delete_core_memory\s+key="([^"]+)"\s*\/>/g;
 
 export class Memory {
-  constructor(private store: MemoryStore) {}
+  private store: MemoryStore;
+  readonly allowedKeys?: string[];
+  private onMemoryUpdate?: MemoryConfig['onMemoryUpdate'];
+
+  constructor(config: MemoryConfig) {
+    this.store = config.store;
+    this.allowedKeys = config.allowedKeys;
+    this.onMemoryUpdate = config.onMemoryUpdate;
+  }
 
   async get(key: string): Promise<string | null> {
     return await this.store.get(key);
@@ -48,7 +72,7 @@ export class Memory {
 
   /**
    * Parses assistant output for <update_core_memory> and <delete_core_memory> tags,
-   * applies them to the store, and returns the updated entries.
+   * applies them to the store (respecting allowedKeys and onMemoryUpdate), and returns the updated entries.
    */
   async extractAndApply(content: string): Promise<MemoryEntry[]> {
     const applied: MemoryEntry[] = [];
@@ -56,12 +80,30 @@ export class Memory {
     for (const match of content.matchAll(UPDATE_RE)) {
       const key = match[1];
       const value = match[2].trim();
+
+      if (this.allowedKeys && !this.allowedKeys.includes(key)) continue;
+
+      const oldValue = await this.store.get(key);
+      if (this.onMemoryUpdate) {
+        const allowed = await this.onMemoryUpdate(key, value, oldValue);
+        if (!allowed) continue;
+      }
+
       await this.store.set(key, value);
       applied.push({ key, value });
     }
 
     for (const match of content.matchAll(DELETE_RE)) {
       const key = match[1];
+
+      if (this.allowedKeys && !this.allowedKeys.includes(key)) continue;
+
+      const oldValue = await this.store.get(key);
+      if (this.onMemoryUpdate) {
+        const allowed = await this.onMemoryUpdate(key, null, oldValue);
+        if (!allowed) continue;
+      }
+
       await this.store.delete(key);
     }
 

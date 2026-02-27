@@ -7,7 +7,7 @@ import type {
 } from '@google/generative-ai';
 import { Prompts } from '../prompts';
 import type { GeminiPayload, Message } from '../types';
-import type { ITargetAdapter } from './iTargetAdapter';
+import type { ITargetAdapter } from './targetAdapter';
 
 // Re-export Gemini-specific types for consumers who want strong typing without importing the SDK
 export type GeminiTextPart = SDKTextPart;

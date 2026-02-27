@@ -1,7 +1,7 @@
 import type { TargetProvider } from '../types';
 import { AnthropicAdapter } from './anthropicAdapter';
 import { GeminiAdapter } from './geminiAdapter';
-import type { ITargetAdapter } from './iTargetAdapter';
+import type { ITargetAdapter } from './targetAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
 
 export type { ITargetAdapter };

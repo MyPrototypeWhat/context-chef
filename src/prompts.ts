@@ -123,4 +123,40 @@ SYSTEM INSTRUCTION: Your response MUST start verbatim with the following text:
 Do not output any introductory text or acknowledgement. Start directly with the text above.
 </ephemeral_message>
 `.trim(),
+
+  /**
+   * Static instruction for developers to include in their system prompt (topLayer).
+   * Teaches the LLM how to use <update_core_memory> and <delete_core_memory> tags.
+   */
+  CORE_MEMORY_INSTRUCTION: `
+You have access to a persistent core memory that survives across conversations.
+Use it to store important facts, user preferences, project conventions, and other knowledge you want to remember.
+
+To create or update a memory entry:
+<update_core_memory key="key_name">value to remember</update_core_memory>
+
+To delete a memory entry:
+<delete_core_memory key="key_name" />
+
+Guidelines:
+- Use clear, descriptive key names (e.g. "project_language", "user_preference_style").
+- Keep values concise but informative.
+- Only update memory when you learn something genuinely worth persisting.
+`.trim(),
+
+  /**
+   * Dynamic wrapper used by compile() to inject recalled core memory alongside key guidance.
+   * Enumerates existing keys (soft guidance) or allowed keys (strict mode) to stabilize LLM key creation.
+   */
+  getCoreMemoryBlock: (coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]) => {
+    let block = `The following is your persistent core memory from previous sessions. Reference it to maintain consistency across conversations.\n${coreMemoryXml}`;
+
+    if (allowedKeys && allowedKeys.length > 0) {
+      block += `\n\nAllowed memory keys: ${allowedKeys.join(', ')}. You may ONLY update or delete these keys. Any other key will be rejected.`;
+    } else if (existingKeys.length > 0) {
+      block += `\n\nExisting memory keys: ${existingKeys.join(', ')}. Prefer updating these keys over creating new ones to maintain consistency.`;
+    }
+
+    return block;
+  },
 };
