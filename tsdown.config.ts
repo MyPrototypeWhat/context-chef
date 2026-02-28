@@ -9,6 +9,4 @@ export default defineConfig({
   platform: 'node',
   treeshake: true,
   sourcemap: true,
-  // SDK packages are peerDependencies — exclude from bundle
-  external: ['openai', '@anthropic-ai/sdk', '@google/generative-ai', 'zod'],
 });
