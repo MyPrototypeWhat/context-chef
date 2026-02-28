@@ -50,7 +50,7 @@ export class Stitcher {
    * "Lost in the Middle" state drift in long conversations.
    */
   private injectIntoLastUser(messages: Message[], dynamicStateXml: string): Message[] {
-    const stateBlock = `\n\n<dynamic_state>\n${dynamicStateXml}\n</dynamic_state>\nAbove is the current system state. Use it to guide your next action.`;
+    const stateBlock = `\n\n${dynamicStateXml}\nAbove is the current system state. Use it to guide your next action.`;
 
     const result = [...messages];
     let lastUserIndex = -1;

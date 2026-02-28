@@ -141,7 +141,5 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     const userMsg = payload.messages[1];
     expect(userMsg.content).toContain('<implicit_context>');
     expect(userMsg.content).toContain('<rag_result>relevant snippet</rag_result>');
-    // Stitcher wraps all injected XML in <dynamic_state>, even if setDynamicState was never called
-    expect(userMsg.content).toContain('<dynamic_state>');
   });
 });

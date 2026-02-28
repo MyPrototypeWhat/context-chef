@@ -70,6 +70,8 @@ export interface Message {
    * Must be echoed verbatim. Not applicable to OpenAI or Gemini.
    */
   redacted_thinking?: RedactedThinking;
+  /** Allow provider-specific or user-defined fields to pass through without loss */
+  [key: string]: unknown;
 }
 
 export type TargetProvider = 'openai' | 'anthropic' | 'gemini';
