@@ -36,8 +36,7 @@ const TaskSchema = z.object({
 
 const chef = new ContextChef({
   janitor: {
-    maxHistoryTokens: 20000,
-    preserveRecentTokens: 10000,
+    contextWindow: 200000,
     compressionModel: async (msgs) => callGpt4oMini(msgs),
   },
 });
@@ -124,33 +123,91 @@ const payload = await chef.compile({ target: 'gemini' });    // GeminiPayload
 
 ### 历史压缩 (Janitor)
 
+Janitor 提供两种压缩路径，根据你的场景选择：
+
+#### 路径 1：Tokenizer（精确控制）
+
+传入自定义的 token 计算函数，Janitor 会精确计算每条消息的 token 数。保留 `contextWindow × preserveRatio` 范围内的近期消息，其余进行压缩。
+
 ```typescript
 const chef = new ContextChef({
   janitor: {
-    maxHistoryTokens: 20000,          // 超过此值触发压缩
-    preserveRecentTokens: 10000,      // 保留近期消息（默认: 70%）
-    tokenizer: (msgs) => countTokens(msgs), // 可选: 接入 tiktoken 精确计算
-    compressionModel: async (msgs) => callGpt4oMini(msgs), // LLM 摘要器
+    contextWindow: 200000,
+    tokenizer: (msgs) => msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
+    preserveRatio: 0.8,              // 保留 80% 的 contextWindow 给近期消息（默认值）
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
     onCompress: async (summary, count) => {
-      // 将压缩状态持久化到数据库
-      await db.replaceOldMessages(sessionId, summary, count);
+      await db.saveCompression(sessionId, summary, count);
     },
   },
 });
 ```
 
+#### 路径 2：feedTokenUsage（简单，无需 tokenizer）
+
+大多数 LLM API 的响应中已经包含 token 用量。直接传入该值，当超过 `contextWindow` 时，Janitor 压缩除最后 N 条消息外的所有内容。
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    preserveRecentMessages: 1,       // 压缩时保留最后 1 条消息（默认值）
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
+  },
+});
+
+// 每次 LLM 调用后：
+const response = await openai.chat.completions.create({ ... });
+chef.feedTokenUsage(response.usage.prompt_tokens);
+```
+
+> **注意：** 如果没有提供 `compressionModel`，旧消息将被直接丢弃而不生成摘要。如果同时没有 `tokenizer` 和 `compressionModel`，构造时会打印控制台警告。
+
+#### `JanitorConfig`
+
+| 选项 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `contextWindow` | `number` | *必填* | 模型的上下文窗口大小（token 数）。token 用量超过此值时触发压缩。 |
+| `tokenizer` | `(msgs: Message[]) => number` | — | 启用 tokenizer 路径，精确计算每条消息的 token 数。 |
+| `preserveRatio` | `number` | `0.8` | [Tokenizer 路径] `contextWindow` 中保留给近期消息的比例。 |
+| `preserveRecentMessages` | `number` | `1` | [feedTokenUsage 路径] 压缩时保留的近期消息数量。 |
+| `compressionModel` | `(msgs: Message[]) => Promise<string>` | — | 异步钩子，调用低成本 LLM 对旧消息进行摘要。 |
+| `onCompress` | `(summary, count) => void` | — | 压缩完成后触发，传入摘要消息和被截断的消息数量。 |
+| `onBudgetExceeded` | `(history, tokenInfo) => Message[] \| null` | — | 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
+
 #### `chef.feedTokenUsage(tokenCount): this`
 
-传入 API 返回的 token 用量，让压缩触发更准确。
+传入 API 返回的 token 用量。下次 `compile()` 时，如果该值超过 `contextWindow`，则触发压缩。在 tokenizer 路径中，取本地计算值和传入值中的较大值。
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });
 chef.feedTokenUsage(response.usage.prompt_tokens);
 ```
 
+#### `onBudgetExceeded` 钩子
+
+当 token 预算超标时，在自动压缩**之前**触发。返回修改后的 `Message[]` 替换历史（例如将工具结果卸载到 VFS），或返回 `null` 让默认压缩继续执行。
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    tokenizer: (msgs) => countTokens(msgs),
+    onBudgetExceeded: (history, { currentTokens, limit }) => {
+      // 示例：压缩前将大型工具结果卸载到 VFS
+      return history.map(msg =>
+        msg.role === 'tool' && msg.content.length > 5000
+          ? { ...msg, content: pointer.process(msg.content, 'log').content }
+          : msg
+      );
+    },
+  },
+});
+```
+
 #### `chef.clearRollingHistory(): this`
 
-切换话题或完成子任务时显式清空历史。
+切换话题或完成子任务时显式清空历史并重置 Janitor 状态。
 
 ---
 

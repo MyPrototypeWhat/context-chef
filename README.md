@@ -36,8 +36,7 @@ const TaskSchema = z.object({
 
 const chef = new ContextChef({
   janitor: {
-    maxHistoryTokens: 20000,
-    preserveRecentTokens: 10000,
+    contextWindow: 200000,
     compressionModel: async (msgs) => callGpt4oMini(msgs),
   },
 });
@@ -124,33 +123,91 @@ const payload = await chef.compile({ target: 'gemini' });    // GeminiPayload
 
 ### History Compression (Janitor)
 
+Janitor provides two compression paths. Choose the one that fits your setup:
+
+#### Path 1: Tokenizer (precise control)
+
+Provide your own token counting function for precise per-message calculation. Janitor preserves recent messages that fit within `contextWindow × preserveRatio` and compresses the rest.
+
 ```typescript
 const chef = new ContextChef({
   janitor: {
-    maxHistoryTokens: 20000,          // trigger compression above this
-    preserveRecentTokens: 10000,      // keep recent messages intact (default: 70%)
-    tokenizer: (msgs) => countTokens(msgs), // optional: plug in tiktoken for precision
-    compressionModel: async (msgs) => callGpt4oMini(msgs), // LLM summarizer
+    contextWindow: 200000,
+    tokenizer: (msgs) => msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
+    preserveRatio: 0.8,              // keep 80% of contextWindow for recent messages (default)
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
     onCompress: async (summary, count) => {
-      // persist compressed state to DB
-      await db.replaceOldMessages(sessionId, summary, count);
+      await db.saveCompression(sessionId, summary, count);
     },
   },
 });
 ```
 
+#### Path 2: feedTokenUsage (simple, no tokenizer needed)
+
+Most LLM APIs return token usage in their response. Feed that value back — when it exceeds `contextWindow`, Janitor compresses everything except the last N messages.
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    preserveRecentMessages: 1,       // keep last 1 message on compression (default)
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
+  },
+});
+
+// After each LLM call:
+const response = await openai.chat.completions.create({ ... });
+chef.feedTokenUsage(response.usage.prompt_tokens);
+```
+
+> **Note:** Without a `compressionModel`, old messages are discarded with no summary. A console warning is printed at construction time if neither `tokenizer` nor `compressionModel` is provided.
+
+#### `JanitorConfig`
+
+| Option | Type | Default | Description |
+| ------ | ---- | ------- | ----------- |
+| `contextWindow` | `number` | *required* | Model's context window size (tokens). Compression triggers when usage exceeds this. |
+| `tokenizer` | `(msgs: Message[]) => number` | — | Enables the tokenizer path for precise per-message token calculation. |
+| `preserveRatio` | `number` | `0.8` | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages. |
+| `preserveRecentMessages` | `number` | `1` | [feedTokenUsage path] Number of recent messages to keep when compressing. |
+| `compressionModel` | `(msgs: Message[]) => Promise<string>` | — | Async hook to summarize old messages via a low-cost LLM. |
+| `onCompress` | `(summary, count) => void` | — | Fires after compression with the summary message and truncated count. |
+| `onBudgetExceeded` | `(history, tokenInfo) => Message[] \| null` | — | Fires before compression. Return modified history to intervene, or null to proceed normally. |
+
 #### `chef.feedTokenUsage(tokenCount): this`
 
-Feed the API-reported token count for more accurate compression triggers.
+Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the higher of the local calculation and the fed value is used.
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });
 chef.feedTokenUsage(response.usage.prompt_tokens);
 ```
 
+#### `onBudgetExceeded` hook
+
+Fires when the token budget is exceeded, **before** automatic compression. Return a modified `Message[]` to replace the history (e.g., offload tool results to VFS), or return `null` to let default compression proceed.
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    tokenizer: (msgs) => countTokens(msgs),
+    onBudgetExceeded: (history, { currentTokens, limit }) => {
+      // Example: offload large tool results to VFS before compression
+      return history.map(msg =>
+        msg.role === 'tool' && msg.content.length > 5000
+          ? { ...msg, content: pointer.process(msg.content, 'log').content }
+          : msg
+      );
+    },
+  },
+});
+```
+
 #### `chef.clearRollingHistory(): this`
 
-Explicitly clear history when switching topics or completing sub-tasks.
+Explicitly clear history and reset Janitor state when switching topics or completing sub-tasks.
 
 ---
 

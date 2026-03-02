@@ -54,7 +54,7 @@ describe('Janitor — tokenizer path', () => {
   });
 
   it('preserveRatio defaults to DEFAULT_PRESERVE_RATIO', async () => {
-    // 5 × 10 = 50 > 40, preserve = floor(40 * 0.8) = 32 → keeps 2 messages (20 ≤ 32)
+    // 5 × 10 = 50 > 40, preserve = floor(40 * 0.8) = 32 → keeps 3 messages (30 ≤ 32)
     const mockModel = vi.fn().mockResolvedValue('<history_summary>DEFAULT</history_summary>');
     const janitor = new Janitor({
       contextWindow: 40,
@@ -66,8 +66,8 @@ describe('Janitor — tokenizer path', () => {
 
     expect(mockModel).toHaveBeenCalledTimes(1);
     expect(result[0].role).toBe('system');
-    // summary + 2 kept messages = 3
-    expect(result).toHaveLength(3);
+    // summary + 3 kept messages = 4
+    expect(result).toHaveLength(4);
   });
 
   it('calls tokenizer with Message[] directly', async () => {
