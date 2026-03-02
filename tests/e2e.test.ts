@@ -181,10 +181,14 @@ const shouldRun = !!apiKey;
   }, 120000); // 120s timeout for API call
 
   it('should automatically trigger Janitor compression and preserve critical context', async () => {
-    // We set maxHistoryTokens very low to force a compression.
+    // We set contextWindow very low to force a compression.
+    // Simple heuristic tokenizer: ~4 chars per token for ASCII text.
+    const simpleTokenizer = (msgs: Message[]) =>
+      msgs.reduce((sum, m) => sum + Math.ceil((m.content?.length ?? 0) / 4), 0);
     const chef = new ContextChef({
       janitor: {
-        maxHistoryTokens: 150,
+        contextWindow: 150,
+        tokenizer: simpleTokenizer,
         compressionModel: async (payloadToCompress: Message[]): Promise<string> => {
           console.log(
             '\\n[ContextChef] Janitor triggered compression. Sending to OpenAI for summary...',

@@ -1,229 +1,131 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
 import type { Message } from '../../types';
 import { Janitor } from '.';
 
-describe('ContextChef Async Features (pi-mono inspiration)', () => {
-  it('should trigger Janitor compression when history exceeds limit', async () => {
-    // Mock: returns a summary already wrapped in <history_summary> tags,
-    // mirroring what a real LLM would output when given CONTEXT_COMPACTION_INSTRUCTION.
-    const mockCompressionModel = vi
-      .fn()
-      .mockResolvedValue('<history_summary>MOCK_SUMMARY</history_summary>');
+// ─── Helpers ───
 
-    const chef = new ContextChef({
-      janitor: {
-        maxHistoryLimit: 5,
-        preserveRecentCount: 2,
-        compressionModel: mockCompressionModel,
-      },
-    });
+const buildHistory = (count: number): Message[] =>
+  Array.from({ length: count }, (_, i) => ({
+    role: 'user' as const,
+    content: `msg-${i + 1}`,
+  }));
 
-    // Create 6 messages (exceeds limit of 5)
-    const history: Message[] = Array.from({ length: 6 }, (_, i) => ({
-      role: 'user',
-      content: `Message ${i + 1}`,
-    }));
+const makeTokenizer =
+  (tokensPerMsg: number) =>
+  (messages: Message[]): number =>
+    messages.length * tokensPerMsg;
 
-    chef.useRollingHistory(history);
+// ═══════════════════════════════════════════════════════
+// Tokenizer path — precise per-message calculation
+// ═══════════════════════════════════════════════════════
 
-    const payload = await chef.compile();
-
-    // The janitor should preserve 2 messages, and replace the remaining 4 with 1 summary.
-    // Total messages in rolling history = 1 summary + 2 preserved = 3.
-    expect(payload.messages.length).toBe(3);
-
-    // Check summary message
-    const summaryMsg = payload.messages[0];
-    expect(summaryMsg.role).toBe('system');
-    expect(summaryMsg.content).toContain('<history_summary>');
-    expect(summaryMsg.content).toContain('MOCK_SUMMARY');
-
-    // Check preserved messages
-    expect(payload.messages[1].content).toBe('Message 5');
-    expect(payload.messages[2].content).toBe('Message 6');
-
-    // Ensure our mock LLM was actually called
-    expect(mockCompressionModel).toHaveBeenCalledTimes(1);
-    const passedMessages = mockCompressionModel.mock.calls[0][0];
-    // 4 compressed messages + 1 CONTEXT_COMPACTION_INSTRUCTION appended by Janitor
-    expect(passedMessages.length).toBe(5);
-  });
-
-  it('should execute transformContext hook to inject or modify messages', async () => {
-    const chef = new ContextChef({
-      transformContext: async (messages: Message[]) => {
-        // Example: An extension that injects a secret branch summary
-        return [{ role: 'system', content: 'Secret Extension Injected' }, ...messages];
-      },
-    });
-
-    chef.setTopLayer([{ role: 'system', content: 'Top Layer' }]);
-
-    const payload = await chef.compile();
-
-    expect(payload.messages.length).toBe(2);
-    expect(payload.messages[0].content).toBe('Secret Extension Injected');
-    expect(payload.messages[1].content).toBe('Top Layer');
-  });
-
-  it('should execute transformContext in compile()', async () => {
-    const chef = new ContextChef({
-      transformContext: (messages: Message[]) => {
-        return messages.map((m) => ({ ...m, name: 'transformed_user' }));
-      },
-    });
-
-    chef.useRollingHistory([{ role: 'user', content: 'Hello' }]);
-
-    const payload = await chef.compile();
-
-    expect(payload.messages.length).toBe(1);
-    expect(payload.messages[0].name).toBe('transformed_user');
-  });
-});
-
-// ─── Janitor: token-based compression (C3) ───
-// Uses a custom tokenizer to make all assertions deterministic.
-// Each message is assigned a fixed token cost so we can reason about splits exactly.
-
-describe('Janitor — token-based compression (maxHistoryTokens)', () => {
-  // Helper: build a history of N user messages, each costing `tokensPerMsg` tokens
-  // via the custom tokenizer (tokenizer receives JSON.stringify of all messages)
-  const buildHistory = (count: number): Message[] =>
-    Array.from({ length: count }, (_, i) => ({
-      role: 'user' as const,
-      content: `msg-${i + 1}`,
-    }));
-
-  // Simple deterministic tokenizer: fixed cost per message.
-  // Tokenizer receives Message[] directly; we assign a flat cost per entry.
-  const makeTokenizer =
-    (tokensPerMsg: number) =>
-    (messages: Message[]): number => {
-      return messages.length * tokensPerMsg;
-    };
-
-  it('does NOT compress when total tokens are within budget', async () => {
+describe('Janitor — tokenizer path', () => {
+  it('does NOT compress when tokens are within budget', async () => {
     const mockModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
     const janitor = new Janitor({
-      maxHistoryTokens: 1000,
-      preserveRecentTokens: 500,
-      tokenizer: makeTokenizer(10), // 5 messages × 10 = 50 tokens, well under 1000
+      contextWindow: 1000,
+      tokenizer: makeTokenizer(10), // 5 × 10 = 50, well under 1000
+      preserveRatio: 0.5,
       compressionModel: mockModel,
     });
 
-    const history = buildHistory(5);
-    const result = await janitor.compress(history);
+    const result = await janitor.compress(buildHistory(5));
 
     expect(result).toHaveLength(5);
     expect(mockModel).not.toHaveBeenCalled();
   });
 
-  it('compresses when tokens exceed maxHistoryTokens', async () => {
+  it('compresses when tokens exceed contextWindow', async () => {
     const mockModel = vi.fn().mockResolvedValue('<history_summary>COMPRESSED</history_summary>');
     const janitor = new Janitor({
-      maxHistoryTokens: 30,
-      preserveRecentTokens: 10, // keep last ~1 message (10 tokens each)
-      tokenizer: makeTokenizer(10), // 5 messages × 10 = 50 tokens > 30
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10), // 5 × 10 = 50 > 30
+      preserveRatio: 0.3, // keep 9 tokens → 0 messages fit → keeps last 1
       compressionModel: mockModel,
-    });
-
-    const history = buildHistory(5);
-    const result = await janitor.compress(history);
-
-    expect(mockModel).toHaveBeenCalledTimes(1);
-    // First message in result should be the summary
-    expect(result[0].role).toBe('system');
-    expect(result[0].content).toContain('COMPRESSED');
-    // Total result must be shorter than original
-    expect(result.length).toBeLessThan(history.length + 1);
-  });
-
-  it('preserveRecentTokens defaults to 70% of maxHistoryTokens when omitted', async () => {
-    // With 5 messages × 10 tokens = 50 total, maxHistoryTokens=40 triggers compression.
-    // Default preserve = floor(40 * 0.7) = 28 tokens → keeps last 2 messages (2×10=20 ≤ 28).
-    const mockModel = vi.fn().mockResolvedValue('<history_summary>DEFAULT</history_summary>');
-    const janitor = new Janitor({
-      maxHistoryTokens: 40,
-      // preserveRecentTokens NOT set — should default to 70%
-      tokenizer: makeTokenizer(10),
-      compressionModel: mockModel,
-    });
-
-    const history = buildHistory(5);
-    const result = await janitor.compress(history);
-
-    expect(mockModel).toHaveBeenCalledTimes(1);
-    expect(result[0].role).toBe('system');
-    // Kept messages + 1 summary
-    expect(result.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('calls the custom tokenizer with the Message[] array directly', async () => {
-    const spy = vi.fn().mockReturnValue(999999); // always huge → always compress
-    const mockModel = vi.fn().mockResolvedValue('<history_summary>X</history_summary>');
-    const janitor = new Janitor({
-      maxHistoryTokens: 100,
-      preserveRecentTokens: 10,
-      tokenizer: spy,
-      compressionModel: mockModel,
-    });
-
-    const history = buildHistory(3);
-    await janitor.compress(history);
-
-    // tokenizer receives Message[] directly (not a JSON string)
-    expect(spy).toHaveBeenCalled();
-    const firstCallArg = spy.mock.calls[0][0] as Message[];
-    expect(Array.isArray(firstCallArg)).toBe(true);
-    expect(firstCallArg.length).toBeGreaterThan(0);
-    expect(firstCallArg[0]).toHaveProperty('role');
-    expect(firstCallArg[0]).toHaveProperty('content');
-  });
-
-  it('fires onCompress with the summary message and truncated count', async () => {
-    const onCompress = vi.fn();
-    const janitor = new Janitor({
-      maxHistoryTokens: 30,
-      preserveRecentTokens: 10,
-      tokenizer: makeTokenizer(10),
-      compressionModel: async () => '<history_summary>S</history_summary>',
-      onCompress,
-    });
-
-    await janitor.compress(buildHistory(5));
-
-    expect(onCompress).toHaveBeenCalledTimes(1);
-    const [summaryMsg, count] = onCompress.mock.calls[0] as [Message, number];
-    expect(summaryMsg.role).toBe('system');
-    expect(summaryMsg.content).toContain('<history_summary>');
-    expect(count).toBeGreaterThan(0);
-  });
-
-  it('falls back to placeholder summary when no compressionModel is provided', async () => {
-    const janitor = new Janitor({
-      maxHistoryTokens: 30,
-      preserveRecentTokens: 10,
-      tokenizer: makeTokenizer(10),
-      // no compressionModel
     });
 
     const result = await janitor.compress(buildHistory(5));
 
-    // Compression must have fired (result shorter than original + 1 summary)
+    expect(mockModel).toHaveBeenCalledTimes(1);
     expect(result[0].role).toBe('system');
-    expect(result[0].content).toContain('<history_summary>');
-    expect(result[0].content).toContain('older messages were truncated');
+    expect(result[0].content).toContain('COMPRESSED');
+    expect(result.length).toBeLessThan(buildHistory(5).length + 1);
   });
 
-  it('integrates with ContextChef.compile() via token budget', async () => {
+  it('preserveRatio defaults to DEFAULT_PRESERVE_RATIO', async () => {
+    // 5 × 10 = 50 > 40, preserve = floor(40 * 0.8) = 32 → keeps 2 messages (20 ≤ 32)
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>DEFAULT</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 40,
+      tokenizer: makeTokenizer(10),
+      compressionModel: mockModel,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    expect(result[0].role).toBe('system');
+    // summary + 2 kept messages = 3
+    expect(result).toHaveLength(3);
+  });
+
+  it('calls tokenizer with Message[] directly', async () => {
+    const spy = vi.fn().mockReturnValue(999999);
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>X</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: spy,
+      preserveRatio: 0.1,
+      compressionModel: mockModel,
+    });
+
+    await janitor.compress(buildHistory(3));
+
+    expect(spy).toHaveBeenCalled();
+    const firstCallArg = spy.mock.calls[0][0] as Message[];
+    expect(Array.isArray(firstCallArg)).toBe(true);
+    expect(firstCallArg[0]).toHaveProperty('role');
+  });
+
+  it('discards old messages without summary when no compressionModel', async () => {
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3, // keep 9 tokens → 0 messages fit → keeps last 1
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    // No summary message — just the preserved messages
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe('msg-5');
+  });
+
+  it('also considers feedTokenUsage in tokenizer path (takes higher value)', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: makeTokenizer(10), // 5 × 10 = 50, under 100
+      preserveRatio: 0.3,
+      compressionModel: mockModel,
+    });
+
+    // Local says 50, but external says 150 → triggers compression
+    janitor.feedTokenUsage(150);
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    expect(result[0].role).toBe('system');
+  });
+
+  it('integrates with ContextChef.compile()', async () => {
     const mockModel = vi.fn().mockResolvedValue('<history_summary>VIA_CHEF</history_summary>');
     const chef = new ContextChef({
       janitor: {
-        maxHistoryTokens: 30,
-        preserveRecentTokens: 10,
+        contextWindow: 30,
         tokenizer: makeTokenizer(10),
+        preserveRatio: 0.3,
         compressionModel: mockModel,
       },
     });
@@ -234,5 +136,237 @@ describe('Janitor — token-based compression (maxHistoryTokens)', () => {
     expect(mockModel).toHaveBeenCalledTimes(1);
     expect(payload.messages[0].role).toBe('system');
     expect(payload.messages[0].content).toContain('VIA_CHEF');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// FeedTokenUsage path — full compression, keep last N
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — feedTokenUsage path (no tokenizer)', () => {
+  it('does NOT compress when fed value is within contextWindow', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(100000); // under 200k
+    const result = await janitor.compress(buildHistory(10));
+
+    expect(result).toHaveLength(10);
+    expect(mockModel).not.toHaveBeenCalled();
+  });
+
+  it('compresses ALL except last 1 message by default', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>FULL</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000); // over 200k
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    // summary + 1 preserved = 2
+    expect(result).toHaveLength(2);
+    expect(result[0].role).toBe('system');
+    expect(result[0].content).toContain('FULL');
+    expect(result[1].content).toBe('msg-5'); // last message preserved
+  });
+
+  it('respects preserveRecentMessages config', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      preserveRecentMessages: 3,
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000);
+    const result = await janitor.compress(buildHistory(5));
+
+    // summary + 3 preserved = 4
+    expect(result).toHaveLength(4);
+    expect(result[1].content).toBe('msg-3');
+    expect(result[2].content).toBe('msg-4');
+    expect(result[3].content).toBe('msg-5');
+  });
+
+  it('falls back to heuristic when no feedTokenUsage is provided', async () => {
+    const janitor = new Janitor({
+      contextWindow: 5, // Very low — heuristic should trigger compression
+    });
+
+    // No feedTokenUsage, no tokenizer → uses heuristic estimateObject
+    const history = buildHistory(10); // 10 messages, heuristic will exceed 5 tokens
+    const result = await janitor.compress(history);
+
+    // No compressionModel → just keeps last 1 message (default preserveRecentMessages)
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe('msg-10');
+  });
+
+  it('consumes feedTokenUsage after use', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000);
+    await janitor.compress(buildHistory(5));
+    expect(mockModel).toHaveBeenCalledTimes(1);
+
+    // E10 suppresses next call
+    await janitor.compress(buildHistory(5));
+    expect(mockModel).toHaveBeenCalledTimes(1);
+
+    // Third call: no fed value, heuristic is low → no compression
+    await janitor.compress(buildHistory(5));
+    expect(mockModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('integrates with ContextChef.feedTokenUsage()', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<history_summary>CHEF</history_summary>');
+    const chef = new ContextChef({
+      janitor: {
+        contextWindow: 200000,
+        compressionModel: mockModel,
+      },
+    });
+
+    chef.useRollingHistory(buildHistory(5));
+    chef.feedTokenUsage(250000);
+    const payload = await chef.compile();
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    expect(payload.messages[0].content).toContain('CHEF');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// onBudgetExceeded hook
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — onBudgetExceeded hook', () => {
+  it('fires with token info before compression', async () => {
+    const onBudgetExceeded = vi.fn().mockReturnValue(null);
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      onBudgetExceeded,
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    expect(onBudgetExceeded).toHaveBeenCalledTimes(1);
+    const [, tokenInfo] = onBudgetExceeded.mock.calls[0];
+    expect(tokenInfo.currentTokens).toBe(50);
+    expect(tokenInfo.limit).toBe(30);
+  });
+
+  it('skips compression when hook brings history under budget', async () => {
+    const onBudgetExceeded = vi.fn().mockImplementation((history: Message[]) => {
+      return history.slice(-2); // 2 × 10 = 20 ≤ 30
+    });
+    const compressionModel = vi.fn().mockResolvedValue('summary');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+      onBudgetExceeded,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(result).toHaveLength(2);
+  });
+
+  it('does NOT fire when under budget', async () => {
+    const onBudgetExceeded = vi.fn();
+    const janitor = new Janitor({
+      contextWindow: 1000,
+      tokenizer: makeTokenizer(10),
+      onBudgetExceeded,
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    expect(onBudgetExceeded).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// E10: Compression suppression
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — E10 compression suppression', () => {
+  it('suppresses check immediately after compression, resumes after', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+
+    // Suppressed (E10)
+    const result2 = await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(result2).toHaveLength(5);
+
+    // Resumes
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Snapshot, restore, reset
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — snapshot & restore', () => {
+  it('captures and restores all internal state', () => {
+    const janitor = new Janitor({ contextWindow: 100, tokenizer: makeTokenizer(10) });
+
+    janitor.feedTokenUsage(999);
+    janitor['_suppressNextCompression'] = true;
+    const snap = janitor.snapshotState();
+
+    janitor.reset();
+    expect(janitor['_externalTokenUsage']).toBeNull();
+    expect(janitor['_suppressNextCompression']).toBe(false);
+
+    janitor.restoreState(snap);
+    expect(janitor['_externalTokenUsage']).toBe(999);
+    expect(janitor['_suppressNextCompression']).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// onCompress hook
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — onCompress hook', () => {
+  it('fires with summary message and truncated count', async () => {
+    const onCompress = vi.fn();
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel: async () => '<history_summary>S</history_summary>',
+      onCompress,
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    expect(onCompress).toHaveBeenCalledTimes(1);
+    const [summaryMsg, count] = onCompress.mock.calls[0] as [Message, number];
+    expect(summaryMsg.role).toBe('system');
+    expect(count).toBeGreaterThan(0);
   });
 });

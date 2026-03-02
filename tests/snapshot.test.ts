@@ -5,9 +5,14 @@ import type { Message } from '../src/types';
 const userMsg = (content: string): Message => ({ role: 'user', content });
 const assistantMsg = (content: string): Message => ({ role: 'assistant', content });
 
+const makeTokenizer = (tokensPerMsg: number) => (messages: Message[]): number =>
+  messages.length * tokensPerMsg;
+
 describe('E3: Snapshot & Restore', () => {
   it('snapshot captures current state', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     chef.useRollingHistory([userMsg('hello'), assistantMsg('hi')]);
 
     const snap = chef.snapshot('test label');
@@ -19,7 +24,9 @@ describe('E3: Snapshot & Restore', () => {
   });
 
   it('restore rolls back rollingHistory', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     chef.useRollingHistory([userMsg('turn 1')]);
 
     const snap = chef.snapshot();
@@ -33,7 +40,9 @@ describe('E3: Snapshot & Restore', () => {
   });
 
   it('restore rolls back topLayer', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     chef.setTopLayer([{ role: 'system', content: 'original system' }]);
     const snap = chef.snapshot();
 
@@ -44,7 +53,9 @@ describe('E3: Snapshot & Restore', () => {
   });
 
   it('restore rolls back dynamicStatePlacement and rawDynamicXml', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     chef['dynamicStatePlacement'] = 'system';
     chef['rawDynamicXml'] = '<dynamic_state><key>value</key></dynamic_state>';
 
@@ -59,13 +70,14 @@ describe('E3: Snapshot & Restore', () => {
   });
 
   it('snapshot is a deep copy — mutating original does not affect snapshot', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     const history = [userMsg('original')];
     chef.useRollingHistory(history);
 
     const snap = chef.snapshot();
 
-    // Mutate the chef's history after snapshot
     chef.useRollingHistory([userMsg('original'), assistantMsg('new message')]);
 
     expect(snap.rollingHistory).toHaveLength(1);
@@ -73,20 +85,23 @@ describe('E3: Snapshot & Restore', () => {
   });
 
   it('restore is a deep copy — mutating snapshot after restore does not affect chef', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     chef.useRollingHistory([userMsg('original')]);
     const snap = chef.snapshot();
 
     chef.restore(snap);
 
-    // Mutate the snapshot object after restore
     (snap.rollingHistory[0] as Message).content = 'mutated';
 
     expect(chef['rollingHistory'][0].content).toBe('original');
   });
 
   it('supports multiple snapshots and restores to any of them', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
 
     chef.useRollingHistory([userMsg('step 1')]);
     const snap1 = chef.snapshot('step 1');
@@ -96,32 +111,32 @@ describe('E3: Snapshot & Restore', () => {
 
     chef.useRollingHistory([...chef['rollingHistory'], assistantMsg('reply 2'), userMsg('step 3')]);
 
-    // Restore to snap1
     chef.restore(snap1);
     expect(chef['rollingHistory']).toHaveLength(1);
 
-    // Restore to snap2
     chef.restore(snap2);
     expect(chef['rollingHistory']).toHaveLength(3);
   });
 
   it('restore() returns this for chaining', () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     const snap = chef.snapshot();
     const result = chef.restore(snap);
     expect(result).toBe(chef);
   });
 
-  it('Janitor state is captured and restored', () => {
-    const chef = new ContextChef({ janitor: { maxHistoryTokens: 1000 } });
+  it('Janitor state (externalTokenUsage + suppression) is captured and restored', () => {
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
 
-    // Manually set Janitor internal state
     chef['janitor'].feedTokenUsage(999);
     chef['janitor']['_suppressNextCompression'] = true;
 
     const snap = chef.snapshot();
 
-    // Reset Janitor state
     chef['janitor']['_externalTokenUsage'] = null;
     chef['janitor']['_suppressNextCompression'] = false;
 
@@ -132,12 +147,13 @@ describe('E3: Snapshot & Restore', () => {
   });
 
   it('agent branching pattern: snapshot before fork, restore on failure', async () => {
-    const chef = new ContextChef();
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
     chef.useRollingHistory([userMsg('task: do something risky')]);
 
     const beforeFork = chef.snapshot('before risky tool call');
 
-    // Simulate a failed branch
     chef.useRollingHistory([
       ...chef['rollingHistory'],
       assistantMsg('attempting risky action...'),
@@ -145,7 +161,6 @@ describe('E3: Snapshot & Restore', () => {
     ]);
     expect(chef['rollingHistory']).toHaveLength(3);
 
-    // Roll back to before the fork
     chef.restore(beforeFork);
     expect(chef['rollingHistory']).toHaveLength(1);
     expect(chef['rollingHistory'][0].content).toBe('task: do something risky');

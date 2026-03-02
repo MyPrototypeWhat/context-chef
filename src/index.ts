@@ -118,7 +118,7 @@ export class ContextChef {
   constructor(config: ChefConfig = {}) {
     this.stitcher = new Stitcher();
     this.pointer = new Pointer(config.vfs);
-    this.janitor = new Janitor(config.janitor);
+    this.janitor = new Janitor(config.janitor ?? { contextWindow: Infinity });
     this.governor = new Governor();
     this.pruner = new Pruner(config.pruner);
     this._memory = config.memory ? new Memory(config.memory) : null;
@@ -217,14 +217,11 @@ export class ContextChef {
   /**
    * Feeds an externally-reported token count into the Janitor.
    * Call this after each LLM response with the token usage reported by the API.
-   * The caller decides which field to pass (e.g. input_tokens, prompt_tokens, total_tokens).
-   * On the next compile(), this value is used alongside the local estimate —
-   * whichever is higher triggers compression.
+   * On the next compile(), if this value exceeds contextWindow, compression is triggered.
    *
    * @example
    * const response = await openai.chat.completions.create({ ... });
    * chef.feedTokenUsage(response.usage.prompt_tokens);
-   * const nextPayload = await chef.compile({ target: 'openai' });
    */
   public feedTokenUsage(tokenCount: number): this {
     this.janitor.feedTokenUsage(tokenCount);
