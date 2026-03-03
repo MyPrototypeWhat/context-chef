@@ -3,7 +3,7 @@ import { getAdapter } from './adapters/adapterFactory';
 import { type GovernanceOptions, Governor } from './modules/governor';
 import { Memory, type MemoryConfig } from './modules/memory';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-import { Pointer, type ProcessOptions, type VFSConfig } from './modules/pointer';
+import { Pointer, type OffloadOptions, type VFSConfig } from './modules/pointer';
 import {
   type CompiledTools,
   Pruner,
@@ -27,7 +27,7 @@ import { objectToXml } from './utils/xmlGenerator';
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
 export { Governor } from './modules/governor';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-export { FileSystemAdapter, Pointer, type ProcessOptions, type VFSConfig, type VFSStorageAdapter } from './modules/pointer';
+export { FileSystemAdapter, Pointer, type OffloadOptions, type VFSConfig, type VFSStorageAdapter } from './modules/pointer';
 export { Pruner, type PrunerConfig } from './modules/pruner';
 export { Stitcher, type StitchOptions } from './modules/stitcher';
 export * from './prompts';
@@ -258,29 +258,25 @@ export class ContextChef {
   }
 
   /**
-   * Utility method to safely process large outputs via VFS before they hit history.
+   * Offload large content to VFS, returning a truncated string with a pointer URI.
    * Throws an error if the configured VFS storage adapter is asynchronous.
    */
-  public processLargeOutput(
+  public offload(
     content: string,
-    type: 'log' | 'doc' = 'log',
-    options?: ProcessOptions,
+    options?: OffloadOptions,
   ): string {
-    const result = this.pointer.process(content, type, options);
+    const result = this.pointer.offload(content, options);
     return result.content;
   }
 
   /**
-   * Async utility method to safely process large outputs via VFS.
-   * Required when using an asynchronous VFS storage adapter (like a database).
-   * Also safely supports synchronous adapters.
+   * Async version of offload(). Required when using an asynchronous VFS storage adapter.
    */
-  public async processLargeOutputAsync(
+  public async offloadAsync(
     content: string,
-    type: 'log' | 'doc' = 'log',
-    options?: ProcessOptions,
+    options?: OffloadOptions,
   ): Promise<string> {
-    const result = await this.pointer.processAsync(content, type, options);
+    const result = await this.pointer.offloadAsync(content, options);
     return result.content;
   }
 

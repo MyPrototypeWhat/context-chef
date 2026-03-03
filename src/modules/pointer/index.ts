@@ -49,9 +49,11 @@ export interface VFSResult {
   uri?: string;
 }
 
-export interface ProcessOptions {
+export interface OffloadOptions {
   /** Allows overriding the instance threshold for a specific call */
   threshold?: number;
+  /** Number of tail lines to preserve in the truncated output (default: 20) */
+  tailLines?: number;
 }
 
 export class Pointer {
@@ -68,45 +70,43 @@ export class Pointer {
     this.adapter = config.adapter ?? new FileSystemAdapter(this.config.storageDir!);
   }
 
-  private _prepareOffload(content: string, type: 'log' | 'doc', activeThreshold: number) {
+  private _prepareOffload(content: string, activeThreshold: number, tailLines: number) {
     const hash = crypto.createHash('md5').update(content).digest('hex').substring(0, 8);
-    const filename = `${type}_${Date.now()}_${hash}.txt`;
+    const filename = `vfs_${Date.now()}_${hash}.txt`;
 
-    let lastLines = '';
-    // For logs, it's often useful to keep the last few lines
-    if (type === 'log') {
+    let lastLinesStr = '';
+    if (tailLines > 0) {
       const lines = content.split('\n');
-      lastLines = lines.slice(-20).join('\n');
+      lastLinesStr = lines.slice(-tailLines).join('\n');
     }
 
     const uri = `${this.config.uriScheme}${filename}`;
-    const truncated = Prompts.getVFSOffloadReminder(activeThreshold, uri, lastLines);
+    const truncated = Prompts.getVFSOffloadReminder(activeThreshold, uri, lastLinesStr);
 
     return { filename, uri, truncated };
   }
 
   /**
-   * Scans content. If it exceeds the threshold, writes the full content to VFS (synchronously)
+   * If content exceeds the threshold, writes full content to VFS (synchronously)
    * and returns a truncated string with a pointer URI.
-   * If not, returns the original content.
    * Throws an error if the configured adapter is asynchronous.
    */
-  public process(
+  public offload(
     content: string,
-    type: 'log' | 'doc' = 'log',
-    options?: ProcessOptions,
+    options?: OffloadOptions,
   ): VFSResult {
     const activeThreshold = options?.threshold ?? this.config.threshold;
+    const tailLines = options?.tailLines ?? 20;
 
     if (content.length <= activeThreshold) {
       return { isOffloaded: false, content };
     }
 
-    const { filename, uri, truncated } = this._prepareOffload(content, type, activeThreshold);
-    
+    const { filename, uri, truncated } = this._prepareOffload(content, activeThreshold, tailLines);
+
     const writeResult = this.adapter.write(filename, content);
     if (writeResult instanceof Promise) {
-      throw new Error('Pointer.process() was called synchronously, but the VFSStorageAdapter is asynchronous. Use processAsync() instead.');
+      throw new Error('Pointer.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.');
     }
 
     return {
@@ -117,24 +117,23 @@ export class Pointer {
   }
 
   /**
-   * Scans content. If it exceeds the threshold, writes the full content to VFS (asynchronously)
+   * If content exceeds the threshold, writes full content to VFS (asynchronously)
    * and returns a truncated string with a pointer URI.
-   * If not, returns the original content.
    * Safely supports both synchronous and asynchronous adapters.
    */
-  public async processAsync(
+  public async offloadAsync(
     content: string,
-    type: 'log' | 'doc' = 'log',
-    options?: ProcessOptions,
+    options?: OffloadOptions,
   ): Promise<VFSResult> {
     const activeThreshold = options?.threshold ?? this.config.threshold;
+    const tailLines = options?.tailLines ?? 20;
 
     if (content.length <= activeThreshold) {
       return { isOffloaded: false, content };
     }
 
-    const { filename, uri, truncated } = this._prepareOffload(content, type, activeThreshold);
-    
+    const { filename, uri, truncated } = this._prepareOffload(content, activeThreshold, tailLines);
+
     await this.adapter.write(filename, content);
 
     return {

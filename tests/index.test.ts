@@ -126,13 +126,13 @@ describe('ContextChef API', () => {
     const log = Array(100).fill('Error log line.').join('\n');
 
     // Won't trigger default
-    const processed1 = chef.processLargeOutput(log);
+    const processed1 = chef.offload(log);
     expect(processed1).not.toContain('context://vfs/');
 
     // Trigger explicit threshold override
-    const processed2 = chef.processLargeOutput(log, 'log', { threshold: 50 });
+    const processed2 = chef.offload(log, { threshold: 50 });
     expect(processed2).toContain('<EPHEMERAL_MESSAGE>');
-    expect(processed2).toContain('context://vfs/log_');
+    expect(processed2).toContain('context://vfs/vfs_');
   });
 
   it('should compile Anthropic with cache control successfully', async () => {

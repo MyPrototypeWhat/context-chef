@@ -197,7 +197,7 @@ const chef = new ContextChef({
       // Example: offload large tool results to VFS before compression
       return history.map(msg =>
         msg.role === 'tool' && msg.content.length > 5000
-          ? { ...msg, content: pointer.process(msg.content, 'log').content }
+          ? { ...msg, content: pointer.offload(msg.content).content }
           : msg
       );
     },
@@ -214,10 +214,16 @@ Explicitly clear history and reset Janitor state when switching topics or comple
 ### Large Output Offloading (Pointer / VFS)
 
 ```typescript
-// truncate + offload if content exceeds threshold
-const safeLog = chef.processLargeOutput(rawTerminalOutput, 'log');
+// Offload if content exceeds threshold; preserves last 20 lines by default
+const safeLog = chef.offload(rawTerminalOutput);
 history.push({ role: 'tool', content: safeLog, tool_call_id: 'call_123' });
 // safeLog: original content if small, or truncated with context://vfs/ URI
+
+// Customize tail lines preserved (0 = no tail, like a static document)
+const safeDoc = chef.offload(largeFileContent, { tailLines: 0 });
+
+// Override threshold per call
+const safeOutput = chef.offload(content, { threshold: 2000, tailLines: 50 });
 ```
 
 Register a tool for the LLM to read full content when needed:

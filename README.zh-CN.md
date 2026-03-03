@@ -197,7 +197,7 @@ const chef = new ContextChef({
       // 示例：压缩前将大型工具结果卸载到 VFS
       return history.map(msg =>
         msg.role === 'tool' && msg.content.length > 5000
-          ? { ...msg, content: pointer.process(msg.content, 'log').content }
+          ? { ...msg, content: pointer.offload(msg.content).content }
           : msg
       );
     },
@@ -214,10 +214,16 @@ const chef = new ContextChef({
 ### 大文本卸载 (Pointer / VFS)
 
 ```typescript
-// 超过阈值时截断并卸载
-const safeLog = chef.processLargeOutput(rawTerminalOutput, 'log');
+// 超过阈值时截断并卸载，默认保留最后 20 行
+const safeLog = chef.offload(rawTerminalOutput);
 history.push({ role: 'tool', content: safeLog, tool_call_id: 'call_123' });
 // safeLog: 内容较小时原样返回，否则截断并附带 context://vfs/ URI
+
+// 自定义保留的尾部行数（0 = 不保留尾部，适合静态文档）
+const safeDoc = chef.offload(largeFileContent, { tailLines: 0 });
+
+// 单次调用覆盖阈值
+const safeOutput = chef.offload(content, { threshold: 2000, tailLines: 50 });
 ```
 
 注册一个工具让 LLM 按需读取完整内容：

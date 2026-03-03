@@ -22,54 +22,62 @@ describe('Pointer (VFS)', () => {
 
   it('should not offload small content', () => {
     const smallText = 'Hello world!';
-    const result = pointer.process(smallText, 'log');
+    const result = pointer.offload(smallText);
 
     expect(result.isOffloaded).toBe(false);
     expect(result.content).toBe(smallText);
     expect(result.uri).toBeUndefined();
   });
 
-  it('should offload large content and return a truncated pointer', () => {
+  it('should offload large content and preserve last 20 lines by default', () => {
     const lines = Array.from(
       { length: 50 },
       (_, i) => `Line ${i + 1} of the long log file that goes on and on.`,
     );
     const largeText = lines.join('\n');
 
-    const result = pointer.process(largeText, 'log');
+    const result = pointer.offload(largeText);
 
     expect(result.isOffloaded).toBe(true);
-    expect(result.uri).toMatch(/^context:\/\/vfs\/log_.*\.txt$/);
+    expect(result.uri).toMatch(/^context:\/\/vfs\/vfs_.*\.txt$/);
 
-    // Check that it kept the last few lines
+    // Default tailLines=20, so last lines are included
     expect(result.content).toContain('Line 50');
-    // Check for the EPHEMERAL_MESSAGE VFS offload notice
     expect(result.content).toContain('<EPHEMERAL_MESSAGE>');
     expect(result.content).toContain('has been truncated and offloaded to VFS');
   });
 
-  it('should offload large doc content without appending truncated lines', () => {
+  it('should offload with tailLines: 0 (no tail preserved)', () => {
     const lines = Array.from(
       { length: 50 },
       (_, i) => `Line ${i + 1} of the long log file that goes on and on.`,
     );
     const largeText = lines.join('\n');
 
-    const result = pointer.process(largeText, 'doc');
+    const result = pointer.offload(largeText, { tailLines: 0 });
 
     expect(result.isOffloaded).toBe(true);
-    expect(result.uri).toMatch(/^context:\/\/vfs\/doc_.*\.txt$/);
-
-    // Check for the EPHEMERAL_MESSAGE VFS offload notice
     expect(result.content).toContain('<EPHEMERAL_MESSAGE>');
     expect(result.content).toContain('has been truncated and offloaded to VFS');
-    // For 'doc' type, last lines and '...[truncated]...' should NOT be included
     expect(result.content).not.toContain('Line 50');
+  });
+
+  it('should respect custom tailLines value', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `Line ${i + 1}`);
+    const largeText = lines.join('\n');
+
+    const result = pointer.offload(largeText, { tailLines: 3 });
+
+    expect(result.isOffloaded).toBe(true);
+    expect(result.content).toContain('Line 48');
+    expect(result.content).toContain('Line 49');
+    expect(result.content).toContain('Line 50');
+    expect(result.content).not.toContain('Line 47');
   });
 
   it('should resolve a valid URI back to full content', () => {
     const largeText = 'A'.repeat(100);
-    const result = pointer.process(largeText, 'doc');
+    const result = pointer.offload(largeText, { tailLines: 0 });
 
     expect(result.isOffloaded).toBe(true);
     expect(result.uri).toBeDefined();
@@ -114,18 +122,18 @@ describe('Pointer (VFS)', () => {
       });
     });
 
-    it('should throw an error if calling sync process() with an async adapter', () => {
+    it('should throw an error if calling sync offload() with an async adapter', () => {
       const largeText = 'A'.repeat(100);
       expect(() => {
-        asyncPointer.process(largeText, 'log');
+        asyncPointer.offload(largeText);
       }).toThrow(
-        'Pointer.process() was called synchronously, but the VFSStorageAdapter is asynchronous. Use processAsync() instead.',
+        'Pointer.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.',
       );
     });
 
-    it('should process async and resolve async via the custom adapter', async () => {
+    it('should offloadAsync and resolveAsync via the custom adapter', async () => {
       const largeText = 'B'.repeat(100);
-      const result = await asyncPointer.processAsync(largeText, 'doc');
+      const result = await asyncPointer.offloadAsync(largeText, { tailLines: 0 });
 
       expect(result.isOffloaded).toBe(true);
       expect(result.uri).toBeDefined();
