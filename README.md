@@ -20,14 +20,14 @@ ContextChef solves the most common context engineering problems in AI agent deve
 ## Installation
 
 ```bash
-npm install context-engineer zod
+npm install context-chef zod
 ```
 
 ## Quick Start
 
 ```typescript
-import { ContextChef } from 'context-engineer';
-import { z } from 'zod';
+import { ContextChef } from "context-chef";
+import { z } from "zod";
 
 const TaskSchema = z.object({
   activeFile: z.string(),
@@ -42,11 +42,23 @@ const chef = new ContextChef({
 });
 
 const payload = await chef
-  .setTopLayer([{ role: 'system', content: 'You are an expert coder.', _cache_breakpoint: true }])
+  .setTopLayer([
+    {
+      role: "system",
+      content: "You are an expert coder.",
+      _cache_breakpoint: true,
+    },
+  ])
   .useRollingHistory(conversationHistory)
-  .setDynamicState(TaskSchema, { activeFile: 'auth.ts', todo: ['Fix login bug'] })
-  .withGovernance({ enforceXML: { outputTag: 'response' }, prefill: '<thinking>\n1.' })
-  .compile({ target: 'anthropic' });
+  .setDynamicState(TaskSchema, {
+    activeFile: "auth.ts",
+    todo: ["Fix login bug"],
+  })
+  .withGovernance({
+    enforceXML: { outputTag: "response" },
+    prefill: "<thinking>\n1.",
+  })
+  .compile({ target: "anthropic" });
 
 const response = await anthropic.messages.create(payload);
 ```
@@ -76,7 +88,11 @@ Sets the static system prompt layer. Cached prefix — should rarely change.
 
 ```typescript
 chef.setTopLayer([
-  { role: 'system', content: 'You are an expert coder.', _cache_breakpoint: true },
+  {
+    role: "system",
+    content: "You are an expert coder.",
+    _cache_breakpoint: true,
+  },
 ]);
 ```
 
@@ -91,9 +107,12 @@ Sets the conversation history. Janitor compresses automatically on `compile()`.
 Injects Zod-validated state as XML into the context.
 
 ```typescript
-const TaskSchema = z.object({ activeFile: z.string(), todo: z.array(z.string()) });
+const TaskSchema = z.object({
+  activeFile: z.string(),
+  todo: z.array(z.string()),
+});
 
-chef.setDynamicState(TaskSchema, { activeFile: 'auth.ts', todo: ['Fix bug'] });
+chef.setDynamicState(TaskSchema, { activeFile: "auth.ts", todo: ["Fix bug"] });
 // placement defaults to 'last_user' (injected into the last user message)
 // use { placement: 'system' } for a standalone system message
 ```
@@ -104,8 +123,8 @@ Applies output format guardrails and optional prefill.
 
 ```typescript
 chef.withGovernance({
-  enforceXML: { outputTag: 'final_code' }, // wraps output rules in EPHEMERAL_MESSAGE
-  prefill: '<thinking>\n1.',               // trailing assistant message (auto-degraded for OpenAI/Gemini)
+  enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
+  prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
 });
 ```
 
@@ -114,9 +133,9 @@ chef.withGovernance({
 Compiles everything into a provider-ready payload. Triggers Janitor compression. Registered tools are auto-included.
 
 ```typescript
-const payload = await chef.compile({ target: 'openai' });    // OpenAIPayload
-const payload = await chef.compile({ target: 'anthropic' }); // AnthropicPayload
-const payload = await chef.compile({ target: 'gemini' });    // GeminiPayload
+const payload = await chef.compile({ target: "openai" }); // OpenAIPayload
+const payload = await chef.compile({ target: "anthropic" }); // AnthropicPayload
+const payload = await chef.compile({ target: "gemini" }); // GeminiPayload
 ```
 
 ---
@@ -133,8 +152,9 @@ Provide your own token counting function for precise per-message calculation. Ja
 const chef = new ContextChef({
   janitor: {
     contextWindow: 200000,
-    tokenizer: (msgs) => msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
-    preserveRatio: 0.8,              // keep 80% of contextWindow for recent messages (default)
+    tokenizer: (msgs) =>
+      msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
+    preserveRatio: 0.8, // keep 80% of contextWindow for recent messages (default)
     compressionModel: async (msgs) => callGpt4oMini(msgs),
     onCompress: async (summary, count) => {
       await db.saveCompression(sessionId, summary, count);
@@ -165,15 +185,15 @@ chef.feedTokenUsage(response.usage.prompt_tokens);
 
 #### `JanitorConfig`
 
-| Option | Type | Default | Description |
-| ------ | ---- | ------- | ----------- |
-| `contextWindow` | `number` | *required* | Model's context window size (tokens). Compression triggers when usage exceeds this. |
-| `tokenizer` | `(msgs: Message[]) => number` | — | Enables the tokenizer path for precise per-message token calculation. |
-| `preserveRatio` | `number` | `0.8` | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages. |
-| `preserveRecentMessages` | `number` | `1` | [feedTokenUsage path] Number of recent messages to keep when compressing. |
-| `compressionModel` | `(msgs: Message[]) => Promise<string>` | — | Async hook to summarize old messages via a low-cost LLM. |
-| `onCompress` | `(summary, count) => void` | — | Fires after compression with the summary message and truncated count. |
-| `onBudgetExceeded` | `(history, tokenInfo) => Message[] \| null` | — | Fires before compression. Return modified history to intervene, or null to proceed normally. |
+| Option                   | Type                                        | Default    | Description                                                                                  |
+| ------------------------ | ------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
+| `contextWindow`          | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds this.          |
+| `tokenizer`              | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
+| `preserveRatio`          | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
+| `preserveRecentMessages` | `number`                                    | `1`        | [feedTokenUsage path] Number of recent messages to keep when compressing.                    |
+| `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
+| `onCompress`             | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
+| `onBudgetExceeded`       | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. |
 
 #### `chef.feedTokenUsage(tokenCount): this`
 
@@ -195,10 +215,10 @@ const chef = new ContextChef({
     tokenizer: (msgs) => countTokens(msgs),
     onBudgetExceeded: (history, { currentTokens, limit }) => {
       // Example: offload large tool results to VFS before compression
-      return history.map(msg =>
-        msg.role === 'tool' && msg.content.length > 5000
+      return history.map((msg) =>
+        msg.role === "tool" && msg.content.length > 5000
           ? { ...msg, content: pointer.offload(msg.content).content }
-          : msg
+          : msg,
       );
     },
   },
@@ -216,7 +236,7 @@ Explicitly clear history and reset Janitor state when switching topics or comple
 ```typescript
 // Offload if content exceeds threshold; preserves last 20 lines by default
 const safeLog = chef.offload(rawTerminalOutput);
-history.push({ role: 'tool', content: safeLog, tool_call_id: 'call_123' });
+history.push({ role: "tool", content: safeLog, tool_call_id: "call_123" });
 // safeLog: original content if small, or truncated with context://vfs/ URI
 
 // Customize tail lines preserved (0 = no tail, like a static document)
@@ -230,8 +250,8 @@ Register a tool for the LLM to read full content when needed:
 
 ```typescript
 // In your tool handler:
-import { Pointer } from 'context-engineer';
-const pointer = new Pointer({ storageDir: '.context_vfs' });
+import { Pointer } from "context-chef";
+const pointer = new Pointer({ storageDir: ".context_vfs" });
 const fullContent = pointer.resolve(uri);
 ```
 
@@ -243,12 +263,15 @@ const fullContent = pointer.resolve(uri);
 
 ```typescript
 chef.registerTools([
-  { name: 'read_file', description: 'Read a file', tags: ['file', 'read'] },
-  { name: 'run_bash', description: 'Run a command', tags: ['shell'] },
-  { name: 'get_time', description: 'Get timestamp' /* no tags = always kept */ },
+  { name: "read_file", description: "Read a file", tags: ["file", "read"] },
+  { name: "run_bash", description: "Run a command", tags: ["shell"] },
+  {
+    name: "get_time",
+    description: "Get timestamp" /* no tags = always kept */,
+  },
 ]);
 
-const { tools, removed } = chef.tools().pruneByTask('Read the auth.ts file');
+const { tools, removed } = chef.tools().pruneByTask("Read the auth.ts file");
 // tools: [read_file, get_time]
 ```
 
@@ -264,26 +287,50 @@ Also supports `allowOnly(names)` and `pruneByTaskAndAllowlist(task, names)`.
 // Layer 1: Stable namespace tools
 chef.registerNamespaces([
   {
-    name: 'file_ops',
-    description: 'File system operations',
+    name: "file_ops",
+    description: "File system operations",
     tools: [
-      { name: 'read_file', description: 'Read a file', parameters: { path: { type: 'string' } } },
-      { name: 'write_file', description: 'Write to a file', parameters: { path: { type: 'string' }, content: { type: 'string' } } },
+      {
+        name: "read_file",
+        description: "Read a file",
+        parameters: { path: { type: "string" } },
+      },
+      {
+        name: "write_file",
+        description: "Write to a file",
+        parameters: { path: { type: "string" }, content: { type: "string" } },
+      },
     ],
   },
   {
-    name: 'terminal',
-    description: 'Shell command execution',
+    name: "terminal",
+    description: "Shell command execution",
     tools: [
-      { name: 'run_bash', description: 'Execute a command', parameters: { command: { type: 'string' } } },
+      {
+        name: "run_bash",
+        description: "Execute a command",
+        parameters: { command: { type: "string" } },
+      },
     ],
   },
 ]);
 
 // Layer 2: On-demand toolkits
 chef.registerToolkits([
-  { name: 'Weather', description: 'Weather forecast APIs', tools: [/* ... */] },
-  { name: 'Database', description: 'SQL query and schema inspection', tools: [/* ... */] },
+  {
+    name: "Weather",
+    description: "Weather forecast APIs",
+    tools: [
+      /* ... */
+    ],
+  },
+  {
+    name: "Database",
+    description: "SQL query and schema inspection",
+    tools: [
+      /* ... */
+    ],
+  },
 ]);
 
 // Compile — tools: [file_ops, terminal, load_toolkit] (always stable)
@@ -299,7 +346,6 @@ for (const toolCall of response.tool_calls) {
     // Route namespace call to real tool
     const { toolName, args } = chef.tools().resolveNamespace(toolCall);
     const result = await executeTool(toolName, args);
-
   } else if (chef.tools().isToolkitLoader(toolCall)) {
     // LLM requested a toolkit — expand and re-call
     const parsed = JSON.parse(toolCall.function.arguments);
@@ -316,10 +362,10 @@ for (const toolCall of response.tool_calls) {
 Persistent key-value memory that survives across sessions. The LLM writes memories via XML tags in its output.
 
 ```typescript
-import { InMemoryStore, VFSMemoryStore } from 'context-engineer';
+import { InMemoryStore, VFSMemoryStore } from "context-chef";
 
 const chef = new ContextChef({
-  memoryStore: new InMemoryStore(),          // ephemeral (testing)
+  memoryStore: new InMemoryStore(), // ephemeral (testing)
   // memoryStore: new VFSMemoryStore(dir),   // persistent (production)
 });
 
@@ -329,8 +375,8 @@ await chef.memory().extractAndApply(assistantResponse);
 // Parses: <delete_core_memory key="outdated_rule" />
 
 // Direct read/write
-await chef.memory().set('persona', 'You are a senior engineer');
-const value = await chef.memory().get('persona');
+await chef.memory().set("persona", "You are a senior engineer");
+const value = await chef.memory().get("persona");
 
 // Memory is auto-injected as <core_memory> XML between topLayer and history on compile()
 ```
@@ -342,7 +388,7 @@ const value = await chef.memory().get('persona');
 Capture and rollback full context state for branching or error recovery.
 
 ```typescript
-const snap = chef.snapshot('before risky tool call');
+const snap = chef.snapshot("before risky tool call");
 
 // ... agent executes tool, something goes wrong ...
 
@@ -359,7 +405,7 @@ Inject external context (RAG, AST snippets, MCP queries) right before compilatio
 const chef = new ContextChef({
   onBeforeCompile: async (ctx) => {
     const snippets = await vectorDB.search(ctx.rawDynamicXml);
-    return snippets.map(s => s.content).join('\n');
+    return snippets.map((s) => s.content).join("\n");
     // Injected as <implicit_context>...</implicit_context> alongside dynamic state
     // Return null to skip injection
   },
@@ -370,18 +416,18 @@ const chef = new ContextChef({
 
 ### Target Adapters
 
-| Feature | OpenAI | Anthropic | Gemini |
-| ------- | ------ | --------- | ------ |
-| Format | Chat Completions | Messages API | generateContent |
-| Cache breakpoints | Stripped | `cache_control: { type: 'ephemeral' }` | Stripped (uses separate CachedContent API) |
-| Prefill (trailing assistant) | Degraded to `[System Note]` | Native support | Degraded to `[System Note]` |
-| `thinking` field | Stripped | Mapped to `ThinkingBlockParam` | Stripped |
-| Tool calls | `tool_calls` array | `tool_use` blocks | `functionCall` parts |
+| Feature                      | OpenAI                      | Anthropic                              | Gemini                                     |
+| ---------------------------- | --------------------------- | -------------------------------------- | ------------------------------------------ |
+| Format                       | Chat Completions            | Messages API                           | generateContent                            |
+| Cache breakpoints            | Stripped                    | `cache_control: { type: 'ephemeral' }` | Stripped (uses separate CachedContent API) |
+| Prefill (trailing assistant) | Degraded to `[System Note]` | Native support                         | Degraded to `[System Note]`                |
+| `thinking` field             | Stripped                    | Mapped to `ThinkingBlockParam`         | Stripped                                   |
+| Tool calls                   | `tool_calls` array          | `tool_use` blocks                      | `functionCall` parts                       |
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 
 ```typescript
-import { getAdapter } from 'context-engineer';
-const adapter = getAdapter('gemini');
+import { getAdapter } from "context-chef";
+const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
