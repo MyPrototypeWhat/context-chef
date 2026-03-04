@@ -1,9 +1,9 @@
 import type { z } from 'zod';
 import { getAdapter } from './adapters/adapterFactory';
 import { type GovernanceOptions, Governor } from './modules/governor';
-import { Memory, type MemoryConfig } from './modules/memory';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-import { Pointer, type OffloadOptions, type VFSConfig } from './modules/pointer';
+import { Memory, type MemoryConfig } from './modules/memory';
+import { type OffloadOptions, Pointer, type VFSConfig } from './modules/pointer';
 import {
   type CompiledTools,
   Pruner,
@@ -27,14 +27,20 @@ import { objectToXml } from './utils/xmlGenerator';
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
 export { Governor } from './modules/governor';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-export { FileSystemAdapter, Pointer, type OffloadOptions, type VFSConfig, type VFSStorageAdapter } from './modules/pointer';
+export { Memory, type MemoryConfig, type MemoryEntry } from './modules/memory';
+export { InMemoryStore } from './modules/memory/inMemoryStore';
+export type { MemoryStore } from './modules/memory/memoryStore';
+export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
+export {
+  FileSystemAdapter,
+  type OffloadOptions,
+  Pointer,
+  type VFSConfig,
+  type VFSStorageAdapter,
+} from './modules/pointer';
 export { Pruner, type PrunerConfig } from './modules/pruner';
 export { Stitcher, type StitchOptions } from './modules/stitcher';
 export * from './prompts';
-export { InMemoryStore } from './modules/memory/inMemoryStore';
-export { Memory, type MemoryConfig, type MemoryEntry } from './modules/memory';
-export type { MemoryStore } from './modules/memory/memoryStore';
-export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export * from './types';
 export { TokenUtils } from './utils/tokenUtils';
 export { XmlGenerator } from './utils/xmlGenerator';
@@ -107,7 +113,9 @@ export class ContextChef {
   private pruner: Pruner;
   private _memory: Memory | null;
   private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
-  private onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
+  private onBeforeCompile?: (
+    context: BeforeCompileContext,
+  ) => string | null | Promise<string | null>;
 
   private topLayer: Message[] = [];
   private rollingHistory: Message[] = [];
@@ -261,10 +269,7 @@ export class ContextChef {
    * Offload large content to VFS, returning a truncated string with a pointer URI.
    * Throws an error if the configured VFS storage adapter is asynchronous.
    */
-  public offload(
-    content: string,
-    options?: OffloadOptions,
-  ): string {
+  public offload(content: string, options?: OffloadOptions): string {
     const result = this.pointer.offload(content, options);
     return result.content;
   }
@@ -272,20 +277,22 @@ export class ContextChef {
   /**
    * Async version of offload(). Required when using an asynchronous VFS storage adapter.
    */
-  public async offloadAsync(
-    content: string,
-    options?: OffloadOptions,
-  ): Promise<string> {
+  public async offloadAsync(content: string, options?: OffloadOptions): Promise<string> {
     const result = await this.pointer.offloadAsync(content, options);
     return result.content;
   }
 
   private async _getMemoryMessages(): Promise<Message[]> {
     if (!this._memory) return [];
+
+    let content = Prompts.CORE_MEMORY_INSTRUCTION;
+
     const xml = await this._memory.toXml();
-    if (!xml) return [];
-    const keys = (await this._memory.getAll()).map((e) => e.key);
-    const content = Prompts.getCoreMemoryBlock(xml, keys, this._memory.allowedKeys);
+    if (xml) {
+      const keys = (await this._memory.getAll()).map((e) => e.key);
+      content = `${content}\n\n${Prompts.getCoreMemoryBlock(xml, keys, this._memory.allowedKeys)}`;
+    }
+
     return [{ role: 'system', content }];
   }
 

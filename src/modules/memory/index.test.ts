@@ -282,6 +282,7 @@ describe('ContextChef + Memory', () => {
 
     const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
     expect(memMsg).toBeDefined();
+    expect(memMsg!.content).toContain('update_core_memory');
     expect(memMsg!.content).toContain('<rule>be concise</rule>');
     expect(memMsg!.content).toContain('persistent core memory');
     expect(memMsg!.content).toContain('Existing memory keys: rule');
@@ -305,7 +306,7 @@ describe('ContextChef + Memory', () => {
     expect(memMsg!.content).toContain('ONLY');
   });
 
-  it('compile() skips memory injection when no memories exist', async () => {
+  it('compile() injects CORE_MEMORY_INSTRUCTION even when no memories exist', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
     chef.setTopLayer([{ role: 'system', content: 'system' }]);
     chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
@@ -313,8 +314,11 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
 
-    // No core_memory message injected
-    expect(messages).toHaveLength(2);
+    // Instruction is always injected when memoryStore is configured
+    expect(messages).toHaveLength(3);
+    const memMsg = messages.find((m) => m.content.includes('update_core_memory'));
+    expect(memMsg).toBeDefined();
+    expect(memMsg!.content).not.toContain('<core_memory>');
   });
 
   it('snapshot/restore includes memory store state (InMemoryStore)', async () => {
