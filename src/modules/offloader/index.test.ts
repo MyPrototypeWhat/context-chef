@@ -1,14 +1,14 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Pointer, VFSStorageAdapter } from '.';
+import { Offloader, VFSStorageAdapter } from '.';
 
-describe('Pointer (VFS)', () => {
+describe('Offloader', () => {
   const TEST_DIR = path.join(process.cwd(), '.test_vfs');
-  let pointer: Pointer;
+  let offloader: Offloader;
 
   beforeEach(() => {
-    pointer = new Pointer({
+    offloader = new Offloader({
       storageDir: TEST_DIR,
       threshold: 50, // Very small threshold for testing
     });
@@ -22,7 +22,7 @@ describe('Pointer (VFS)', () => {
 
   it('should not offload small content', () => {
     const smallText = 'Hello world!';
-    const result = pointer.offload(smallText);
+    const result = offloader.offload(smallText);
 
     expect(result.isOffloaded).toBe(false);
     expect(result.content).toBe(smallText);
@@ -36,7 +36,7 @@ describe('Pointer (VFS)', () => {
     );
     const largeText = lines.join('\n');
 
-    const result = pointer.offload(largeText);
+    const result = offloader.offload(largeText);
 
     expect(result.isOffloaded).toBe(true);
     expect(result.uri).toMatch(/^context:\/\/vfs\/vfs_.*\.txt$/);
@@ -54,7 +54,7 @@ describe('Pointer (VFS)', () => {
     );
     const largeText = lines.join('\n');
 
-    const result = pointer.offload(largeText, { tailLines: 0 });
+    const result = offloader.offload(largeText, { tailLines: 0 });
 
     expect(result.isOffloaded).toBe(true);
     expect(result.content).toContain('<EPHEMERAL_MESSAGE>');
@@ -66,7 +66,7 @@ describe('Pointer (VFS)', () => {
     const lines = Array.from({ length: 50 }, (_, i) => `Line ${i + 1}`);
     const largeText = lines.join('\n');
 
-    const result = pointer.offload(largeText, { tailLines: 3 });
+    const result = offloader.offload(largeText, { tailLines: 3 });
 
     expect(result.isOffloaded).toBe(true);
     expect(result.content).toContain('Line 48');
@@ -77,18 +77,18 @@ describe('Pointer (VFS)', () => {
 
   it('should resolve a valid URI back to full content', () => {
     const largeText = 'A'.repeat(100);
-    const result = pointer.offload(largeText, { tailLines: 0 });
+    const result = offloader.offload(largeText, { tailLines: 0 });
 
     expect(result.isOffloaded).toBe(true);
     expect(result.uri).toBeDefined();
 
-    const resolved = result.uri ? pointer.resolve(result.uri) : null;
+    const resolved = result.uri ? offloader.resolve(result.uri) : null;
     expect(resolved).toBe(largeText);
   });
 
   it('should return null for invalid or missing URIs', () => {
-    expect(pointer.resolve('context://vfs/does_not_exist.txt')).toBeNull();
-    expect(pointer.resolve('http://example.com')).toBeNull();
+    expect(offloader.resolve('context://vfs/does_not_exist.txt')).toBeNull();
+    expect(offloader.resolve('http://example.com')).toBeNull();
   });
 
   describe('Custom Async Storage Adapter', () => {
@@ -113,10 +113,10 @@ describe('Pointer (VFS)', () => {
       }
     }
 
-    let asyncPointer: Pointer;
+    let asyncOffloader: Offloader;
 
     beforeEach(() => {
-      asyncPointer = new Pointer({
+      asyncOffloader = new Offloader({
         threshold: 50,
         adapter: new MockDbAdapter(),
       });
@@ -125,15 +125,15 @@ describe('Pointer (VFS)', () => {
     it('should throw an error if calling sync offload() with an async adapter', () => {
       const largeText = 'A'.repeat(100);
       expect(() => {
-        asyncPointer.offload(largeText);
+        asyncOffloader.offload(largeText);
       }).toThrow(
-        'Pointer.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.',
+        'Offloader.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.',
       );
     });
 
     it('should offloadAsync and resolveAsync via the custom adapter', async () => {
       const largeText = 'B'.repeat(100);
-      const result = await asyncPointer.offloadAsync(largeText, { tailLines: 0 });
+      const result = await asyncOffloader.offloadAsync(largeText, { tailLines: 0 });
 
       expect(result.isOffloaded).toBe(true);
       expect(result.uri).toBeDefined();
@@ -142,13 +142,13 @@ describe('Pointer (VFS)', () => {
 
       // Test sync resolve throws
       expect(() => {
-        asyncPointer.resolve(result.uri!);
+        asyncOffloader.resolve(result.uri!);
       }).toThrow(
-        'Pointer.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.',
+        'Offloader.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.',
       );
 
       // Test async resolve
-      const resolved = await asyncPointer.resolveAsync(result.uri);
+      const resolved = await asyncOffloader.resolveAsync(result.uri);
       expect(resolved).toBe(largeText);
     });
   });

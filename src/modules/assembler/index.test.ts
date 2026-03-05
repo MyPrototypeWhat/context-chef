@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../../types';
-import { Stitcher } from '.';
+import { Assembler } from '.';
 
-describe('Stitcher', () => {
+describe('Assembler', () => {
   it('should deterministically order keys', () => {
     const obj1 = { b: 2, a: 1, c: { e: 4, d: 3 } };
     const obj2 = { c: { d: 3, e: 4 }, a: 1, b: 2 };
 
-    const sorted1 = Stitcher.orderKeysDeterministically(obj1);
-    const sorted2 = Stitcher.orderKeysDeterministically(obj2);
+    const sorted1 = Assembler.orderKeysDeterministically(obj1);
+    const sorted2 = Assembler.orderKeysDeterministically(obj2);
 
     expect(JSON.stringify(sorted1)).toBe(JSON.stringify(sorted2));
     expect(JSON.stringify(sorted1)).toBe('{"a":1,"b":2,"c":{"d":3,"e":4}}');
   });
 
   it('should maintain static prefix hash across different histories', () => {
-    const stitcher = new Stitcher();
+    const assembler = new Assembler();
 
     const topLayer: Message[] = [{ role: 'system', content: 'You are a helpful assistant' }];
 
@@ -25,8 +25,8 @@ describe('Stitcher', () => {
     // Scenario 2: User asks a different question but Top Layer is same
     const history2: Message[] = [{ role: 'user', content: 'What is the capital of France?' }];
 
-    const payload1 = stitcher.compile([...topLayer, ...history1]);
-    const payload2 = stitcher.compile([...topLayer, ...history2]);
+    const payload1 = assembler.compile([...topLayer, ...history1]);
+    const payload2 = assembler.compile([...topLayer, ...history2]);
 
     // Extract just the top layer from the compiled payloads to verify stability
     const topLayerResult1 = payload1.messages.slice(0, topLayer.length);
@@ -39,12 +39,12 @@ describe('Stitcher', () => {
     const msg1: Message = { role: 'user', content: 'test', name: 'Alice' };
     const msg2: Message = { name: 'Alice', role: 'user', content: 'test' };
 
-    const stitcher = new Stitcher();
-    const payload1 = stitcher.compile([msg1]);
-    const payload2 = stitcher.compile([msg2]);
+    const assembler = new Assembler();
+    const payload1 = assembler.compile([msg1]);
+    const payload2 = assembler.compile([msg2]);
 
-    const str1 = Stitcher.stringifyPayload(payload1);
-    const str2 = Stitcher.stringifyPayload(payload2);
+    const str1 = Assembler.stringifyPayload(payload1);
+    const str2 = Assembler.stringifyPayload(payload2);
 
     expect(str1).toBe(str2);
   });

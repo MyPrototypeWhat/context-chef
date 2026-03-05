@@ -1,9 +1,9 @@
 import type { z } from 'zod';
 import { getAdapter } from './adapters/adapterFactory';
-import { type GovernanceOptions, Governor } from './modules/governor';
+import { type GuardrailOptions, Guardrail } from './modules/guardrail';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
 import { Memory, type MemoryConfig } from './modules/memory';
-import { type OffloadOptions, Pointer, type VFSConfig } from './modules/pointer';
+import { type OffloadOptions, Offloader, type VFSConfig } from './modules/offloader';
 import {
   type CompiledTools,
   Pruner,
@@ -11,7 +11,7 @@ import {
   type ResolvedToolCall,
   type ToolGroup,
 } from './modules/pruner';
-import { type DynamicStatePlacement, Stitcher } from './modules/stitcher';
+import { type DynamicStatePlacement, Assembler } from './modules/assembler';
 import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
@@ -25,7 +25,7 @@ import type {
 import { objectToXml } from './utils/xmlGenerator';
 
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
-export { Governor } from './modules/governor';
+export { Guardrail } from './modules/guardrail';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
 export { Memory, type MemoryConfig, type MemoryEntry } from './modules/memory';
 export { InMemoryStore } from './modules/memory/inMemoryStore';
@@ -34,12 +34,12 @@ export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export {
   FileSystemAdapter,
   type OffloadOptions,
-  Pointer,
+  Offloader,
   type VFSConfig,
   type VFSStorageAdapter,
-} from './modules/pointer';
+} from './modules/offloader';
 export { Pruner, type PrunerConfig } from './modules/pruner';
-export { Stitcher, type StitchOptions } from './modules/stitcher';
+export { Assembler, type AssembleOptions } from './modules/assembler';
 export * from './prompts';
 export * from './types';
 export { TokenUtils } from './utils/tokenUtils';
@@ -98,7 +98,7 @@ export interface ChefConfig {
 }
 
 export type {
-  GovernanceOptions,
+  GuardrailOptions,
   ToolGroup,
   CompiledTools,
   ResolvedToolCall,
@@ -106,10 +106,10 @@ export type {
 };
 
 export class ContextChef {
-  private stitcher: Stitcher;
-  private pointer: Pointer;
+  private assembler: Assembler;
+  private offloader: Offloader;
   private janitor: Janitor;
-  private governor: Governor;
+  private guardrail: Guardrail;
   private pruner: Pruner;
   private _memory: Memory | null;
   private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
@@ -124,10 +124,10 @@ export class ContextChef {
   private rawDynamicXml: string = '';
 
   constructor(config: ChefConfig = {}) {
-    this.stitcher = new Stitcher();
-    this.pointer = new Pointer(config.vfs);
+    this.assembler = new Assembler();
+    this.offloader = new Offloader(config.vfs);
     this.janitor = new Janitor(config.janitor ?? { contextWindow: Infinity });
-    this.governor = new Governor();
+    this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
     this._memory = config.memory ? new Memory(config.memory) : null;
     this.transformContext = config.transformContext;
@@ -186,11 +186,11 @@ export class ContextChef {
   }
 
   /**
-   * Applies the Governor's rules.
+   * Applies the Guardrail's rules.
    * If a specific `target` is provided during `compile()`, it will elegantly degrade prefill.
    */
-  public withGovernance(options: GovernanceOptions): this {
-    this.dynamicState = this.governor.applyGovernance(this.dynamicState, options);
+  public withGuardrails(options: GuardrailOptions): this {
+    this.dynamicState = this.guardrail.applyGuardrails(this.dynamicState, options);
     return this;
   }
 
@@ -270,7 +270,7 @@ export class ContextChef {
    * Throws an error if the configured VFS storage adapter is asynchronous.
    */
   public offload(content: string, options?: OffloadOptions): string {
-    const result = this.pointer.offload(content, options);
+    const result = this.offloader.offload(content, options);
     return result.content;
   }
 
@@ -278,7 +278,7 @@ export class ContextChef {
    * Async version of offload(). Required when using an asynchronous VFS storage adapter.
    */
   public async offloadAsync(content: string, options?: OffloadOptions): Promise<string> {
-    const result = await this.pointer.offloadAsync(content, options);
+    const result = await this.offloader.offloadAsync(content, options);
     return result.content;
   }
 
@@ -410,7 +410,7 @@ export class ContextChef {
 
     // 7. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const stitchXml = [this.rawDynamicXml, implicitContextXml].filter(Boolean).join('\n');
-    const rawPayload = this.stitcher.compile(messages, {
+    const rawPayload = this.assembler.compile(messages, {
       dynamicStateXml: stitchXml || undefined,
       placement: this.dynamicStatePlacement,
     });

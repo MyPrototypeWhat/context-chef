@@ -2,7 +2,7 @@ import type { Message } from '../../types';
 
 export type DynamicStatePlacement = 'system' | 'last_user';
 
-export interface StitchOptions {
+export interface AssembleOptions {
   /** XML content of the dynamic state to inject */
   dynamicStateXml?: string;
   /** Where to inject the dynamic state */
@@ -10,7 +10,7 @@ export interface StitchOptions {
 }
 
 /**
- * The Stitcher is the physical compiler of the Sandwich Model.
+ * The Assembler is the physical compiler of the Sandwich Model.
  *
  * It has two responsibilities:
  * 1. **Deterministic Serialization**: Guarantees identical byte-level output for identical
@@ -19,16 +19,16 @@ export interface StitchOptions {
  *    into the optimal position within the message array, respecting the configured placement
  *    strategy (system message vs last-user-message injection).
  */
-export class Stitcher {
+export class Assembler {
   public static orderKeysDeterministically(obj: unknown): unknown {
     if (obj === null || typeof obj !== 'object') return obj;
-    if (Array.isArray(obj)) return obj.map(Stitcher.orderKeysDeterministically);
+    if (Array.isArray(obj)) return obj.map(Assembler.orderKeysDeterministically);
     const sortedObj: Record<string, unknown> = {};
     const keys = Object.keys(obj as object).sort();
     const src = obj as Record<string, unknown>;
     for (const key of keys) {
       if (key !== '_cache_breakpoint') {
-        sortedObj[key] = Stitcher.orderKeysDeterministically(src[key]);
+        sortedObj[key] = Assembler.orderKeysDeterministically(src[key]);
       } else {
         sortedObj[key] = src[key];
       }
@@ -37,7 +37,7 @@ export class Stitcher {
   }
 
   public static stringifyPayload(payload: unknown): string {
-    return JSON.stringify(Stitcher.orderKeysDeterministically(payload));
+    return JSON.stringify(Assembler.orderKeysDeterministically(payload));
   }
 
   /**
@@ -82,7 +82,7 @@ export class Stitcher {
    * @param messages - The pre-assembled sandwich (topLayer + history + dynamicState system messages)
    * @param options  - Optional stitch options for last_user injection
    */
-  public compile(messages: Message[], options?: StitchOptions): { messages: Message[] } {
+  public compile(messages: Message[], options?: AssembleOptions): { messages: Message[] } {
     let assembled = [...messages];
 
     if (options?.dynamicStateXml && options.placement === 'last_user') {
@@ -90,7 +90,7 @@ export class Stitcher {
     }
 
     return {
-      messages: assembled.map((msg) => Stitcher.orderKeysDeterministically(msg) as Message),
+      messages: assembled.map((msg) => Assembler.orderKeysDeterministically(msg) as Message),
     };
   }
 }

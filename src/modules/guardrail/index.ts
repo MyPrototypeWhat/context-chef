@@ -1,19 +1,19 @@
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 
-export interface GovernanceOptions {
+export interface GuardrailOptions {
   enforceXML?: {
     outputTag: string;
   };
   prefill?: string;
 }
 
-export class Governor {
+export class Guardrail {
   /**
    * Applies robust format guardrails and optional prefill to the dynamic state.
    * Uses the Claude Code-inspired EPHEMERAL_MESSAGE pattern for maximum compliance.
    */
-  public applyGovernance(dynamicState: Message[], options: GovernanceOptions): Message[] {
+  public applyGuardrails(dynamicState: Message[], options: GuardrailOptions): Message[] {
     const state = [...dynamicState];
 
     if (options.enforceXML) {

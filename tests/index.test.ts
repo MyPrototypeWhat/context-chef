@@ -28,7 +28,7 @@ describe('ContextChef API', () => {
         },
         { placement: 'system' },
       )
-      .withGovernance({
+      .withGuardrails({
         enforceXML: { outputTag: 'final_code' },
         prefill: '<thinking>\n1. ',
       })
@@ -41,7 +41,7 @@ describe('ContextChef API', () => {
     // 1: History
     expect(payload.messages[1].content).toBe('Help me.');
 
-    // 2: System Message (Combined DynamicState and Governor Rules)
+    // 2: System Message (Combined DynamicState and Guardrail Rules)
     const sysMsg = payload.messages[2];
     expect(sysMsg.role).toBe('system');
 

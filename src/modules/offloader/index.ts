@@ -56,7 +56,7 @@ export interface OffloadOptions {
   tailLines?: number;
 }
 
-export class Pointer {
+export class Offloader {
   private config: VFSConfig;
   private adapter: VFSStorageAdapter;
 
@@ -106,7 +106,7 @@ export class Pointer {
 
     const writeResult = this.adapter.write(filename, content);
     if (writeResult instanceof Promise) {
-      throw new Error('Pointer.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.');
+      throw new Error('Offloader.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.');
     }
 
     return {
@@ -157,7 +157,7 @@ export class Pointer {
     const readResult = this.adapter.read(filename);
     
     if (readResult instanceof Promise) {
-      throw new Error('Pointer.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.');
+      throw new Error('Offloader.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.');
     }
     
     return readResult;
