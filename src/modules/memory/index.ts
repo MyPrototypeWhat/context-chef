@@ -1,19 +1,23 @@
-import type { MemoryStore } from './memoryStore';
+import type { MemoryStore, MemoryStoreEntry } from './memoryStore';
 
 export interface MemoryEntry {
   key: string;
   value: string;
+  tier: 'core' | 'archival';
+  createdAt: number;
+  updatedAt: number;
+  updateCount: number;
+  importance?: number;
+}
+
+export interface MemorySetOptions {
+  tier?: 'core' | 'archival';
+  importance?: number;
 }
 
 export interface MemoryConfig {
   store: MemoryStore;
-  /** When set, only these keys are accepted for update/delete. Unknown keys are silently skipped. */
   allowedKeys?: string[];
-  /**
-   * Lifecycle hook fired before each memory write (update or delete).
-   * Return `true` to allow, `false` to reject.
-   * For deletes, `value` is `null`.
-   */
   onMemoryUpdate?: (
     key: string,
     value: string | null,
@@ -36,11 +40,39 @@ export class Memory {
   }
 
   async get(key: string): Promise<string | null> {
-    return await this.store.get(key);
+    const entry = await this.store.get(key);
+    return entry?.value ?? null;
   }
 
-  async set(key: string, value: string): Promise<void> {
-    await this.store.set(key, value);
+  async getEntry(key: string): Promise<MemoryEntry | null> {
+    const entry = await this.store.get(key);
+    if (!entry) return null;
+    return { key, ...entry };
+  }
+
+  async set(key: string, value: string, options?: MemorySetOptions): Promise<void> {
+    const now = Date.now();
+    const existing = await this.store.get(key);
+
+    const entry: MemoryStoreEntry = existing
+      ? {
+          ...existing,
+          value,
+          tier: options?.tier ?? existing.tier,
+          updatedAt: now,
+          updateCount: existing.updateCount + 1,
+          importance: options?.importance ?? existing.importance,
+        }
+      : {
+          value,
+          tier: options?.tier ?? 'core',
+          createdAt: now,
+          updatedAt: now,
+          updateCount: 1,
+          importance: options?.importance,
+        };
+
+    await this.store.set(key, entry);
   }
 
   async delete(key: string): Promise<boolean> {
@@ -51,29 +83,21 @@ export class Memory {
     const allKeys = await this.store.keys();
     const entries: MemoryEntry[] = [];
     for (const key of allKeys) {
-      const value = await this.store.get(key);
-      if (value !== null) {
-        entries.push({ key, value });
+      const storeEntry = await this.store.get(key);
+      if (storeEntry !== null) {
+        entries.push({ key, ...storeEntry });
       }
     }
     return entries;
   }
 
-  /**
-   * Generates XML representation of all stored memories for compile() injection.
-   * Returns empty string if no memories exist.
-   */
   async toXml(): Promise<string> {
-    const entries = await this.getAll();
+    const entries = (await this.getAll()).filter((e) => e.tier === 'core');
     if (entries.length === 0) return '';
     const inner = entries.map((e) => `  <${e.key}>${e.value}</${e.key}>`).join('\n');
     return `<core_memory>\n${inner}\n</core_memory>`;
   }
 
-  /**
-   * Parses assistant output for <update_core_memory> and <delete_core_memory> tags,
-   * applies them to the store (respecting allowedKeys and onMemoryUpdate), and returns the updated entries.
-   */
   async extractAndApply(content: string): Promise<MemoryEntry[]> {
     const applied: MemoryEntry[] = [];
 
@@ -83,14 +107,18 @@ export class Memory {
 
       if (this.allowedKeys && !this.allowedKeys.includes(key)) continue;
 
-      const oldValue = await this.store.get(key);
+      const oldEntry = await this.store.get(key);
+      const oldValue = oldEntry?.value ?? null;
       if (this.onMemoryUpdate) {
         const allowed = await this.onMemoryUpdate(key, value, oldValue);
         if (!allowed) continue;
       }
 
-      await this.store.set(key, value);
-      applied.push({ key, value });
+      await this.set(key, value, { tier: 'core' });
+      const entry = await this.store.get(key);
+      if (entry) {
+        applied.push({ key, ...entry });
+      }
     }
 
     for (const match of content.matchAll(DELETE_RE)) {
@@ -98,7 +126,8 @@ export class Memory {
 
       if (this.allowedKeys && !this.allowedKeys.includes(key)) continue;
 
-      const oldValue = await this.store.get(key);
+      const oldEntry = await this.store.get(key);
+      const oldValue = oldEntry?.value ?? null;
       if (this.onMemoryUpdate) {
         const allowed = await this.onMemoryUpdate(key, null, oldValue);
         if (!allowed) continue;
@@ -110,18 +139,11 @@ export class Memory {
     return applied;
   }
 
-  /**
-   * Captures store state if the underlying store supports snapshots.
-   * Returns null if the store does not implement snapshot().
-   */
-  snapshot(): Record<string, string> | null {
+  snapshot(): Record<string, MemoryStoreEntry> | null {
     return this.store.snapshot ? this.store.snapshot() : null;
   }
 
-  /**
-   * Restores store state if the underlying store supports restore().
-   */
-  restore(data: Record<string, string>): void {
+  restore(data: Record<string, MemoryStoreEntry>): void {
     if (this.store.restore) {
       this.store.restore(data);
     }

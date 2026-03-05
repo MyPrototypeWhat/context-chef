@@ -1,21 +1,14 @@
-import type { MemoryStore } from './memoryStore';
+import type { MemoryStore, MemoryStoreEntry } from './memoryStore';
 
-/**
- * In-process key-value store backed by a plain Map.
- *
- * All operations are synchronous. Data lives only for the lifetime of the
- * process — suitable for testing, short-lived agents, or Serverless functions
- * where cross-invocation persistence is not required.
- */
 export class InMemoryStore implements MemoryStore {
-  private store = new Map<string, string>();
+  private store = new Map<string, MemoryStoreEntry>();
 
-  get(key: string): string | null {
+  get(key: string): MemoryStoreEntry | null {
     return this.store.get(key) ?? null;
   }
 
-  set(key: string, value: string): void {
-    this.store.set(key, value);
+  set(key: string, entry: MemoryStoreEntry): void {
+    this.store.set(key, entry);
   }
 
   delete(key: string): boolean {
@@ -26,11 +19,11 @@ export class InMemoryStore implements MemoryStore {
     return Array.from(this.store.keys());
   }
 
-  snapshot(): Record<string, string> {
+  snapshot(): Record<string, MemoryStoreEntry> {
     return Object.fromEntries(this.store);
   }
 
-  restore(data: Record<string, string>): void {
+  restore(data: Record<string, MemoryStoreEntry>): void {
     this.store.clear();
     for (const [k, v] of Object.entries(data)) {
       this.store.set(k, v);

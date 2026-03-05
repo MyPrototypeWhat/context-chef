@@ -1,18 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { MemoryStore } from './memoryStore';
+import type { MemoryStore, MemoryStoreEntry } from './memoryStore';
 
-/**
- * Persistent key-value store that writes each entry as a file under a
- * configurable directory (default: `.context_memory/`).
- *
- * Key → filename mapping: keys are base64url-encoded to produce safe filenames,
- * avoiding path traversal and special-character issues.
- * An index file (`_index.json`) tracks all active keys for O(1) `keys()` calls.
- *
- * All operations are synchronous. Suitable for CLI tools, long-running daemons,
- * and any scenario where memory must survive process restarts.
- */
 export class VFSMemoryStore implements MemoryStore {
   private readonly dir: string;
   private readonly indexPath: string;
@@ -24,15 +13,19 @@ export class VFSMemoryStore implements MemoryStore {
     this.index = new Set(this._loadIndex());
   }
 
-  get(key: string): string | null {
+  get(key: string): MemoryStoreEntry | null {
     const file = this._keyToFile(key);
     if (!fs.existsSync(file)) return null;
-    return fs.readFileSync(file, 'utf-8');
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf-8')) as MemoryStoreEntry;
+    } catch {
+      return null;
+    }
   }
 
-  set(key: string, value: string): void {
+  set(key: string, entry: MemoryStoreEntry): void {
     this._ensureDir();
-    fs.writeFileSync(this._keyToFile(key), value, 'utf-8');
+    fs.writeFileSync(this._keyToFile(key), JSON.stringify(entry), 'utf-8');
     this.index.add(key);
     this._saveIndex();
   }
@@ -53,7 +46,6 @@ export class VFSMemoryStore implements MemoryStore {
   // ─── Private helpers ────────────────────────────────────────────────────
 
   private _keyToFile(key: string): string {
-    // base64url encode to produce a safe, reversible filename
     const safe = Buffer.from(key).toString('base64url');
     return path.join(this.dir, `${safe}.mem`);
   }

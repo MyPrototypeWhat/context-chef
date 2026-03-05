@@ -1,22 +1,17 @@
-/**
- * Standard key-value store interface for ContextChef memory subsystem.
- *
- * Supports both synchronous and asynchronous implementations, mirroring the
- * VFSStorageAdapter pattern. Use InMemoryStore for ephemeral/test scenarios,
- * VFSMemoryStore for persistent cross-session memory, or supply your own
- * implementation backed by Redis, SQLite, a vector DB, etc.
- *
- * This interface is the storage foundation for E4 (Core Memory persistence),
- * where the model can actively write to the static Top Layer via
- * <update_core_memory> output tags.
- */
+export interface MemoryStoreEntry {
+  value: string;
+  tier: 'core' | 'archival';
+  createdAt: number;
+  updatedAt: number;
+  updateCount: number;
+  importance?: number;
+}
+
 export interface MemoryStore {
-  get(key: string): string | null | Promise<string | null>;
-  set(key: string, value: string): void | Promise<void>;
+  get(key: string): MemoryStoreEntry | null | Promise<MemoryStoreEntry | null>;
+  set(key: string, entry: MemoryStoreEntry): void | Promise<void>;
   delete(key: string): boolean | Promise<boolean>;
   keys(): string[] | Promise<string[]>;
-  /** Optional: capture all entries for snapshot (e.g. InMemoryStore). */
-  snapshot?(): Record<string, string>;
-  /** Optional: restore all entries from a snapshot. */
-  restore?(data: Record<string, string>): void;
+  snapshot?(): Record<string, MemoryStoreEntry>;
+  restore?(data: Record<string, MemoryStoreEntry>): void;
 }

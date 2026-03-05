@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
 import { InMemoryStore } from './inMemoryStore';
+import type { MemoryStoreEntry } from './memoryStore';
 import { Memory } from '.';
 
 // ─── Memory module unit tests ───────────────────────────────────────────────
@@ -72,7 +73,8 @@ Done.`;
 
     const applied = await mem.extractAndApply(content);
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({ key: 'new_rule', value: 'always lint' });
+    expect(applied[0].key).toBe('new_rule');
+    expect(applied[0].value).toBe('always lint');
     expect(await mem.get('to_remove')).toBeNull();
     expect(await mem.get('new_rule')).toBe('always lint');
   });
@@ -83,24 +85,32 @@ Done.`;
     expect(applied).toHaveLength(0);
   });
 
-  it('snapshot() returns entries from InMemoryStore', () => {
+  it('snapshot() returns entries from InMemoryStore', async () => {
     const store = new InMemoryStore();
-    store.set('k1', 'v1');
     const mem = new Memory({ store });
+    await mem.set('k1', 'v1');
 
     const snap = mem.snapshot();
-    expect(snap).toEqual({ k1: 'v1' });
+    expect(snap).not.toBeNull();
+    expect(snap!.k1.value).toBe('v1');
+    expect(snap!.k1.tier).toBe('core');
+    expect(snap!.k1.updateCount).toBe(1);
   });
 
-  it('restore() replaces store contents', () => {
+  it('restore() replaces store contents', async () => {
     const store = new InMemoryStore();
-    store.set('k1', 'v1');
     const mem = new Memory({ store });
+    await mem.set('k1', 'v1');
 
-    mem.restore({ k2: 'v2', k3: 'v3' });
-    expect(store.get('k1')).toBeNull();
-    expect(store.get('k2')).toBe('v2');
-    expect(store.get('k3')).toBe('v3');
+    const now = Date.now();
+    const data: Record<string, MemoryStoreEntry> = {
+      k2: { value: 'v2', tier: 'core', createdAt: now, updatedAt: now, updateCount: 1 },
+      k3: { value: 'v3', tier: 'core', createdAt: now, updatedAt: now, updateCount: 1 },
+    };
+    mem.restore(data);
+    expect(await mem.get('k1')).toBeNull();
+    expect(await mem.get('k2')).toBe('v2');
+    expect(await mem.get('k3')).toBe('v3');
   });
 
   it('snapshot() returns null for stores without snapshot support', () => {
@@ -112,6 +122,107 @@ Done.`;
     };
     const mem = new Memory({ store: bareStore });
     expect(mem.snapshot()).toBeNull();
+  });
+
+  it('getEntry() returns full metadata', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('project', 'context-chef');
+
+    const entry = await mem.getEntry('project');
+    expect(entry).not.toBeNull();
+    expect(entry!.key).toBe('project');
+    expect(entry!.value).toBe('context-chef');
+    expect(entry!.tier).toBe('core');
+    expect(entry!.updateCount).toBe(1);
+    expect(entry!.createdAt).toBeGreaterThan(0);
+    expect(entry!.updatedAt).toBeGreaterThanOrEqual(entry!.createdAt);
+  });
+
+  it('getEntry() returns null for unknown key', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    expect(await mem.getEntry('nope')).toBeNull();
+  });
+
+  it('set() auto-generates metadata on new entries', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const before = Date.now();
+    await mem.set('key', 'val');
+    const after = Date.now();
+
+    const entry = await mem.getEntry('key');
+    expect(entry!.createdAt).toBeGreaterThanOrEqual(before);
+    expect(entry!.createdAt).toBeLessThanOrEqual(after);
+    expect(entry!.updatedAt).toBeGreaterThanOrEqual(before);
+    expect(entry!.updateCount).toBe(1);
+    expect(entry!.tier).toBe('core');
+  });
+
+  it('set() updates preserve createdAt and increment updateCount', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('key', 'v1');
+    const first = await mem.getEntry('key');
+
+    await mem.set('key', 'v2');
+    const second = await mem.getEntry('key');
+
+    expect(second!.value).toBe('v2');
+    expect(second!.createdAt).toBe(first!.createdAt);
+    expect(second!.updateCount).toBe(2);
+    expect(second!.updatedAt).toBeGreaterThanOrEqual(first!.updatedAt);
+  });
+
+  it('set() with tier option', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('archive', 'old data', { tier: 'archival' });
+
+    const entry = await mem.getEntry('archive');
+    expect(entry!.tier).toBe('archival');
+  });
+
+  it('set() with importance option', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('important', 'critical', { importance: 10 });
+
+    const entry = await mem.getEntry('important');
+    expect(entry!.importance).toBe(10);
+  });
+
+  it('toXml() only includes core entries, not archival', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('core_rule', 'always lint');
+    await mem.set('archive_rule', 'old stuff', { tier: 'archival' });
+
+    const xml = await mem.toXml();
+    expect(xml).toContain('<core_rule>always lint</core_rule>');
+    expect(xml).not.toContain('archive_rule');
+    expect(xml).not.toContain('old stuff');
+  });
+
+  it('extractAndApply() writes entries with tier=core', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const content = '<update_core_memory key="lang">TS</update_core_memory>';
+    await mem.extractAndApply(content);
+
+    const entry = await mem.getEntry('lang');
+    expect(entry!.tier).toBe('core');
+    expect(entry!.updateCount).toBe(1);
+  });
+
+  it('getAll() returns entries with full metadata', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('a', '1');
+    await mem.set('b', '2', { tier: 'archival' });
+
+    const all = await mem.getAll();
+    expect(all).toHaveLength(2);
+
+    const a = all.find((e) => e.key === 'a')!;
+    expect(a.value).toBe('1');
+    expect(a.tier).toBe('core');
+    expect(a.updateCount).toBe(1);
+
+    const b = all.find((e) => e.key === 'b')!;
+    expect(b.tier).toBe('archival');
   });
 });
 
@@ -145,9 +256,8 @@ describe('Memory allowedKeys', () => {
   });
 
   it('silently skips deletes to keys NOT in the allowlist', async () => {
-    const store = new InMemoryStore();
-    store.set('protected', 'important');
-    const mem = new Memory({ store, allowedKeys: ['other'] });
+    const mem = new Memory({ store: new InMemoryStore(), allowedKeys: ['other'] });
+    await mem.set('protected', 'important');
 
     const content = '<delete_core_memory key="protected" />';
     await mem.extractAndApply(content);
@@ -221,9 +331,8 @@ describe('Memory onMemoryUpdate', () => {
 
   it('blocks delete when hook returns false', async () => {
     const hook = vi.fn().mockReturnValue(false);
-    const store = new InMemoryStore();
-    store.set('protected', 'keep');
-    const mem = new Memory({ store, onMemoryUpdate: hook });
+    const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
+    await mem.set('protected', 'keep');
 
     const content = '<delete_core_memory key="protected" />';
     await mem.extractAndApply(content);
@@ -314,7 +423,6 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
 
-    // Instruction is always injected when memoryStore is configured
     expect(messages).toHaveLength(3);
     const memMsg = messages.find((m) => m.content.includes('update_core_memory'));
     expect(memMsg).toBeDefined();

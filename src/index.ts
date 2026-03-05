@@ -3,6 +3,7 @@ import { getAdapter } from './adapters/adapterFactory';
 import { type GuardrailOptions, Guardrail } from './modules/guardrail';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
 import { Memory, type MemoryConfig } from './modules/memory';
+import type { MemoryStoreEntry } from './modules/memory/memoryStore';
 import { type OffloadOptions, Offloader, type VFSConfig } from './modules/offloader';
 import {
   type CompiledTools,
@@ -27,9 +28,9 @@ import { objectToXml } from './utils/xmlGenerator';
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
 export { Guardrail } from './modules/guardrail';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-export { Memory, type MemoryConfig, type MemoryEntry } from './modules/memory';
+export { Memory, type MemoryConfig, type MemoryEntry, type MemorySetOptions } from './modules/memory';
 export { InMemoryStore } from './modules/memory/inMemoryStore';
-export type { MemoryStore } from './modules/memory/memoryStore';
+export type { MemoryStore, MemoryStoreEntry } from './modules/memory/memoryStore';
 export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export {
   FileSystemAdapter,
@@ -66,7 +67,7 @@ export interface ChefSnapshot {
   readonly dynamicStatePlacement: DynamicStatePlacement;
   readonly rawDynamicXml: string;
   readonly _janitor: JanitorSnapshot;
-  readonly _memoryStore?: Record<string, string>;
+  readonly _memoryStore?: Record<string, MemoryStoreEntry>;
   readonly label?: string;
   readonly createdAt: number;
 }
