@@ -1,10 +1,13 @@
 export interface MemoryStoreEntry {
   value: string;
-  tier: 'core' | 'archival';
   createdAt: number;
   updatedAt: number;
   updateCount: number;
   importance?: number;
+  /** Wall-clock expiration timestamp (ms). Set by ms-based TTL. */
+  expiresAt?: number;
+  /** Turn-based expiration point. Set by turn-based TTL. */
+  expiresAtTurn?: number;
 }
 
 export interface MemoryStore {

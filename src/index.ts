@@ -2,8 +2,7 @@ import type { z } from 'zod';
 import { getAdapter } from './adapters/adapterFactory';
 import { type GuardrailOptions, Guardrail } from './modules/guardrail';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-import { Memory, type MemoryConfig } from './modules/memory';
-import type { MemoryStoreEntry } from './modules/memory/memoryStore';
+import { Memory, type MemoryConfig, type MemorySnapshot } from './modules/memory';
 import { type OffloadOptions, Offloader, type VFSConfig } from './modules/offloader';
 import {
   type CompiledTools,
@@ -28,7 +27,16 @@ import { objectToXml } from './utils/xmlGenerator';
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
 export { Guardrail } from './modules/guardrail';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-export { Memory, type MemoryConfig, type MemoryEntry, type MemorySetOptions } from './modules/memory';
+export {
+  Memory,
+  type MemoryChangeEvent,
+  type MemoryConfig,
+  type MemoryEntry,
+  type MemorySetOptions,
+  type MemorySnapshot,
+  type TTLValue,
+  stripMemoryTags,
+} from './modules/memory';
 export { InMemoryStore } from './modules/memory/inMemoryStore';
 export type { MemoryStore, MemoryStoreEntry } from './modules/memory/memoryStore';
 export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
@@ -67,7 +75,7 @@ export interface ChefSnapshot {
   readonly dynamicStatePlacement: DynamicStatePlacement;
   readonly rawDynamicXml: string;
   readonly _janitor: JanitorSnapshot;
-  readonly _memoryStore?: Record<string, MemoryStoreEntry>;
+  readonly _memory?: MemorySnapshot;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -288,9 +296,11 @@ export class ContextChef {
 
     let content = Prompts.CORE_MEMORY_INSTRUCTION;
 
-    const xml = await this._memory.toXml();
-    if (xml) {
-      const keys = (await this._memory.getAll()).map((e) => e.key);
+    const selected = await this._memory.getSelectedEntries();
+    if (selected.length > 0) {
+      const inner = selected.map((e) => `  <${e.key}>${e.value}</${e.key}>`).join('\n');
+      const xml = `<core_memory>\n${inner}\n</core_memory>`;
+      const keys = selected.map((e) => e.key);
       content = `${content}\n\n${Prompts.getCoreMemoryBlock(xml, keys, this._memory.allowedKeys)}`;
     }
 
@@ -336,7 +346,7 @@ export class ContextChef {
       dynamicStatePlacement: this.dynamicStatePlacement,
       rawDynamicXml: this.rawDynamicXml,
       _janitor: this.janitor.snapshotState(),
-      _memoryStore: this._memory?.snapshot() ?? undefined,
+      _memory: this._memory?.snapshot() ?? undefined,
       label,
       createdAt: Date.now(),
     };
@@ -353,8 +363,8 @@ export class ContextChef {
     this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
     this.rawDynamicXml = snapshot.rawDynamicXml;
     this.janitor.restoreState(snapshot._janitor);
-    if (snapshot._memoryStore && this._memory) {
-      this._memory.restore(snapshot._memoryStore);
+    if (snapshot._memory && this._memory) {
+      this._memory.restore(snapshot._memory);
     }
     return this;
   }
@@ -398,18 +408,29 @@ export class ContextChef {
       );
     }
 
-    // 4. Core Memory injection (between topLayer and history)
-    const memoryMessages = await this._getMemoryMessages();
+    // 4. Memory: sweep expired entries, then advance turn counter
+    let memoryExpiredKeys: string[] = [];
+    let injectedMemoryKeys: string[] = [];
+    if (this._memory) {
+      memoryExpiredKeys = await this._memory.sweepExpired();
+      this._memory.advanceTurn();
+    }
 
-    // 5. Sandwich assembly
+    // 5. Core Memory injection (between topLayer and history)
+    const memoryMessages = await this._getMemoryMessages();
+    if (this._memory) {
+      injectedMemoryKeys = (await this._memory.getSelectedEntries()).map((e) => e.key);
+    }
+
+    // 6. Sandwich assembly
     let messages = [...this.topLayer, ...memoryMessages, ...compressedHistory, ...dynamicState];
 
-    // 6. Transform hook
+    // 7. Transform hook
     if (this.transformContext) {
       messages = await this.transformContext(messages);
     }
 
-    // 7. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
+    // 8. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
     const stitchXml = [this.rawDynamicXml, implicitContextXml].filter(Boolean).join('\n');
     const rawPayload = this.assembler.compile(messages, {
       dynamicStateXml: stitchXml || undefined,
@@ -421,6 +442,9 @@ export class ContextChef {
     const adapterPayload = adapter.compile([...rawPayload.messages]);
 
     const tools = this._getPrunerTools();
-    return tools.length > 0 ? { ...adapterPayload, tools } : adapterPayload;
+    const meta = { injectedMemoryKeys, memoryExpiredKeys };
+    const payload: TargetPayload = { ...adapterPayload, meta };
+    if (tools.length > 0) payload.tools = tools;
+    return payload;
   }
 }

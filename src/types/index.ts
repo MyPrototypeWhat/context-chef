@@ -80,23 +80,36 @@ export interface CompileOptions {
   target: TargetProvider;
 }
 
+// ─── Compile metadata ───
+
+/** Metadata returned by compile() for observability. */
+export interface CompileMeta {
+  /** Memory keys that were injected into the system prompt this turn. */
+  injectedMemoryKeys: string[];
+  /** Memory keys that expired and were removed this turn. */
+  memoryExpiredKeys: string[];
+}
+
 // ─── Per-provider payload types ───
 
 export interface OpenAIPayload {
   messages: ChatCompletionMessageParam[];
   tools?: ToolDefinition[];
+  meta?: CompileMeta;
 }
 
 export interface AnthropicPayload {
   system?: AnthropicTextBlockParam[];
   messages: AnthropicMessageParam[];
   tools?: ToolDefinition[];
+  meta?: CompileMeta;
 }
 
 export interface GeminiPayload {
   messages: GeminiContent[];
   systemInstruction?: { parts: GeminiTextPart[] };
   tools?: ToolDefinition[];
+  meta?: CompileMeta;
 }
 
 /**
@@ -108,4 +121,5 @@ export interface TargetPayload {
   system?: unknown;
   systemInstruction?: unknown;
   tools?: ToolDefinition[];
+  meta?: CompileMeta;
 }

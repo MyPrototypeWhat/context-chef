@@ -2,7 +2,7 @@
 
 ## Background
 
-Current memory module uses inline XML tags (`<update_core_memory>` / `<delete_core_memory>`) in LLM responses, with a flat KV store that injects all entries into the system prompt. Based on industry research (Mem0, Letta/MemGPT, Zep, A-MEM, MAGMA), the following optimizations are planned.
+Memory module uses XML tags (`<update_core_memory>` / `<delete_core_memory>`) in LLM responses, with a KV store that injects all entries into the system prompt. Based on industry research (Mem0, Letta/MemGPT, Cursor, Claude Code, Manus, Windsurf, Augment, Cline), the following optimizations are planned.
 
 Design principle: **ContextChef provides mechanisms (hooks + utility functions), not policies.**
 
@@ -10,160 +10,101 @@ Design principle: **ContextChef provides mechanisms (hooks + utility functions),
 
 ## Architecture Overview
 
-### Unified Config
+### Design Decisions
+
+**No tiers.** Originally borrowed `core / archival` from Letta, but analysis showed:
+- Tier classification is fundamentally an LLM decision problem — unreliable regardless of how it's framed
+- No product has solved this well; most (Cursor, Claude Code, Windsurf) avoid tiers entirely
+- Mem0's approach (LLM-powered ADD/UPDATE/DELETE pipeline) belongs in agent framework layer, not context library
+
+**No dual-mode (inline + tool).** Originally proposed to support tiered write paths. With tiers removed:
+- Inline XML tags already provide full read/write capability in a single LLM response (zero extra round trips)
+- Developers who want tool-based memory can trivially wrap `memory().set()` / `memory().delete()` in custom tool handlers (~15 lines)
+- ContextChef provides mechanisms; tool routing is a policy decision
+
+**TTL-based lifecycle control** instead of tier-based separation:
+- All entries are equal — no tier semantics
+- Growth control via TTL (turn-based or wall-clock) + developer hooks
+- Industry patterns: Augment uses TTL for session memory; Manus uses recoverable compression; Cursor/Claude Code rely on manual curation
+
+### Current Config
 
 ```typescript
 memory: {
-  store: myStore,                    // single store, shared by both tiers
-
-  core: {
-    mode: 'inline' | 'tool',        // write protocol (default: 'inline')
-    selector?: (entries) => entries,  // filter/sort within core tier
-    allowedKeys?: string[],
-  },
-
-  archival?: {                       // optional, low priority
-    search: (query: string) => MemoryEntry[] | Promise<MemoryEntry[]>,
-    // developer provides search implementation (string match, vector DB, etc.)
-    // search logic stays out of MemoryStore interface
-  },
-
+  store: myStore,
+  defaultTTL?: TTLValue,              // number = turns, { ms } or { turns }
+  allowedKeys?: string[],
   onMemoryUpdate?: (key, value, oldValue) => boolean,  // veto hook
-  onMemoryChanged?: (event) => void,                    // notification hook
+  onMemoryExpired?: (entry) => void,                    // expiry notification
 }
+
+// TTL types
+type TTLValue = number | { ms: number } | { turns: number };
+// number (bare) = turns shorthand
+// { ms: 3600_000 } = wall-clock expiry
+// { turns: 20 } = turn-based expiry (robust to session gaps)
 ```
 
-### Tier Separation: By Call Path, Not By LLM Decision
+### Memory Lifecycle
 
-Tier is determined by **which code path writes the entry**, not by LLM or developer manually tagging:
+```
+LLM response → extractAndApply() → set() with defaultTTL → store
+                                                              ↓
+compile() → sweepExpired() → advanceTurn() → toXml() → inject into system prompt
+               ↓
+         onMemoryExpired hook → developer decides: discard / offload to file / extend TTL
+```
 
-| Call path | Writes to tier | Why |
-| --- | --- | --- |
-| `extractAndApply(response)` | core | inline mode is core_memory's write protocol |
-| `core_memory_update` tool call | core | core_memory's tool |
-| `archival_memory_insert` tool call | archival | archival_memory's tool |
-| `chef.memory().set(key, val)` | core (default) | developer direct call, can override with `{ tier: 'archival' }` |
-
-LLM never sees or decides tier. The two tiers are exposed to the LLM as **separate interfaces with distinct prompts/tool descriptions** to prevent confusion.
-
-### Core Memory: Read via Injection, Write via Mode
-
-In **both** inline and tool mode, core memory content is always injected into the system prompt. LLM can read core memory directly from context without any tool call.
-
-The `mode` only determines the **write protocol**:
-
-- **inline**: LLM writes `<update_core_memory>` tags in response
-- **tool**: LLM calls `core_memory_update` / `core_memory_delete` tools
-
-There is no `core_memory_read` tool — it would be redundant since all core entries are already visible in the system prompt.
-
-### Prompt/Tool Isolation Between Tiers
-
-**Critical**: core and archival must have clearly separated instructions so the LLM doesn't conflate them.
-
-**Core memory** (inline mode prompt):
-
-- "You have persistent core memory for key facts and preferences. Update it with `<update_core_memory>` tags."
-- Injected content is labeled `<core_memory>` in system prompt
-- Framing: small, stable, high-importance facts
-
-**Core memory** (tool mode description):
-
-- `core_memory_update`: "Save or update a key fact in your core memory (preferences, rules, conventions)."
-- `core_memory_delete`: "Remove a key from your core memory."
-- No read tool — core memory is already visible in the system prompt
-- Framing: write-only tools for known keys
-
-**Archival memory** (tool description):
-
-- `archival_memory_search`: "Search your long-term knowledge archive for relevant information. Use when you need to recall details not in your core memory."
-- `archival_memory_insert`: "Store information in your long-term archive for future retrieval."
-- Framing: search-based, for large/infrequent knowledge
-
-The distinction is reinforced by:
-
-1. Different tool name prefixes (`core_memory_*` vs `archival_memory_*`)
-2. Different tool descriptions (write-only CRUD vs search semantics)
-3. System prompt guidance: "Core memory = always-available key facts. Archive = searchable long-term storage."
+- **Write**: LLM via XML tags (`extractAndApply()`) or developer via `memory().set()`
+- **Read**: Always injected into system prompt during `compile()`
+- **Expire**: Lazily during `compile()` — check `expiresAt` (wall-clock) or `expiresAtTurn` (turn-based)
+- **Clean response**: `stripMemoryTags()` removes XML tags from assistant content
 
 ---
 
-## P0 — Immediate
+## Completed
 
-> **Implementation order**: #3 metadata → #2 dual-mode → #1 stripMemoryTags
->
-> Rationale: metadata (#3) provides the `tier` field that dual-mode (#2) depends on for routing.
-> stripMemoryTags (#1) has zero dependencies and is simplest, so it goes last.
+### ✅ Entry metadata
 
-### 1. Entry metadata
+`MemoryEntry` with `createdAt`, `updatedAt`, `updateCount`, `importance`.
 
-Extend `MemoryEntry`:
+### ✅ TTL-based expiration
 
-```typescript
-interface MemoryEntry {
-  key: string;
-  value: string;
-  tier: 'core' | 'archival';   // determined by call path, default: 'core'
-  createdAt: number;
-  lastAccessedAt: number;
-  accessCount: number;
-  importance?: number;          // developer-set, 1-10, optional
-}
-```
+- `defaultTTL` config: applies to all writes
+- Per-entry override: `set(key, val, { ttl })`, `ttl: null` = never expire
+- Two TTL modes: turn-based (robust to session gaps) and wall-clock (ms)
+- `sweepExpired()` called automatically during `compile()`
+- `onMemoryExpired` hook for developer to handle expiring entries (offload, extend, log)
+- Turn counter (`advanceTurn()`) incremented per `compile()` call, included in snapshot/restore
 
-- `MemoryStore` interface updated to support metadata
-- `InMemoryStore` and `VfsMemoryStore` both updated
-- `lastAccessedAt` auto-updated when entry is injected during `compile()`
-- `tier` field enables two-tier memory without separate stores
+### ✅ `stripMemoryTags(content: string): string`
 
-### 2. Dual-mode memory (inline + tool)
-
-**inline mode** (current behavior, default):
-
-- `compile()` injects XML instruction + core memory content into system prompt
-- Developer calls `extractAndApply()` + `stripMemoryTags()` post-response
-
-**tool mode**:
-
-- `compile()` injects core memory content into system prompt (same as inline — always readable)
-- `compile()` registers write-only tools via Pruner namespace instead of XML instruction
-- Core tools: `core_memory_update(key, value)`, `core_memory_delete(key)`
-- No `core_memory_read` — content already in system prompt
-- Provide a resolver function for developers to route tool calls to memory operations
-- No tag stripping needed — tool calls are structurally separate from assistant content
-
-### 3. Export `stripMemoryTags(content: string): string`
-
-- Strip `<update_core_memory>` and `<delete_core_memory>` tags from LLM response
+- Strips `<update_core_memory>` and `<delete_core_memory>` tags from LLM response
 - Pure utility function, no side effects
-- Reuse existing regexes from `Memory` class (`UPDATE_RE`, `DELETE_RE`)
-- Rationale: ContextChef defines the tags, so it should provide the cleanup tool
-- Only needed for inline mode; tool mode doesn't produce tags
 
 ---
 
 ## P1 — Extension
 
-### 4. `selector` hook
+### 1. `selector` hook
 
 ```typescript
-core: {
+memory: {
   selector?: (entries: MemoryEntry[]) => MemoryEntry[]
 }
 ```
 
-- Called during `compile()` before core memory injection
-- Developer controls filtering, sorting, truncation **within core tier**
-- Default: return all core entries
+- Called during `compile()` before memory injection
+- Developer controls filtering, sorting, truncation
+- Default: return all non-expired entries
 - Enables custom token budgeting, priority filtering, etc.
 
-### 5. `onMemoryChanged` event hook
+### 2. `onMemoryChanged` event hook
 
 ```typescript
 onMemoryChanged?: (event: {
-  type: 'set' | 'delete';
+  type: 'set' | 'delete' | 'expire';
   key: string;
-  tier: 'core' | 'archival';
   value: string | null;
   oldValue: string | null;
 }) => void
@@ -172,7 +113,7 @@ onMemoryChanged?: (event: {
 - Pure notification, does not affect write flow (unlike `onMemoryUpdate` which is a veto)
 - Use cases: logging, external sync, multi-agent shared memory
 
-### 6. `compile()` metadata return
+### 3. `compile()` metadata return
 
 ```typescript
 const result = chef.compile(history);
@@ -187,7 +128,7 @@ result.meta.memoryTokenCount    // 342
 
 ## P2 — Utilities
 
-### 7. `createTokenBudgetSelector` utility
+### 4. `createTokenBudgetSelector` utility
 
 ```typescript
 import { createTokenBudgetSelector } from 'context-chef';
@@ -195,36 +136,14 @@ import { createTokenBudgetSelector } from 'context-chef';
 const selector = createTokenBudgetSelector({
   budget: 2000,
   scorer?: (entry: MemoryEntry) => number
-  // default scorer: recency-based decay 0.995^hoursSinceLastAccess
+  // default scorer: recency-based decay 0.995^hoursSinceLastUpdate
 });
 ```
 
 - Deterministic scoring, no LLM dependency
-- Default: pure time decay based on `lastAccessedAt`
+- Default: pure time decay based on `updatedAt`
 - Developer can set `importance` manually and provide custom scorer
 - Accumulate token count, stop when budget exceeded
-
----
-
-## P3 — Low Priority (Pending User Demand)
-
-### 8. Two-tier memory (core + archival)
-
-Builds on P0's metadata `tier` field and tool infrastructure:
-
-- `archival` config field enables archival tier
-- Archival tools: `archival_memory_search(query)`, `archival_memory_insert(key, value)`
-- Search logic provided by developer via config, not built into MemoryStore:
-
-  ```typescript
-  archival: {
-    search: (query: string) => MemoryEntry[] | Promise<MemoryEntry[]>
-  }
-  ```
-
-- Tool descriptions clearly differentiate from core tools (see Architecture section)
-- Core and archival tool sets are orthogonal, can coexist
-- Deferred until real user demand: most memory use cases involve short entries that fit comfortably in core
 
 ---
 
@@ -233,7 +152,7 @@ Builds on P0's metadata `tier` field and tool infrastructure:
 > Inspired by [tape.systems](https://tape.systems/) / [bubbuild/bub](https://github.com/bubbuild/bub) comparison.
 > Core insight: context-chef currently treats everything as flat `Message[]`. Adding lightweight type annotations and per-module state ownership improves time travel, debugging, and observability — without changing the compilation model.
 
-### 9. `MessageKind` — typed message annotations
+### 5. `MessageKind` — typed message annotations
 
 Add an optional `kind` field to `Message` to distinguish messages generated by context-chef internals from user-provided conversation messages.
 
@@ -259,7 +178,7 @@ interface Message {
 - `onBeforeCompile` implicit context injection sets `kind: 'implicit'`
 - Adapters strip `kind` before sending to LLM (internal metadata only)
 
-### 10. `CompileEvent` — compilation event log
+### 6. `CompileEvent` — compilation event log
 
 Each `compile()` call produces a `CompileEvent` record. Not sent to the LLM — purely for developer observability and time travel causality tracking.
 
@@ -273,6 +192,7 @@ interface CompileEvent {
   compressed: boolean;
   compressedCount?: number;
   memoryInjected: string[];   // which memory keys were injected
+  memoryExpired: string[];    // which memory keys expired this turn
   implicitContext: boolean;   // whether onBeforeCompile injected content
   tokenEstimate?: number;
 }
@@ -283,27 +203,16 @@ interface CompileEvent {
 - Combined with snapshots, provides full causality: snapshot = "state at a point", CompileEvent = "what happened between states"
 - Included in `ChefSnapshot.events` for time travel replay
 
-### 11. Module state ownership pattern
+### 7. Module state ownership pattern
 
 Each stateful module implements a consistent state interface. `ChefSnapshot` composes module states instead of reaching into module internals.
-
-**Current problem:**
-
-```typescript
-// ContextChef manually picks fields from each module
-interface ChefSnapshot {
-  readonly _janitor: JanitorSnapshot;     // _ prefix on public API
-  readonly _memoryStore?: Record<string, string>;  // leaks store implementation
-  // Pruner state? missing. Pointer state? missing.
-}
-```
 
 **Target:**
 
 ```typescript
 // Each stateful module defines its own state type
 interface JanitorState { externalTokenUsage: number | null; suppressNextCompression: boolean; }
-interface MemoryState  { entries: Record<string, string>; }
+interface MemoryState  { entries: Record<string, MemoryStoreEntry>; turnCount: number; }
 interface PrunerState  { flatTools: ToolDefinition[]; namespaces: ToolGroup[]; lazyToolkits: ToolGroup[]; }
 interface PointerState { offloadRecords: OffloadRecord[]; }
 
@@ -340,13 +249,15 @@ Modules without state (Stitcher, Governor) are pure functions and do not partici
 
 The following patterns from the industry are intentionally out of scope for ContextChef:
 
+- **Memory tiers (core/archival)**: tier classification is an LLM decision problem; TTL + selector provides equivalent growth control without the classification burden
+- **Dual-mode write protocol (inline + tool)**: inline XML tags already work; developers can wrap public API in custom tools if needed
 - **Graph memory** (Mem0g, Zep/Graphiti, MAGMA): requires external graph DB, too heavy
 - **Reflection / self-assessment**: requires extra LLM calls, belongs in agent framework layer
-- **Vector retrieval / embeddings**: requires embedding model dependency, but can be plugged in via archival `search` implementation
+- **Vector retrieval / embeddings**: requires embedding model dependency, but can be plugged in via `selector` or `onBeforeCompile`
 - **LLM-based importance scoring**: unreliable, adds cost
 - **LLM-based memory consolidation**: same as above
 
-These should be implemented at the agent framework layer, using ContextChef's hooks (`selector`, `onMemoryChanged`, `onMemoryUpdate`) as integration points.
+These should be implemented at the agent framework layer, using ContextChef's hooks (`selector`, `onMemoryChanged`, `onMemoryUpdate`, `onMemoryExpired`) as integration points.
 
 ---
 

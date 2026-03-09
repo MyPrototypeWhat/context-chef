@@ -8,7 +8,6 @@ import { VFSMemoryStore } from './vfsMemoryStore';
 function entry(value: string, overrides?: Partial<MemoryStoreEntry>): MemoryStoreEntry {
   return {
     value,
-    tier: 'core',
     createdAt: Date.now(),
     updatedAt: Date.now(),
     updateCount: 1,
@@ -133,14 +132,13 @@ describe('VFSMemoryStore', () => {
   });
 
   it('persists across instance re-creation (simulates process restart)', () => {
-    const e = entry('Always use TypeScript.', { tier: 'archival', importance: 5 });
+    const e = entry('Always use TypeScript.', { importance: 5 });
     const store1 = new VFSMemoryStore(TMP_DIR);
     store1.set('persistent_rule', e);
 
     const store2 = new VFSMemoryStore(TMP_DIR);
     const restored = store2.get('persistent_rule');
     expect(restored?.value).toBe('Always use TypeScript.');
-    expect(restored?.tier).toBe('archival');
     expect(restored?.importance).toBe(5);
     expect(restored?.createdAt).toBe(e.createdAt);
     expect(store2.keys()).toContain('persistent_rule');
