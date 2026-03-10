@@ -346,7 +346,10 @@ export class Pruner {
 
   public restoreState(state: PrunerSnapshot): void {
     this.flatTools = state.flatTools.map((t) => ({ ...t }));
-    this.namespaces = state.namespaces.map((g) => ({ ...g, tools: g.tools.map((t) => ({ ...t })) }));
+    this.namespaces = state.namespaces.map((g) => ({
+      ...g,
+      tools: g.tools.map((t) => ({ ...t })),
+    }));
     this.lazyToolkits = state.lazyToolkits.map((g) => ({
       ...g,
       tools: g.tools.map((t) => ({ ...t })),
