@@ -1,6 +1,7 @@
 {
   "name": "context-chef",
   "version": "1.0.1",
+  "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
