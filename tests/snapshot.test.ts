@@ -1,5 +1,5 @@
-import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { ContextChef } from '../src/index';
 import type { Message, ToolDefinition } from '../src/types';
 
