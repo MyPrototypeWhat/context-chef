@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { BeforeCompileContext } from '../src/index';
 import { ContextChef } from '../src/index';
@@ -47,8 +47,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     );
     expect(dynamicSysMsg).toBeDefined();
     // implicit_context is appended directly to the dynamic state system message
-    expect(dynamicSysMsg!.content?.toString()).toContain('<implicit_context>');
-    expect(dynamicSysMsg!.content?.toString()).toContain('AST dependency graph here');
+    expect(dynamicSysMsg?.content?.toString()).toContain('<implicit_context>');
+    expect(dynamicSysMsg?.content?.toString()).toContain('AST dependency graph here');
   });
 
   it('should skip injection when hook returns null', async () => {
@@ -105,11 +105,11 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     await chef.compile({ target: 'openai' });
 
     expect(receivedCtx).not.toBeNull();
-    expect(receivedCtx!.topLayer).toHaveLength(1);
-    expect(receivedCtx!.topLayer[0].content).toBe('Top');
-    expect(receivedCtx!.rollingHistory).toHaveLength(2);
-    expect(receivedCtx!.dynamicState).toHaveLength(0); // last_user placement → empty array
-    expect(receivedCtx!.rawDynamicXml).toContain('<activeFile>test.ts</activeFile>');
+    expect(receivedCtx?.topLayer).toHaveLength(1);
+    expect(receivedCtx?.topLayer[0].content).toBe('Top');
+    expect(receivedCtx?.rollingHistory).toHaveLength(2);
+    expect(receivedCtx?.dynamicState).toHaveLength(0); // last_user placement → empty array
+    expect(receivedCtx?.rawDynamicXml).toContain('<activeFile>test.ts</activeFile>');
   });
 
   it('should support synchronous hook', async () => {

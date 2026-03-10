@@ -15,10 +15,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { Message } from '../types';
 import { AnthropicAdapter } from './anthropicAdapter';
 import { GeminiAdapter } from './geminiAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
-import type { Message } from '../types';
 
 // ─── Local inspection types (avoid as-unknown casts in assertions) ──────────
 
@@ -169,7 +169,9 @@ describe('OpenAIAdapter — thinking field', () => {
       { role: 'user', content: 'Thanks' }, // prevent prefill degradation
     ];
     const result = openai.compile(messages);
-    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as OpenAIAssertMsg | undefined;
+    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as
+      | OpenAIAssertMsg
+      | undefined;
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     expect(assistantMsg.thinking).toBeUndefined();
@@ -187,7 +189,9 @@ describe('OpenAIAdapter — thinking field', () => {
       { role: 'user', content: 'Next' }, // prevent prefill degradation
     ];
     const result = openai.compile(messages);
-    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as OpenAIAssertMsg | undefined;
+    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as
+      | OpenAIAssertMsg
+      | undefined;
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     expect(assistantMsg.redacted_thinking).toBeUndefined();
@@ -204,7 +208,9 @@ describe('OpenAIAdapter — thinking field', () => {
       { role: 'user', content: 'cont' }, // prevent prefill degradation
     ];
     const result = openai.compile(messages);
-    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as OpenAIAssertMsg | undefined;
+    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as
+      | OpenAIAssertMsg
+      | undefined;
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     expect(assistantMsg._cache_breakpoint).toBeUndefined();

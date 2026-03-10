@@ -1,5 +1,12 @@
 # ContextChef
 
+[![npm version](https://img.shields.io/npm/v/context-chef.svg)](https://www.npmjs.com/package/context-chef)
+[![npm downloads](https://img.shields.io/npm/dm/context-chef.svg)](https://www.npmjs.com/package/context-chef)
+[![GitHub stars](https://img.shields.io/github/stars/MyPrototypeWhat/context-chef)](https://github.com/MyPrototypeWhat/context-chef)
+[![License](https://img.shields.io/npm/l/context-chef.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
+[![CI](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml/badge.svg)](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml)
+
 TypeScript/JavaScript AI Agent 的上下文编译器。
 
 ContextChef 解决 AI Agent 开发中最常见的上下文工程问题：对话太长模型会忘事、工具太多模型会幻觉、切换模型要重写 prompt、长程任务状态丢失。它不接管你的控制流，只负责在每次 LLM 调用前把你的状态编译成最优的 payload。

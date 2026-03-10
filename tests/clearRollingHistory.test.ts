@@ -5,8 +5,10 @@ import type { Message } from '../src/types';
 const userMsg = (content: string): Message => ({ role: 'user', content });
 const assistantMsg = (content: string): Message => ({ role: 'assistant', content });
 
-const makeTokenizer = (tokensPerMsg: number) => (messages: Message[]): number =>
-  messages.length * tokensPerMsg;
+const makeTokenizer =
+  (tokensPerMsg: number) =>
+  (messages: Message[]): number =>
+    messages.length * tokensPerMsg;
 
 describe('E13: clearRollingHistory', () => {
   it('clears rolling history and produces empty history in compile output', async () => {
@@ -72,7 +74,7 @@ describe('E13: clearRollingHistory', () => {
 
     chef.clearRollingHistory();
 
-    expect(chef['topLayer']).toHaveLength(1);
-    expect(chef['topLayer'][0].content).toBe('top');
+    expect(chef.topLayer).toHaveLength(1);
+    expect(chef.topLayer[0].content).toBe('top');
   });
 });

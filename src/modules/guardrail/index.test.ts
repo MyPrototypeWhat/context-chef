@@ -1,6 +1,6 @@
-import { describe, beforeEach, it, expect } from 'vitest';
-import { Guardrail } from '.';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { Message } from '../../types';
+import { Guardrail } from '.';
 
 describe('Guardrail', () => {
   let guardrail: Guardrail;
@@ -38,7 +38,7 @@ describe('Guardrail', () => {
       expect(result).toHaveLength(2);
       const sysMsg = result.find((m) => m.role === 'system');
       expect(sysMsg).toBeDefined();
-      expect(sysMsg!.content).toContain('reply');
+      expect(sysMsg?.content).toContain('reply');
     });
 
     it('guardrail does not include <thinking> tag instructions', () => {

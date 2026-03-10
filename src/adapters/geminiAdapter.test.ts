@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { GeminiPayload, Message } from '../types';
+import type { Message } from '../types';
 import { GeminiAdapter } from './geminiAdapter';
 
 describe('GeminiAdapter', () => {
@@ -18,9 +18,9 @@ describe('GeminiAdapter', () => {
     };
 
     expect(result.systemInstruction).toBeDefined();
-    expect(result.systemInstruction!.parts).toHaveLength(2);
-    expect(result.systemInstruction!.parts[0].text).toBe('You are an expert.');
-    expect(result.systemInstruction!.parts[1].text).toBe('Be concise.');
+    expect(result.systemInstruction?.parts).toHaveLength(2);
+    expect(result.systemInstruction?.parts[0].text).toBe('You are an expert.');
+    expect(result.systemInstruction?.parts[1].text).toBe('Be concise.');
 
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].role).toBe('user');
@@ -86,8 +86,8 @@ describe('GeminiAdapter', () => {
     expect(modelMsg.role).toBe('model');
     expect(modelMsg.parts).toHaveLength(1);
     expect(modelMsg.parts[0].functionCall).toBeDefined();
-    expect(modelMsg.parts[0].functionCall!.name).toBe('get_weather');
-    expect(modelMsg.parts[0].functionCall!.args).toEqual({ city: 'London' });
+    expect(modelMsg.parts[0].functionCall?.name).toBe('get_weather');
+    expect(modelMsg.parts[0].functionCall?.args).toEqual({ city: 'London' });
   });
 
   it('should include text part when assistant message has both content and tool_calls', () => {
@@ -122,7 +122,7 @@ describe('GeminiAdapter', () => {
     const modelMsg = result.messages[1];
     expect(modelMsg.parts).toHaveLength(2);
     expect(modelMsg.parts[0].text).toBe('Let me check...');
-    expect(modelMsg.parts[1].functionCall!.name).toBe('get_weather');
+    expect(modelMsg.parts[1].functionCall?.name).toBe('get_weather');
   });
 
   it('should convert parallel tool calls into multiple functionCall parts', () => {
@@ -160,9 +160,9 @@ describe('GeminiAdapter', () => {
 
     const modelMsg = result.messages[1];
     expect(modelMsg.parts).toHaveLength(3);
-    expect(modelMsg.parts[0].functionCall!.args).toEqual({ city: 'London' });
-    expect(modelMsg.parts[1].functionCall!.args).toEqual({ city: 'Paris' });
-    expect(modelMsg.parts[2].functionCall!.args).toEqual({ city: 'Tokyo' });
+    expect(modelMsg.parts[0].functionCall?.args).toEqual({ city: 'London' });
+    expect(modelMsg.parts[1].functionCall?.args).toEqual({ city: 'Paris' });
+    expect(modelMsg.parts[2].functionCall?.args).toEqual({ city: 'Tokyo' });
   });
 
   it('should convert tool results to functionResponse parts with user role', () => {
@@ -200,8 +200,8 @@ describe('GeminiAdapter', () => {
     const toolResultMsg = result.messages[2];
     expect(toolResultMsg.role).toBe('user');
     expect(toolResultMsg.parts[0].functionResponse).toBeDefined();
-    expect(toolResultMsg.parts[0].functionResponse!.name).toBe('get_weather');
-    expect(toolResultMsg.parts[0].functionResponse!.response).toEqual({
+    expect(toolResultMsg.parts[0].functionResponse?.name).toBe('get_weather');
+    expect(toolResultMsg.parts[0].functionResponse?.response).toEqual({
       temp: 15,
       unit: 'celsius',
     });
@@ -226,7 +226,7 @@ describe('GeminiAdapter', () => {
       }>;
     };
 
-    expect(result.messages[0].parts[0].functionResponse!.response).toEqual({
+    expect(result.messages[0].parts[0].functionResponse?.response).toEqual({
       result: 'File not found',
     });
   });
@@ -249,7 +249,7 @@ describe('GeminiAdapter', () => {
       }>;
     };
 
-    expect(result.messages[0].parts[0].functionResponse!.name).toBe('call_fallback');
+    expect(result.messages[0].parts[0].functionResponse?.name).toBe('call_fallback');
   });
 
   it('should silently ignore _cache_breakpoint', () => {

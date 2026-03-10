@@ -61,13 +61,14 @@ export class Offloader {
   private adapter: VFSStorageAdapter;
 
   constructor(config: Partial<VFSConfig> = {}) {
+    const storageDir = config.storageDir ?? path.join(process.cwd(), '.context_vfs');
     this.config = {
       threshold: config.threshold ?? 5000,
-      storageDir: config.storageDir ?? path.join(process.cwd(), '.context_vfs'),
+      storageDir,
       uriScheme: config.uriScheme ?? 'context://vfs/',
     };
 
-    this.adapter = config.adapter ?? new FileSystemAdapter(this.config.storageDir!);
+    this.adapter = config.adapter ?? new FileSystemAdapter(storageDir);
   }
 
   private _prepareOffload(content: string, activeThreshold: number, tailLines: number) {
@@ -91,10 +92,7 @@ export class Offloader {
    * and returns a truncated string with a pointer URI.
    * Throws an error if the configured adapter is asynchronous.
    */
-  public offload(
-    content: string,
-    options?: OffloadOptions,
-  ): VFSResult {
+  public offload(content: string, options?: OffloadOptions): VFSResult {
     const activeThreshold = options?.threshold ?? this.config.threshold;
     const tailLines = options?.tailLines ?? 20;
 
@@ -106,7 +104,9 @@ export class Offloader {
 
     const writeResult = this.adapter.write(filename, content);
     if (writeResult instanceof Promise) {
-      throw new Error('Offloader.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.');
+      throw new Error(
+        'Offloader.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.',
+      );
     }
 
     return {
@@ -121,10 +121,7 @@ export class Offloader {
    * and returns a truncated string with a pointer URI.
    * Safely supports both synchronous and asynchronous adapters.
    */
-  public async offloadAsync(
-    content: string,
-    options?: OffloadOptions,
-  ): Promise<VFSResult> {
+  public async offloadAsync(content: string, options?: OffloadOptions): Promise<VFSResult> {
     const activeThreshold = options?.threshold ?? this.config.threshold;
     const tailLines = options?.tailLines ?? 20;
 
@@ -155,11 +152,13 @@ export class Offloader {
 
     const filename = uri.slice(scheme.length);
     const readResult = this.adapter.read(filename);
-    
+
     if (readResult instanceof Promise) {
-      throw new Error('Offloader.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.');
+      throw new Error(
+        'Offloader.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.',
+      );
     }
-    
+
     return readResult;
   }
 
@@ -175,7 +174,7 @@ export class Offloader {
 
     const filename = uri.slice(scheme.length);
     const readResult = await this.adapter.read(filename);
-    
+
     return readResult;
   }
 }

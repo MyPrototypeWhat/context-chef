@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
-import { InMemoryStore } from './inMemoryStore';
-import type { MemoryStoreEntry } from './memoryStore';
 import { Memory, stripMemoryTags } from '.';
+import { InMemoryStore } from './inMemoryStore';
 
 // ─── Memory module unit tests ───────────────────────────────────────────────
 
@@ -92,9 +91,9 @@ Done.`;
 
     const snap = mem.snapshot();
     expect(snap).not.toBeNull();
-    expect(snap!.entries.k1.value).toBe('v1');
-    expect(snap!.entries.k1.updateCount).toBe(1);
-    expect(snap!.turnCount).toBe(0);
+    expect(snap?.entries.k1.value).toBe('v1');
+    expect(snap?.entries.k1.updateCount).toBe(1);
+    expect(snap?.turnCount).toBe(0);
   });
 
   it('restore() replaces store contents and turnCount', async () => {
@@ -133,11 +132,11 @@ Done.`;
 
     const entry = await mem.getEntry('project');
     expect(entry).not.toBeNull();
-    expect(entry!.key).toBe('project');
-    expect(entry!.value).toBe('context-chef');
-    expect(entry!.updateCount).toBe(1);
-    expect(entry!.createdAt).toBeGreaterThan(0);
-    expect(entry!.updatedAt).toBeGreaterThanOrEqual(entry!.createdAt);
+    expect(entry?.key).toBe('project');
+    expect(entry?.value).toBe('context-chef');
+    expect(entry?.updateCount).toBe(1);
+    expect(entry?.createdAt).toBeGreaterThan(0);
+    expect(entry?.updatedAt).toBeGreaterThanOrEqual(entry?.createdAt);
   });
 
   it('getEntry() returns null for unknown key', async () => {
@@ -152,10 +151,10 @@ Done.`;
     const after = Date.now();
 
     const entry = await mem.getEntry('key');
-    expect(entry!.createdAt).toBeGreaterThanOrEqual(before);
-    expect(entry!.createdAt).toBeLessThanOrEqual(after);
-    expect(entry!.updatedAt).toBeGreaterThanOrEqual(before);
-    expect(entry!.updateCount).toBe(1);
+    expect(entry?.createdAt).toBeGreaterThanOrEqual(before);
+    expect(entry?.createdAt).toBeLessThanOrEqual(after);
+    expect(entry?.updatedAt).toBeGreaterThanOrEqual(before);
+    expect(entry?.updateCount).toBe(1);
   });
 
   it('set() updates preserve createdAt and increment updateCount', async () => {
@@ -166,10 +165,10 @@ Done.`;
     await mem.set('key', 'v2');
     const second = await mem.getEntry('key');
 
-    expect(second!.value).toBe('v2');
-    expect(second!.createdAt).toBe(first!.createdAt);
-    expect(second!.updateCount).toBe(2);
-    expect(second!.updatedAt).toBeGreaterThanOrEqual(first!.updatedAt);
+    expect(second?.value).toBe('v2');
+    expect(second?.createdAt).toBe(first?.createdAt);
+    expect(second?.updateCount).toBe(2);
+    expect(second?.updatedAt).toBeGreaterThanOrEqual(first?.updatedAt);
   });
 
   it('set() with importance option', async () => {
@@ -177,7 +176,7 @@ Done.`;
     await mem.set('important', 'critical', { importance: 10 });
 
     const entry = await mem.getEntry('important');
-    expect(entry!.importance).toBe(10);
+    expect(entry?.importance).toBe(10);
   });
 
   it('toXml() includes all entries', async () => {
@@ -198,9 +197,10 @@ Done.`;
     const all = await mem.getAll();
     expect(all).toHaveLength(2);
 
-    const a = all.find((e) => e.key === 'a')!;
-    expect(a.value).toBe('1');
-    expect(a.updateCount).toBe(1);
+    const a = all.find((e) => e.key === 'a');
+    expect(a).toBeDefined();
+    expect(a?.value).toBe('1');
+    expect(a?.updateCount).toBe(1);
   });
 });
 
@@ -212,8 +212,8 @@ describe('Memory TTL (turn-based)', () => {
     await mem.set('key', 'val');
 
     const entry = await mem.getEntry('key');
-    expect(entry!.expiresAtTurn).toBe(3); // turnCount=0 + 3
-    expect(entry!.expiresAt).toBeUndefined();
+    expect(entry?.expiresAtTurn).toBe(3); // turnCount=0 + 3
+    expect(entry?.expiresAt).toBeUndefined();
   });
 
   it('{ turns: N } TTL sets expiresAtTurn', async () => {
@@ -222,7 +222,7 @@ describe('Memory TTL (turn-based)', () => {
     await mem.set('key', 'val');
 
     const entry = await mem.getEntry('key');
-    expect(entry!.expiresAtTurn).toBe(6); // turnCount=1 + 5
+    expect(entry?.expiresAtTurn).toBe(6); // turnCount=1 + 5
   });
 
   it('sweepExpired() removes entries past their turn', async () => {
@@ -290,7 +290,7 @@ describe('Memory TTL (turn-based)', () => {
     await mem.extractAndApply('<update_core_memory key="lang">TS</update_core_memory>');
 
     const entry = await mem.getEntry('lang');
-    expect(entry!.expiresAtTurn).toBe(2);
+    expect(entry?.expiresAtTurn).toBe(2);
   });
 });
 
@@ -303,8 +303,8 @@ describe('Memory TTL (ms-based)', () => {
     await mem.set('key', 'val');
 
     const entry = await mem.getEntry('key');
-    expect(entry!.expiresAt).toBeGreaterThanOrEqual(before + 5000);
-    expect(entry!.expiresAtTurn).toBeUndefined();
+    expect(entry?.expiresAt).toBeGreaterThanOrEqual(before + 5000);
+    expect(entry?.expiresAtTurn).toBeUndefined();
   });
 
   it('sweepExpired() removes entries past their wall-clock expiry', async () => {
@@ -656,10 +656,10 @@ describe('ContextChef + Memory', () => {
 
     const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
     expect(memMsg).toBeDefined();
-    expect(memMsg!.content).toContain('update_core_memory');
-    expect(memMsg!.content).toContain('<rule>be concise</rule>');
-    expect(memMsg!.content).toContain('persistent core memory');
-    expect(memMsg!.content).toContain('Existing memory keys: rule');
+    expect(memMsg?.content).toContain('update_core_memory');
+    expect(memMsg?.content).toContain('<rule>be concise</rule>');
+    expect(memMsg?.content).toContain('persistent core memory');
+    expect(memMsg?.content).toContain('Existing memory keys: rule');
   });
 
   it('compile() includes allowedKeys guidance when configured', async () => {
@@ -676,8 +676,8 @@ describe('ContextChef + Memory', () => {
 
     const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
     expect(memMsg).toBeDefined();
-    expect(memMsg!.content).toContain('Allowed memory keys: lang, style');
-    expect(memMsg!.content).toContain('ONLY');
+    expect(memMsg?.content).toContain('Allowed memory keys: lang, style');
+    expect(memMsg?.content).toContain('ONLY');
   });
 
   it('compile() injects CORE_MEMORY_INSTRUCTION even when no memories exist', async () => {
@@ -691,7 +691,7 @@ describe('ContextChef + Memory', () => {
     expect(messages).toHaveLength(3);
     const memMsg = messages.find((m) => m.content.includes('update_core_memory'));
     expect(memMsg).toBeDefined();
-    expect(memMsg!.content).not.toContain('<core_memory>');
+    expect(memMsg?.content).not.toContain('<core_memory>');
   });
 
   it('snapshot/restore includes memory state', async () => {
@@ -747,9 +747,9 @@ describe('ContextChef + Memory', () => {
 
     const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
     expect(memMsg).toBeDefined();
-    expect(memMsg!.content).toContain('<perm>stays</perm>');
-    expect(memMsg!.content).not.toContain('temp');
-    expect(memMsg!.content).not.toContain('will expire');
+    expect(memMsg?.content).toContain('<perm>stays</perm>');
+    expect(memMsg?.content).not.toContain('temp');
+    expect(memMsg?.content).not.toContain('will expire');
   });
 
   it('compile() returns meta.injectedMemoryKeys', async () => {
@@ -762,7 +762,7 @@ describe('ContextChef + Memory', () => {
 
     const payload = await chef.compile({ target: 'openai' });
     expect(payload.meta).toBeDefined();
-    expect(payload.meta!.injectedMemoryKeys.sort()).toEqual(['lang', 'style']);
+    expect(payload.meta?.injectedMemoryKeys.sort()).toEqual(['lang', 'style']);
   });
 
   it('compile() returns meta.memoryExpiredKeys', async () => {
@@ -777,13 +777,13 @@ describe('ContextChef + Memory', () => {
 
     // First compile: nothing expires yet
     const p1 = await chef.compile({ target: 'openai' });
-    expect(p1.meta!.memoryExpiredKeys).toEqual([]);
-    expect(p1.meta!.injectedMemoryKeys.sort()).toEqual(['perm', 'temp']);
+    expect(p1.meta?.memoryExpiredKeys).toEqual([]);
+    expect(p1.meta?.injectedMemoryKeys.sort()).toEqual(['perm', 'temp']);
 
     // Second compile: temp expires
     const p2 = await chef.compile({ target: 'openai' });
-    expect(p2.meta!.memoryExpiredKeys).toEqual(['temp']);
-    expect(p2.meta!.injectedMemoryKeys).toEqual(['perm']);
+    expect(p2.meta?.memoryExpiredKeys).toEqual(['temp']);
+    expect(p2.meta?.injectedMemoryKeys).toEqual(['perm']);
   });
 
   it('compile() returns empty meta when no memory configured', async () => {
@@ -793,8 +793,8 @@ describe('ContextChef + Memory', () => {
 
     const payload = await chef.compile({ target: 'openai' });
     expect(payload.meta).toBeDefined();
-    expect(payload.meta!.injectedMemoryKeys).toEqual([]);
-    expect(payload.meta!.memoryExpiredKeys).toEqual([]);
+    expect(payload.meta?.injectedMemoryKeys).toEqual([]);
+    expect(payload.meta?.memoryExpiredKeys).toEqual([]);
   });
 });
 
@@ -907,8 +907,8 @@ describe('Memory selector', () => {
     const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
 
     expect(memMsg).toBeDefined();
-    expect(memMsg!.content).toContain('<important>keep</important>');
-    expect(memMsg!.content).not.toContain('trivial');
+    expect(memMsg?.content).toContain('<important>keep</important>');
+    expect(memMsg?.content).not.toContain('trivial');
   });
 });
 

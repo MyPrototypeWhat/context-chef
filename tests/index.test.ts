@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ContextChef } from '../src/index';
 import type { Message } from '../src/types';

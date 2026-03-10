@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Offloader, VFSStorageAdapter } from '.';
+import { Offloader, type VFSStorageAdapter } from '.';
 
 describe('Offloader', () => {
   const TEST_DIR = path.join(process.cwd(), '.test_vfs');
@@ -138,11 +138,12 @@ describe('Offloader', () => {
       expect(result.isOffloaded).toBe(true);
       expect(result.uri).toBeDefined();
 
-      if (!result.uri) throw new Error('URI not defined');
+      const uri = result.uri;
+      if (!uri) throw new Error('URI not defined');
 
       // Test sync resolve throws
       expect(() => {
-        asyncOffloader.resolve(result.uri!);
+        asyncOffloader.resolve(uri);
       }).toThrow(
         'Offloader.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.',
       );

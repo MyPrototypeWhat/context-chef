@@ -5,8 +5,10 @@ import type { Message } from '../src/types';
 const userMsg = (content: string): Message => ({ role: 'user', content });
 const assistantMsg = (content: string): Message => ({ role: 'assistant', content });
 
-const makeTokenizer = (tokensPerMsg: number) => (messages: Message[]): number =>
-  messages.length * tokensPerMsg;
+const makeTokenizer =
+  (tokensPerMsg: number) =>
+  (messages: Message[]): number =>
+    messages.length * tokensPerMsg;
 
 describe('E3: Snapshot & Restore', () => {
   it('snapshot captures current state', () => {
@@ -32,11 +34,11 @@ describe('E3: Snapshot & Restore', () => {
     const snap = chef.snapshot();
 
     chef.useRollingHistory([userMsg('turn 1'), assistantMsg('reply'), userMsg('turn 2')]);
-    expect(chef['rollingHistory']).toHaveLength(3);
+    expect(chef.rollingHistory).toHaveLength(3);
 
     chef.restore(snap);
-    expect(chef['rollingHistory']).toHaveLength(1);
-    expect(chef['rollingHistory'][0].content).toBe('turn 1');
+    expect(chef.rollingHistory).toHaveLength(1);
+    expect(chef.rollingHistory[0].content).toBe('turn 1');
   });
 
   it('restore rolls back topLayer', () => {
@@ -49,24 +51,24 @@ describe('E3: Snapshot & Restore', () => {
     chef.setTopLayer([{ role: 'system', content: 'modified system' }]);
     chef.restore(snap);
 
-    expect(chef['topLayer'][0].content).toBe('original system');
+    expect(chef.topLayer[0].content).toBe('original system');
   });
 
   it('restore rolls back dynamicStatePlacement and rawDynamicXml', () => {
     const chef = new ContextChef({
       janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
     });
-    chef['dynamicStatePlacement'] = 'system';
-    chef['rawDynamicXml'] = '<dynamic_state><key>value</key></dynamic_state>';
+    chef.dynamicStatePlacement = 'system';
+    chef.rawDynamicXml = '<dynamic_state><key>value</key></dynamic_state>';
 
     const snap = chef.snapshot();
 
-    chef['dynamicStatePlacement'] = 'last_user';
-    chef['rawDynamicXml'] = '';
+    chef.dynamicStatePlacement = 'last_user';
+    chef.rawDynamicXml = '';
     chef.restore(snap);
 
-    expect(chef['dynamicStatePlacement']).toBe('system');
-    expect(chef['rawDynamicXml']).toBe('<dynamic_state><key>value</key></dynamic_state>');
+    expect(chef.dynamicStatePlacement).toBe('system');
+    expect(chef.rawDynamicXml).toBe('<dynamic_state><key>value</key></dynamic_state>');
   });
 
   it('snapshot is a deep copy — mutating original does not affect snapshot', () => {
@@ -95,7 +97,7 @@ describe('E3: Snapshot & Restore', () => {
 
     (snap.rollingHistory[0] as Message).content = 'mutated';
 
-    expect(chef['rollingHistory'][0].content).toBe('original');
+    expect(chef.rollingHistory[0].content).toBe('original');
   });
 
   it('supports multiple snapshots and restores to any of them', () => {
@@ -109,13 +111,13 @@ describe('E3: Snapshot & Restore', () => {
     chef.useRollingHistory([userMsg('step 1'), assistantMsg('reply 1'), userMsg('step 2')]);
     const snap2 = chef.snapshot('step 2');
 
-    chef.useRollingHistory([...chef['rollingHistory'], assistantMsg('reply 2'), userMsg('step 3')]);
+    chef.useRollingHistory([...chef.rollingHistory, assistantMsg('reply 2'), userMsg('step 3')]);
 
     chef.restore(snap1);
-    expect(chef['rollingHistory']).toHaveLength(1);
+    expect(chef.rollingHistory).toHaveLength(1);
 
     chef.restore(snap2);
-    expect(chef['rollingHistory']).toHaveLength(3);
+    expect(chef.rollingHistory).toHaveLength(3);
   });
 
   it('restore() returns this for chaining', () => {
@@ -132,18 +134,18 @@ describe('E3: Snapshot & Restore', () => {
       janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
     });
 
-    chef['janitor'].feedTokenUsage(999);
-    chef['janitor']['_suppressNextCompression'] = true;
+    chef.janitor.feedTokenUsage(999);
+    chef.janitor._suppressNextCompression = true;
 
     const snap = chef.snapshot();
 
-    chef['janitor']['_externalTokenUsage'] = null;
-    chef['janitor']['_suppressNextCompression'] = false;
+    chef.janitor._externalTokenUsage = null;
+    chef.janitor._suppressNextCompression = false;
 
     chef.restore(snap);
 
-    expect(chef['janitor']['_externalTokenUsage']).toBe(999);
-    expect(chef['janitor']['_suppressNextCompression']).toBe(true);
+    expect(chef.janitor._externalTokenUsage).toBe(999);
+    expect(chef.janitor._suppressNextCompression).toBe(true);
   });
 
   it('agent branching pattern: snapshot before fork, restore on failure', async () => {
@@ -155,14 +157,14 @@ describe('E3: Snapshot & Restore', () => {
     const beforeFork = chef.snapshot('before risky tool call');
 
     chef.useRollingHistory([
-      ...chef['rollingHistory'],
+      ...chef.rollingHistory,
       assistantMsg('attempting risky action...'),
       { role: 'tool', content: 'ERROR: action failed', tool_call_id: 't1' },
     ]);
-    expect(chef['rollingHistory']).toHaveLength(3);
+    expect(chef.rollingHistory).toHaveLength(3);
 
     chef.restore(beforeFork);
-    expect(chef['rollingHistory']).toHaveLength(1);
-    expect(chef['rollingHistory'][0].content).toBe('task: do something risky');
+    expect(chef.rollingHistory).toHaveLength(1);
+    expect(chef.rollingHistory[0].content).toBe('task: do something risky');
   });
 });

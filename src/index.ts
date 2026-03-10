@@ -1,9 +1,10 @@
 import type { z } from 'zod';
 import { getAdapter } from './adapters/adapterFactory';
-import { type GuardrailOptions, Guardrail } from './modules/guardrail';
+import { Assembler, type DynamicStatePlacement } from './modules/assembler';
+import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
 import { Memory, type MemoryConfig, type MemorySnapshot } from './modules/memory';
-import { type OffloadOptions, Offloader, type VFSConfig } from './modules/offloader';
+import { Offloader, type OffloadOptions, type VFSConfig } from './modules/offloader';
 import {
   type CompiledTools,
   Pruner,
@@ -11,7 +12,6 @@ import {
   type ResolvedToolCall,
   type ToolGroup,
 } from './modules/pruner';
-import { type DynamicStatePlacement, Assembler } from './modules/assembler';
 import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
@@ -25,6 +25,7 @@ import type {
 import { objectToXml } from './utils/xmlGenerator';
 
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
+export { type AssembleOptions, Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
 export {
@@ -34,21 +35,20 @@ export {
   type MemoryEntry,
   type MemorySetOptions,
   type MemorySnapshot,
-  type TTLValue,
   stripMemoryTags,
+  type TTLValue,
 } from './modules/memory';
 export { InMemoryStore } from './modules/memory/inMemoryStore';
 export type { MemoryStore, MemoryStoreEntry } from './modules/memory/memoryStore';
 export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export {
   FileSystemAdapter,
-  type OffloadOptions,
   Offloader,
+  type OffloadOptions,
   type VFSConfig,
   type VFSStorageAdapter,
 } from './modules/offloader';
 export { Pruner, type PrunerConfig } from './modules/pruner';
-export { Assembler, type AssembleOptions } from './modules/assembler';
 export * from './prompts';
 export * from './types';
 export { TokenUtils } from './utils/tokenUtils';
@@ -106,13 +106,7 @@ export interface ChefConfig {
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
 }
 
-export type {
-  GuardrailOptions,
-  ToolGroup,
-  CompiledTools,
-  ResolvedToolCall,
-  DynamicStatePlacement,
-};
+export type { GuardrailOptions, ToolGroup, CompiledTools, ResolvedToolCall, DynamicStatePlacement };
 
 export class ContextChef {
   private assembler: Assembler;
