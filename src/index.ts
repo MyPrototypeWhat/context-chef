@@ -9,6 +9,7 @@ import {
   type CompiledTools,
   Pruner,
   type PrunerConfig,
+  type PrunerSnapshot,
   type ResolvedToolCall,
   type ToolGroup,
 } from './modules/pruner';
@@ -48,7 +49,7 @@ export {
   type VFSConfig,
   type VFSStorageAdapter,
 } from './modules/offloader';
-export { Pruner, type PrunerConfig } from './modules/pruner';
+export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner';
 export * from './prompts';
 export * from './types';
 export { TokenUtils } from './utils/tokenUtils';
@@ -74,8 +75,11 @@ export interface ChefSnapshot {
   readonly dynamicState: Message[];
   readonly dynamicStatePlacement: DynamicStatePlacement;
   readonly rawDynamicXml: string;
-  readonly _janitor: JanitorSnapshot;
-  readonly _memory?: MemorySnapshot;
+  readonly modules: {
+    readonly janitor: JanitorSnapshot;
+    readonly memory: MemorySnapshot | null;
+    readonly pruner: PrunerSnapshot;
+  };
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -339,8 +343,11 @@ export class ContextChef {
       dynamicState: this.dynamicState.map((m) => ({ ...m })),
       dynamicStatePlacement: this.dynamicStatePlacement,
       rawDynamicXml: this.rawDynamicXml,
-      _janitor: this.janitor.snapshotState(),
-      _memory: this._memory?.snapshot() ?? undefined,
+      modules: {
+        janitor: this.janitor.snapshotState(),
+        memory: this._memory?.snapshot() ?? null,
+        pruner: this.pruner.snapshotState(),
+      },
       label,
       createdAt: Date.now(),
     };
@@ -356,10 +363,11 @@ export class ContextChef {
     this.dynamicState = snapshot.dynamicState.map((m) => ({ ...m }));
     this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
     this.rawDynamicXml = snapshot.rawDynamicXml;
-    this.janitor.restoreState(snapshot._janitor);
-    if (snapshot._memory && this._memory) {
-      this._memory.restore(snapshot._memory);
+    this.janitor.restoreState(snapshot.modules.janitor);
+    if (snapshot.modules.memory && this._memory) {
+      this._memory.restore(snapshot.modules.memory);
     }
+    this.pruner.restoreState(snapshot.modules.pruner);
     return this;
   }
 

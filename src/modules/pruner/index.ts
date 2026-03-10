@@ -15,6 +15,12 @@ export interface PrunerConfig {
   strategy?: 'union' | 'intersection';
 }
 
+export interface PrunerSnapshot {
+  flatTools: ToolDefinition[];
+  namespaces: ToolGroup[];
+  lazyToolkits: ToolGroup[];
+}
+
 export interface PrunerResult {
   tools: ToolDefinition[];
   removed: string[];
@@ -323,6 +329,28 @@ export class Pruner {
     });
 
     return `<available_toolkits>\n${items.join('\n')}\n</available_toolkits>`;
+  }
+
+  // ─── Snapshot / Restore ───
+
+  public snapshotState(): PrunerSnapshot {
+    return {
+      flatTools: this.flatTools.map((t) => ({ ...t })),
+      namespaces: this.namespaces.map((g) => ({ ...g, tools: g.tools.map((t) => ({ ...t })) })),
+      lazyToolkits: this.lazyToolkits.map((g) => ({
+        ...g,
+        tools: g.tools.map((t) => ({ ...t })),
+      })),
+    };
+  }
+
+  public restoreState(state: PrunerSnapshot): void {
+    this.flatTools = state.flatTools.map((t) => ({ ...t }));
+    this.namespaces = state.namespaces.map((g) => ({ ...g, tools: g.tools.map((t) => ({ ...t })) }));
+    this.lazyToolkits = state.lazyToolkits.map((g) => ({
+      ...g,
+      tools: g.tools.map((t) => ({ ...t })),
+    }));
   }
 
   private _buildResult(kept: ToolDefinition[]): PrunerResult {

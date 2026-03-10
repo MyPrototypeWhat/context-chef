@@ -709,10 +709,10 @@ describe('ContextChef + Memory', () => {
     expect(await chef.memory().get('key2')).toBeNull();
   });
 
-  it('snapshot without memory has no _memory field', () => {
+  it('snapshot without memory has null modules.memory', () => {
     const chef = new ContextChef();
     const snap = chef.snapshot();
-    expect(snap._memory).toBeUndefined();
+    expect(snap.modules.memory).toBeNull();
   });
 
   it('compile() advances memory turnCount', async () => {
