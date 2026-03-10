@@ -249,7 +249,7 @@ Explicitly clear history and reset Janitor state when switching topics or comple
 
 ---
 
-### Large Output Offloading (Pointer / VFS)
+### Large Output Offloading (Offloader / VFS)
 
 ```typescript
 // Offload if content exceeds threshold; preserves last 20 lines by default
@@ -268,9 +268,9 @@ Register a tool for the LLM to read full content when needed:
 
 ```typescript
 // In your tool handler:
-import { Pointer } from "context-chef";
-const pointer = new Pointer({ storageDir: ".context_vfs" });
-const fullContent = pointer.resolve(uri);
+import { Offloader } from "context-chef";
+const offloader = new Offloader({ storageDir: ".context_vfs" });
+const fullContent = offloader.resolve(uri);
 ```
 
 ---

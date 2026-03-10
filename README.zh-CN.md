@@ -249,7 +249,7 @@ const chef = new ContextChef({
 
 ---
 
-### 大文本卸载 (Pointer / VFS)
+### 大文本卸载 (Offloader / VFS)
 
 ```typescript
 // 超过阈值时截断并卸载，默认保留最后 20 行
@@ -268,9 +268,9 @@ const safeOutput = chef.offload(content, { threshold: 2000, tailLines: 50 });
 
 ```typescript
 // 在你的工具处理函数中:
-import { Pointer } from "context-chef";
-const pointer = new Pointer({ storageDir: ".context_vfs" });
-const fullContent = pointer.resolve(uri);
+import { Offloader } from "context-chef";
+const offloader = new Offloader({ storageDir: ".context_vfs" });
+const fullContent = offloader.resolve(uri);
 ```
 
 ---
