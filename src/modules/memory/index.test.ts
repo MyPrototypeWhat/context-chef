@@ -658,7 +658,7 @@ describe('ContextChef + Memory', () => {
     expect(memMsg).toBeDefined();
     expect(memMsg?.content).toContain('update_core_memory');
     expect(memMsg?.content).toContain('<rule>be concise</rule>');
-    expect(memMsg?.content).toContain('persistent core memory');
+    expect(memMsg?.content).toContain('You recall the following from previous conversations');
     expect(memMsg?.content).toContain('Existing memory keys: rule');
   });
 

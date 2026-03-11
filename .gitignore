@@ -14,6 +14,7 @@ coverage/
 *.swp
 *.swo
 .claude/
+.cursor/
 
 # OS
 .DS_Store
