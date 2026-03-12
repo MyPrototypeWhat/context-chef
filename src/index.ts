@@ -36,7 +36,6 @@ export {
   type MemoryEntry,
   type MemorySetOptions,
   type MemorySnapshot,
-  stripMemoryTags,
   type TTLValue,
 } from './modules/memory';
 export { InMemoryStore } from './modules/memory/inMemoryStore';
@@ -258,12 +257,12 @@ export class ContextChef {
   }
 
   /**
-   * Returns the Memory instance for direct access to core memory operations.
-   * Requires `memoryStore` to be configured in ChefConfig.
+   * Returns the Memory instance for direct access to memory operations.
+   * Requires `memory` to be configured in ChefConfig.
    *
    * @example
-   * await chef.memory().set('project_rules', 'Always use strict TypeScript');
-   * await chef.memory().extractAndApply(assistantResponse);
+   * await chef.memory().createMemory('project_rules', 'Always use strict TypeScript');
+   * await chef.memory().deleteMemory('outdated_rule');
    */
   public memory(): Memory {
     if (!this._memory) {
@@ -292,14 +291,13 @@ export class ContextChef {
   private async _getMemoryMessages(): Promise<Message[]> {
     if (!this._memory) return [];
 
-    let content = Prompts.CORE_MEMORY_INSTRUCTION;
+    let content = Prompts.MEMORY_INSTRUCTION;
 
     const selected = await this._memory.getSelectedEntries();
     if (selected.length > 0) {
-      const inner = selected.map((e) => `  <${e.key}>${e.value}</${e.key}>`).join('\n');
-      const xml = `<core_memory>\n${inner}\n</core_memory>`;
+      const xml = await this._memory.toXml();
       const keys = selected.map((e) => e.key);
-      content = `${content}\n\n${Prompts.getCoreMemoryBlock(xml, keys, this._memory.allowedKeys)}`;
+      content = `${content}\n\n${Prompts.getMemoryBlock(xml, keys, this._memory.allowedKeys)}`;
     }
 
     return [{ role: 'system', content }];
@@ -443,7 +441,9 @@ export class ContextChef {
     const adapter = getAdapter(target);
     const adapterPayload = adapter.compile([...rawPayload.messages]);
 
-    const tools = this._getPrunerTools();
+    const prunerTools = this._getPrunerTools();
+    const memoryTools = this._memory ? await this._memory.getToolDefinitions() : [];
+    const tools = [...prunerTools, ...memoryTools];
     const meta = { injectedMemoryKeys, memoryExpiredKeys };
     const payload: TargetPayload = { ...adapterPayload, meta };
     if (tools.length > 0) payload.tools = tools;

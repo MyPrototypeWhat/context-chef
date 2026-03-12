@@ -125,31 +125,20 @@ Do not output any introductory text or acknowledgement. Start directly with the 
 `.trim(),
 
   /**
-   * Static instruction for developers to include in their system prompt (topLayer).
-   * Teaches the LLM how to use <update_core_memory> and <delete_core_memory> tags.
+   * Static instruction injected into the system prompt when memory is enabled.
+   * Guides the LLM to use memory tools for persistence.
    */
-  CORE_MEMORY_INSTRUCTION: `
-You can remember important facts across conversations by including memory tags in your response.
-
-To remember something:
-<update_core_memory key="key_name">value to remember</update_core_memory>
-
-To forget something:
-<delete_core_memory key="key_name" />
-
-Include these tags anywhere in your response. The system processes them automatically — no other action is needed on your part.
-
-Guidelines:
-- Use clear, descriptive key names (e.g. "project_language", "user_preference_style").
-- Keep values concise but informative.
-- Only remember things genuinely worth persisting.
+  MEMORY_INSTRUCTION: `
+You have access to memory tools that let you remember and forget facts across conversations.
+Use them to store important information like user preferences, project conventions, and key decisions.
+Only remember things genuinely worth persisting.
 `.trim(),
 
   /**
    * Dynamic wrapper used by compile() to inject recalled core memory alongside key guidance.
    * Enumerates existing keys (soft guidance) or allowed keys (strict mode) to stabilize LLM key creation.
    */
-  getCoreMemoryBlock: (coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]) => {
+  getMemoryBlock: (coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]) => {
     let block = `You recall the following from previous conversations:\n${coreMemoryXml}`;
 
     if (allowedKeys && allowedKeys.length > 0) {

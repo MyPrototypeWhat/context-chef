@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
-import { Memory, stripMemoryTags } from '.';
+import { Memory } from '.';
 import { InMemoryStore } from './inMemoryStore';
 
 // ─── Memory module unit tests ───────────────────────────────────────────────
@@ -26,62 +26,38 @@ describe('Memory', () => {
     expect(await mem.toXml()).toBe('');
   });
 
-  it('toXml() wraps entries in <core_memory>', async () => {
+  it('toXml() wraps entries in <memory> with metadata', async () => {
     const mem = new Memory({ store: new InMemoryStore() });
     await mem.set('lang', 'TypeScript');
     await mem.set('style', 'functional');
 
     const xml = await mem.toXml();
-    expect(xml).toContain('<core_memory>');
-    expect(xml).toContain('<lang>TypeScript</lang>');
-    expect(xml).toContain('<style>functional</style>');
-    expect(xml).toContain('</core_memory>');
+    expect(xml).toContain('<memory>');
+    expect(xml).toContain('<entry key="lang">');
+    expect(xml).toContain('<metadata>');
+    expect(xml).toContain('- updated_at=');
+    expect(xml).toContain('- update_count=1');
+    expect(xml).toContain('<value>\nTypeScript\n</value>');
+    expect(xml).toContain('<entry key="style">');
+    expect(xml).toContain('<value>\nfunctional\n</value>');
+    expect(xml).toContain('</memory>');
   });
 
-  it('extractAndApply() parses update tags', async () => {
+  it('toXml() includes description when set', async () => {
     const mem = new Memory({ store: new InMemoryStore() });
-    const content = `Sure, I'll remember that.
-<update_core_memory key="project_lang">TypeScript</update_core_memory>
-<update_core_memory key="test_framework">Vitest</update_core_memory>
-Done.`;
+    await mem.set('lang', 'TypeScript', { description: 'Primary project language' });
 
-    const applied = await mem.extractAndApply(content);
-    expect(applied).toHaveLength(2);
-    expect(await mem.get('project_lang')).toBe('TypeScript');
-    expect(await mem.get('test_framework')).toBe('Vitest');
+    const xml = await mem.toXml();
+    expect(xml).toContain('<description>\nPrimary project language\n</description>');
+    expect(xml).toContain('<value>\nTypeScript\n</value>');
   });
 
-  it('extractAndApply() parses delete tags', async () => {
+  it('toXml() omits description tag when not set', async () => {
     const mem = new Memory({ store: new InMemoryStore() });
-    await mem.set('old_rule', 'deprecated');
+    await mem.set('lang', 'TypeScript');
 
-    const content = `Removing old rule.
-<delete_core_memory key="old_rule" />`;
-
-    await mem.extractAndApply(content);
-    expect(await mem.get('old_rule')).toBeNull();
-  });
-
-  it('extractAndApply() handles mixed update and delete', async () => {
-    const mem = new Memory({ store: new InMemoryStore() });
-    await mem.set('to_remove', 'old value');
-
-    const content = `
-<update_core_memory key="new_rule">always lint</update_core_memory>
-<delete_core_memory key="to_remove" />`;
-
-    const applied = await mem.extractAndApply(content);
-    expect(applied).toHaveLength(1);
-    expect(applied[0].key).toBe('new_rule');
-    expect(applied[0].value).toBe('always lint');
-    expect(await mem.get('to_remove')).toBeNull();
-    expect(await mem.get('new_rule')).toBe('always lint');
-  });
-
-  it('extractAndApply() returns empty for content without tags', async () => {
-    const mem = new Memory({ store: new InMemoryStore() });
-    const applied = await mem.extractAndApply('Just a normal response with no memory tags.');
-    expect(applied).toHaveLength(0);
+    const xml = await mem.toXml();
+    expect(xml).not.toContain('<description>');
   });
 
   it('snapshot() returns entries and turnCount from InMemoryStore', async () => {
@@ -185,8 +161,10 @@ Done.`;
     await mem.set('rule2', 'use strict');
 
     const xml = await mem.toXml();
-    expect(xml).toContain('<rule1>always lint</rule1>');
-    expect(xml).toContain('<rule2>use strict</rule2>');
+    expect(xml).toContain('<entry key="rule1"');
+    expect(xml).toContain('always lint');
+    expect(xml).toContain('<entry key="rule2"');
+    expect(xml).toContain('use strict');
   });
 
   it('getAll() returns entries with full metadata', async () => {
@@ -201,6 +179,275 @@ Done.`;
     expect(a).toBeDefined();
     expect(a?.value).toBe('1');
     expect(a?.updateCount).toBe(1);
+  });
+});
+
+// ─── createMemory / updateMemory / deleteMemory ──────────────────────────────
+
+describe('Memory validated methods', () => {
+  it('createMemory() creates a new entry and returns it', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const entry = await mem.createMemory('lang', 'TypeScript');
+
+    expect(entry).not.toBeNull();
+    expect(entry?.key).toBe('lang');
+    expect(entry?.value).toBe('TypeScript');
+    expect(entry?.updateCount).toBe(1);
+    expect(await mem.get('lang')).toBe('TypeScript');
+  });
+
+  it('createMemory() returns null for disallowed key', async () => {
+    const mem = new Memory({
+      store: new InMemoryStore(),
+      allowedKeys: ['lang'],
+    });
+    const entry = await mem.createMemory('rogue', 'hack');
+
+    expect(entry).toBeNull();
+    expect(await mem.get('rogue')).toBeNull();
+  });
+
+  it('createMemory() returns null when veto hook blocks', async () => {
+    const hook = vi.fn().mockReturnValue(false);
+    const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
+    const entry = await mem.createMemory('blocked', 'val');
+
+    expect(entry).toBeNull();
+    expect(await mem.get('blocked')).toBeNull();
+    expect(hook).toHaveBeenCalledWith('blocked', 'val', null);
+  });
+
+  it('createMemory() can overwrite existing key', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'JS');
+    const entry = await mem.createMemory('lang', 'TypeScript');
+
+    expect(entry?.value).toBe('TypeScript');
+    expect(entry?.updateCount).toBe(2);
+  });
+
+  it('createMemory() stores description', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const entry = await mem.createMemory('lang', 'TypeScript', 'Primary project language');
+
+    expect(entry?.description).toBe('Primary project language');
+
+    const xml = await mem.toXml();
+    expect(xml).toContain('<description>\nPrimary project language\n</description>');
+  });
+
+  it('updateMemory() can update description', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'JS', { description: 'Old desc' });
+    const entry = await mem.updateMemory('lang', 'TypeScript', 'New desc');
+
+    expect(entry?.description).toBe('New desc');
+  });
+
+  it('updateMemory() preserves existing description when not provided', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'JS', { description: 'Keep this' });
+    const entry = await mem.updateMemory('lang', 'TypeScript');
+
+    expect(entry?.description).toBe('Keep this');
+  });
+
+  it('updateMemory() updates an existing entry', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'JS');
+    const entry = await mem.updateMemory('lang', 'TypeScript');
+
+    expect(entry).not.toBeNull();
+    expect(entry?.value).toBe('TypeScript');
+    expect(entry?.updateCount).toBe(2);
+  });
+
+  it('updateMemory() returns null for non-existent key', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const entry = await mem.updateMemory('missing', 'val');
+
+    expect(entry).toBeNull();
+  });
+
+  it('updateMemory() returns null for disallowed key', async () => {
+    const mem = new Memory({
+      store: new InMemoryStore(),
+      allowedKeys: ['other'],
+    });
+    await mem.set('lang', 'JS');
+    const entry = await mem.updateMemory('lang', 'TS');
+
+    expect(entry).toBeNull();
+    expect(await mem.get('lang')).toBe('JS');
+  });
+
+  it('updateMemory() returns null when veto hook blocks', async () => {
+    const hook = vi.fn().mockReturnValue(false);
+    const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
+    await mem.set('lang', 'JS');
+    const entry = await mem.updateMemory('lang', 'TS');
+
+    expect(entry).toBeNull();
+    expect(await mem.get('lang')).toBe('JS');
+    expect(hook).toHaveBeenCalledWith('lang', 'TS', 'JS');
+  });
+
+  it('deleteMemory() deletes an existing entry', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'TS');
+    const result = await mem.deleteMemory('lang');
+
+    expect(result).toBe(true);
+    expect(await mem.get('lang')).toBeNull();
+  });
+
+  it('deleteMemory() returns false for non-existent key', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const result = await mem.deleteMemory('missing');
+
+    expect(result).toBe(false);
+  });
+
+  it('deleteMemory() returns false for disallowed key', async () => {
+    const mem = new Memory({
+      store: new InMemoryStore(),
+      allowedKeys: ['other'],
+    });
+    await mem.set('protected', 'important');
+    const result = await mem.deleteMemory('protected');
+
+    expect(result).toBe(false);
+    expect(await mem.get('protected')).toBe('important');
+  });
+
+  it('deleteMemory() returns false when veto hook blocks', async () => {
+    const hook = vi.fn().mockReturnValue(false);
+    const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
+    await mem.set('protected', 'keep');
+    const result = await mem.deleteMemory('protected');
+
+    expect(result).toBe(false);
+    expect(await mem.get('protected')).toBe('keep');
+    expect(hook).toHaveBeenCalledWith('protected', null, 'keep');
+  });
+
+  it('createMemory() respects defaultTTL', async () => {
+    const mem = new Memory({ store: new InMemoryStore(), defaultTTL: 2 });
+    await mem.createMemory('lang', 'TS');
+
+    const entry = await mem.getEntry('lang');
+    expect(entry?.expiresAtTurn).toBe(2);
+  });
+
+  it('validated methods support async veto hook', async () => {
+    const hook = vi.fn().mockResolvedValue(true);
+    const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
+    await mem.createMemory('key', 'val');
+
+    expect(hook).toHaveBeenCalled();
+    expect(await mem.get('key')).toBe('val');
+  });
+
+  it('allowedKeys is checked before onMemoryUpdate', async () => {
+    const hook = vi.fn().mockReturnValue(true);
+    const mem = new Memory({
+      store: new InMemoryStore(),
+      allowedKeys: ['allowed'],
+      onMemoryUpdate: hook,
+    });
+    await mem.createMemory('disallowed', 'val');
+
+    expect(hook).not.toHaveBeenCalled();
+  });
+});
+
+// ─── getToolDefinitions ──────────────────────────────────────────────────────
+
+describe('Memory getToolDefinitions', () => {
+  it('returns only create_memory when no entries exist', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const tools = await mem.getToolDefinitions();
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe('create_memory');
+  });
+
+  it('returns create_memory and modify_memory when entries exist', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'TS');
+    await mem.set('style', 'functional');
+
+    const tools = await mem.getToolDefinitions();
+
+    expect(tools).toHaveLength(2);
+    expect(tools[0].name).toBe('create_memory');
+    expect(tools[1].name).toBe('modify_memory');
+  });
+
+  it('modify_memory key has enum of existing keys', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'TS');
+    await mem.set('style', 'functional');
+
+    const tools = await mem.getToolDefinitions();
+    const modifyTool = tools.find((t) => t.name === 'modify_memory');
+    const keyParam = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const keyDef = keyParam?.key as Record<string, unknown>;
+
+    expect(keyDef.enum).toEqual(['lang', 'style']);
+  });
+
+  it('modify_memory action has update/delete enum', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'TS');
+
+    const tools = await mem.getToolDefinitions();
+    const modifyTool = tools.find((t) => t.name === 'modify_memory');
+    const props = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const actionDef = props?.action as Record<string, unknown>;
+
+    expect(actionDef.enum).toEqual(['update', 'delete']);
+  });
+
+  it('create_memory key has allowedKeys enum when configured', async () => {
+    const mem = new Memory({
+      store: new InMemoryStore(),
+      allowedKeys: ['lang', 'style', 'framework'],
+    });
+
+    const tools = await mem.getToolDefinitions();
+    const createTool = tools.find((t) => t.name === 'create_memory');
+    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const keyDef = props?.key as Record<string, unknown>;
+
+    expect(keyDef.enum).toEqual(['lang', 'style', 'framework']);
+  });
+
+  it('create_memory key is free-form when no allowedKeys', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+
+    const tools = await mem.getToolDefinitions();
+    const createTool = tools.find((t) => t.name === 'create_memory');
+    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const keyDef = props?.key as Record<string, unknown>;
+
+    expect(keyDef.enum).toBeUndefined();
+    expect(keyDef.type).toBe('string');
+  });
+
+  it('create_memory and modify_memory include description parameter', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('lang', 'TS');
+
+    const tools = await mem.getToolDefinitions();
+    const createTool = tools.find((t) => t.name === 'create_memory');
+    const modifyTool = tools.find((t) => t.name === 'modify_memory');
+
+    const createProps = (createTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    expect(createProps?.description).toBeDefined();
+
+    const modifyProps = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    expect(modifyProps?.description).toBeDefined();
   });
 });
 
@@ -284,14 +531,6 @@ describe('Memory TTL (turn-based)', () => {
     expect(expired).toEqual([]);
     expect(await mem.get('key')).toBe('v2');
   });
-
-  it('extractAndApply() entries respect defaultTTL', async () => {
-    const mem = new Memory({ store: new InMemoryStore(), defaultTTL: 2 });
-    await mem.extractAndApply('<update_core_memory key="lang">TS</update_core_memory>');
-
-    const entry = await mem.getEntry('lang');
-    expect(entry?.expiresAtTurn).toBe(2);
-  });
 });
 
 // ─── TTL (ms-based) ─────────────────────────────────────────────────────────
@@ -372,57 +611,38 @@ describe('Memory without defaultTTL', () => {
 // ─── allowedKeys ────────────────────────────────────────────────────────────
 
 describe('Memory allowedKeys', () => {
-  it('allows updates to keys in the allowlist', async () => {
+  it('createMemory allows keys in the allowlist', async () => {
     const mem = new Memory({
       store: new InMemoryStore(),
       allowedKeys: ['lang', 'style'],
     });
 
-    const content = '<update_core_memory key="lang">TS</update_core_memory>';
-    const applied = await mem.extractAndApply(content);
+    const entry = await mem.createMemory('lang', 'TS');
 
-    expect(applied).toHaveLength(1);
+    expect(entry).not.toBeNull();
     expect(await mem.get('lang')).toBe('TS');
   });
 
-  it('silently skips updates to keys NOT in the allowlist', async () => {
+  it('createMemory returns null for keys NOT in the allowlist', async () => {
     const mem = new Memory({
       store: new InMemoryStore(),
       allowedKeys: ['lang'],
     });
 
-    const content = '<update_core_memory key="rogue_key">hack</update_core_memory>';
-    const applied = await mem.extractAndApply(content);
+    const entry = await mem.createMemory('rogue_key', 'hack');
 
-    expect(applied).toHaveLength(0);
+    expect(entry).toBeNull();
     expect(await mem.get('rogue_key')).toBeNull();
   });
 
-  it('silently skips deletes to keys NOT in the allowlist', async () => {
+  it('deleteMemory returns false for keys NOT in the allowlist', async () => {
     const mem = new Memory({ store: new InMemoryStore(), allowedKeys: ['other'] });
     await mem.set('protected', 'important');
 
-    const content = '<delete_core_memory key="protected" />';
-    await mem.extractAndApply(content);
+    const result = await mem.deleteMemory('protected');
 
+    expect(result).toBe(false);
     expect(await mem.get('protected')).toBe('important');
-  });
-
-  it('mixed allowed and disallowed keys: only allowed keys are applied', async () => {
-    const mem = new Memory({
-      store: new InMemoryStore(),
-      allowedKeys: ['lang', 'style'],
-    });
-
-    const content = `
-<update_core_memory key="lang">TypeScript</update_core_memory>
-<update_core_memory key="unknown">rejected</update_core_memory>
-<update_core_memory key="style">functional</update_core_memory>`;
-
-    const applied = await mem.extractAndApply(content);
-    expect(applied).toHaveLength(2);
-    expect(applied.map((e) => e.key)).toEqual(['lang', 'style']);
-    expect(await mem.get('unknown')).toBeNull();
   });
 
   it('allowedKeys is exposed as readonly property', () => {
@@ -437,49 +657,56 @@ describe('Memory allowedKeys', () => {
 // ─── onMemoryUpdate ─────────────────────────────────────────────────────────
 
 describe('Memory onMemoryUpdate', () => {
-  it('calls hook with (key, value, oldValue) for updates', async () => {
+  it('calls hook with (key, value, oldValue) for createMemory', async () => {
+    const hook = vi.fn().mockReturnValue(true);
+    const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
+
+    await mem.createMemory('lang', 'TS');
+
+    expect(hook).toHaveBeenCalledWith('lang', 'TS', null);
+    expect(await mem.get('lang')).toBe('TS');
+  });
+
+  it('calls hook with (key, value, oldValue) for updateMemory', async () => {
     const hook = vi.fn().mockReturnValue(true);
     const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
     await mem.set('existing', 'old');
 
-    const content = '<update_core_memory key="existing">new</update_core_memory>';
-    await mem.extractAndApply(content);
+    await mem.updateMemory('existing', 'new');
 
     expect(hook).toHaveBeenCalledWith('existing', 'new', 'old');
     expect(await mem.get('existing')).toBe('new');
   });
 
-  it('calls hook with (key, null, oldValue) for deletes', async () => {
+  it('calls hook with (key, null, oldValue) for deleteMemory', async () => {
     const hook = vi.fn().mockReturnValue(true);
     const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
     await mem.set('doomed', 'bye');
 
-    const content = '<delete_core_memory key="doomed" />';
-    await mem.extractAndApply(content);
+    await mem.deleteMemory('doomed');
 
     expect(hook).toHaveBeenCalledWith('doomed', null, 'bye');
     expect(await mem.get('doomed')).toBeNull();
   });
 
-  it('blocks update when hook returns false', async () => {
+  it('blocks createMemory when hook returns false', async () => {
     const hook = vi.fn().mockReturnValue(false);
     const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
 
-    const content = '<update_core_memory key="blocked">val</update_core_memory>';
-    const applied = await mem.extractAndApply(content);
+    const entry = await mem.createMemory('blocked', 'val');
 
-    expect(applied).toHaveLength(0);
+    expect(entry).toBeNull();
     expect(await mem.get('blocked')).toBeNull();
   });
 
-  it('blocks delete when hook returns false', async () => {
+  it('blocks deleteMemory when hook returns false', async () => {
     const hook = vi.fn().mockReturnValue(false);
     const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
     await mem.set('protected', 'keep');
 
-    const content = '<delete_core_memory key="protected" />';
-    await mem.extractAndApply(content);
+    const result = await mem.deleteMemory('protected');
 
+    expect(result).toBe(false);
     expect(await mem.get('protected')).toBe('keep');
   });
 
@@ -487,8 +714,7 @@ describe('Memory onMemoryUpdate', () => {
     const hook = vi.fn().mockResolvedValue(true);
     const mem = new Memory({ store: new InMemoryStore(), onMemoryUpdate: hook });
 
-    const content = '<update_core_memory key="async_key">val</update_core_memory>';
-    await mem.extractAndApply(content);
+    await mem.createMemory('async_key', 'val');
 
     expect(hook).toHaveBeenCalled();
     expect(await mem.get('async_key')).toBe('val');
@@ -502,8 +728,7 @@ describe('Memory onMemoryUpdate', () => {
       onMemoryUpdate: hook,
     });
 
-    const content = '<update_core_memory key="disallowed">val</update_core_memory>';
-    await mem.extractAndApply(content);
+    await mem.createMemory('disallowed', 'val');
 
     expect(hook).not.toHaveBeenCalled();
   });
@@ -593,11 +818,11 @@ describe('Memory onMemoryChanged', () => {
     });
   });
 
-  it('fires on extractAndApply() writes', async () => {
+  it('fires on createMemory()', async () => {
     const hook = vi.fn();
     const mem = new Memory({ store: new InMemoryStore(), onMemoryChanged: hook });
 
-    await mem.extractAndApply('<update_core_memory key="lang">TS</update_core_memory>');
+    await mem.createMemory('lang', 'TS');
 
     expect(hook).toHaveBeenCalledTimes(1);
     expect(hook.mock.calls[0][0].type).toBe('set');
@@ -605,13 +830,13 @@ describe('Memory onMemoryChanged', () => {
     expect(hook.mock.calls[0][0].value).toBe('TS');
   });
 
-  it('fires on extractAndApply() deletes', async () => {
+  it('fires on deleteMemory()', async () => {
     const hook = vi.fn();
     const mem = new Memory({ store: new InMemoryStore(), onMemoryChanged: hook });
     await mem.set('old', 'val');
     hook.mockClear();
 
-    await mem.extractAndApply('<delete_core_memory key="old" />');
+    await mem.deleteMemory('old');
 
     expect(hook).toHaveBeenCalledTimes(1);
     expect(hook.mock.calls[0][0]).toEqual({
@@ -644,7 +869,7 @@ describe('ContextChef + Memory', () => {
     expect(chef.memory()).toBeInstanceOf(Memory);
   });
 
-  it('compile() injects core memory block with getCoreMemoryBlock prompt', async () => {
+  it('compile() injects memory block with getMemoryBlock prompt', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
     await chef.memory().set('rule', 'be concise');
 
@@ -654,10 +879,11 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
 
-    const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
+    const memMsg = messages.find((m) => m.content.includes('<memory>'));
     expect(memMsg).toBeDefined();
-    expect(memMsg?.content).toContain('update_core_memory');
-    expect(memMsg?.content).toContain('<rule>be concise</rule>');
+    expect(memMsg?.content).toContain('memory tools');
+    expect(memMsg?.content).toContain('<entry key="rule"');
+    expect(memMsg?.content).toContain('be concise');
     expect(memMsg?.content).toContain('You recall the following from previous conversations');
     expect(memMsg?.content).toContain('Existing memory keys: rule');
   });
@@ -674,13 +900,13 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
 
-    const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
+    const memMsg = messages.find((m) => m.content.includes('<memory>'));
     expect(memMsg).toBeDefined();
     expect(memMsg?.content).toContain('Allowed memory keys: lang, style');
     expect(memMsg?.content).toContain('ONLY');
   });
 
-  it('compile() injects CORE_MEMORY_INSTRUCTION even when no memories exist', async () => {
+  it('compile() injects MEMORY_INSTRUCTION even when no memories exist', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
     chef.setTopLayer([{ role: 'system', content: 'system' }]);
     chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
@@ -689,9 +915,38 @@ describe('ContextChef + Memory', () => {
     const messages = payload.messages as Array<{ role: string; content: string }>;
 
     expect(messages).toHaveLength(3);
-    const memMsg = messages.find((m) => m.content.includes('update_core_memory'));
+    const memMsg = messages.find((m) => m.content.includes('memory tools'));
     expect(memMsg).toBeDefined();
-    expect(memMsg?.content).not.toContain('<core_memory>');
+    expect(memMsg?.content).not.toContain('<memory>');
+  });
+
+  it('compile() auto-injects memory tools into payload', async () => {
+    const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
+    await chef.memory().set('lang', 'TS');
+
+    chef.setTopLayer([{ role: 'system', content: 'system' }]);
+    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+
+    const payload = await chef.compile({ target: 'openai' });
+
+    expect(payload.tools).toBeDefined();
+    const toolNames = payload.tools!.map((t) => t.name);
+    expect(toolNames).toContain('create_memory');
+    expect(toolNames).toContain('modify_memory');
+  });
+
+  it('compile() includes only create_memory when no entries exist', async () => {
+    const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
+
+    chef.setTopLayer([{ role: 'system', content: 'system' }]);
+    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+
+    const payload = await chef.compile({ target: 'openai' });
+
+    expect(payload.tools).toBeDefined();
+    const toolNames = payload.tools!.map((t) => t.name);
+    expect(toolNames).toContain('create_memory');
+    expect(toolNames).not.toContain('modify_memory');
   });
 
   it('snapshot/restore includes memory state', async () => {
@@ -745,9 +1000,10 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
 
-    const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
+    const memMsg = messages.find((m) => m.content.includes('<memory>'));
     expect(memMsg).toBeDefined();
-    expect(memMsg?.content).toContain('<perm>stays</perm>');
+    expect(memMsg?.content).toContain('<entry key="perm"');
+    expect(memMsg?.content).toContain('stays');
     expect(memMsg?.content).not.toContain('temp');
     expect(memMsg?.content).not.toContain('will expire');
   });
@@ -810,7 +1066,8 @@ describe('Memory selector', () => {
     await mem.set('excluded', 'no');
 
     const xml = await mem.toXml();
-    expect(xml).toContain('<kept>yes</kept>');
+    expect(xml).toContain('<entry key="kept"');
+    expect(xml).toContain('yes');
     expect(xml).not.toContain('excluded');
   });
 
@@ -823,8 +1080,8 @@ describe('Memory selector', () => {
     await mem.set('a_rule', 'first');
 
     const xml = await mem.toXml();
-    const aPos = xml.indexOf('<a_rule>');
-    const zPos = xml.indexOf('<z_rule>');
+    const aPos = xml.indexOf('key="a_rule"');
+    const zPos = xml.indexOf('key="z_rule"');
     expect(aPos).toBeLessThan(zPos);
   });
 
@@ -840,9 +1097,11 @@ describe('Memory selector', () => {
 
     const xml = await mem.toXml();
     // Only the 2 highest importance should be present
-    expect(xml).toContain('<high>v3</high>');
-    expect(xml).toContain('<mid>v2</mid>');
-    expect(xml).not.toContain('<low>');
+    expect(xml).toContain('key="high"');
+    expect(xml).toContain('v3');
+    expect(xml).toContain('key="mid"');
+    expect(xml).toContain('v2');
+    expect(xml).not.toContain('key="low"');
   });
 
   it('returns empty XML when selector filters out all entries', async () => {
@@ -904,55 +1163,11 @@ describe('Memory selector', () => {
 
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
-    const memMsg = messages.find((m) => m.content.includes('<core_memory>'));
+    const memMsg = messages.find((m) => m.content.includes('<memory>'));
 
     expect(memMsg).toBeDefined();
-    expect(memMsg?.content).toContain('<important>keep</important>');
+    expect(memMsg?.content).toContain('key="important"');
+    expect(memMsg?.content).toContain('keep');
     expect(memMsg?.content).not.toContain('trivial');
-  });
-});
-
-// ─── stripMemoryTags ─────────────────────────────────────────────────────────
-
-describe('stripMemoryTags', () => {
-  it('strips update tags', () => {
-    const input = `Sure, I'll remember that.
-<update_core_memory key="lang">TypeScript</update_core_memory>
-Done.`;
-    expect(stripMemoryTags(input)).toBe("Sure, I'll remember that.\n\nDone.");
-  });
-
-  it('strips delete tags', () => {
-    const input = `Removing old rule.
-<delete_core_memory key="old_rule" />
-OK.`;
-    expect(stripMemoryTags(input)).toBe('Removing old rule.\n\nOK.');
-  });
-
-  it('strips mixed update and delete tags', () => {
-    const input = `Updating memory.
-<update_core_memory key="lang">TS</update_core_memory>
-<delete_core_memory key="old" />
-All done.`;
-    expect(stripMemoryTags(input)).toBe('Updating memory.\n\n\nAll done.');
-  });
-
-  it('returns content unchanged when no tags present', () => {
-    const input = 'Just a normal response with no memory tags.';
-    expect(stripMemoryTags(input)).toBe(input);
-  });
-
-  it('returns empty string for tag-only content', () => {
-    const input = '<update_core_memory key="k">v</update_core_memory>';
-    expect(stripMemoryTags(input)).toBe('');
-  });
-
-  it('handles multiline values inside update tags', () => {
-    const input = `Before.
-<update_core_memory key="rules">rule 1
-rule 2
-rule 3</update_core_memory>
-After.`;
-    expect(stripMemoryTags(input)).toBe('Before.\n\nAfter.');
   });
 });

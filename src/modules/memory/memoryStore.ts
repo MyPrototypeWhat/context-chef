@@ -1,5 +1,7 @@
 export interface MemoryStoreEntry {
   value: string;
+  /** Human-readable description of this memory entry's purpose. */
+  description?: string;
   createdAt: number;
   updatedAt: number;
   updateCount: number;

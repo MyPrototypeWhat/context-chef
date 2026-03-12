@@ -35,7 +35,7 @@ ContextChef solves the most common context engineering problems in AI agent deve
 - **Switching providers?** — Same prompt architecture compiles to OpenAI / Anthropic / Gemini with automatic prefill, cache, and tool call format adaptation
 - **Long tasks drifting?** — Zod schema-based state injection forces the model to stay aligned with the current task on every call
 - **Terminal output too large?** — Auto-truncate and offload to VFS, keeping error lines + a `context://` URI pointer for on-demand retrieval
-- **Can't remember across sessions?** — Core Memory lets the model persist key information (project rules, user preferences) that auto-injects on the next session
+- **Can't remember across sessions?** — Memory lets the model persist key information (project rules, user preferences) via tool calls, auto-injected on the next session
 - **Need to rollback?** — Snapshot & Restore captures and rolls back full context state for branching and exploration
 - **Need external context?** — `onBeforeCompile` hook lets you inject RAG results, AST snippets, or MCP queries before compilation
 
@@ -379,28 +379,44 @@ for (const toolCall of response.tool_calls) {
 
 ---
 
-### Core Memory
+### Memory
 
-Persistent key-value memory that survives across sessions. The LLM writes memories via XML tags in its output.
+Persistent key-value memory that survives across sessions. Memory is modified via tool calls (`create_memory` / `modify_memory`), which are auto-injected into the payload on `compile()`.
 
 ```typescript
 import { InMemoryStore, VFSMemoryStore } from "context-chef";
 
 const chef = new ContextChef({
-  memoryStore: new InMemoryStore(), // ephemeral (testing)
-  // memoryStore: new VFSMemoryStore(dir),   // persistent (production)
+  memory: {
+    store: new InMemoryStore(), // ephemeral (testing)
+    // store: new VFSMemoryStore(dir),   // persistent (production)
+  },
 });
 
-// After each LLM response, extract and apply memory updates
-await chef.memory().extractAndApply(assistantResponse);
-// Parses: <update_core_memory key="project_rules">Use TypeScript strict mode</update_core_memory>
-// Parses: <delete_core_memory key="outdated_rule" />
+// In your agent loop, intercept memory tool calls:
+for (const toolCall of response.tool_calls) {
+  if (toolCall.function.name === "create_memory") {
+    const { key, value, description } = JSON.parse(toolCall.function.arguments);
+    await chef.memory().createMemory(key, value, description);
+  } else if (toolCall.function.name === "modify_memory") {
+    const { action, key, value, description } = JSON.parse(toolCall.function.arguments);
+    if (action === "update") {
+      await chef.memory().updateMemory(key, value, description);
+    } else {
+      await chef.memory().deleteMemory(key);
+    }
+  }
+}
 
-// Direct read/write
-await chef.memory().set("persona", "You are a senior engineer");
+// Direct read/write (developer use, bypasses validation hooks)
+await chef.memory().set("persona", "You are a senior engineer", {
+  description: "The agent's persona and role",
+});
 const value = await chef.memory().get("persona");
 
-// Memory is auto-injected as <core_memory> XML between topLayer and history on compile()
+// On compile():
+// - Memory tools (create_memory, modify_memory) are auto-injected into payload.tools
+// - Existing memories are injected as <memory> XML between topLayer and history
 ```
 
 ---
