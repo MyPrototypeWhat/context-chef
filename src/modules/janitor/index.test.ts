@@ -335,16 +335,16 @@ describe('Janitor — snapshot & restore', () => {
     const janitor = new Janitor({ contextWindow: 100, tokenizer: makeTokenizer(10) });
 
     janitor.feedTokenUsage(999);
-    janitor._suppressNextCompression = true;
+    janitor['_suppressNextCompression'] = true;
     const snap = janitor.snapshotState();
 
     janitor.reset();
-    expect(janitor._externalTokenUsage).toBeNull();
-    expect(janitor._suppressNextCompression).toBe(false);
+    expect(janitor['_externalTokenUsage']).toBeNull();
+    expect(janitor['_suppressNextCompression']).toBe(false);
 
     janitor.restoreState(snap);
-    expect(janitor._externalTokenUsage).toBe(999);
-    expect(janitor._suppressNextCompression).toBe(true);
+    expect(janitor['_externalTokenUsage']).toBe(999);
+    expect(janitor['_suppressNextCompression']).toBe(true);
   });
 });
 

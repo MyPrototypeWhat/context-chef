@@ -149,7 +149,7 @@ describe('Offloader', () => {
       );
 
       // Test async resolve
-      const resolved = await asyncOffloader.resolveAsync(result.uri);
+      const resolved = await asyncOffloader.resolveAsync(uri);
       expect(resolved).toBe(largeText);
     });
   });

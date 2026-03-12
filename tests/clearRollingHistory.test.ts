@@ -74,7 +74,7 @@ describe('E13: clearRollingHistory', () => {
 
     chef.clearRollingHistory();
 
-    expect(chef.topLayer).toHaveLength(1);
-    expect(chef.topLayer[0].content).toBe('top');
+    expect(chef['topLayer']).toHaveLength(1);
+    expect(chef['topLayer'][0].content).toBe('top');
   });
 });

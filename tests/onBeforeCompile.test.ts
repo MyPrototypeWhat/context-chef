@@ -82,11 +82,11 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
   });
 
   it('should receive correct context in the hook', async () => {
-    let receivedCtx: BeforeCompileContext | null = null;
+    const captured: { ctx: BeforeCompileContext | null } = { ctx: null };
 
     const chef = new ContextChef({
       onBeforeCompile: async (ctx) => {
-        receivedCtx = ctx;
+        captured.ctx = ctx;
         return null;
       },
     });
@@ -104,12 +104,12 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
 
     await chef.compile({ target: 'openai' });
 
-    expect(receivedCtx).not.toBeNull();
-    expect(receivedCtx?.topLayer).toHaveLength(1);
-    expect(receivedCtx?.topLayer[0].content).toBe('Top');
-    expect(receivedCtx?.rollingHistory).toHaveLength(2);
-    expect(receivedCtx?.dynamicState).toHaveLength(0); // last_user placement → empty array
-    expect(receivedCtx?.rawDynamicXml).toContain('<activeFile>test.ts</activeFile>');
+    expect(captured.ctx).not.toBeNull();
+    expect(captured.ctx?.topLayer).toHaveLength(1);
+    expect(captured.ctx?.topLayer[0].content).toBe('Top');
+    expect(captured.ctx?.rollingHistory).toHaveLength(2);
+    expect(captured.ctx?.dynamicState).toHaveLength(0); // last_user placement → empty array
+    expect(captured.ctx?.rawDynamicXml).toContain('<activeFile>test.ts</activeFile>');
   });
 
   it('should support synchronous hook', async () => {
