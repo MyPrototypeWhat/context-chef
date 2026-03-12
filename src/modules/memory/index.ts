@@ -209,7 +209,9 @@ export class Memory {
           parts.push(`<description>\n${e.description}\n</description>`);
         }
         const updated = new Date(e.updatedAt).toISOString();
-        parts.push(`<metadata>\n- updated_at=${updated}\n- update_count=${e.updateCount}\n</metadata>`);
+        parts.push(
+          `<metadata>\n- updated_at=${updated}\n- update_count=${e.updateCount}\n</metadata>`,
+        );
         parts.push(`<value>\n${e.value}\n</value>`);
         parts.push('</entry>');
         return parts.join('\n');
@@ -224,7 +226,11 @@ export class Memory {
    * Create a new memory entry. Validates allowedKeys and invokes onMemoryUpdate veto hook.
    * Returns the created entry, or null if vetoed/blocked.
    */
-  async createMemory(key: string, value: string, description?: string): Promise<MemoryEntry | null> {
+  async createMemory(
+    key: string,
+    value: string,
+    description?: string,
+  ): Promise<MemoryEntry | null> {
     if (this.allowedKeys && !this.allowedKeys.includes(key)) return null;
 
     const oldEntry = await this.store.get(key);
@@ -243,7 +249,11 @@ export class Memory {
    * Update an existing memory entry. Validates allowedKeys and invokes onMemoryUpdate veto hook.
    * Returns the updated entry, or null if the key doesn't exist or was vetoed/blocked.
    */
-  async updateMemory(key: string, value: string, description?: string): Promise<MemoryEntry | null> {
+  async updateMemory(
+    key: string,
+    value: string,
+    description?: string,
+  ): Promise<MemoryEntry | null> {
     if (this.allowedKeys && !this.allowedKeys.includes(key)) return null;
 
     const existing = await this.store.get(key);
@@ -294,7 +304,8 @@ export class Memory {
     // create_memory
     const createKeyParam: Record<string, unknown> = {
       type: 'string',
-      description: 'A clear, descriptive key name for the memory (e.g. "project_language", "user_preference_style").',
+      description:
+        'A clear, descriptive key name for the memory (e.g. "project_language", "user_preference_style").',
     };
     if (this.allowedKeys && this.allowedKeys.length > 0) {
       createKeyParam.enum = this.allowedKeys;
@@ -314,7 +325,8 @@ export class Memory {
           },
           description: {
             type: 'string',
-            description: 'A brief description of what this memory entry is for and when it should be referenced.',
+            description:
+              'A brief description of what this memory entry is for and when it should be referenced.',
           },
         },
         required: ['key', 'value'],
@@ -342,7 +354,8 @@ export class Memory {
             },
             value: {
               type: 'string',
-              description: 'The new value for the memory entry. Required for "update", ignored for "delete".',
+              description:
+                'The new value for the memory entry. Required for "update", ignored for "delete".',
             },
             description: {
               type: 'string',

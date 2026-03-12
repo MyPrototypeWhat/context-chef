@@ -112,7 +112,7 @@ describe('Memory', () => {
     expect(entry?.value).toBe('context-chef');
     expect(entry?.updateCount).toBe(1);
     expect(entry?.createdAt).toBeGreaterThan(0);
-    expect(entry?.updatedAt).toBeGreaterThanOrEqual(entry?.createdAt);
+    expect(entry?.updatedAt).toBeGreaterThanOrEqual(entry?.createdAt as number);
   });
 
   it('getEntry() returns null for unknown key', async () => {
@@ -144,7 +144,7 @@ describe('Memory', () => {
     expect(second?.value).toBe('v2');
     expect(second?.createdAt).toBe(first?.createdAt);
     expect(second?.updateCount).toBe(2);
-    expect(second?.updatedAt).toBeGreaterThanOrEqual(first?.updatedAt);
+    expect(second?.updatedAt).toBeGreaterThanOrEqual(first?.updatedAt as number);
   });
 
   it('set() with importance option', async () => {
@@ -391,7 +391,10 @@ describe('Memory getToolDefinitions', () => {
 
     const tools = await mem.getToolDefinitions();
     const modifyTool = tools.find((t) => t.name === 'modify_memory');
-    const keyParam = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const keyParam = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<
+      string,
+      unknown
+    >;
     const keyDef = keyParam?.key as Record<string, unknown>;
 
     expect(keyDef.enum).toEqual(['lang', 'style']);
@@ -403,7 +406,10 @@ describe('Memory getToolDefinitions', () => {
 
     const tools = await mem.getToolDefinitions();
     const modifyTool = tools.find((t) => t.name === 'modify_memory');
-    const props = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const props = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<
+      string,
+      unknown
+    >;
     const actionDef = props?.action as Record<string, unknown>;
 
     expect(actionDef.enum).toEqual(['update', 'delete']);
@@ -417,7 +423,10 @@ describe('Memory getToolDefinitions', () => {
 
     const tools = await mem.getToolDefinitions();
     const createTool = tools.find((t) => t.name === 'create_memory');
-    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<
+      string,
+      unknown
+    >;
     const keyDef = props?.key as Record<string, unknown>;
 
     expect(keyDef.enum).toEqual(['lang', 'style', 'framework']);
@@ -428,7 +437,10 @@ describe('Memory getToolDefinitions', () => {
 
     const tools = await mem.getToolDefinitions();
     const createTool = tools.find((t) => t.name === 'create_memory');
-    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<
+      string,
+      unknown
+    >;
     const keyDef = props?.key as Record<string, unknown>;
 
     expect(keyDef.enum).toBeUndefined();
@@ -443,10 +455,16 @@ describe('Memory getToolDefinitions', () => {
     const createTool = tools.find((t) => t.name === 'create_memory');
     const modifyTool = tools.find((t) => t.name === 'modify_memory');
 
-    const createProps = (createTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const createProps = (createTool?.parameters as Record<string, unknown>)?.properties as Record<
+      string,
+      unknown
+    >;
     expect(createProps?.description).toBeDefined();
 
-    const modifyProps = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<string, unknown>;
+    const modifyProps = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<
+      string,
+      unknown
+    >;
     expect(modifyProps?.description).toBeDefined();
   });
 });
@@ -930,7 +948,7 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
 
     expect(payload.tools).toBeDefined();
-    const toolNames = payload.tools!.map((t) => t.name);
+    const toolNames = payload.tools?.map((t) => t.name);
     expect(toolNames).toContain('create_memory');
     expect(toolNames).toContain('modify_memory');
   });
@@ -944,7 +962,7 @@ describe('ContextChef + Memory', () => {
     const payload = await chef.compile({ target: 'openai' });
 
     expect(payload.tools).toBeDefined();
-    const toolNames = payload.tools!.map((t) => t.name);
+    const toolNames = payload.tools?.map((t) => t.name);
     expect(toolNames).toContain('create_memory');
     expect(toolNames).not.toContain('modify_memory');
   });
