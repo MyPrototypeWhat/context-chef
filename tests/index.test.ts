@@ -129,9 +129,9 @@ describe('ContextChef API', () => {
     const processed1 = chef.offload(log);
     expect(processed1).not.toContain('context://vfs/');
 
-    // Trigger explicit threshold override
-    const processed2 = chef.offload(log, { threshold: 50 });
-    expect(processed2).toContain('<EPHEMERAL_MESSAGE>');
+    // Trigger explicit threshold override with small tailChars so content gets truncated
+    const processed2 = chef.offload(log, { threshold: 50, tailChars: 100 });
+    expect(processed2).toContain('output truncated');
     expect(processed2).toContain('context://vfs/vfs_');
   });
 

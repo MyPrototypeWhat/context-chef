@@ -52,8 +52,10 @@ export interface VFSResult {
 export interface OffloadOptions {
   /** Allows overriding the instance threshold for a specific call */
   threshold?: number;
-  /** Number of tail lines to preserve in the truncated output (default: 20) */
-  tailLines?: number;
+  /** Number of characters to preserve from the head of the content (default: 0) */
+  headChars?: number;
+  /** Number of characters to preserve from the tail of the content (default: 2000) */
+  tailChars?: number;
 }
 
 export class Offloader {
@@ -71,18 +73,43 @@ export class Offloader {
     this.adapter = config.adapter ?? new FileSystemAdapter(storageDir);
   }
 
-  private _prepareOffload(content: string, activeThreshold: number, tailLines: number) {
+  /**
+   * Snaps a character index to the nearest line boundary.
+   * For head: snaps backward to include the last complete line.
+   * For tail: snaps forward to start at the beginning of a line.
+   */
+  private _snapToLineBoundary(content: string, charIndex: number, direction: 'head' | 'tail'): number {
+    if (charIndex <= 0) return 0;
+    if (charIndex >= content.length) return content.length;
+
+    if (direction === 'head') {
+      // Snap backward: find the last newline before or at charIndex
+      const lastNewline = content.lastIndexOf('\n', charIndex);
+      return lastNewline === -1 ? charIndex : lastNewline + 1;
+    }
+    // Snap forward: find the first newline at or after charIndex
+    const nextNewline = content.indexOf('\n', charIndex);
+    return nextNewline === -1 ? charIndex : nextNewline + 1;
+  }
+
+  private _prepareOffload(content: string, headChars: number, tailChars: number) {
     const hash = crypto.createHash('md5').update(content).digest('hex').substring(0, 8);
     const filename = `vfs_${Date.now()}_${hash}.txt`;
-
-    let lastLinesStr = '';
-    if (tailLines > 0) {
-      const lines = content.split('\n');
-      lastLinesStr = lines.slice(-tailLines).join('\n');
-    }
-
     const uri = `${this.config.uriScheme}${filename}`;
-    const truncated = Prompts.getVFSOffloadReminder(activeThreshold, uri, lastLinesStr);
+
+    const totalLines = content.split('\n').length;
+    const totalChars = content.length;
+
+    // Snap to line boundaries
+    const headEnd = headChars > 0 ? this._snapToLineBoundary(content, headChars, 'head') : 0;
+    const tailStart = tailChars > 0
+      ? this._snapToLineBoundary(content, content.length - tailChars, 'tail')
+      : content.length;
+
+    const headStr = headEnd > 0 ? content.slice(0, headEnd) : '';
+    const tailStr = tailStart < content.length ? content.slice(tailStart) : '';
+
+    const truncated = Prompts.getVFSOffloadReminder(uri, totalLines, totalChars, headStr, tailStr);
 
     return { filename, uri, truncated };
   }
@@ -94,13 +121,19 @@ export class Offloader {
    */
   public offload(content: string, options?: OffloadOptions): VFSResult {
     const activeThreshold = options?.threshold ?? this.config.threshold;
-    const tailLines = options?.tailLines ?? 20;
+    const headChars = options?.headChars ?? 0;
+    const tailChars = options?.tailChars ?? 2000;
 
     if (content.length <= activeThreshold) {
       return { isOffloaded: false, content };
     }
 
-    const { filename, uri, truncated } = this._prepareOffload(content, activeThreshold, tailLines);
+    // If head + tail would cover the entire content, no need to truncate
+    if (headChars + tailChars >= content.length) {
+      return { isOffloaded: false, content };
+    }
+
+    const { filename, uri, truncated } = this._prepareOffload(content, headChars, tailChars);
 
     const writeResult = this.adapter.write(filename, content);
     if (writeResult instanceof Promise) {
@@ -123,13 +156,18 @@ export class Offloader {
    */
   public async offloadAsync(content: string, options?: OffloadOptions): Promise<VFSResult> {
     const activeThreshold = options?.threshold ?? this.config.threshold;
-    const tailLines = options?.tailLines ?? 20;
+    const headChars = options?.headChars ?? 0;
+    const tailChars = options?.tailChars ?? 2000;
 
     if (content.length <= activeThreshold) {
       return { isOffloaded: false, content };
     }
 
-    const { filename, uri, truncated } = this._prepareOffload(content, activeThreshold, tailLines);
+    if (headChars + tailChars >= content.length) {
+      return { isOffloaded: false, content };
+    }
+
+    const { filename, uri, truncated } = this._prepareOffload(content, headChars, tailChars);
 
     await this.adapter.write(filename, content);
 

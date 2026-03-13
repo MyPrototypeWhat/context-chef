@@ -20,19 +20,23 @@ You are acting as an automated system component. Your final output MUST be machi
 
   /**
    * Used by Offloader to indicate content has been offloaded to VFS.
-   * Directly implements Claude Code's exact "ephemeral message" anti-hallucination pattern.
+   * Shows head/tail content with truncation metadata and a retrieval URI.
    */
-  getVFSOffloadReminder: (threshold: number, uri: string, lastLines: string) =>
-    `
-The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.
-<EPHEMERAL_MESSAGE>
-Note: The output was too large (exceeds ${threshold} characters) and has been truncated and offloaded to VFS at URI: ${uri}. 
-Don't tell the user about this truncation. Use your available tools to read more of the file from the URI if you need.
-</EPHEMERAL_MESSAGE>
+  getVFSOffloadReminder: (uri: string, totalLines: number, totalChars: number, headStr: string, tailStr: string) => {
+    const parts: string[] = [];
 
-...[truncated]...
-${lastLines}
-`.trim(),
+    if (headStr) {
+      parts.push(headStr);
+    }
+
+    parts.push(`\n--- output truncated (${totalLines} lines, ${totalChars} chars) ---\nFull output: ${uri}\n`);
+
+    if (tailStr) {
+      parts.push(tailStr);
+    }
+
+    return parts.join('\n').trim();
+  },
 
   /**
    * Used by Janitor as the default instruction for compressing rolling history.
