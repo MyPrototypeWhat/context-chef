@@ -256,16 +256,19 @@ Explicitly clear history and reset Janitor state when switching topics or comple
 ### Large Output Offloading (Offloader / VFS)
 
 ```typescript
-// Offload if content exceeds threshold; preserves last 20 lines by default
+// Offload if content exceeds threshold; preserves last 2000 chars by default
 const safeLog = chef.offload(rawTerminalOutput);
 history.push({ role: "tool", content: safeLog, tool_call_id: "call_123" });
 // safeLog: original content if small, or truncated with context://vfs/ URI
 
-// Customize tail lines preserved (0 = no tail, like a static document)
-const safeDoc = chef.offload(largeFileContent, { tailLines: 0 });
+// Preserve head (first 500 chars) + tail (last 1000 chars), snapped to line boundaries
+const safeOutput = chef.offload(content, { headChars: 500, tailChars: 1000 });
+
+// No preview content — just truncation notice + URI
+const safeDoc = chef.offload(largeFileContent, { headChars: 0, tailChars: 0 });
 
 // Override threshold per call
-const safeOutput = chef.offload(content, { threshold: 2000, tailLines: 50 });
+const safeOutput2 = chef.offload(content, { threshold: 2000, tailChars: 500 });
 ```
 
 Register a tool for the LLM to read full content when needed:
