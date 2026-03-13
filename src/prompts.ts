@@ -22,14 +22,22 @@ You are acting as an automated system component. Your final output MUST be machi
    * Used by Offloader to indicate content has been offloaded to VFS.
    * Shows head/tail content with truncation metadata and a retrieval URI.
    */
-  getVFSOffloadReminder: (uri: string, totalLines: number, totalChars: number, headStr: string, tailStr: string) => {
+  getVFSOffloadReminder: (
+    uri: string,
+    totalLines: number,
+    totalChars: number,
+    headStr: string,
+    tailStr: string,
+  ) => {
     const parts: string[] = [];
 
     if (headStr) {
       parts.push(headStr);
     }
 
-    parts.push(`\n--- output truncated (${totalLines} lines, ${totalChars} chars) ---\nFull output: ${uri}\n`);
+    parts.push(
+      `\n--- output truncated (${totalLines} lines, ${totalChars} chars) ---\nFull output: ${uri}\n`,
+    );
 
     if (tailStr) {
       parts.push(tailStr);

@@ -78,7 +78,11 @@ export class Offloader {
    * For head: snaps backward to include the last complete line.
    * For tail: snaps forward to start at the beginning of a line.
    */
-  private _snapToLineBoundary(content: string, charIndex: number, direction: 'head' | 'tail'): number {
+  private _snapToLineBoundary(
+    content: string,
+    charIndex: number,
+    direction: 'head' | 'tail',
+  ): number {
     if (charIndex <= 0) return 0;
     if (charIndex >= content.length) return content.length;
 
@@ -102,9 +106,10 @@ export class Offloader {
 
     // Snap to line boundaries
     const headEnd = headChars > 0 ? this._snapToLineBoundary(content, headChars, 'head') : 0;
-    const tailStart = tailChars > 0
-      ? this._snapToLineBoundary(content, content.length - tailChars, 'tail')
-      : content.length;
+    const tailStart =
+      tailChars > 0
+        ? this._snapToLineBoundary(content, content.length - tailChars, 'tail')
+        : content.length;
 
     const headStr = headEnd > 0 ? content.slice(0, headEnd) : '';
     const tailStr = tailStart < content.length ? content.slice(tailStart) : '';
