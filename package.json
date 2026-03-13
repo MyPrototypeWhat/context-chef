@@ -22,7 +22,10 @@
     "typecheck:compat": "tsc --noEmit --strict --esModuleInterop --target ES2022 --module CommonJS --moduleResolution node --skipLibCheck tests/typeCompat.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
   },
   "keywords": [
     "ai",
@@ -75,6 +78,8 @@
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@biomejs/biome": "^2.4.4",
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
     "@google/generative-ai": "^0.24.1",
     "@types/node": "^25.3.0",
     "openai": "^6.22.0",
