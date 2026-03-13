@@ -64,19 +64,19 @@ const chef = new ContextChef({
 });
 
 const payload = await chef
-  .setTopLayer([
+  .setSystemPrompt([
     {
       role: "system",
       content: "You are an expert coder.",
       _cache_breakpoint: true,
     },
   ])
-  .useRollingHistory(conversationHistory)
+  .setHistory(conversationHistory)
   .setDynamicState(TaskSchema, {
     activeFile: "auth.ts",
     todo: ["Fix login bug"],
   })
-  .withGovernance({
+  .withGuardrails({
     enforceXML: { outputTag: "response" },
     prefill: "<thinking>\n1.",
   })
@@ -104,12 +104,12 @@ const chef = new ContextChef({
 
 ### Context Building
 
-#### `chef.setTopLayer(messages): this`
+#### `chef.setSystemPrompt(messages): this`
 
 Sets the static system prompt layer. Cached prefix — should rarely change.
 
 ```typescript
-chef.setTopLayer([
+chef.setSystemPrompt([
   {
     role: "system",
     content: "You are an expert coder.",
@@ -120,7 +120,7 @@ chef.setTopLayer([
 
 `_cache_breakpoint: true` tells the Anthropic adapter to inject `cache_control: { type: 'ephemeral' }`.
 
-#### `chef.useRollingHistory(messages): this`
+#### `chef.setHistory(messages): this`
 
 Sets the conversation history. Janitor compresses automatically on `compile()`.
 
@@ -139,12 +139,12 @@ chef.setDynamicState(TaskSchema, { activeFile: "auth.ts", todo: ["Fix bug"] });
 // use { placement: 'system' } for a standalone system message
 ```
 
-#### `chef.withGovernance(options): this`
+#### `chef.withGuardrails(options): this`
 
 Applies output format guardrails and optional prefill.
 
 ```typescript
-chef.withGovernance({
+chef.withGuardrails({
   enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
   prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
 });
@@ -185,7 +185,7 @@ const chef = new ContextChef({
 });
 ```
 
-#### Path 2: feedTokenUsage (simple, no tokenizer needed)
+#### Path 2: reportTokenUsage (simple, no tokenizer needed)
 
 Most LLM APIs return token usage in their response. Feed that value back — when it exceeds `contextWindow`, Janitor compresses everything except the last N messages.
 
@@ -200,7 +200,7 @@ const chef = new ContextChef({
 
 // After each LLM call:
 const response = await openai.chat.completions.create({ ... });
-chef.feedTokenUsage(response.usage.prompt_tokens);
+chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
 > **Note:** Without a `compressionModel`, old messages are discarded with no summary. A console warning is printed at construction time if neither `tokenizer` nor `compressionModel` is provided.
@@ -212,18 +212,18 @@ chef.feedTokenUsage(response.usage.prompt_tokens);
 | `contextWindow`          | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds this.          |
 | `tokenizer`              | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
 | `preserveRatio`          | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
-| `preserveRecentMessages` | `number`                                    | `1`        | [feedTokenUsage path] Number of recent messages to keep when compressing.                    |
+| `preserveRecentMessages` | `number`                                    | `1`        | [reportTokenUsage path] Number of recent messages to keep when compressing.                    |
 | `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `onCompress`             | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
 | `onBudgetExceeded`       | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. |
 
-#### `chef.feedTokenUsage(tokenCount): this`
+#### `chef.reportTokenUsage(tokenCount): this`
 
 Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the higher of the local calculation and the fed value is used.
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });
-chef.feedTokenUsage(response.usage.prompt_tokens);
+chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
 #### `onBudgetExceeded` hook
@@ -247,7 +247,7 @@ const chef = new ContextChef({
 });
 ```
 
-#### `chef.clearRollingHistory(): this`
+#### `chef.clearHistory(): this`
 
 Explicitly clear history and reset Janitor state when switching topics or completing sub-tasks.
 
@@ -293,7 +293,7 @@ chef.registerTools([
   },
 ]);
 
-const { tools, removed } = chef.tools().pruneByTask("Read the auth.ts file");
+const { tools, removed } = chef.getPruner().pruneByTask("Read the auth.ts file");
 // tools: [read_file, get_time]
 ```
 
@@ -356,7 +356,7 @@ chef.registerToolkits([
 ]);
 
 // Compile — tools: [file_ops, terminal, load_toolkit] (always stable)
-const { tools, directoryXml } = chef.tools().compile();
+const { tools, directoryXml } = chef.getPruner().compile();
 // directoryXml: inject into system prompt so LLM knows available toolkits
 ```
 
@@ -364,14 +364,14 @@ const { tools, directoryXml } = chef.tools().compile();
 
 ```typescript
 for (const toolCall of response.tool_calls) {
-  if (chef.tools().isNamespaceCall(toolCall)) {
+  if (chef.getPruner().isNamespaceCall(toolCall)) {
     // Route namespace call to real tool
-    const { toolName, args } = chef.tools().resolveNamespace(toolCall);
+    const { toolName, args } = chef.getPruner().resolveNamespace(toolCall);
     const result = await executeTool(toolName, args);
-  } else if (chef.tools().isToolkitLoader(toolCall)) {
+  } else if (chef.getPruner().isToolkitLoader(toolCall)) {
     // LLM requested a toolkit — expand and re-call
     const parsed = JSON.parse(toolCall.function.arguments);
-    const newTools = chef.tools().extractToolkit(parsed.toolkit_name);
+    const newTools = chef.getPruner().extractToolkit(parsed.toolkit_name);
     // Merge newTools into the next LLM request
   }
 }
@@ -397,26 +397,26 @@ const chef = new ContextChef({
 for (const toolCall of response.tool_calls) {
   if (toolCall.function.name === "create_memory") {
     const { key, value, description } = JSON.parse(toolCall.function.arguments);
-    await chef.memory().createMemory(key, value, description);
+    await chef.getMemory().createMemory(key, value, description);
   } else if (toolCall.function.name === "modify_memory") {
     const { action, key, value, description } = JSON.parse(toolCall.function.arguments);
     if (action === "update") {
-      await chef.memory().updateMemory(key, value, description);
+      await chef.getMemory().updateMemory(key, value, description);
     } else {
-      await chef.memory().deleteMemory(key);
+      await chef.getMemory().deleteMemory(key);
     }
   }
 }
 
 // Direct read/write (developer use, bypasses validation hooks)
-await chef.memory().set("persona", "You are a senior engineer", {
+await chef.getMemory().set("persona", "You are a senior engineer", {
   description: "The agent's persona and role",
 });
-const value = await chef.memory().get("persona");
+const value = await chef.getMemory().get("persona");
 
 // On compile():
 // - Memory tools (create_memory, modify_memory) are auto-injected into payload.tools
-// - Existing memories are injected as <memory> XML between topLayer and history
+// - Existing memories are injected as <memory> XML between systemPrompt and history
 ```
 
 ---
@@ -442,7 +442,7 @@ Inject external context (RAG, AST snippets, MCP queries) right before compilatio
 ```typescript
 const chef = new ContextChef({
   onBeforeCompile: async (ctx) => {
-    const snippets = await vectorDB.search(ctx.rawDynamicXml);
+    const snippets = await vectorDB.search(ctx.dynamicStateXml);
     return snippets.map((s) => s.content).join("\n");
     // Injected as <implicit_context>...</implicit_context> alongside dynamic state
     // Return null to skip injection
