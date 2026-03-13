@@ -51,8 +51,8 @@ async function chat(userMessage: string) {
   history.push({ role: 'user', content: userMessage });
 
   const payload = await chef
-    .setTopLayer([{ role: 'system', content: 'You are a helpful coding assistant.' }])
-    .useRollingHistory(history)
+    .setSystemPrompt([{ role: 'system', content: 'You are a helpful coding assistant.' }])
+    .setHistory(history)
     .setDynamicState(TaskSchema, {
       currentGoal: 'Help user with their coding questions',
     })

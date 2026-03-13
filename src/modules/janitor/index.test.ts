@@ -130,7 +130,7 @@ describe('Janitor — tokenizer path', () => {
       },
     });
 
-    chef.useRollingHistory(buildHistory(5));
+    chef.setHistory(buildHistory(5));
     const payload = await chef.compile();
 
     expect(mockModel).toHaveBeenCalledTimes(1);
@@ -228,7 +228,7 @@ describe('Janitor — feedTokenUsage path (no tokenizer)', () => {
     expect(mockModel).toHaveBeenCalledTimes(1);
   });
 
-  it('integrates with ContextChef.feedTokenUsage()', async () => {
+  it('integrates with ContextChef.reportTokenUsage()', async () => {
     const mockModel = vi.fn().mockResolvedValue('<history_summary>CHEF</history_summary>');
     const chef = new ContextChef({
       janitor: {
@@ -237,8 +237,8 @@ describe('Janitor — feedTokenUsage path (no tokenizer)', () => {
       },
     });
 
-    chef.useRollingHistory(buildHistory(5));
-    chef.feedTokenUsage(250000);
+    chef.setHistory(buildHistory(5));
+    chef.reportTokenUsage(250000);
     const payload = await chef.compile();
 
     expect(mockModel).toHaveBeenCalledTimes(1);

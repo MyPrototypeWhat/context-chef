@@ -1,6 +1,6 @@
 export const Prompts = {
   /**
-   * Used by Governor to enforce strict XML output and behavior.
+   * Used by Guardrail to enforce strict XML output and behavior.
    * Uses Claude Code's <EPHEMERAL_MESSAGE> wrapper pattern to inject system rules
    * into the user/assistant flow without the model "replying" to it.
    * Uses Claude Code-style emphasis (CRITICAL, MUST, NEVER) for cognitive anchoring.
@@ -19,7 +19,7 @@ You are acting as an automated system component. Your final output MUST be machi
 `.trim(),
 
   /**
-   * Used by Pointer to indicate content has been offloaded to VFS.
+   * Used by Offloader to indicate content has been offloaded to VFS.
    * Directly implements Claude Code's exact "ephemeral message" anti-hallucination pattern.
    */
   getVFSOffloadReminder: (threshold: number, uri: string, lastLines: string) =>

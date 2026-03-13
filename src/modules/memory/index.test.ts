@@ -877,22 +877,22 @@ describe('Memory onMemoryChanged', () => {
 // ─── ContextChef integration ────────────────────────────────────────────────
 
 describe('ContextChef + Memory', () => {
-  it('memory() throws when memory not configured', () => {
+  it('getMemory() throws when memory not configured', () => {
     const chef = new ContextChef();
-    expect(() => chef.memory()).toThrow('memory');
+    expect(() => chef.getMemory()).toThrow('memory');
   });
 
-  it('memory() returns Memory instance when configured', () => {
+  it('getMemory() returns Memory instance when configured', () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    expect(chef.memory()).toBeInstanceOf(Memory);
+    expect(chef.getMemory()).toBeInstanceOf(Memory);
   });
 
   it('compile() injects memory block with getMemoryBlock prompt', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    await chef.memory().set('rule', 'be concise');
+    await chef.getMemory().set('rule', 'be concise');
 
-    chef.setTopLayer([{ role: 'system', content: 'You are a helpful assistant.' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hello' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'You are a helpful assistant.' }]);
+    chef.setHistory([{ role: 'user', content: 'hello' }]);
 
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
@@ -910,10 +910,10 @@ describe('ContextChef + Memory', () => {
     const chef = new ContextChef({
       memory: { store: new InMemoryStore(), allowedKeys: ['lang', 'style'] },
     });
-    await chef.memory().set('lang', 'TypeScript');
+    await chef.getMemory().set('lang', 'TypeScript');
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
@@ -926,8 +926,8 @@ describe('ContextChef + Memory', () => {
 
   it('compile() injects MEMORY_INSTRUCTION even when no memories exist', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;
@@ -940,10 +940,10 @@ describe('ContextChef + Memory', () => {
 
   it('compile() auto-injects memory tools into payload', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    await chef.memory().set('lang', 'TS');
+    await chef.getMemory().set('lang', 'TS');
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
 
@@ -956,8 +956,8 @@ describe('ContextChef + Memory', () => {
   it('compile() includes only create_memory when no entries exist', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
 
@@ -969,17 +969,17 @@ describe('ContextChef + Memory', () => {
 
   it('snapshot/restore includes memory state', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    await chef.memory().set('key1', 'val1');
+    await chef.getMemory().set('key1', 'val1');
 
     const snap = chef.snapshot('before change');
 
-    await chef.memory().set('key1', 'changed');
-    await chef.memory().set('key2', 'new');
+    await chef.getMemory().set('key1', 'changed');
+    await chef.getMemory().set('key2', 'new');
 
     chef.restore(snap);
 
-    expect(await chef.memory().get('key1')).toBe('val1');
-    expect(await chef.memory().get('key2')).toBeNull();
+    expect(await chef.getMemory().get('key1')).toBe('val1');
+    expect(await chef.getMemory().get('key2')).toBeNull();
   });
 
   it('snapshot without memory has null modules.memory', () => {
@@ -990,25 +990,25 @@ describe('ContextChef + Memory', () => {
 
   it('compile() advances memory turnCount', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
-    expect(chef.memory().turnCount).toBe(0);
+    expect(chef.getMemory().turnCount).toBe(0);
     await chef.compile({ target: 'openai' });
-    expect(chef.memory().turnCount).toBe(1);
+    expect(chef.getMemory().turnCount).toBe(1);
     await chef.compile({ target: 'openai' });
-    expect(chef.memory().turnCount).toBe(2);
+    expect(chef.getMemory().turnCount).toBe(2);
   });
 
   it('compile() sweeps expired entries before injection', async () => {
     const chef = new ContextChef({
       memory: { store: new InMemoryStore(), defaultTTL: 1 },
     });
-    await chef.memory().set('temp', 'will expire');
-    await chef.memory().set('perm', 'stays', { ttl: null });
+    await chef.getMemory().set('temp', 'will expire');
+    await chef.getMemory().set('perm', 'stays', { ttl: null });
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     // First compile: turn 0→1, temp was created at turn 0 with TTL 1 → expiresAtTurn=1
     // At sweep time turnCount=0, so 0 >= 1 is false → not expired yet
@@ -1028,11 +1028,11 @@ describe('ContextChef + Memory', () => {
 
   it('compile() returns meta.injectedMemoryKeys', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
-    await chef.memory().set('lang', 'TS');
-    await chef.memory().set('style', 'functional');
+    await chef.getMemory().set('lang', 'TS');
+    await chef.getMemory().set('style', 'functional');
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
     expect(payload.meta).toBeDefined();
@@ -1043,11 +1043,11 @@ describe('ContextChef + Memory', () => {
     const chef = new ContextChef({
       memory: { store: new InMemoryStore(), defaultTTL: 1 },
     });
-    await chef.memory().set('temp', 'will expire');
-    await chef.memory().set('perm', 'stays', { ttl: null });
+    await chef.getMemory().set('temp', 'will expire');
+    await chef.getMemory().set('perm', 'stays', { ttl: null });
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     // First compile: nothing expires yet
     const p1 = await chef.compile({ target: 'openai' });
@@ -1062,8 +1062,8 @@ describe('ContextChef + Memory', () => {
 
   it('compile() returns empty meta when no memory configured', async () => {
     const chef = new ContextChef();
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
     expect(payload.meta).toBeDefined();
@@ -1173,11 +1173,11 @@ describe('Memory selector', () => {
         selector: (entries) => entries.filter((e) => e.importance != null && e.importance >= 5),
       },
     });
-    await chef.memory().set('important', 'keep', { importance: 10 });
-    await chef.memory().set('trivial', 'drop', { importance: 1 });
+    await chef.getMemory().set('important', 'keep', { importance: 10 });
+    await chef.getMemory().set('trivial', 'drop', { importance: 1 });
 
-    chef.setTopLayer([{ role: 'system', content: 'system' }]);
-    chef.useRollingHistory([{ role: 'user', content: 'hi' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
     const messages = payload.messages as Array<{ role: string; content: string }>;

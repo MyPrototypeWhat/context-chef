@@ -13,7 +13,7 @@ export class Guardrail {
    * Applies robust format guardrails and optional prefill to the dynamic state.
    * Uses the Claude Code-inspired EPHEMERAL_MESSAGE pattern for maximum compliance.
    */
-  public applyGuardrails(dynamicState: Message[], options: GuardrailOptions): Message[] {
+  public apply(dynamicState: Message[], options: GuardrailOptions): Message[] {
     const state = [...dynamicState];
 
     if (options.enforceXML) {

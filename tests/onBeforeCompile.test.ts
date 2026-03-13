@@ -15,8 +15,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     });
 
     chef
-      .setTopLayer([{ role: 'system', content: 'You are an expert.' }])
-      .useRollingHistory([{ role: 'user', content: 'Fix the bug.' }])
+      .setSystemPrompt([{ role: 'system', content: 'You are an expert.' }])
+      .setHistory([{ role: 'user', content: 'Fix the bug.' }])
       .setDynamicState(TaskSchema, { activeFile: 'auth.ts' });
 
     const payload = await chef.compile({ target: 'openai' });
@@ -35,8 +35,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     });
 
     chef
-      .setTopLayer([{ role: 'system', content: 'You are an expert.' }])
-      .useRollingHistory([{ role: 'user', content: 'Help me.' }])
+      .setSystemPrompt([{ role: 'system', content: 'You are an expert.' }])
+      .setHistory([{ role: 'user', content: 'Help me.' }])
       .setDynamicState(TaskSchema, { activeFile: 'index.ts' }, { placement: 'system' });
 
     const payload = await chef.compile({ target: 'openai' });
@@ -57,8 +57,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     });
 
     chef
-      .setTopLayer([{ role: 'system', content: 'You are an expert.' }])
-      .useRollingHistory([{ role: 'user', content: 'Help me.' }])
+      .setSystemPrompt([{ role: 'system', content: 'You are an expert.' }])
+      .setHistory([{ role: 'user', content: 'Help me.' }])
       .setDynamicState(TaskSchema, { activeFile: 'app.ts' });
 
     const payload = await chef.compile({ target: 'openai' });
@@ -72,8 +72,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     const chef = new ContextChef();
 
     chef
-      .setTopLayer([{ role: 'system', content: 'You are an expert.' }])
-      .useRollingHistory([{ role: 'user', content: 'Help.' }]);
+      .setSystemPrompt([{ role: 'system', content: 'You are an expert.' }])
+      .setHistory([{ role: 'user', content: 'Help.' }]);
 
     const payload = await chef.compile({ target: 'openai' });
 
@@ -98,18 +98,18 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     ];
 
     chef
-      .setTopLayer(topLayer)
-      .useRollingHistory(history)
+      .setSystemPrompt(topLayer)
+      .setHistory(history)
       .setDynamicState(TaskSchema, { activeFile: 'test.ts' });
 
     await chef.compile({ target: 'openai' });
 
     expect(captured.ctx).not.toBeNull();
-    expect(captured.ctx?.topLayer).toHaveLength(1);
-    expect(captured.ctx?.topLayer[0].content).toBe('Top');
-    expect(captured.ctx?.rollingHistory).toHaveLength(2);
+    expect(captured.ctx?.systemPrompt).toHaveLength(1);
+    expect(captured.ctx?.systemPrompt[0].content).toBe('Top');
+    expect(captured.ctx?.history).toHaveLength(2);
     expect(captured.ctx?.dynamicState).toHaveLength(0); // last_user placement → empty array
-    expect(captured.ctx?.rawDynamicXml).toContain('<activeFile>test.ts</activeFile>');
+    expect(captured.ctx?.dynamicStateXml).toContain('<activeFile>test.ts</activeFile>');
   });
 
   it('should support synchronous hook', async () => {
@@ -118,8 +118,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     });
 
     chef
-      .setTopLayer([{ role: 'system', content: 'Top' }])
-      .useRollingHistory([{ role: 'user', content: 'Hi' }]);
+      .setSystemPrompt([{ role: 'system', content: 'Top' }])
+      .setHistory([{ role: 'user', content: 'Hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
 
@@ -133,8 +133,8 @@ describe('onBeforeCompile lifecycle hook (E8)', () => {
     });
 
     chef
-      .setTopLayer([{ role: 'system', content: 'Top' }])
-      .useRollingHistory([{ role: 'user', content: 'Find the bug.' }]);
+      .setSystemPrompt([{ role: 'system', content: 'Top' }])
+      .setHistory([{ role: 'user', content: 'Find the bug.' }]);
 
     const payload = await chef.compile({ target: 'openai' });
 

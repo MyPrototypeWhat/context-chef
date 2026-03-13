@@ -18,8 +18,8 @@ describe('ContextChef API', () => {
     });
 
     const payload = await chef
-      .setTopLayer(topLayer)
-      .useRollingHistory(history)
+      .setSystemPrompt(topLayer)
+      .setHistory(history)
       .setDynamicState(
         TaskSchema,
         {
@@ -72,8 +72,8 @@ describe('ContextChef API', () => {
     });
 
     const payload = await chef
-      .setTopLayer(topLayer)
-      .useRollingHistory(history)
+      .setSystemPrompt(topLayer)
+      .setHistory(history)
       .setDynamicState(TaskSchema, {
         activeFile: 'auth.ts',
         todo: ['Fix login bug'],
@@ -99,7 +99,7 @@ describe('ContextChef API', () => {
     const TaskSchema = z.object({ task: z.string() });
 
     const payload = await chef
-      .setTopLayer([{ role: 'system', content: 'You are an expert.' }])
+      .setSystemPrompt([{ role: 'system', content: 'You are an expert.' }])
       .setDynamicState(TaskSchema, { task: 'Initialize project' })
       .compile({ target: 'openai' });
 
@@ -140,8 +140,8 @@ describe('ContextChef API', () => {
     const TaskSchema = z.object({ task: z.string() });
 
     const payload = await chef
-      .setTopLayer([{ role: 'system', content: 'You are an expert.', _cache_breakpoint: true }])
-      .useRollingHistory([{ role: 'user', content: 'Help me.' }])
+      .setSystemPrompt([{ role: 'system', content: 'You are an expert.', _cache_breakpoint: true }])
+      .setHistory([{ role: 'user', content: 'Help me.' }])
       .setDynamicState(TaskSchema, { task: 'Fix bug' })
       .compile({ target: 'anthropic' });
 

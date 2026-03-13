@@ -10,15 +10,15 @@ const makeTokenizer =
   (messages: Message[]): number =>
     messages.length * tokensPerMsg;
 
-describe('E13: clearRollingHistory', () => {
-  it('clears rolling history and produces empty history in compile output', async () => {
+describe('E13: clearHistory', () => {
+  it('clears history and produces empty history in compile output', async () => {
     const chef = new ContextChef({
       janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
     });
-    chef.setTopLayer([{ role: 'system', content: 'You are helpful.' }]);
-    chef.useRollingHistory([userMsg('turn 1'), assistantMsg('reply 1'), userMsg('turn 2')]);
+    chef.setSystemPrompt([{ role: 'system', content: 'You are helpful.' }]);
+    chef.setHistory([userMsg('turn 1'), assistantMsg('reply 1'), userMsg('turn 2')]);
 
-    chef.clearRollingHistory();
+    chef.clearHistory();
 
     const payload = await chef.compile({ target: 'openai' });
     expect(payload.messages).toHaveLength(1);
@@ -29,11 +29,11 @@ describe('E13: clearRollingHistory', () => {
     const chef = new ContextChef({
       janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
     });
-    const result = chef.clearRollingHistory();
+    const result = chef.clearHistory();
     expect(result).toBe(chef);
   });
 
-  it('resets Janitor state so feedTokenUsage does not trigger stale compression', async () => {
+  it('resets Janitor state so reportTokenUsage does not trigger stale compression', async () => {
     const compressionModel = vi.fn(async () => 'compressed summary');
     const chef = new ContextChef({
       janitor: {
@@ -43,11 +43,11 @@ describe('E13: clearRollingHistory', () => {
     });
 
     // Feed a high token count that would normally trigger compression
-    chef.feedTokenUsage(999999);
-    chef.clearRollingHistory();
+    chef.reportTokenUsage(999999);
+    chef.clearHistory();
 
     // Now add fresh history — should NOT trigger compression since state was reset
-    chef.useRollingHistory([userMsg('fresh start')]);
+    chef.setHistory([userMsg('fresh start')]);
     await chef.compile({ target: 'openai' });
 
     expect(compressionModel).not.toHaveBeenCalled();
@@ -57,24 +57,24 @@ describe('E13: clearRollingHistory', () => {
     const chef = new ContextChef({
       janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
     });
-    chef.setTopLayer([{ role: 'system', content: 'sys' }]);
+    chef.setSystemPrompt([{ role: 'system', content: 'sys' }]);
 
-    chef.clearRollingHistory();
+    chef.clearHistory();
 
     const payload = await chef.compile({ target: 'openai' });
     expect(payload.messages).toHaveLength(1);
   });
 
-  it('does not affect topLayer or dynamicState', async () => {
+  it('does not affect systemPrompt or dynamicState', async () => {
     const chef = new ContextChef({
       janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
     });
-    chef.setTopLayer([{ role: 'system', content: 'top' }]);
-    chef.useRollingHistory([userMsg('history msg')]);
+    chef.setSystemPrompt([{ role: 'system', content: 'top' }]);
+    chef.setHistory([userMsg('history msg')]);
 
-    chef.clearRollingHistory();
+    chef.clearHistory();
 
-    expect(chef['topLayer']).toHaveLength(1);
-    expect(chef['topLayer'][0].content).toBe('top');
+    expect(chef['systemPrompt']).toHaveLength(1);
+    expect(chef['systemPrompt'][0].content).toBe('top');
   });
 });

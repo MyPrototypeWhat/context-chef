@@ -58,10 +58,10 @@ export { XmlGenerator } from './utils/xmlGenerator';
  * Read-only snapshot of the current context, passed to the onBeforeCompile hook.
  */
 export interface BeforeCompileContext {
-  topLayer: readonly Message[];
-  rollingHistory: readonly Message[];
+  systemPrompt: readonly Message[];
+  history: readonly Message[];
   dynamicState: readonly Message[];
-  rawDynamicXml: string;
+  dynamicStateXml: string;
 }
 
 /**
@@ -69,11 +69,11 @@ export interface BeforeCompileContext {
  * Created by chef.snapshot() and consumed by chef.restore().
  */
 export interface ChefSnapshot {
-  readonly topLayer: Message[];
-  readonly rollingHistory: Message[];
+  readonly systemPrompt: Message[];
+  readonly history: Message[];
   readonly dynamicState: Message[];
   readonly dynamicStatePlacement: DynamicStatePlacement;
-  readonly rawDynamicXml: string;
+  readonly dynamicStateXml: string;
   readonly modules: {
     readonly janitor: JanitorSnapshot;
     readonly memory: MemorySnapshot | null;
@@ -101,7 +101,7 @@ export interface ChefConfig {
    * @example
    * const chef = new ContextChef({
    *   onBeforeCompile: async (ctx) => {
-   *     const snippets = await vectorDB.search(ctx.rawDynamicXml);
+   *     const snippets = await vectorDB.search(ctx.dynamicStateXml);
    *     return snippets.map(s => s.content).join('\n');
    *   },
    * });
@@ -117,17 +117,17 @@ export class ContextChef {
   private janitor: Janitor;
   private guardrail: Guardrail;
   private pruner: Pruner;
-  private _memory: Memory | null;
+  private memory: Memory | null;
   private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   private onBeforeCompile?: (
     context: BeforeCompileContext,
   ) => string | null | Promise<string | null>;
 
-  private topLayer: Message[] = [];
-  private rollingHistory: Message[] = [];
+  private systemPrompt: Message[] = [];
+  private history: Message[] = [];
   private dynamicState: Message[] = [];
   private dynamicStatePlacement: DynamicStatePlacement = 'last_user';
-  private rawDynamicXml: string = '';
+  private dynamicStateXml: string = '';
 
   constructor(config: ChefConfig = {}) {
     this.assembler = new Assembler();
@@ -135,26 +135,26 @@ export class ContextChef {
     this.janitor = new Janitor(config.janitor ?? { contextWindow: Infinity });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
-    this._memory = config.memory ? new Memory(config.memory) : null;
+    this.memory = config.memory ? new Memory(config.memory) : null;
     this.transformContext = config.transformContext;
     this.onBeforeCompile = config.onBeforeCompile;
   }
 
   /**
-   * Sets the static base of the context.
+   * Sets the static system prompt layer.
    * This layer is deeply frozen to ensure KV-Cache stability.
    */
-  public setTopLayer(messages: Message[]): this {
-    this.topLayer = [...messages];
+  public setSystemPrompt(messages: Message[]): this {
+    this.systemPrompt = [...messages];
     return this;
   }
 
   /**
-   * Appends to or sets the rolling history.
+   * Sets the conversation history.
    * Compression runs automatically on compile() via the Janitor.
    */
-  public useRollingHistory(history: Message[]): this {
-    this.rollingHistory = [...history];
+  public setHistory(history: Message[]): this {
+    this.history = [...history];
     return this;
   }
 
@@ -178,7 +178,7 @@ export class ContextChef {
     const xml = objectToXml(parsedState, 'dynamic_state');
 
     this.dynamicStatePlacement = options?.placement ?? 'last_user';
-    this.rawDynamicXml = xml;
+    this.dynamicStateXml = xml;
 
     if (this.dynamicStatePlacement === 'system') {
       this.dynamicState = [{ role: 'system', content: `CURRENT TASK STATE:\n${xml}` }];
@@ -196,7 +196,7 @@ export class ContextChef {
    * If a specific `target` is provided during `compile()`, it will elegantly degrade prefill.
    */
   public withGuardrails(options: GuardrailOptions): this {
-    this.dynamicState = this.guardrail.applyGuardrails(this.dynamicState, options);
+    this.dynamicState = this.guardrail.apply(this.dynamicState, options);
     return this;
   }
 
@@ -235,9 +235,9 @@ export class ContextChef {
    *
    * @example
    * const response = await openai.chat.completions.create({ ... });
-   * chef.feedTokenUsage(response.usage.prompt_tokens);
+   * chef.reportTokenUsage(response.usage.prompt_tokens);
    */
-  public feedTokenUsage(tokenCount: number): this {
+  public reportTokenUsage(tokenCount: number): this {
     this.janitor.feedTokenUsage(tokenCount);
     return this;
   }
@@ -247,12 +247,12 @@ export class ContextChef {
    *
    * @example
    * // Flat mode
-   * const { tools } = chef.tools().pruneByTask("read and analyze a file");
+   * const { tools } = chef.getPruner().pruneByTask("read and analyze a file");
    *
    * // Namespace + Lazy Loading
-   * const { tools, directoryXml } = chef.tools().compile();
+   * const { tools, directoryXml } = chef.getPruner().compile();
    */
-  public tools(): Pruner {
+  public getPruner(): Pruner {
     return this.pruner;
   }
 
@@ -261,14 +261,14 @@ export class ContextChef {
    * Requires `memory` to be configured in ChefConfig.
    *
    * @example
-   * await chef.memory().createMemory('project_rules', 'Always use strict TypeScript');
-   * await chef.memory().deleteMemory('outdated_rule');
+   * await chef.getMemory().createMemory('project_rules', 'Always use strict TypeScript');
+   * await chef.getMemory().deleteMemory('outdated_rule');
    */
-  public memory(): Memory {
-    if (!this._memory) {
-      throw new Error('ContextChef: memory() requires a memoryStore in ChefConfig.');
+  public getMemory(): Memory {
+    if (!this.memory) {
+      throw new Error('ContextChef: getMemory() requires a memoryStore in ChefConfig.');
     }
-    return this._memory;
+    return this.memory;
   }
 
   /**
@@ -289,15 +289,15 @@ export class ContextChef {
   }
 
   private async _getMemoryMessages(): Promise<Message[]> {
-    if (!this._memory) return [];
+    if (!this.memory) return [];
 
     let content = Prompts.MEMORY_INSTRUCTION;
 
-    const selected = await this._memory.getSelectedEntries();
+    const selected = await this.memory.getSelectedEntries();
     if (selected.length > 0) {
-      const xml = await this._memory.toXml();
+      const xml = await this.memory.toXml();
       const keys = selected.map((e) => e.key);
-      content = `${content}\n\n${Prompts.getMemoryBlock(xml, keys, this._memory.allowedKeys)}`;
+      content = `${content}\n\n${Prompts.getMemoryBlock(xml, keys, this.memory.allowedKeys)}`;
     }
 
     return [{ role: 'system', content }];
@@ -314,13 +314,13 @@ export class ContextChef {
   }
 
   /**
-   * Explicitly clears the rolling history and resets Janitor state.
+   * Explicitly clears the conversation history and resets Janitor state.
    * Use when the developer knows it's time to "start fresh" — e.g., user requests a new topic,
    * or an Agent completes an independent sub-task phase.
    * This provides more direct control than waiting for Janitor's automatic token-based compression.
    */
-  public clearRollingHistory(): this {
-    this.rollingHistory = [];
+  public clearHistory(): this {
+    this.history = [];
     this.janitor.reset();
     return this;
   }
@@ -336,14 +336,14 @@ export class ContextChef {
    */
   public snapshot(label?: string): ChefSnapshot {
     return {
-      topLayer: this.topLayer.map((m) => ({ ...m })),
-      rollingHistory: this.rollingHistory.map((m) => ({ ...m })),
+      systemPrompt: this.systemPrompt.map((m) => ({ ...m })),
+      history: this.history.map((m) => ({ ...m })),
       dynamicState: this.dynamicState.map((m) => ({ ...m })),
       dynamicStatePlacement: this.dynamicStatePlacement,
-      rawDynamicXml: this.rawDynamicXml,
+      dynamicStateXml: this.dynamicStateXml,
       modules: {
         janitor: this.janitor.snapshotState(),
-        memory: this._memory?.snapshot() ?? null,
+        memory: this.memory?.snapshot() ?? null,
         pruner: this.pruner.snapshotState(),
       },
       label,
@@ -356,14 +356,14 @@ export class ContextChef {
    * All state — including Janitor compression flags — is rolled back.
    */
   public restore(snapshot: ChefSnapshot): this {
-    this.topLayer = snapshot.topLayer.map((m) => ({ ...m }));
-    this.rollingHistory = snapshot.rollingHistory.map((m) => ({ ...m }));
+    this.systemPrompt = snapshot.systemPrompt.map((m) => ({ ...m }));
+    this.history = snapshot.history.map((m) => ({ ...m }));
     this.dynamicState = snapshot.dynamicState.map((m) => ({ ...m }));
     this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
-    this.rawDynamicXml = snapshot.rawDynamicXml;
+    this.dynamicStateXml = snapshot.dynamicStateXml;
     this.janitor.restoreState(snapshot.modules.janitor);
-    if (snapshot.modules.memory && this._memory) {
-      this._memory.restore(snapshot.modules.memory);
+    if (snapshot.modules.memory && this.memory) {
+      this.memory.restore(snapshot.modules.memory);
     }
     this.pruner.restoreState(snapshot.modules.pruner);
     return this;
@@ -381,16 +381,16 @@ export class ContextChef {
   public async compile(options?: CompileOptions): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload> {
     // 1. Janitor: Compress history if needed
-    const compressedHistory = await this.janitor.compress(this.rollingHistory);
+    const compressedHistory = await this.janitor.compress(this.history);
 
     // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
     let implicitContextXml = '';
     if (this.onBeforeCompile) {
       const injected = await this.onBeforeCompile({
-        topLayer: this.topLayer,
-        rollingHistory: compressedHistory,
+        systemPrompt: this.systemPrompt,
+        history: compressedHistory,
         dynamicState: this.dynamicState,
-        rawDynamicXml: this.rawDynamicXml,
+        dynamicStateXml: this.dynamicStateXml,
       });
       if (injected) {
         implicitContextXml = `<implicit_context>\n${injected}\n</implicit_context>`;
@@ -398,7 +398,7 @@ export class ContextChef {
     }
 
     // 3. For system placement, append implicit_context directly to the dynamic state message
-    //    (Stitcher only handles last_user injection)
+    //    (Assembler only handles last_user injection)
     let dynamicState = this.dynamicState;
     if (implicitContextXml && this.dynamicStatePlacement === 'system' && dynamicState.length > 0) {
       dynamicState = dynamicState.map((msg) =>
@@ -411,27 +411,27 @@ export class ContextChef {
     // 4. Memory: sweep expired entries, then advance turn counter
     let memoryExpiredKeys: string[] = [];
     let injectedMemoryKeys: string[] = [];
-    if (this._memory) {
-      memoryExpiredKeys = await this._memory.sweepExpired();
-      this._memory.advanceTurn();
+    if (this.memory) {
+      memoryExpiredKeys = await this.memory.sweepExpired();
+      this.memory.advanceTurn();
     }
 
-    // 5. Core Memory injection (between topLayer and history)
+    // 5. Core Memory injection (between systemPrompt and history)
     const memoryMessages = await this._getMemoryMessages();
-    if (this._memory) {
-      injectedMemoryKeys = (await this._memory.getSelectedEntries()).map((e) => e.key);
+    if (this.memory) {
+      injectedMemoryKeys = (await this.memory.getSelectedEntries()).map((e) => e.key);
     }
 
     // 6. Sandwich assembly
-    let messages = [...this.topLayer, ...memoryMessages, ...compressedHistory, ...dynamicState];
+    let messages = [...this.systemPrompt, ...memoryMessages, ...compressedHistory, ...dynamicState];
 
     // 7. Transform hook
     if (this.transformContext) {
       messages = await this.transformContext(messages);
     }
 
-    // 8. Stitcher: Dynamic state injection (if last_user) + deterministic key ordering
-    const stitchXml = [this.rawDynamicXml, implicitContextXml].filter(Boolean).join('\n');
+    // 8. Assembler: Dynamic state injection (if last_user) + deterministic key ordering
+    const stitchXml = [this.dynamicStateXml, implicitContextXml].filter(Boolean).join('\n');
     const rawPayload = this.assembler.compile(messages, {
       dynamicStateXml: stitchXml || undefined,
       placement: this.dynamicStatePlacement,
@@ -442,7 +442,7 @@ export class ContextChef {
     const adapterPayload = adapter.compile([...rawPayload.messages]);
 
     const prunerTools = this._getPrunerTools();
-    const memoryTools = this._memory ? await this._memory.getToolDefinitions() : [];
+    const memoryTools = this.memory ? await this.memory.getToolDefinitions() : [];
     const tools = [...prunerTools, ...memoryTools];
     const meta = { injectedMemoryKeys, memoryExpiredKeys };
     const payload: TargetPayload = { ...adapterPayload, meta };

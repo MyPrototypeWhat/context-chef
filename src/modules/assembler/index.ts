@@ -79,7 +79,7 @@ export class Assembler {
   /**
    * Compiles the final message array.
    *
-   * @param messages - The pre-assembled sandwich (topLayer + history + dynamicState system messages)
+   * @param messages - The pre-assembled sandwich (systemPrompt + history + dynamicState system messages)
    * @param options  - Optional stitch options for last_user injection
    */
   public compile(messages: Message[], options?: AssembleOptions): { messages: Message[] } {

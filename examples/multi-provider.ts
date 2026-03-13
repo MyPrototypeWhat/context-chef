@@ -36,14 +36,14 @@ async function main() {
   console.log('=== ContextChef Multi-Provider Example ===\n');
 
   chef
-    .setTopLayer([
+    .setSystemPrompt([
       {
         role: 'system',
         content: 'You are a senior security engineer performing code review.',
         _cache_breakpoint: true,
       },
     ])
-    .useRollingHistory(history)
+    .setHistory(history)
     .setDynamicState(TaskSchema, {
       activeFile: 'src/auth.ts',
       todo: ['Check for SQL injection', 'Verify password hashing', 'Review session management'],

@@ -13,7 +13,7 @@ describe('Guardrail', () => {
 
   describe('enforceXML', () => {
     it('empty state: adds a system message with XML guardrail', () => {
-      const result = guardrail.applyGuardrails([], { enforceXML: { outputTag: 'response' } });
+      const result = guardrail.apply([], { enforceXML: { outputTag: 'response' } });
 
       expect(result).toHaveLength(1);
       expect(result[0].role).toBe('system');
@@ -22,7 +22,7 @@ describe('Guardrail', () => {
 
     it('appends guardrail to existing system message instead of creating a new one', () => {
       const state: Message[] = [{ role: 'system', content: 'CURRENT TASK STATE:\n<task/>' }];
-      const result = guardrail.applyGuardrails(state, {
+      const result = guardrail.apply(state, {
         enforceXML: { outputTag: 'task_response' },
       });
 
@@ -33,7 +33,7 @@ describe('Guardrail', () => {
 
     it('creates new system message when no system message exists', () => {
       const state: Message[] = [{ role: 'user', content: 'Hello' }];
-      const result = guardrail.applyGuardrails(state, { enforceXML: { outputTag: 'reply' } });
+      const result = guardrail.apply(state, { enforceXML: { outputTag: 'reply' } });
 
       expect(result).toHaveLength(2);
       const sysMsg = result.find((m) => m.role === 'system');
@@ -42,13 +42,13 @@ describe('Guardrail', () => {
     });
 
     it('guardrail does not include <thinking> tag instructions', () => {
-      const result = guardrail.applyGuardrails([], { enforceXML: { outputTag: 'out' } });
+      const result = guardrail.apply([], { enforceXML: { outputTag: 'out' } });
 
       expect(result[0].content).not.toContain('<thinking>');
     });
 
     it('guardrail content contains EPHEMERAL_MESSAGE wrapper', () => {
-      const result = guardrail.applyGuardrails([], { enforceXML: { outputTag: 'final_code' } });
+      const result = guardrail.apply([], { enforceXML: { outputTag: 'final_code' } });
 
       expect(result[0].content).toContain('EPHEMERAL_MESSAGE');
     });
@@ -58,7 +58,7 @@ describe('Guardrail', () => {
 
   describe('prefill', () => {
     it('empty state: adds an assistant message', () => {
-      const result = guardrail.applyGuardrails([], { prefill: '<thinking>\nAnalyzing...' });
+      const result = guardrail.apply([], { prefill: '<thinking>\nAnalyzing...' });
 
       expect(result).toHaveLength(1);
       expect(result[0].role).toBe('assistant');
@@ -67,7 +67,7 @@ describe('Guardrail', () => {
 
     it('appends prefill after existing state messages', () => {
       const state: Message[] = [{ role: 'system', content: 'base rules' }];
-      const result = guardrail.applyGuardrails(state, { prefill: '<thinking>' });
+      const result = guardrail.apply(state, { prefill: '<thinking>' });
 
       expect(result).toHaveLength(2);
       expect(result[1].role).toBe('assistant');
@@ -79,7 +79,7 @@ describe('Guardrail', () => {
 
   describe('enforceXML + prefill combined', () => {
     it('both options: applies XML guardrail then prefill assistant message', () => {
-      const result = guardrail.applyGuardrails([], {
+      const result = guardrail.apply([], {
         enforceXML: { outputTag: 'final_answer' },
         prefill: '<thinking>\nLet me think...',
       });
@@ -97,7 +97,7 @@ describe('Guardrail', () => {
   describe('edge cases', () => {
     it('empty options object: returns a copy of state without modification', () => {
       const state: Message[] = [{ role: 'system', content: 'base' }];
-      const result = guardrail.applyGuardrails(state, {});
+      const result = guardrail.apply(state, {});
 
       expect(result).toEqual(state);
       expect(result).not.toBe(state); // must return a new array
@@ -107,7 +107,7 @@ describe('Guardrail', () => {
       const state: Message[] = [{ role: 'system', content: 'original' }];
       const originalLength = state.length;
 
-      guardrail.applyGuardrails(state, {
+      guardrail.apply(state, {
         enforceXML: { outputTag: 'out' },
         prefill: '<thinking>',
       });
@@ -117,18 +117,18 @@ describe('Guardrail', () => {
     });
 
     it('consecutive calls accumulate state correctly', () => {
-      const afterXml = guardrail.applyGuardrails([], { enforceXML: { outputTag: 'step1' } });
+      const afterXml = guardrail.apply([], { enforceXML: { outputTag: 'step1' } });
       expect(afterXml).toHaveLength(1);
 
-      const afterPrefill = guardrail.applyGuardrails(afterXml, { prefill: '<thinking>' });
+      const afterPrefill = guardrail.apply(afterXml, { prefill: '<thinking>' });
       expect(afterPrefill).toHaveLength(2);
       expect(afterPrefill[0].role).toBe('system');
       expect(afterPrefill[1].role).toBe('assistant');
     });
 
     it('different outputTags produce different guardrail content', () => {
-      const result1 = guardrail.applyGuardrails([], { enforceXML: { outputTag: 'alpha' } });
-      const result2 = guardrail.applyGuardrails([], { enforceXML: { outputTag: 'beta' } });
+      const result1 = guardrail.apply([], { enforceXML: { outputTag: 'alpha' } });
+      const result2 = guardrail.apply([], { enforceXML: { outputTag: 'beta' } });
 
       expect(result1[0].content).toContain('alpha');
       expect(result2[0].content).toContain('beta');
