@@ -20,12 +20,12 @@ export class InMemoryStore implements MemoryStore {
   }
 
   snapshot(): Record<string, MemoryStoreEntry> {
-    return Object.fromEntries(this.store);
+    return structuredClone(Object.fromEntries(this.store));
   }
 
   restore(data: Record<string, MemoryStoreEntry>): void {
     this.store.clear();
-    for (const [k, v] of Object.entries(data)) {
+    for (const [k, v] of Object.entries(structuredClone(data))) {
       this.store.set(k, v);
     }
   }

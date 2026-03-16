@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { ContextChef } from '../src/index';
+import { ContextChef, InMemoryStore } from '../src/index';
+import { VFSMemoryStore } from '../src/modules/memory/vfsMemoryStore';
 import type { Message, ToolDefinition } from '../src/types';
 
 const userMsg = (content: string): Message => ({ role: 'user', content });
@@ -266,5 +269,173 @@ describe('E3: Snapshot & Restore', () => {
 
     expect(snap.modules.pruner.flatTools).toHaveLength(1);
     expect(snap.modules.pruner.flatTools[0].name).toBe('tool_a');
+  });
+
+  it('deep clone: nested tool_calls are isolated between snapshot and chef', () => {
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
+    const msgWithToolCalls: Message = {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'foo', arguments: '{}' } }],
+    };
+    chef.setHistory([msgWithToolCalls]);
+
+    const snap = chef.snapshot();
+
+    // Mutate the original message's nested tool_calls
+    msgWithToolCalls.tool_calls[0].function.name = 'mutated';
+
+    expect(snap.history[0].tool_calls?.[0].function.name).toBe('foo');
+  });
+
+  it('deep clone: nested thinking is isolated between snapshot and chef', () => {
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
+    chef.setHistory([
+      {
+        role: 'assistant',
+        content: 'reply',
+        thinking: { thinking: 'original thought', signature: 'sig1' },
+      },
+    ]);
+
+    const snap = chef.snapshot();
+
+    // Mutate thinking via a new snapshot
+    const snap2 = chef.snapshot();
+    (snap2.history[0] as Message).thinking = { thinking: 'mutated' };
+
+    expect(snap.history[0].thinking?.thinking).toBe('original thought');
+  });
+
+  it('deep clone: tool parameters are isolated in pruner snapshot', () => {
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
+    const params = { type: 'object', properties: { path: { type: 'string' } } };
+    chef.registerTools([{ name: 'read', description: 'Read', parameters: params }]);
+
+    const snap = chef.snapshot();
+
+    // Mutate the original parameters object
+    (params.properties as Record<string, unknown>).extra = { type: 'number' };
+
+    expect(snap.modules.pruner.flatTools[0].parameters).not.toHaveProperty('properties.extra');
+  });
+
+  it('deep clone: same checkpoint can be restored multiple times', () => {
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+    });
+    chef.setHistory([userMsg('original')]);
+    const snap = chef.snapshot();
+
+    // First restore + mutate
+    chef.restore(snap);
+    chef.setHistory([userMsg('after first restore'), assistantMsg('reply')]);
+
+    // Second restore from same snapshot
+    chef.restore(snap);
+    expect(chef.snapshot().history).toHaveLength(1);
+    expect(chef.snapshot().history[0].content).toBe('original');
+  });
+
+  it('deep clone: InMemoryStore snapshot isolates entry references', () => {
+    const store = new InMemoryStore();
+    store.set('key1', {
+      value: 'hello',
+      createdAt: 1000,
+      updatedAt: 1000,
+      updateCount: 1,
+    });
+
+    const snap = store.snapshot();
+
+    // Mutate via store
+    store.set('key1', {
+      value: 'mutated',
+      createdAt: 1000,
+      updatedAt: 2000,
+      updateCount: 2,
+    });
+
+    expect(snap.key1.value).toBe('hello');
+    expect(snap.key1.updateCount).toBe(1);
+  });
+});
+
+describe('VFSMemoryStore snapshot & restore', () => {
+  const testDir = path.join(process.cwd(), '.test_vfs_snapshot');
+
+  afterEach(() => {
+    if (fs.existsSync(testDir)) {
+      fs.rmSync(testDir, { recursive: true });
+    }
+  });
+
+  it('snapshot captures all entries from disk', () => {
+    const store = new VFSMemoryStore(testDir);
+    store.set('k1', { value: 'v1', createdAt: 1, updatedAt: 1, updateCount: 1 });
+    store.set('k2', { value: 'v2', createdAt: 2, updatedAt: 2, updateCount: 1 });
+
+    const snap = store.snapshot();
+
+    expect(Object.keys(snap)).toHaveLength(2);
+    expect(snap.k1.value).toBe('v1');
+    expect(snap.k2.value).toBe('v2');
+  });
+
+  it('restore replaces all entries on disk', () => {
+    const store = new VFSMemoryStore(testDir);
+    store.set('old', { value: 'will be removed', createdAt: 1, updatedAt: 1, updateCount: 1 });
+
+    const snapData = {
+      new1: { value: 'restored1', createdAt: 10, updatedAt: 10, updateCount: 1 },
+      new2: { value: 'restored2', createdAt: 20, updatedAt: 20, updateCount: 1 },
+    };
+    store.restore(snapData);
+
+    expect(store.get('old')).toBeNull();
+    expect(store.get('new1')?.value).toBe('restored1');
+    expect(store.get('new2')?.value).toBe('restored2');
+    expect(store.keys()).toHaveLength(2);
+  });
+
+  it('snapshot + restore round-trips correctly', () => {
+    const store = new VFSMemoryStore(testDir);
+    store.set('a', { value: 'alpha', createdAt: 1, updatedAt: 1, updateCount: 1 });
+
+    const snap = store.snapshot();
+
+    store.set('b', { value: 'beta', createdAt: 2, updatedAt: 2, updateCount: 1 });
+    store.delete('a');
+
+    store.restore(snap);
+
+    expect(store.get('a')?.value).toBe('alpha');
+    expect(store.get('b')).toBeNull();
+    expect(store.keys()).toEqual(['a']);
+  });
+
+  it('works with ContextChef snapshot/restore', async () => {
+    const store = new VFSMemoryStore(testDir);
+    const chef = new ContextChef({
+      janitor: { contextWindow: 1000, tokenizer: makeTokenizer(10) },
+      memory: { store },
+    });
+
+    await chef.getMemory().createMemory('rule', 'always use strict mode');
+    const snap = chef.snapshot();
+
+    await chef.getMemory().createMemory('rule2', 'never use var');
+    await chef.getMemory().deleteMemory('rule');
+
+    chef.restore(snap);
+
+    expect(store.get('rule')?.value).toBe('always use strict mode');
+    expect(store.get('rule2')).toBeNull();
   });
 });

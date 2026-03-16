@@ -336,9 +336,9 @@ export class ContextChef {
    */
   public snapshot(label?: string): ChefSnapshot {
     return {
-      systemPrompt: this.systemPrompt.map((m) => ({ ...m })),
-      history: this.history.map((m) => ({ ...m })),
-      dynamicState: this.dynamicState.map((m) => ({ ...m })),
+      systemPrompt: structuredClone(this.systemPrompt),
+      history: structuredClone(this.history),
+      dynamicState: structuredClone(this.dynamicState),
       dynamicStatePlacement: this.dynamicStatePlacement,
       dynamicStateXml: this.dynamicStateXml,
       modules: {
@@ -356,9 +356,9 @@ export class ContextChef {
    * All state — including Janitor compression flags — is rolled back.
    */
   public restore(snapshot: ChefSnapshot): this {
-    this.systemPrompt = snapshot.systemPrompt.map((m) => ({ ...m }));
-    this.history = snapshot.history.map((m) => ({ ...m }));
-    this.dynamicState = snapshot.dynamicState.map((m) => ({ ...m }));
+    this.systemPrompt = structuredClone(snapshot.systemPrompt);
+    this.history = structuredClone(snapshot.history);
+    this.dynamicState = structuredClone(snapshot.dynamicState);
     this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
     this.dynamicStateXml = snapshot.dynamicStateXml;
     this.janitor.restoreState(snapshot.modules.janitor);

@@ -334,26 +334,18 @@ export class Pruner {
   // ─── Snapshot / Restore ───
 
   public snapshotState(): PrunerSnapshot {
-    return {
-      flatTools: this.flatTools.map((t) => ({ ...t })),
-      namespaces: this.namespaces.map((g) => ({ ...g, tools: g.tools.map((t) => ({ ...t })) })),
-      lazyToolkits: this.lazyToolkits.map((g) => ({
-        ...g,
-        tools: g.tools.map((t) => ({ ...t })),
-      })),
-    };
+    return structuredClone({
+      flatTools: this.flatTools,
+      namespaces: this.namespaces,
+      lazyToolkits: this.lazyToolkits,
+    });
   }
 
   public restoreState(state: PrunerSnapshot): void {
-    this.flatTools = state.flatTools.map((t) => ({ ...t }));
-    this.namespaces = state.namespaces.map((g) => ({
-      ...g,
-      tools: g.tools.map((t) => ({ ...t })),
-    }));
-    this.lazyToolkits = state.lazyToolkits.map((g) => ({
-      ...g,
-      tools: g.tools.map((t) => ({ ...t })),
-    }));
+    const cloned = structuredClone(state);
+    this.flatTools = cloned.flatTools;
+    this.namespaces = cloned.namespaces;
+    this.lazyToolkits = cloned.lazyToolkits;
   }
 
   private _buildResult(kept: ToolDefinition[]): PrunerResult {

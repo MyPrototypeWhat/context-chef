@@ -43,6 +43,29 @@ export class VFSMemoryStore implements MemoryStore {
     return Array.from(this.index);
   }
 
+  snapshot(): Record<string, MemoryStoreEntry> {
+    const result: Record<string, MemoryStoreEntry> = {};
+    for (const key of this.index) {
+      const entry = this.get(key);
+      if (entry) result[key] = entry;
+    }
+    return result;
+  }
+
+  restore(data: Record<string, MemoryStoreEntry>): void {
+    // Remove existing entries not in snapshot
+    for (const key of this.index) {
+      const file = this._keyToFile(key);
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    }
+    this.index.clear();
+
+    // Write snapshot entries
+    for (const [key, entry] of Object.entries(data)) {
+      this.set(key, entry);
+    }
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────
 
   private _keyToFile(key: string): string {
