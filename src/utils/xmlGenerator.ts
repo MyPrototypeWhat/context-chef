@@ -28,7 +28,9 @@ export function objectToXml(obj: unknown, rootName = 'data'): string {
   }
 
   if (Array.isArray(obj)) {
-    return obj.map((item) => objectToXml(item, 'item')).join('\n');
+    if (obj.length === 0) return '';
+    const items = obj.map((item) => `  ${objectToXml(item, 'item')}`).join('\n');
+    return `<${rootName}>\n${items}\n</${rootName}>`;
   }
 
   let xml = `<${rootName}>\n`;
