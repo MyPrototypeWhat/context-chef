@@ -120,6 +120,56 @@ Also added `snapshot()` / `restore()` to `VFSMemoryStore`, which previously retu
 
 ---
 
+## Planned
+
+### 🔲 `compact()` — Extensible History Compaction API
+
+**Background**: Anthropic's context engineering guide identifies tool result clearing as "the safest, lightest-touch form of compaction" — no LLM call needed, pure mechanical removal. LangChain Deep Agents uses the same pattern (offloading old tool inputs/results to filesystem). Currently, ContextChef's Janitor without a `compressionModel` simply discards old messages with a placeholder, which is a heavy-handed fallback. A lightweight, zero-LLM-cost compaction step is missing.
+
+**Design**: Provide a public API on `ContextChef` (or as a standalone utility) that mechanically strips content from a `Message[]` based on developer-specified options. This is a **mechanism** — the developer decides when to call it (e.g., inside `onBudgetExceeded`, or proactively in the agent loop).
+
+```typescript
+// API sketch
+const compacted = chef.compact(history, {
+  clearToolResults: true,   // replace role:"tool" content with "[Tool result cleared]"
+  clearThinking: true,      // strip thinking/redacted_thinking blocks
+  // future extensible options:
+  // clearToolCallArgs: true,  // replace tool_calls[].function.arguments with "[Args cleared]"
+  // custom: (msg) => msg,    // arbitrary per-message transform
+});
+```
+
+**Key decisions**:
+- Pure function: takes `Message[]`, returns new `Message[]`. No side effects, no state mutation.
+- Does NOT auto-run during `compile()` — developer controls when/where to call it.
+- Extensible via options object — new clearing types can be added without breaking changes.
+- Can be composed with `onBudgetExceeded` hook as a first-pass compaction before LLM-based compression.
+
+**Typical usage patterns**:
+```typescript
+// Pattern 1: As onBudgetExceeded fallback (no compressionModel needed)
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    onBudgetExceeded: (history) => {
+      return chef.compact(history, { clearToolResults: true });
+    },
+  },
+});
+
+// Pattern 2: Proactive compaction in agent loop
+if (turnCount % 10 === 0) {
+  history = chef.compact(history, { clearToolResults: true, clearThinking: true });
+}
+```
+
+**References**:
+- [Anthropic: Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) — "clearing tool calls and results … one of the safest lightest touch forms of compaction"
+- [Anthropic: Context editing (tool result clearing)](https://platform.claude.com/docs/en/build-with-claude/compaction) — server-side feature on Claude API
+- [LangChain Deep Agents: Context Management](https://blog.langchain.com/context-management-for-deepagents/) — offloading large tool results and old tool call arguments
+
+---
+
 ## Not Planned
 
 The following patterns from the industry are intentionally out of scope for ContextChef:
