@@ -1,5 +1,5 @@
 import { Prompts } from '../../prompts';
-import type { Message } from '../../types';
+import type { CompactOptions, Message } from '../../types';
 import { TokenUtils } from '../../utils/tokenUtils';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
@@ -148,6 +148,39 @@ export class Janitor {
     }
 
     return this.executeCompression(history, splitIndex);
+  }
+
+  /**
+   * Mechanically strips content from history based on the specified clear targets.
+   * Pure function — no LLM call, no side effects, no state mutation.
+   *
+   * @example
+   * // Inside onBudgetExceeded hook
+   * onBudgetExceeded: (history) => {
+   *   return janitor.compact(history, { clear: ['tool-result'] });
+   * }
+   *
+   * // Proactive compaction in agent loop
+   * history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
+   */
+  public compact(history: Message[], options: CompactOptions): Message[] {
+    const targets = new Set(options.clear);
+    return history.map((msg) => {
+      let result = msg;
+
+      if (targets.has('tool-result') && msg.role === 'tool') {
+        result = { ...result, content: '[Tool result cleared]' };
+      }
+
+      if (targets.has('thinking') && msg.role === 'assistant') {
+        if (msg.thinking || msg.redacted_thinking) {
+          const { thinking, redacted_thinking, ...rest } = result;
+          result = rest as Message;
+        }
+      }
+
+      return result;
+    });
   }
 
   /**

@@ -29,6 +29,7 @@ export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adap
 export { type AssembleOptions, Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
+export type { ClearTarget, CompactOptions } from './types';
 export {
   Memory,
   type MemoryChangeEvent,

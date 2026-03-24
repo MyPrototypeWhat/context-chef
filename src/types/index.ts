@@ -74,6 +74,17 @@ export interface Message {
   [key: string]: unknown;
 }
 
+// ─── Compact options ───
+
+/** Clearing targets for `Janitor.compact()`. */
+export type ClearTarget = 'tool-result' | 'thinking';
+
+/** Options for `Janitor.compact()` — mechanical, zero-LLM-cost history compaction. */
+export interface CompactOptions {
+  /** Which content types to clear from history. */
+  clear: ClearTarget[];
+}
+
 export type TargetProvider = 'openai' | 'anthropic' | 'gemini';
 
 export interface CompileOptions {
