@@ -96,7 +96,7 @@ const chef = new ContextChef({
   vfs?: { threshold?: number, storageDir?: string },
   janitor?: JanitorConfig,
   pruner?: { strategy?: 'union' | 'intersection' },
-  memoryStore?: MemoryStore,
+  memory?: MemoryConfig,
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>,
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>,
 });
@@ -472,3 +472,30 @@ import { getAdapter } from "context-chef";
 const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
+
+---
+
+## Skill
+
+ContextChef ships with a [Claude Code Skill](https://docs.anthropic.com/en/docs/claude-code/skills) that helps you integrate the library into your project interactively. The skill analyzes your existing codebase (LLM provider, package manager, project structure) and generates tailored integration code.
+
+### Install the Skill
+
+```bash
+npx skills add MyPrototypeWhat/context-chef
+```
+
+### Use
+
+Open [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) in your project and type:
+
+```
+/integrate
+```
+
+Claude will:
+
+1. **Detect your setup** — which LLM SDK you use (OpenAI / Anthropic / Gemini), package manager, TypeScript vs JavaScript
+2. **Ask about your needs** — history compression, tool management, memory, VFS offloading, snapshot/restore
+3. **Generate integration code** — tailored to your project structure and existing agent loop
+4. **Explain the architecture** — the sandwich model, cache breakpoints, dynamic state placement

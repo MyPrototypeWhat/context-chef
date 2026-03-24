@@ -96,7 +96,7 @@ const chef = new ContextChef({
   vfs?: { threshold?: number, storageDir?: string },
   janitor?: JanitorConfig,
   pruner?: { strategy?: 'union' | 'intersection' },
-  memoryStore?: MemoryStore,
+  memory?: MemoryConfig,
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>,
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>,
 });
@@ -466,3 +466,30 @@ import { getAdapter } from "context-chef";
 const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
+
+---
+
+## Skill
+
+ContextChef 内置了一个 [Claude Code Skill](https://docs.anthropic.com/en/docs/claude-code/skills)，帮助你交互式地将库集成到项目中。Skill 会分析你现有的代码（LLM 供应商、包管理器、项目结构），生成定制化的集成代码。
+
+### 安装 Skill
+
+```bash
+npx skills add MyPrototypeWhat/context-chef
+```
+
+### 使用
+
+在项目中打开 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)，输入：
+
+```
+/integrate
+```
+
+Claude 会：
+
+1. **检测你的项目** — 使用的 LLM SDK（OpenAI / Anthropic / Gemini）、包管理器、TypeScript 还是 JavaScript
+2. **了解你的需求** — 历史压缩、工具管理、记忆、VFS 卸载、快照/恢复
+3. **生成集成代码** — 根据你的项目结构和现有 agent 循环定制
+4. **解释核心架构** — 三明治模型、缓存断点、动态状态注入位置
