@@ -29,7 +29,6 @@ export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adap
 export { type AssembleOptions, Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-export type { ClearTarget, CompactOptions } from './types';
 export {
   Memory,
   type MemoryChangeEvent,
@@ -51,6 +50,7 @@ export {
 } from './modules/offloader';
 export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner';
 export * from './prompts';
+export type { ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { TokenUtils } from './utils/tokenUtils';
 export { XmlGenerator } from './utils/xmlGenerator';

@@ -10,7 +10,9 @@ const janitor = new Janitor({ contextWindow: Infinity });
 const toolCallMsg: Message = {
   role: 'assistant',
   content: '',
-  tool_calls: [{ id: 'tc_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }],
+  tool_calls: [
+    { id: 'tc_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } },
+  ],
 };
 
 const toolResultMsg: Message = {
