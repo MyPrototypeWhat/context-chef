@@ -1,5 +1,11 @@
 # context-chef
 
+## 2.1.3
+
+### Patch Changes
+
+- [`03687d3`](https://github.com/MyPrototypeWhat/context-chef/commit/03687d3821808a6560ac61d4fd782782ba9af20f) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - - Remove `skills` directory from npm package to reduce bundle size. Skills are now maintained at the repository root.
+
 ## 2.1.0
 
 ### Minor Changes
