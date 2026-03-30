@@ -13,8 +13,7 @@
     }
   },
   "files": [
-    "dist",
-    "skills"
+    "dist"
   ],
   "scripts": {
     "build": "tsdown",

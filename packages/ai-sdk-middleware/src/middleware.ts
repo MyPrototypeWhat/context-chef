@@ -1,10 +1,14 @@
-import type { LanguageModelV3, LanguageModelV3StreamPart } from '@ai-sdk/provider';
-import { Janitor, type Message } from '@context-chef/core';
+import type {
+  LanguageModelV3,
+  LanguageModelV3Prompt,
+  LanguageModelV3StreamPart,
+} from '@ai-sdk/provider';
+import { Janitor, type Message, XmlGenerator } from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
 import { truncateToolResults } from './truncator';
-import type { ContextChefOptions } from './types';
+import type { ContextChefOptions, DynamicStateConfig } from './types';
 
 type CompressRole = 'system' | 'user' | 'assistant';
 
@@ -28,6 +32,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     onCompress: options.onCompress
       ? (summary, count) => options.onCompress?.(summary.content, count)
       : undefined,
+    onBudgetExceeded: options.onBudgetExceeded,
   });
 
   return {
@@ -41,13 +46,39 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         prompt = await truncateToolResults(prompt, options.truncate);
       }
 
-      // 2. Compress history if over token budget
-      const irMessages = fromAISDK(prompt);
-      const compressed = await janitor.compress(irMessages);
+      // 2. Convert to IR
+      let irMessages = fromAISDK(prompt);
 
-      // Only convert back if compression actually changed something
-      if (compressed !== irMessages) {
-        prompt = toAISDK(compressed);
+      // 3. Compact (mechanical, zero LLM cost) before compression
+      if (options.compact) {
+        const preCompact = irMessages;
+        irMessages = janitor.compact(irMessages, options.compact);
+
+        // When thinking is stripped, invalidate adapter pass-through
+        // so toAISDK reconstructs from IR fields (without reasoning)
+        if (options.compact.clear.includes('thinking')) {
+          for (let i = 0; i < irMessages.length; i++) {
+            if (preCompact[i].thinking && !irMessages[i].thinking) {
+              delete irMessages[i]._assistantContent;
+            }
+          }
+        }
+      }
+
+      // 4. Compress history if over token budget
+      irMessages = await janitor.compress(irMessages);
+
+      // 5. Convert back to AI SDK format
+      prompt = toAISDK(irMessages);
+
+      // 6. Dynamic state injection
+      if (options.dynamicState) {
+        prompt = await injectDynamicState(prompt, options.dynamicState);
+      }
+
+      // 7. Custom transform hook
+      if (options.transformContext) {
+        prompt = await options.transformContext(prompt);
       }
 
       return { ...params, prompt };
@@ -94,6 +125,48 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       return { ...rest, stream: stream.pipeThrough(transform) };
     },
   };
+}
+
+/**
+ * Injects dynamic state XML into the AI SDK prompt.
+ *
+ * - `last_user`: Appends to the last user message's content parts.
+ *   Leverages Recency Bias for maximum LLM attention.
+ * - `system`: Adds as a standalone system message at the end.
+ */
+async function injectDynamicState(
+  prompt: LanguageModelV3Prompt,
+  config: DynamicStateConfig,
+): Promise<LanguageModelV3Prompt> {
+  const state = await config.getState();
+  const xml = XmlGenerator.objectToXml(state, 'dynamic_state');
+  const placement = config.placement ?? 'last_user';
+
+  if (placement === 'system') {
+    return [...prompt, { role: 'system', content: `CURRENT TASK STATE:\n${xml}` }];
+  }
+
+  // last_user: inject into the last user message
+  const result = [...prompt];
+  const stateBlock = `\n\n${xml}\nAbove is the current system state. Use it to guide your next action.`;
+
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i];
+    if (msg.role === 'user') {
+      result[i] = {
+        ...msg,
+        content: [...msg.content, { type: 'text', text: stateBlock }],
+      };
+      return result;
+    }
+  }
+
+  // No user message found — append as new user message
+  result.push({
+    role: 'user',
+    content: [{ type: 'text', text: stateBlock.trim() }],
+  });
+  return result;
 }
 
 /**

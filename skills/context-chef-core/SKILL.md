@@ -1,13 +1,13 @@
 ---
-name: integrate
-description: "Helps developers integrate the context-chef library into their TypeScript/JavaScript AI agent projects. Use this skill when the user wants to add context-chef to their project, set up context management for LLM calls, integrate history compression or tool management into an agent loop, or asks about wiring context-chef with OpenAI/Anthropic/Gemini. Also trigger when the user mentions 'context-chef', 'context compiler', 'context engineering', or asks how to manage LLM context, compress conversation history, prune tools, or add memory to their AI agent."
+name: context-chef-core
+description: "Helps developers integrate @context-chef/core into their TypeScript/JavaScript AI agent projects. Use this skill when the user wants to add context-chef to their project, set up context management for LLM calls, integrate history compression or tool management into an agent loop, or asks about wiring context-chef with OpenAI/Anthropic/Gemini. Also trigger when the user mentions 'context-chef', 'context compiler', 'context engineering', or asks how to manage LLM context, compress conversation history, prune tools, or add memory to their AI agent."
 argument-hint: "[feature-focus]"
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 ---
 
-# Integrate context-chef
+# Integrate @context-chef/core
 
-Help the developer add [context-chef](https://github.com/MyPrototypeWhat/context-chef) — a context compiler for AI agents — into their existing project. The goal is to produce working, tailored integration code, not generic boilerplate.
+Help the developer add [@context-chef/core](https://github.com/MyPrototypeWhat/context-chef) — a context compiler for AI agents — into their existing project. The goal is to produce working, tailored integration code, not generic boilerplate.
 
 ## Step 1: Analyze the developer's project
 
@@ -48,10 +48,10 @@ If the developer is unsure, recommend starting with: **history compression + mul
 Generate the install command using their detected package manager:
 
 ```
-npm install context-chef zod
-pnpm add context-chef zod
-yarn add context-chef zod
-bun add context-chef zod
+npm install @context-chef/core zod
+pnpm add @context-chef/core zod
+yarn add @context-chef/core zod
+bun add @context-chef/core zod
 ```
 
 `zod` is required for dynamic state injection (the schema-validated XML state that prevents model drift).
@@ -61,7 +61,7 @@ bun add context-chef zod
 Generate code that fits their existing project structure. The core pattern is always:
 
 ```typescript
-import { ContextChef } from "context-chef";
+import { ContextChef } from "@context-chef/core";
 import { z } from "zod";
 
 // 1. Initialize once
@@ -136,7 +136,7 @@ onBeforeCompile: async (ctx) => {
 
 If they want to try cheaper compression before LLM summarization, recommend the `onBudgetExceeded` + `compact()` pattern:
 ```typescript
-import { Janitor } from "context-chef";
+import { Janitor } from "@context-chef/core";
 const compactJanitor = new Janitor({ contextWindow: Infinity });
 
 // In ChefConfig:
@@ -188,7 +188,7 @@ For provider-specific examples, read `references/provider-examples.md`.
 
 After generating the code:
 
-1. Verify imports are correct — `ContextChef`, `InMemoryStore`, `VFSMemoryStore` all come from `"context-chef"`
+1. Verify imports are correct — `ContextChef`, `InMemoryStore`, `VFSMemoryStore` all come from `"@context-chef/core"`
 2. Verify the compile target matches their SDK (`"openai"` for openai, `"anthropic"` for @anthropic-ai/sdk, `"gemini"` for @google/generative-ai)
 3. Explain the "sandwich model" briefly: system prompt (cached, stable) → memory → compressed history → dynamic state (injected into last user message for recency bias)
 4. Point out the `_cache_breakpoint: true` flag on system prompt messages — this enables Anthropic's prompt caching and is harmless on other providers

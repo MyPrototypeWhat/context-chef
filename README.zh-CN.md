@@ -469,13 +469,27 @@ const payload = adapter.compile(messages);
 
 ---
 
-## Skill
+## Skills
 
-ContextChef 内置了一个 [Claude Code Skill](https://docs.anthropic.com/en/docs/claude-code/skills)，帮助你交互式地将库集成到项目中。Skill 会分析你现有的代码（LLM 供应商、包管理器、项目结构），生成定制化的集成代码。
+ContextChef 提供了 [Claude Code Skills](https://docs.anthropic.com/en/docs/claude-code/skills)，帮助你交互式地将库集成到项目中。每个 Skill 会分析你现有的代码，生成定制化的集成代码。
+
+| Skill | 描述 |
+|---|---|
+| `context-chef-core` | 集成 `@context-chef/core` — 完全控制编译流程，多供应商支持 |
+| `context-chef-middleware` | 集成 `@context-chef/ai-sdk-middleware` — AI SDK 即插即用中间件，零代码改动 |
 
 ### 安装 Skill
 
+按需安装：
+
 ```bash
+# 核心库（直接使用 OpenAI / Anthropic / Gemini SDK）
+npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
+
+# AI SDK 中间件（Vercel AI SDK v6+）
+npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
+
+# 全部安装
 npx skills add MyPrototypeWhat/context-chef
 ```
 
@@ -484,12 +498,14 @@ npx skills add MyPrototypeWhat/context-chef
 在项目中打开 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)，输入：
 
 ```
-/integrate
+/context-chef-core
+# 或
+/context-chef-middleware
 ```
 
 Claude 会：
 
-1. **检测你的项目** — 使用的 LLM SDK（OpenAI / Anthropic / Gemini）、包管理器、TypeScript 还是 JavaScript
-2. **了解你的需求** — 历史压缩、工具管理、记忆、VFS 卸载、快照/恢复
+1. **检测你的项目** — LLM SDK、包管理器、TypeScript 还是 JavaScript
+2. **了解你的需求** — 历史压缩、工具管理、截断、记忆等
 3. **生成集成代码** — 根据你的项目结构和现有 agent 循环定制
-4. **解释核心架构** — 三明治模型、缓存断点、动态状态注入位置
+4. **解释核心架构** — 处理流程、缓存断点、动态状态注入位置

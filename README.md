@@ -507,13 +507,27 @@ const payload = adapter.compile(messages);
 
 ---
 
-## Skill
+## Skills
 
-ContextChef ships with a [Claude Code Skill](https://docs.anthropic.com/en/docs/claude-code/skills) that helps you integrate the library into your project interactively. The skill analyzes your existing codebase (LLM provider, package manager, project structure) and generates tailored integration code.
+ContextChef provides [Claude Code Skills](https://docs.anthropic.com/en/docs/claude-code/skills) that help you integrate the library into your project interactively. Each skill analyzes your existing codebase and generates tailored integration code.
 
-### Install the Skill
+| Skill | Description |
+|---|---|
+| `context-chef-core` | Integrate `@context-chef/core` — full control over compilation pipeline, multi-provider support |
+| `context-chef-middleware` | Integrate `@context-chef/ai-sdk-middleware` — drop-in AI SDK middleware, zero code changes |
+
+### Install
+
+Install only what you need:
 
 ```bash
+# Core library (OpenAI / Anthropic / Gemini direct SDK usage)
+npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
+
+# AI SDK middleware (Vercel AI SDK v6+)
+npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
+
+# Both
 npx skills add MyPrototypeWhat/context-chef
 ```
 
@@ -522,12 +536,14 @@ npx skills add MyPrototypeWhat/context-chef
 Open [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) in your project and type:
 
 ```
-/integrate
+/context-chef-core
+# or
+/context-chef-middleware
 ```
 
 Claude will:
 
-1. **Detect your setup** — which LLM SDK you use (OpenAI / Anthropic / Gemini), package manager, TypeScript vs JavaScript
-2. **Ask about your needs** — history compression, tool management, memory, VFS offloading, snapshot/restore
+1. **Detect your setup** — LLM SDK, package manager, TypeScript vs JavaScript
+2. **Ask about your needs** — history compression, tool management, truncation, memory, etc.
 3. **Generate integration code** — tailored to your project structure and existing agent loop
-4. **Explain the architecture** — the sandwich model, cache breakpoints, dynamic state placement
+4. **Explain the architecture** — processing pipeline, cache breakpoints, dynamic state placement

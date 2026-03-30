@@ -15,8 +15,8 @@ Complete working examples for each supported LLM provider.
 
 ```typescript
 import OpenAI from "openai";
-import { ContextChef } from "context-chef";
-import type { Message } from "context-chef";
+import { ContextChef } from "@context-chef/core";
+import type { Message } from "@context-chef/core";
 import { z } from "zod";
 
 const openai = new OpenAI();
@@ -136,8 +136,8 @@ async function agentLoop(userMessage: string) {
 
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
-import { ContextChef, InMemoryStore } from "context-chef";
-import type { Message } from "context-chef";
+import { ContextChef, InMemoryStore } from "@context-chef/core";
+import type { Message } from "@context-chef/core";
 import { z } from "zod";
 
 const anthropic = new Anthropic();
@@ -262,8 +262,8 @@ async function agentLoop(userMessage: string) {
 
 ```typescript
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { ContextChef } from "context-chef";
-import type { Message } from "context-chef";
+import { ContextChef } from "@context-chef/core";
+import type { Message } from "@context-chef/core";
 import { z } from "zod";
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
@@ -315,7 +315,7 @@ async function agentLoop(userMessage: string) {
 Switch providers without changing your prompt architecture:
 
 ```typescript
-import { ContextChef } from "context-chef";
+import { ContextChef } from "@context-chef/core";
 
 type Provider = "openai" | "anthropic" | "gemini";
 
@@ -361,8 +361,8 @@ async function callLLM(chef: ContextChef, provider: Provider, history: Message[]
 Complete example with all features enabled:
 
 ```typescript
-import { ContextChef, InMemoryStore, VFSMemoryStore, Janitor } from "context-chef";
-import type { Message } from "context-chef";
+import { ContextChef, InMemoryStore, VFSMemoryStore, Janitor } from "@context-chef/core";
+import type { Message } from "@context-chef/core";
 import { z } from "zod";
 
 const compactJanitor = new Janitor({ contextWindow: Infinity });

@@ -306,3 +306,384 @@ describe('withContextChef wrapper', () => {
     }
   });
 });
+
+describe('compact', () => {
+  it('clears tool-result content before compression', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      compact: { clear: ['tool-result'] },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Run command' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'run_cmd',
+            input: { cmd: 'ls' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_1',
+            toolName: 'run_cmd',
+            output: { type: 'text', value: 'very long tool output here' },
+          },
+        ],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Thanks' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    const toolMsg = result.prompt.find((m) => m.role === 'tool');
+    expect(toolMsg).toBeDefined();
+    if (toolMsg?.role === 'tool') {
+      const part = toolMsg.content[0];
+      if (part.type === 'tool-result' && part.output.type === 'text') {
+        expect(part.output.value).toBe('[Tool result cleared]');
+      }
+    }
+  });
+
+  it('clears thinking content', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      compact: { clear: ['thinking'] },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'I need to think about this...' },
+          { type: 'text', text: 'Here is my answer.' },
+        ],
+      },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    const assistantMsg = result.prompt.find((m) => m.role === 'assistant');
+    expect(assistantMsg).toBeDefined();
+    if (assistantMsg?.role === 'assistant') {
+      const hasReasoning = assistantMsg.content.some((p) => p.type === 'reasoning');
+      expect(hasReasoning).toBe(false);
+    }
+  });
+});
+
+describe('onBudgetExceeded', () => {
+  it('calls hook when budget is exceeded', async () => {
+    const onBudgetExceeded = vi.fn().mockReturnValue(null);
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onBudgetExceeded,
+    });
+
+    const model = createMockModel({ inputTokens: 200 });
+
+    // Feed high token usage to trigger budget exceeded
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
+      model,
+    });
+
+    const longPrompt = makeConversation(5);
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt },
+      type: 'generate',
+      model,
+    });
+
+    expect(onBudgetExceeded).toHaveBeenCalled();
+  });
+});
+
+describe('dynamicState', () => {
+  it('injects state as XML into last user message (last_user placement)', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      dynamicState: {
+        getState: () => ({ currentStep: 'analysis', progress: '50%' }),
+        placement: 'last_user',
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'What next?' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    const userMsg = result.prompt.find((m) => m.role === 'user');
+    expect(userMsg).toBeDefined();
+    if (userMsg?.role === 'user') {
+      expect(userMsg.content.length).toBe(2);
+      const lastPart = userMsg.content[userMsg.content.length - 1];
+      if (lastPart.type === 'text') {
+        expect(lastPart.text).toContain('<dynamic_state>');
+        expect(lastPart.text).toContain('<currentStep>analysis</currentStep>');
+        expect(lastPart.text).toContain('<progress>50%</progress>');
+      }
+    }
+  });
+
+  it('injects state as system message (system placement)', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      dynamicState: {
+        getState: () => ({ mode: 'debug' }),
+        placement: 'system',
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    const lastMsg = result.prompt[result.prompt.length - 1];
+    expect(lastMsg.role).toBe('system');
+    if (lastMsg.role === 'system') {
+      expect(lastMsg.content).toContain('CURRENT TASK STATE');
+      expect(lastMsg.content).toContain('<mode>debug</mode>');
+    }
+  });
+
+  it('defaults to last_user placement', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      dynamicState: {
+        getState: () => ({ key: 'value' }),
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    // Should inject into user message, not add system message
+    const userMsg = result.prompt.find((m) => m.role === 'user');
+    expect(userMsg).toBeDefined();
+    if (userMsg?.role === 'user') {
+      const lastPart = userMsg.content[userMsg.content.length - 1];
+      if (lastPart.type === 'text') {
+        expect(lastPart.text).toContain('<key>value</key>');
+      }
+    }
+  });
+
+  it('calls getState on each invocation', async () => {
+    let callCount = 0;
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      dynamicState: {
+        getState: () => {
+          callCount++;
+          return { step: callCount };
+        },
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    expect(callCount).toBe(2);
+  });
+
+  it('handles async getState', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      dynamicState: {
+        getState: async () => ({ async: 'state' }),
+        placement: 'system',
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    const lastMsg = result.prompt[result.prompt.length - 1];
+    if (lastMsg.role === 'system') {
+      expect(lastMsg.content).toContain('<async>state</async>');
+    }
+  });
+});
+
+describe('transformContext', () => {
+  it('transforms prompt after compression', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      transformContext: (prompt) => {
+        return [{ role: 'system', content: 'Injected by transform' } as const, ...prompt];
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    expect(result.prompt[0].role).toBe('system');
+    if (result.prompt[0].role === 'system') {
+      expect(result.prompt[0].content).toBe('Injected by transform');
+    }
+  });
+
+  it('supports async transform', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      transformContext: async (prompt) => {
+        return [...prompt, { role: 'system', content: 'async injected' } as const];
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    const lastMsg = result.prompt[result.prompt.length - 1];
+    expect(lastMsg.role).toBe('system');
+    if (lastMsg.role === 'system') {
+      expect(lastMsg.content).toBe('async injected');
+    }
+  });
+
+  it('runs after dynamicState injection', async () => {
+    const transformContext = vi.fn((prompt: LanguageModelV3Prompt) => prompt);
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      dynamicState: {
+        getState: () => ({ injected: true }),
+        placement: 'system',
+      },
+      transformContext,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    expect(transformContext).toHaveBeenCalledTimes(1);
+    const received = transformContext.mock.calls[0][0];
+    // transformContext should see the dynamic state system message
+    const systemMsgs = received.filter((m: LanguageModelV3Prompt[number]) => m.role === 'system');
+    const hasState = systemMsgs.some(
+      (m: LanguageModelV3Prompt[number]) =>
+        m.role === 'system' && m.content.includes('<injected>true</injected>'),
+    );
+    expect(hasState).toBe(true);
+  });
+});

@@ -20,7 +20,7 @@ import {
   getAdapter,           // Standalone adapter factory
   TokenUtils,           // Token counting utilities
   XmlGenerator,         // XML generation utilities
-} from "context-chef";
+} from "@context-chef/core";
 
 // Types
 import type {
@@ -32,7 +32,7 @@ import type {
   OffloadOptions, VFSConfig, VFSStorageAdapter,
   BeforeCompileContext, ChefSnapshot, ChefConfig,
   GuardrailOptions, DynamicStatePlacement,
-} from "context-chef";
+} from "@context-chef/core";
 ```
 
 ## ChefConfig
@@ -240,7 +240,7 @@ OffloadOptions: `{ headChars?, tailChars?, threshold? }`
 **Standalone Offloader** (for retrieving offloaded content):
 
 ```typescript
-import { Offloader } from "context-chef";
+import { Offloader } from "@context-chef/core";
 const offloader = new Offloader({ storageDir: ".context_vfs" });
 
 // Retrieve full content from a context://vfs/ URI
@@ -270,7 +270,7 @@ const fullContent = await offloader.resolveAsync(uri); // async
 Use it standalone or inside the `onBudgetExceeded` hook.
 
 ```typescript
-import { Janitor } from "context-chef";
+import { Janitor } from "@context-chef/core";
 
 const janitor = new Janitor({ contextWindow: Infinity });
 
@@ -396,7 +396,7 @@ interface BeforeCompileContext {
 Fires when token budget is exceeded, BEFORE automatic compression. Use this to try cheaper strategies first.
 
 ```typescript
-import { Janitor } from "context-chef";
+import { Janitor } from "@context-chef/core";
 const compactJanitor = new Janitor({ contextWindow: Infinity });
 
 const chef = new ContextChef({

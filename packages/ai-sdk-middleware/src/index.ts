@@ -6,7 +6,13 @@ import type { ContextChefOptions } from './types';
 
 export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export { createMiddleware } from './middleware';
-export type { CompressOptions, ContextChefOptions, TruncateOptions } from './types';
+export type {
+  CompactConfig,
+  CompressOptions,
+  ContextChefOptions,
+  DynamicStateConfig,
+  TruncateOptions,
+} from './types';
 
 /**
  * Wraps an AI SDK language model with context-chef middleware for

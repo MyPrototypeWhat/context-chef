@@ -1,5 +1,5 @@
-import type { LanguageModelV3 } from '@ai-sdk/provider';
-import type { VFSStorageAdapter } from '@context-chef/core';
+import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
+import type { ClearTarget, Message, VFSStorageAdapter } from '@context-chef/core';
 
 export interface TruncateOptions {
   /** Character count threshold to trigger truncation. */
@@ -24,6 +24,34 @@ export interface CompressOptions {
   preserveRatio?: number;
 }
 
+/**
+ * Mechanical compaction options — zero LLM cost.
+ * Runs before LLM-based compression to reduce token usage at no cost.
+ */
+export interface CompactConfig {
+  /** Which content types to clear from history. */
+  clear: ClearTarget[];
+}
+
+/**
+ * Dynamic state injection config.
+ * State is converted to XML and injected into the prompt for maximum LLM attention.
+ */
+export interface DynamicStateConfig {
+  /**
+   * Returns the current state object. Auto-converted to XML via `objectToXml`.
+   * Called on every model invocation.
+   */
+  getState: () => Record<string, unknown> | Promise<Record<string, unknown>>;
+  /**
+   * Where to inject the state.
+   * - `'last_user'` (default): Appends to the last user message. Leverages Recency Bias
+   *   for maximum attention, preventing "Lost in the Middle" drift in long conversations.
+   * - `'system'`: Adds as a standalone system message at the end.
+   */
+  placement?: 'system' | 'last_user';
+}
+
 export interface ContextChefOptions {
   /** The model's context window size in tokens. */
   contextWindow: number;
@@ -31,8 +59,34 @@ export interface ContextChefOptions {
   compress?: CompressOptions;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
+  /**
+   * Mechanical compaction before LLM compression.
+   * Clears specified content types (tool-result, thinking) at zero LLM cost.
+   */
+  compact?: CompactConfig;
+  /**
+   * Dynamic state injection. State is converted to XML and placed
+   * for maximum LLM attention (last_user or system position).
+   */
+  dynamicState?: DynamicStateConfig;
   /** Optional tokenizer for precise per-message token counting. */
   tokenizer?: (messages: unknown[]) => number;
   /** Hook called after compression occurs. */
   onCompress?: (summary: string, truncatedCount: number) => void;
+  /**
+   * Called when token budget is exceeded, before automatic compression.
+   * Return modified messages to replace history, or null/undefined to
+   * let default compression handle it.
+   */
+  onBudgetExceeded?: (
+    history: Message[],
+    tokenInfo: { currentTokens: number; limit: number },
+  ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
+  /**
+   * Transform the AI SDK prompt after compression, before sending to the model.
+   * Use for custom prompt manipulation, RAG injection, etc.
+   */
+  transformContext?: (
+    prompt: LanguageModelV3Prompt,
+  ) => LanguageModelV3Prompt | Promise<LanguageModelV3Prompt>;
 }
