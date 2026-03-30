@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.build.json --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "ai-sdk",

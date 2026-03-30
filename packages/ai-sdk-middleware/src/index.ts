@@ -4,7 +4,7 @@ import { wrapLanguageModel } from 'ai';
 import { createMiddleware } from './middleware';
 import type { ContextChefOptions } from './types';
 
-export { fromAISDK, toAISDK } from './adapter';
+export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export { createMiddleware } from './middleware';
 export type { CompressOptions, ContextChefOptions, TruncateOptions } from './types';
 

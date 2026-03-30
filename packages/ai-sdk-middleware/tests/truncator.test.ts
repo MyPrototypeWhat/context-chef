@@ -95,7 +95,7 @@ describe('truncateToolResults', () => {
   });
 
   it('preserves head and tail content', async () => {
-    const output = 'HEAD_CONTENT' + '_'.repeat(500) + 'TAIL_CONTENT';
+    const output = `HEAD_CONTENT${'_'.repeat(500)}TAIL_CONTENT`;
     const prompt = makeToolPrompt(output);
     const result = await truncateToolResults(prompt, {
       threshold: 50,

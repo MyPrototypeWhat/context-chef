@@ -285,7 +285,9 @@ describe('E3: Snapshot & Restore', () => {
     const snap = chef.snapshot();
 
     // Mutate the original message's nested tool_calls
-    msgWithToolCalls.tool_calls[0].function.name = 'mutated';
+    if (msgWithToolCalls.tool_calls) {
+      msgWithToolCalls.tool_calls[0].function.name = 'mutated';
+    }
 
     expect(snap.history[0].tool_calls?.[0].function.name).toBe('foo');
   });

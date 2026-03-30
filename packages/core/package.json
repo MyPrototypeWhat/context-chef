@@ -19,7 +19,7 @@
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "typecheck": "tsc --noEmit",
     "typecheck:compat": "tsc --noEmit --strict --esModuleInterop --target ES2022 --module CommonJS --moduleResolution node --skipLibCheck tests/typeCompat.ts"
   },
   "keywords": [

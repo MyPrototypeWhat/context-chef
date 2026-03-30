@@ -6,6 +6,8 @@ import { fromAISDK, toAISDK } from './adapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions } from './types';
 
+type CompressRole = 'system' | 'user' | 'assistant';
+
 /**
  * Creates a LanguageModelMiddleware that transparently applies
  * context-chef compression and truncation to AI SDK model calls.
@@ -95,6 +97,15 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 }
 
 /**
+ * Maps an IR role to a role accepted by generateText.
+ * Tool messages are handled separately before this is called.
+ */
+function toCompressRole(role: string): CompressRole {
+  if (role === 'system' || role === 'user' || role === 'assistant') return role;
+  return 'user';
+}
+
+/**
  * Adapts an AI SDK LanguageModelV3 into the compressionModel callback
  * that Janitor expects: (messages: Message[]) => Promise<string>
  *
@@ -105,25 +116,24 @@ function createCompressionAdapter(
   model: LanguageModelV3,
 ): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
-    const formatted = messages.map((m) => {
+    const formatted = messages.map((m): { role: CompressRole; content: string } => {
       if (m.role === 'tool') {
         return {
-          role: 'user' as const,
+          role: 'user' satisfies CompressRole,
           content: `[Tool result${m.tool_call_id ? ` (${m.tool_call_id})` : ''}: ${m.content}]`,
         };
       }
-      // assistant messages with tool_calls: include tool call info in content
       if (m.role === 'assistant' && m.tool_calls?.length) {
         const toolCallsDesc = m.tool_calls
           .map((tc) => `[Called tool: ${tc.function.name}(${tc.function.arguments})]`)
           .join('\n');
         return {
-          role: 'assistant' as const,
+          role: 'assistant' satisfies CompressRole,
           content: m.content ? `${m.content}\n${toolCallsDesc}` : toolCallsDesc,
         };
       }
       return {
-        role: m.role as 'system' | 'user' | 'assistant',
+        role: toCompressRole(m.role),
         content: m.content,
       };
     });

@@ -2,8 +2,11 @@ import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
   LanguageModelV3Content,
+  LanguageModelV3FinishReason,
+  LanguageModelV3GenerateResult,
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
+  LanguageModelV3StreamResult,
 } from '@ai-sdk/provider';
 import { describe, expect, it, vi } from 'vitest';
 import { withContextChef } from '../src/index';
@@ -13,16 +16,19 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
   const inputTokens = options?.inputTokens ?? 100;
   const outputText = options?.outputText ?? 'Hello';
 
-  return {
+  const model: LanguageModelV3 = {
     specificationVersion: 'v3',
     provider: 'test',
     modelId: 'test-model',
-    defaultObjectGenerationMode: 'json' as const,
+    supportedUrls: {},
 
-    async doGenerate(opts: LanguageModelV3CallOptions) {
+    async doGenerate(_opts: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
+      const content: LanguageModelV3Content[] = [{ type: 'text', text: outputText }];
+      const finishReason: LanguageModelV3FinishReason = { unified: 'stop', raw: undefined };
       return {
-        content: [{ type: 'text' as const, text: outputText }] as LanguageModelV3Content[],
-        finishReason: 'stop' as const,
+        content,
+        finishReason,
+        warnings: [],
         usage: {
           inputTokens: {
             total: inputTokens,
@@ -40,7 +46,7 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
       };
     },
 
-    async doStream(opts: LanguageModelV3CallOptions) {
+    async doStream(_opts: LanguageModelV3CallOptions) {
       const parts: LanguageModelV3StreamPart[] = [
         { type: 'text-start', id: '1' },
         { type: 'text-delta', id: '1', delta: outputText },
@@ -56,7 +62,7 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
             },
             outputTokens: { total: 10, text: undefined, reasoning: undefined },
           },
-          finishReason: 'stop',
+          finishReason: { unified: 'stop', raw: undefined },
         },
       ];
 
@@ -71,7 +77,8 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
 
       return { stream };
     },
-  } as LanguageModelV3;
+  };
+  return model;
 }
 
 function makeConversation(messageCount: number): LanguageModelV3Prompt {
@@ -89,6 +96,12 @@ function makeConversation(messageCount: number): LanguageModelV3Prompt {
   return prompt;
 }
 
+/** Assert middleware method exists and return it (avoids `possibly undefined` errors) */
+function assertDefined<T>(value: T | undefined, name: string): T {
+  if (value === undefined) throw new Error(`${name} is undefined`);
+  return value;
+}
+
 describe('createMiddleware', () => {
   it('passes through when no truncation or compression needed', async () => {
     const middleware = createMiddleware({
@@ -99,8 +112,11 @@ describe('createMiddleware', () => {
       { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
     ];
 
-    const params = { prompt } as LanguageModelV3CallOptions;
-    const result = await middleware.transformParams!({
+    const params: LanguageModelV3CallOptions = { prompt };
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
       params,
       type: 'generate',
       model: createMockModel(),
@@ -142,8 +158,11 @@ describe('createMiddleware', () => {
       },
     ];
 
-    const params = { prompt } as LanguageModelV3CallOptions;
-    const result = await middleware.transformParams!({
+    const params: LanguageModelV3CallOptions = { prompt };
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
       params,
       type: 'generate',
       model: createMockModel(),
@@ -167,17 +186,17 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 200 });
 
-    const doGenerate = async () => {
-      return model.doGenerate({ prompt: [] } as LanguageModelV3CallOptions);
-    };
-    const doStream = async () => {
-      return model.doStream({ prompt: [] } as LanguageModelV3CallOptions);
-    };
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
 
-    const result = await middleware.wrapGenerate!({
-      doGenerate: doGenerate as any,
-      doStream: doStream as any,
-      params: { prompt: [] } as LanguageModelV3CallOptions,
+    const result = await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
       model,
     });
 
@@ -191,17 +210,17 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 300 });
 
-    const doGenerate = async () => {
-      return model.doGenerate({ prompt: [] } as LanguageModelV3CallOptions);
-    };
-    const doStream = async () => {
-      return model.doStream({ prompt: [] } as LanguageModelV3CallOptions);
-    };
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
 
-    const streamResult = await middleware.wrapStream!({
-      doGenerate: doGenerate as any,
-      doStream: doStream as any,
-      params: { prompt: [] } as LanguageModelV3CallOptions,
+    const streamResult = await assertDefined(
+      middleware.wrapStream,
+      'wrapStream',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
       model,
     });
 
@@ -229,24 +248,26 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 200 });
 
-    const doGenerate = async () => {
-      return model.doGenerate({ prompt: [] } as LanguageModelV3CallOptions);
-    };
-    const doStream = async () => {
-      return model.doStream({ prompt: [] } as LanguageModelV3CallOptions);
-    };
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
 
-    await middleware.wrapGenerate!({
-      doGenerate: doGenerate as any,
-      doStream: doStream as any,
-      params: { prompt: [] } as LanguageModelV3CallOptions,
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
       model,
     });
 
     const longPrompt = makeConversation(10);
-    const params = { prompt: longPrompt } as LanguageModelV3CallOptions;
-    const result = await middleware.transformParams!({
-      params,
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt },
       type: 'generate',
       model,
     });
@@ -276,10 +297,12 @@ describe('withContextChef wrapper', () => {
 
     const result = await wrapped.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-    } as LanguageModelV3CallOptions);
+    });
 
     const textContent = result.content.find((c: LanguageModelV3Content) => c.type === 'text');
     expect(textContent).toBeDefined();
-    expect((textContent as { type: 'text'; text: string }).text).toBe('Hello from wrapped model');
+    if (textContent?.type === 'text') {
+      expect(textContent.text).toBe('Hello from wrapped model');
+    }
   });
 });

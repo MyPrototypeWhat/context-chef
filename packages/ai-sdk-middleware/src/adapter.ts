@@ -1,4 +1,5 @@
 import type {
+  LanguageModelV3Message,
   LanguageModelV3Prompt,
   LanguageModelV3ToolResultOutput,
   LanguageModelV3ToolResultPart,
@@ -6,15 +7,33 @@ import type {
 } from '@ai-sdk/provider';
 import type { Message, ToolCall } from '@context-chef/core';
 
+/** Content types for each AI SDK message role */
+type UserContent = Extract<LanguageModelV3Message, { role: 'user' }>['content'];
+type AssistantContent = Extract<LanguageModelV3Message, { role: 'assistant' }>['content'];
+type ToolContent = Extract<LanguageModelV3Message, { role: 'tool' }>['content'];
+
+/**
+ * Extended IR message with typed pass-through fields for lossless AI SDK round-trip.
+ * Per-role content fields avoid union types, so no `as` casts are needed in `toAISDK`.
+ */
+export interface AISDKMessage extends Message {
+  _userContent?: UserContent;
+  _assistantContent?: AssistantContent;
+  _toolContent?: ToolContent;
+  _originalText?: string;
+  _providerOptions?: SharedV3ProviderOptions;
+  _toolName?: string;
+}
+
 /**
  * Converts an AI SDK V3 prompt to context-chef IR messages.
  *
- * Original AI SDK content is stored in `_originalContent` for lossless round-trip.
+ * Original AI SDK content is stored in per-role fields for lossless round-trip.
  * `_originalText` caches the extracted text so `toAISDK` can detect Janitor modifications.
  * `_providerOptions` preserves message-level provider options (e.g. Anthropic cache control).
  */
-export function fromAISDK(prompt: LanguageModelV3Prompt): Message[] {
-  const messages: Message[] = [];
+export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
+  const messages: AISDKMessage[] = [];
 
   for (const msg of prompt) {
     if (msg.role === 'system') {
@@ -34,7 +53,7 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): Message[] {
       messages.push({
         role: 'user',
         content: text,
-        _originalContent: msg.content,
+        _userContent: msg.content,
         _originalText: text,
         ...(msg.providerOptions ? { _providerOptions: msg.providerOptions } : {}),
       });
@@ -63,10 +82,10 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): Message[] {
       }
 
       const joinedText = text.join('\n');
-      const m: Message = {
+      const m: AISDKMessage = {
         role: 'assistant',
         content: joinedText,
-        _originalContent: msg.content,
+        _assistantContent: msg.content,
         _originalText: joinedText,
         ...(msg.providerOptions ? { _providerOptions: msg.providerOptions } : {}),
       };
@@ -84,7 +103,7 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): Message[] {
             role: 'tool',
             content: text,
             tool_call_id: part.toolCallId,
-            _originalContent: [part],
+            _toolContent: [part],
             _originalText: text,
             _toolName: part.toolName,
           });
@@ -97,9 +116,16 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): Message[] {
 }
 
 /**
+ * Narrows a generic Message to AISDKMessage for typed access to pass-through fields.
+ */
+function asAISDK(msg: Message): AISDKMessage {
+  return msg;
+}
+
+/**
  * Converts context-chef IR messages back to AI SDK V3 prompt format.
  *
- * Uses `_originalContent` when content is unmodified (detected via `_originalText`).
+ * Uses per-role original content when unmodified (detected via `_originalText`).
  * Falls back to constructing from IR fields when content was modified by Janitor
  * (e.g. compact() cleared tool results) or for new messages (e.g. compression summaries).
  */
@@ -108,43 +134,40 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
 
   let i = 0;
   while (i < messages.length) {
-    const msg = messages[i];
-    const providerOptions = msg._providerOptions as SharedV3ProviderOptions | undefined;
+    const msg = asAISDK(messages[i]);
     const contentModified = msg._originalText !== undefined && msg._originalText !== msg.content;
 
     if (msg.role === 'system') {
       prompt.push({
         role: 'system',
         content: msg.content,
-        ...(providerOptions ? { providerOptions } : {}),
+        ...(msg._providerOptions ? { providerOptions: msg._providerOptions } : {}),
       });
       i++;
       continue;
     }
 
     if (msg.role === 'user') {
-      const content =
-        !contentModified && Array.isArray(msg._originalContent)
-          ? (msg._originalContent as any)
-          : [{ type: 'text' as const, text: msg.content }];
       prompt.push({
         role: 'user',
-        content,
-        ...(providerOptions ? { providerOptions } : {}),
+        content:
+          !contentModified && msg._userContent
+            ? msg._userContent
+            : [{ type: 'text', text: msg.content }],
+        ...(msg._providerOptions ? { providerOptions: msg._providerOptions } : {}),
       });
       i++;
       continue;
     }
 
     if (msg.role === 'assistant') {
-      const content =
-        !contentModified && Array.isArray(msg._originalContent)
-          ? (msg._originalContent as any)
-          : [{ type: 'text' as const, text: msg.content }];
       prompt.push({
         role: 'assistant',
-        content,
-        ...(providerOptions ? { providerOptions } : {}),
+        content:
+          !contentModified && msg._assistantContent
+            ? msg._assistantContent
+            : [{ type: 'text', text: msg.content }],
+        ...(msg._providerOptions ? { providerOptions: msg._providerOptions } : {}),
       });
       i++;
       continue;
@@ -153,17 +176,21 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
     if (msg.role === 'tool') {
       const toolResults: LanguageModelV3ToolResultPart[] = [];
       while (i < messages.length && messages[i].role === 'tool') {
-        const toolMsg = messages[i];
+        const toolMsg = asAISDK(messages[i]);
         const toolModified =
           toolMsg._originalText !== undefined && toolMsg._originalText !== toolMsg.content;
 
-        if (!toolModified && toolMsg._originalContent) {
-          toolResults.push(...(toolMsg._originalContent as LanguageModelV3ToolResultPart[]));
+        if (!toolModified && toolMsg._toolContent) {
+          for (const part of toolMsg._toolContent) {
+            if (part.type === 'tool-result') {
+              toolResults.push(part);
+            }
+          }
         } else {
           toolResults.push({
             type: 'tool-result',
             toolCallId: toolMsg.tool_call_id ?? '',
-            toolName: (toolMsg._toolName as string) ?? 'unknown',
+            toolName: toolMsg._toolName ?? 'unknown',
             output: { type: 'text', value: toolMsg.content },
           });
         }
@@ -189,7 +216,7 @@ function stringifyToolOutput(output: LanguageModelV3ToolResultOutput): string {
       return JSON.stringify(output.value);
     case 'content':
       return output.value
-        .map((v: { type: string; text?: string }) => (v.type === 'text' ? (v.text ?? '') : ''))
+        .map((v) => (v.type === 'text' ? v.text : ''))
         .filter(Boolean)
         .join('\n');
     default:

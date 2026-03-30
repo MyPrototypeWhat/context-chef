@@ -63,7 +63,7 @@ describe('compact — clear tool-result', () => {
     const result = janitor.compact([toolCallMsg, toolResultMsg], { clear: ['tool-result'] });
 
     expect(result[0].tool_calls).toHaveLength(1);
-    expect(result[0].tool_calls![0].function.arguments).toBe('{"path":"a.ts"}');
+    expect(result[0].tool_calls?.[0].function.arguments).toBe('{"path":"a.ts"}');
   });
 });
 

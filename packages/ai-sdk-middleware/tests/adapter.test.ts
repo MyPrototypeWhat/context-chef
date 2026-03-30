@@ -22,7 +22,7 @@ describe('fromAISDK', () => {
     ];
     const result = fromAISDK(prompt);
     expect(result[0].content).toBe('Hello\nWorld');
-    expect(result[0]._originalContent).toBeDefined();
+    expect(result[0]._userContent).toBeDefined();
   });
 
   it('stores original content including file parts', () => {
@@ -35,7 +35,7 @@ describe('fromAISDK', () => {
     const prompt: LanguageModelV3Prompt = [{ role: 'user', content }];
     const result = fromAISDK(prompt);
     expect(result[0].content).toBe('Look at this');
-    expect(result[0]._originalContent).toEqual(content);
+    expect(result[0]._userContent).toEqual(content);
   });
 
   it('converts assistant messages with text + tool calls', () => {
@@ -62,7 +62,7 @@ describe('fromAISDK', () => {
         function: { name: 'get_weather', arguments: '{"city":"Tokyo"}' },
       },
     ]);
-    expect(result[0]._originalContent).toBeDefined();
+    expect(result[0]._assistantContent).toBeDefined();
   });
 
   it('converts assistant reasoning to thinking', () => {
@@ -107,7 +107,7 @@ describe('fromAISDK', () => {
       content: 'Sunny, 25°C',
       tool_call_id: 'call_1',
     });
-    expect(result[0]._originalContent).toBeDefined();
+    expect(result[0]._toolContent).toBeDefined();
     expect(result[1]).toMatchObject({
       role: 'tool',
       content: '14:30',
@@ -141,19 +141,24 @@ describe('toAISDK', () => {
     expect(result).toEqual([{ role: 'system', content: 'Be helpful.' }]);
   });
 
-  it('falls back to text part when no _originalContent (e.g. compression summary)', () => {
+  it('falls back to text part when no original content (e.g. compression summary)', () => {
     const messages: Message[] = [{ role: 'user', content: 'Hi there' }];
     const result = toAISDK(messages);
     expect(result).toEqual([{ role: 'user', content: [{ type: 'text', text: 'Hi there' }] }]);
   });
 
-  it('uses _originalContent for lossless round-trip', () => {
+  it('uses original content for lossless round-trip', () => {
     const originalContent = [
       { type: 'text' as const, text: 'See this' },
       { type: 'file' as const, data: 'base64data', mediaType: 'image/png' },
     ];
     const messages: Message[] = [
-      { role: 'user', content: 'See this', _originalContent: originalContent },
+      {
+        role: 'user',
+        content: 'See this',
+        _userContent: originalContent,
+        _originalText: 'See this',
+      },
     ];
     const result = toAISDK(messages);
     expect(result[0]).toMatchObject({ role: 'user', content: originalContent });
@@ -173,27 +178,46 @@ describe('toAISDK', () => {
       output: { type: 'text' as const, value: 'result2' },
     };
     const messages: Message[] = [
-      { role: 'tool', content: 'result1', tool_call_id: 'call_1', _originalContent: [part1] },
-      { role: 'tool', content: 'result2', tool_call_id: 'call_2', _originalContent: [part2] },
+      {
+        role: 'tool',
+        content: 'result1',
+        tool_call_id: 'call_1',
+        _toolContent: [part1],
+        _originalText: 'result1',
+      },
+      {
+        role: 'tool',
+        content: 'result2',
+        tool_call_id: 'call_2',
+        _toolContent: [part2],
+        _originalText: 'result2',
+      },
     ];
     const result = toAISDK(messages);
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe('tool');
     if (result[0].role === 'tool') {
       expect(result[0].content).toHaveLength(2);
-      expect(result[0].content[0].toolCallId).toBe('call_1');
-      expect(result[0].content[1].toolCallId).toBe('call_2');
+      const p0 = result[0].content[0];
+      const p1 = result[0].content[1];
+      if (p0.type === 'tool-result' && p1.type === 'tool-result') {
+        expect(p0.toolCallId).toBe('call_1');
+        expect(p1.toolCallId).toBe('call_2');
+      }
     }
   });
 
-  it('falls back for tool messages without _originalContent', () => {
+  it('falls back for tool messages without original content', () => {
     const messages: Message[] = [{ role: 'tool', content: 'some output', tool_call_id: 'call_1' }];
     const result = toAISDK(messages);
     if (result[0].role === 'tool') {
-      expect(result[0].content[0].output).toEqual({
-        type: 'text',
-        value: 'some output',
-      });
+      const part = result[0].content[0];
+      if (part.type === 'tool-result') {
+        expect(part.output).toEqual({
+          type: 'text',
+          value: 'some output',
+        });
+      }
     }
   });
 });
