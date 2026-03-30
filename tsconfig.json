@@ -9,6 +9,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
-  },
-  "include": ["src/**/*", "tests/**/*"]
+  }
 }

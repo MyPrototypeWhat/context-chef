@@ -1,4 +1,4 @@
-# ContextChef
+# @context-chef/core
 
 [![npm version](https://img.shields.io/npm/v/@context-chef/core.svg)](https://www.npmjs.com/package/@context-chef/core)
 [![npm downloads](https://img.shields.io/npm/dm/@context-chef/core.svg)](https://www.npmjs.com/package/@context-chef/core)
@@ -8,46 +8,16 @@
 [![CI](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml/badge.svg)](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="./ContextChef.gif" alt="ContextChef Demo" width="600" />
+  <img src="https://raw.githubusercontent.com/MyPrototypeWhat/context-chef/main/ContextChef.gif" alt="ContextChef Demo" width="600" />
 </p>
 
 Context compiler for TypeScript/JavaScript AI agents.
 
 ContextChef solves the most common context engineering problems in AI agent development: conversations too long for the model to remember, too many tools causing hallucinations, having to rewrite prompts when switching providers, and state drift in long-running tasks. It doesn't take over your control flow — it just compiles your state into an optimal payload before each LLM call.
 
-[中文文档](./README.zh-CN.md)
+[中文文档](https://github.com/MyPrototypeWhat/context-chef/blob/main/README.zh-CN.md) | [GitHub](https://github.com/MyPrototypeWhat/context-chef)
 
-## Packages
-
-| Package | Description |
-|---|---|
-| [`@context-chef/core`](./packages/core) | Core context compiler — history compression, tool pruning, memory, VFS offloading, multi-provider adapters |
-| [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware) | [Vercel AI SDK](https://sdk.vercel.ai) middleware — drop-in context engineering with zero code changes |
-
-### Zero-config AI SDK integration
-
-If you use the Vercel AI SDK, you can get transparent history compression and tool result truncation with just 2 lines:
-
-```typescript
-import { withContextChef } from '@context-chef/ai-sdk-middleware';
-import { openai } from '@ai-sdk/openai';
-import { generateText } from 'ai';
-
-const model = withContextChef(openai('gpt-4o'), {
-  contextWindow: 128_000,
-  compress: { model: openai('gpt-4o-mini') },
-  truncate: { threshold: 5000 },
-});
-
-// Everything below stays exactly the same
-const result = await generateText({ model, messages, tools });
-```
-
-See the [`@context-chef/ai-sdk-middleware` README](./packages/ai-sdk-middleware/README.md) for full documentation.
-
-### Full control with `@context-chef/core`
-
-For direct control over the compilation pipeline — dynamic state injection, tool namespaces, memory, snapshot/restore — use the core library directly:
+> Looking for zero-config AI SDK integration? See [`@context-chef/ai-sdk-middleware`](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
 
 ## Blog Series
 
@@ -200,7 +170,7 @@ Janitor provides two compression paths. Choose the one that fits your setup:
 
 #### Path 1: Tokenizer (precise control)
 
-Provide your own token counting function for precise per-message calculation. Janitor preserves recent messages that fit within `contextWindow × preserveRatio` and compresses the rest.
+Provide your own token counting function for precise per-message calculation. Janitor preserves recent messages that fit within `contextWindow * preserveRatio` and compresses the rest.
 
 ```typescript
 const chef = new ContextChef({
@@ -531,3 +501,7 @@ Claude will:
 2. **Ask about your needs** — history compression, tool management, memory, VFS offloading, snapshot/restore
 3. **Generate integration code** — tailored to your project structure and existing agent loop
 4. **Explain the architecture** — the sandwich model, cache breakpoints, dynamic state placement
+
+## License
+
+ISC

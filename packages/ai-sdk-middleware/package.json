@@ -1,0 +1,60 @@
+{
+  "name": "@context-chef/ai-sdk-middleware",
+  "version": "0.1.2",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit"
+  },
+  "keywords": [
+    "ai-sdk",
+    "vercel-ai",
+    "context-chef",
+    "middleware",
+    "context-engineering",
+    "llm",
+    "compression",
+    "token-management"
+  ],
+  "author": "MyPrototypeWhat",
+  "license": "ISC",
+  "description": "AI SDK middleware for context-chef. Transparent history compression, tool result truncation, and token budget management.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MyPrototypeWhat/context-chef.git",
+    "directory": "packages/ai-sdk-middleware"
+  },
+  "homepage": "https://github.com/MyPrototypeWhat/context-chef#readme",
+  "bugs": {
+    "url": "https://github.com/MyPrototypeWhat/context-chef/issues"
+  },
+  "dependencies": {
+    "@context-chef/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": ">=3",
+    "ai": ">=6"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@types/node": "^25.3.0",
+    "ai": "^6.0.140",
+    "tsdown": "^0.20.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
