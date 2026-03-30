@@ -28,7 +28,10 @@ export type { CompressOptions, ContextChefOptions, TruncateOptions } from './typ
  * const result = await generateText({ model, messages, tools });
  * ```
  */
-export function withContextChef(model: LanguageModelV3, options: ContextChefOptions): LanguageModelV3 {
+export function withContextChef(
+  model: LanguageModelV3,
+  options: ContextChefOptions,
+): LanguageModelV3 {
   const middleware = createMiddleware(options);
   return wrapLanguageModel({ model, middleware });
 }

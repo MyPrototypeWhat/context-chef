@@ -1,6 +1,3 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createMiddleware } from '../src/middleware';
-import { withContextChef } from '../src/index';
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -8,11 +5,11 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
+import { describe, expect, it, vi } from 'vitest';
+import { withContextChef } from '../src/index';
+import { createMiddleware } from '../src/middleware';
 
-function createMockModel(options?: {
-  inputTokens?: number;
-  outputText?: string;
-}): LanguageModelV3 {
+function createMockModel(options?: { inputTokens?: number; outputText?: string }): LanguageModelV3 {
   const inputTokens = options?.inputTokens ?? 100;
   const outputText = options?.outputText ?? 'Hello';
 
@@ -27,7 +24,12 @@ function createMockModel(options?: {
         content: [{ type: 'text' as const, text: outputText }] as LanguageModelV3Content[],
         finishReason: 'stop' as const,
         usage: {
-          inputTokens: { total: inputTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          inputTokens: {
+            total: inputTokens,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
           outputTokens: { total: 10, text: undefined, reasoning: undefined },
         },
         response: {
@@ -46,7 +48,12 @@ function createMockModel(options?: {
         {
           type: 'finish',
           usage: {
-            inputTokens: { total: inputTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            inputTokens: {
+              total: inputTokens,
+              noCache: undefined,
+              cacheRead: undefined,
+              cacheWrite: undefined,
+            },
             outputTokens: { total: 10, text: undefined, reasoning: undefined },
           },
           finishReason: 'stop',
@@ -68,9 +75,7 @@ function createMockModel(options?: {
 }
 
 function makeConversation(messageCount: number): LanguageModelV3Prompt {
-  const prompt: LanguageModelV3Prompt = [
-    { role: 'system', content: 'You are helpful.' },
-  ];
+  const prompt: LanguageModelV3Prompt = [{ role: 'system', content: 'You are helpful.' }];
   for (let i = 0; i < messageCount; i++) {
     prompt.push({
       role: 'user',
@@ -270,15 +275,11 @@ describe('withContextChef wrapper', () => {
     });
 
     const result = await wrapped.doGenerate({
-      prompt: [
-        { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
-      ],
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
     } as LanguageModelV3CallOptions);
 
     const textContent = result.content.find((c: LanguageModelV3Content) => c.type === 'text');
     expect(textContent).toBeDefined();
-    expect((textContent as { type: 'text'; text: string }).text).toBe(
-      'Hello from wrapped model',
-    );
+    expect((textContent as { type: 'text'; text: string }).text).toBe('Hello from wrapped model');
   });
 });

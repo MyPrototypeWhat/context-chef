@@ -1,6 +1,6 @@
 import type { LanguageModelV3, LanguageModelV3StreamPart } from '@ai-sdk/provider';
-import { generateText, type LanguageModelMiddleware } from 'ai';
 import { Janitor, type Message } from '@context-chef/core';
+import { generateText, type LanguageModelMiddleware } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
 import { truncateToolResults } from './truncator';
@@ -101,7 +101,9 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
  * Tool messages are converted to user messages describing the tool interaction,
  * since generateText only accepts system/user/assistant roles.
  */
-function createCompressionAdapter(model: LanguageModelV3): (messages: Message[]) => Promise<string> {
+function createCompressionAdapter(
+  model: LanguageModelV3,
+): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
     const formatted = messages.map((m) => {
       if (m.role === 'tool') {

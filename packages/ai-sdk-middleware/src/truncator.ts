@@ -16,9 +16,7 @@ export async function truncateToolResults(
 ): Promise<LanguageModelV3Prompt> {
   const { threshold, headChars = 0, tailChars = 1000, storage } = options;
 
-  const offloader = storage
-    ? new Offloader({ threshold, adapter: storage, storageDir: '' })
-    : null;
+  const offloader = storage ? new Offloader({ threshold, adapter: storage, storageDir: '' }) : null;
 
   const result: LanguageModelV3Prompt = [];
 
@@ -48,7 +46,10 @@ export async function truncateToolResults(
           const vfsResult = await offloader.offloadAsync(text, { threshold, headChars, tailChars });
           newContent.push({
             ...part,
-            output: { type: 'text', value: vfsResult.content } satisfies LanguageModelV3ToolResultOutput,
+            output: {
+              type: 'text',
+              value: vfsResult.content,
+            } satisfies LanguageModelV3ToolResultOutput,
           } satisfies LanguageModelV3ToolResultPart);
           continue;
         } catch (error) {

@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { truncateToolResults } from '../src/truncator';
 import type { LanguageModelV3Prompt } from '@ai-sdk/provider';
 import type { VFSStorageAdapter } from '@context-chef/core';
+import { describe, expect, it } from 'vitest';
+import { truncateToolResults } from '../src/truncator';
 
 describe('truncateToolResults', () => {
   const makeToolPrompt = (output: string): LanguageModelV3Prompt => [

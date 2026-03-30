@@ -1,13 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { fromAISDK, toAISDK } from '../src/adapter';
 import type { LanguageModelV3Prompt } from '@ai-sdk/provider';
 import type { Message } from '@context-chef/core';
+import { describe, expect, it } from 'vitest';
+import { fromAISDK, toAISDK } from '../src/adapter';
 
 describe('fromAISDK', () => {
   it('converts system messages', () => {
-    const prompt: LanguageModelV3Prompt = [
-      { role: 'system', content: 'You are helpful.' },
-    ];
+    const prompt: LanguageModelV3Prompt = [{ role: 'system', content: 'You are helpful.' }];
     const result = fromAISDK(prompt);
     expect(result).toEqual([{ role: 'system', content: 'You are helpful.' }]);
   });
@@ -146,9 +144,7 @@ describe('toAISDK', () => {
   it('falls back to text part when no _originalContent (e.g. compression summary)', () => {
     const messages: Message[] = [{ role: 'user', content: 'Hi there' }];
     const result = toAISDK(messages);
-    expect(result).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'Hi there' }] },
-    ]);
+    expect(result).toEqual([{ role: 'user', content: [{ type: 'text', text: 'Hi there' }] }]);
   });
 
   it('uses _originalContent for lossless round-trip', () => {
@@ -191,9 +187,7 @@ describe('toAISDK', () => {
   });
 
   it('falls back for tool messages without _originalContent', () => {
-    const messages: Message[] = [
-      { role: 'tool', content: 'some output', tool_call_id: 'call_1' },
-    ];
+    const messages: Message[] = [{ role: 'tool', content: 'some output', tool_call_id: 'call_1' }];
     const result = toAISDK(messages);
     if (result[0].role === 'tool') {
       expect(result[0].content[0].output).toEqual({
