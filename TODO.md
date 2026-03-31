@@ -138,6 +138,140 @@ const compacted = janitor.compact(history, {
 
 ## Planned
 
+### Tool Pair Protection in Janitor — Correctness Fix
+
+**Priority: Critical** — Without this, `compress()` can produce invalid API payloads.
+
+When Janitor splits history at `splitIndex`, it may separate a `tool_calls` assistant message from its corresponding `tool` result message. All LLM APIs (OpenAI, Anthropic, Gemini) require every `tool_use`/`tool_calls` to have a matching `tool_result`/`tool` response — splitting the pair causes a hard API error.
+
+**Reference**: Claude Code's `adjustIndexToPreserveAPIInvariants()` in `sessionMemoryCompact.ts` handles this by:
+1. Collecting all `tool_call_id`s in the kept range
+2. Scanning backwards for assistant messages with matching `tool_calls`
+3. Expanding `splitIndex` backwards to include the full pair
+
+**Implementation**:
+- Add `adjustSplitIndex(history: Message[], splitIndex: number): number` to Janitor
+- After calculating `splitIndex` in `evaluateBudget()`, run the adjustment before returning
+- Walk kept messages for `role: 'tool'` entries, collect their `tool_call_id`s
+- Scan backwards from `splitIndex` for `role: 'assistant'` messages whose `tool_calls[].id` matches
+- Expand `splitIndex` backwards to include those assistant messages
+
+```typescript
+// Pseudo-code
+private adjustSplitIndex(history: Message[], splitIndex: number): number {
+  // Collect tool_call_ids from kept messages (splitIndex..end)
+  const keptToolCallIds = new Set<string>();
+  for (let i = splitIndex; i < history.length; i++) {
+    if (history[i].role === 'tool' && history[i].tool_call_id) {
+      keptToolCallIds.add(history[i].tool_call_id!);
+    }
+  }
+  if (keptToolCallIds.size === 0) return splitIndex;
+
+  // Scan backwards for matching assistant tool_calls
+  let adjusted = splitIndex;
+  for (let i = splitIndex - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (msg.role === 'assistant' && msg.tool_calls?.some(tc => keptToolCallIds.has(tc.id))) {
+      adjusted = i;
+    }
+  }
+  return adjusted;
+}
+```
+
+---
+
+### Enhanced `compact()` — Fine-Grained Tool Result Clearing
+
+**Priority: High** — Current `compact({ clear: ['tool-result'] })` clears ALL tool results indiscriminately. Real agent loops need selective clearing.
+
+**Reference**: Claude Code's `microCompact.ts` uses a `COMPACTABLE_TOOLS` whitelist and `keepRecent` count to selectively clear old tool results while preserving recent ones and specific tool types.
+
+**Design**: Extend `ClearTarget` union to support object form with options:
+
+```typescript
+type ClearTarget =
+  | 'thinking'                               // simple targets stay as string
+  | {
+      target: 'tool-result';
+      keepRecent?: number;                    // preserve last N tool results (default: 0 = clear all)
+      toolFilter?: string[];                  // only clear results from these tool names (matches tool_call_id's corresponding function name)
+    };
+```
+
+The object form is only needed for `'tool-result'` since it's the only target that benefits from selective clearing. `'thinking'` remains a simple string — there's no meaningful "keep recent N thinking blocks" use case.
+
+**Implementation**:
+- Update `ClearTarget` type in `types/index.ts`
+- In `Janitor.compact()`, when processing a `tool-result` target object:
+  - Collect all `role: 'tool'` messages in reverse order
+  - Skip the last `keepRecent` entries
+  - If `toolFilter` is set, only clear messages whose corresponding `tool_calls` function name is in the filter
+  - Resolving function name requires scanning the preceding assistant message for the matching `tool_calls[].id` → `function.name`
+
+---
+
+### Compression Circuit Breaker
+
+**Priority: Medium** — Prevents infinite retry loops when `compressionModel` consistently fails.
+
+**Reference**: Claude Code's `autoCompact.ts` tracks `consecutiveFailures` and stops retrying after `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`.
+
+**Implementation**:
+- Add `consecutiveFailures: number` to Janitor private state
+- Add `MAX_FAILURES = 3` constant
+- In `compress()`: if `consecutiveFailures >= MAX_FAILURES`, return `history` unchanged
+- In `executeCompression()`: on success, reset to 0; on catch, increment
+- Add to `JanitorSnapshot` and `snapshotState()`/`restoreState()`/`reset()`
+- Add optional `onCompressError?: (info: { failures: number; tripped: boolean }) => void` to `JanitorConfig`
+
+---
+
+### Built-in Compression Prompt Utilities
+
+**Priority: Medium** — Reduces boilerplate for developers using `compressionModel`.
+
+**Reference**: Claude Code's `prompt.ts` uses a two-phase `<analysis>` + `<summary>` pattern where the LLM first reasons in an `<analysis>` scratchpad (stripped from final output), then produces a structured `<summary>`. This measurably improves summary quality.
+
+**Implementation**:
+- `Prompts.COMPACT_PROMPT` — structured prompt with the analysis+summary pattern, usable as the final user message in a `compressionModel` call
+- `Prompts.formatCompactSummary(raw: string): string` — strips `<analysis>...</analysis>`, extracts content from `<summary>...</summary>`, cleans whitespace
+- `Prompts.PARTIAL_COMPACT_PROMPT` — variant for partial history compression (only summarize the old portion, recent messages are preserved separately)
+
+These are pure utilities, not policies — developers choose whether to use them.
+
+Example:
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 128_000,
+    compressionModel: async (msgs) => {
+      const resp = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [...msgs, { role: 'user', content: Prompts.COMPACT_PROMPT }],
+      });
+      return Prompts.formatCompactSummary(resp.choices[0].message.content);
+    },
+  },
+});
+```
+
+---
+
+### Strip Media Before Compression
+
+**Priority: Low** — Small change, prevents wasted tokens and potential prompt-too-long errors during compression.
+
+**Reference**: Claude Code's `stripImagesFromMessages()` in `compact.ts` replaces image/document blocks with `[image]`/`[document]` text markers before sending to the compression model. Images waste compression model tokens and contribute nothing to a text summary.
+
+**Implementation**:
+- Add `stripMediaFromHistory(history: Message[]): Message[]` utility
+- Replace any message content containing base64 image data patterns or known media markers with `[media content]` placeholder
+- Call this in `executeCompression()` before passing `toCompress` to `compressionModel`
+- Since context-chef IR uses a flat `content: string`, detection is pattern-based (e.g., base64 data URI prefixes, or messages with `role: 'tool'` that contain very large content likely from image tools)
+- For now, scope to a simple heuristic: if a tool result message's content exceeds a threshold (e.g., 50KB) and looks like base64, replace with `[large binary content cleared for compression]`
+
 ---
 
 ## Not Planned
