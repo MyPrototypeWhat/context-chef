@@ -6,17 +6,29 @@ import type { ITargetAdapter } from './targetAdapter';
 
 export type { ITargetAdapter };
 
+const adapterCache = new Map<TargetProvider, ITargetAdapter>();
+
 export function getAdapter(target: TargetProvider): ITargetAdapter {
+  const cached = adapterCache.get(target);
+  if (cached) return cached;
+
+  let adapter: ITargetAdapter;
   switch (target) {
     case 'openai':
-      return new OpenAIAdapter();
+      adapter = new OpenAIAdapter();
+      break;
     case 'anthropic':
-      return new AnthropicAdapter();
+      adapter = new AnthropicAdapter();
+      break;
     case 'gemini':
-      return new GeminiAdapter();
+      adapter = new GeminiAdapter();
+      break;
     default:
       throw new Error(`Unsupported target provider: ${target}`);
   }
+
+  adapterCache.set(target, adapter);
+  return adapter;
 }
 
 /** @deprecated Use getAdapter() instead */

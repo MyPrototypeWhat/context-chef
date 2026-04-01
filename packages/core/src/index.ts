@@ -3,7 +3,13 @@ import { getAdapter } from './adapters/adapterFactory';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
-import { Memory, type MemoryConfig, type MemorySnapshot } from './modules/memory';
+import {
+  Memory,
+  type MemoryChangeEvent,
+  type MemoryConfig,
+  type MemoryEntry,
+  type MemorySnapshot,
+} from './modules/memory';
 import { Offloader, type OffloadOptions, type VFSConfig } from './modules/offloader';
 import {
   type CompiledTools,
@@ -23,6 +29,7 @@ import type {
   TargetPayload,
   ToolDefinition,
 } from './types';
+import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 import { objectToXml } from './utils/xmlGenerator';
 
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
@@ -53,6 +60,7 @@ export * from './prompts';
 export type { ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
+export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 export { TokenUtils } from './utils/tokenUtils';
 export { XmlGenerator } from './utils/xmlGenerator';
 
@@ -113,6 +121,37 @@ export interface ChefConfig {
 
 export type { GuardrailOptions, ToolGroup, CompiledTools, ResolvedToolCall, DynamicStatePlacement };
 
+/**
+ * Unified event map for ContextChef lifecycle notifications.
+ *
+ * Observation events (pure notification, do not affect control flow):
+ * - `compile:start`  — emitted at the very start of compile()
+ * - `compile:done`   — emitted after compile() produces the final payload
+ * - `compress`       — emitted after Janitor compresses history
+ * - `memory:changed` — emitted after any memory mutation (set, delete, expire)
+ * - `memory:expired` — emitted when a memory entry expires during compile()
+ *
+ * Intercept hooks (can modify data / veto operations) remain as config callbacks:
+ * - `onBudgetExceeded` in JanitorConfig
+ * - `onMemoryUpdate` in MemoryConfig
+ * - `onBeforeCompile` / `transformContext` in ChefConfig
+ */
+export interface ChefEvents {
+  'compile:start': {
+    systemPrompt: readonly Message[];
+    history: readonly Message[];
+  };
+  'compile:done': {
+    payload: TargetPayload;
+  };
+  compress: {
+    summary: Message;
+    truncatedCount: number;
+  };
+  'memory:changed': MemoryChangeEvent;
+  'memory:expired': MemoryEntry;
+}
+
 export class ContextChef {
   private assembler: Assembler;
   private offloader: Offloader;
@@ -124,6 +163,7 @@ export class ContextChef {
   private onBeforeCompile?: (
     context: BeforeCompileContext,
   ) => string | null | Promise<string | null>;
+  private emitter = new TypedEventEmitter<ChefEvents>();
 
   private systemPrompt: Message[] = [];
   private history: Message[] = [];
@@ -134,12 +174,67 @@ export class ContextChef {
   constructor(config: ChefConfig = {}) {
     this.assembler = new Assembler();
     this.offloader = new Offloader(config.vfs);
-    this.janitor = new Janitor(config.janitor ?? { contextWindow: Infinity });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
-    this.memory = config.memory ? new Memory(config.memory) : null;
     this.transformContext = config.transformContext;
     this.onBeforeCompile = config.onBeforeCompile;
+
+    // Bridge Janitor's onCompress callback to the unified event system
+    const janitorConfig = config.janitor ?? { contextWindow: Infinity };
+    const userOnCompress = janitorConfig.onCompress;
+    this.janitor = new Janitor({
+      ...janitorConfig,
+      onCompress: async (summary, truncatedCount) => {
+        if (userOnCompress) await userOnCompress(summary, truncatedCount);
+        await this.emitter.emit('compress', { summary, truncatedCount });
+      },
+    });
+
+    // Bridge Memory's notification callbacks to the unified event system
+    if (config.memory) {
+      const userOnChanged = config.memory.onMemoryChanged;
+      const userOnExpired = config.memory.onMemoryExpired;
+      this.memory = new Memory({
+        ...config.memory,
+        onMemoryChanged: async (event) => {
+          if (userOnChanged) await userOnChanged(event);
+          await this.emitter.emit('memory:changed', event);
+        },
+        onMemoryExpired: async (entry) => {
+          if (userOnExpired) await userOnExpired(entry);
+          await this.emitter.emit('memory:expired', entry);
+        },
+      });
+    } else {
+      this.memory = null;
+    }
+  }
+
+  // ─── Event System ──────────────────────────────────────────────────────
+
+  /**
+   * Subscribe to a lifecycle event.
+   *
+   * @example
+   * chef.on('compress', ({ summary, truncatedCount }) => {
+   *   console.log(`Compressed ${truncatedCount} messages`);
+   * });
+   *
+   * chef.on('compile:done', ({ payload }) => {
+   *   metrics.track('compile', { messageCount: payload.messages.length });
+   * });
+   */
+  public on<K extends keyof ChefEvents>(event: K, handler: EventHandler<ChefEvents[K]>): this {
+    this.emitter.on(event, handler);
+    return this;
+  }
+
+  /**
+   * Unsubscribe from a lifecycle event.
+   */
+  public off<K extends keyof ChefEvents>(event: K, handler: EventHandler<ChefEvents[K]>): this {
+    this.emitter.off(event, handler);
+    return this;
   }
 
   /**
@@ -382,6 +477,12 @@ export class ContextChef {
   public async compile(options: { target: 'gemini' }): Promise<GeminiPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload> {
+    // 0. Emit compile:start
+    await this.emitter.emit('compile:start', {
+      systemPrompt: this.systemPrompt,
+      history: this.history,
+    });
+
     // 1. Janitor: Compress history if needed
     const compressedHistory = await this.janitor.compress(this.history);
 
@@ -449,6 +550,10 @@ export class ContextChef {
     const meta = { injectedMemoryKeys, memoryExpiredKeys };
     const payload: TargetPayload = { ...adapterPayload, meta };
     if (tools.length > 0) payload.tools = tools;
+
+    // 9. Emit compile:done
+    await this.emitter.emit('compile:done', { payload });
+
     return payload;
   }
 }

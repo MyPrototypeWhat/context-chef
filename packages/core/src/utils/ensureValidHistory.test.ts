@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../../types';
+import type { Message } from '../types';
 import { ensureValidHistory } from './ensureValidHistory';
 
 describe('ensureValidHistory', () => {
