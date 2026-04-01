@@ -45,7 +45,7 @@ describe('compact — clear tool-result', () => {
   it('replaces tool message content with placeholder', () => {
     const result = janitor.compact([toolCallMsg, toolResultMsg], { clear: ['tool-result'] });
 
-    expect(result[1].content).toBe('[Tool result cleared]');
+    expect(result[1].content).toBe('[Old tool result content cleared]');
     expect(result[1].tool_call_id).toBe('tc_1'); // preserved
   });
 
@@ -56,7 +56,7 @@ describe('compact — clear tool-result', () => {
     expect(result[0].content).toBe('Hello');
     expect(result[1].content).toBe('Hi there');
     expect(result[2].content).toBe('You are helpful.');
-    expect(result[3].content).toBe('[Tool result cleared]');
+    expect(result[3].content).toBe('[Old tool result content cleared]');
   });
 
   it('preserves assistant tool_calls (does not strip call args)', () => {
@@ -111,7 +111,7 @@ describe('compact — combined & edge cases', () => {
 
     expect(result[0].content).toBe('Hello'); // user: untouched
     expect(result[1].tool_calls).toBeDefined(); // assistant tool_calls: untouched
-    expect(result[2].content).toBe('[Tool result cleared]'); // tool result: cleared
+    expect(result[2].content).toBe('[Old tool result content cleared]'); // tool result: cleared
     expect(result[3].thinking).toBeUndefined(); // thinking: cleared
     expect(result[3].content).toBe('Here is the answer.'); // content: preserved
   });
@@ -140,6 +140,103 @@ describe('compact — combined & edge cases', () => {
     janitor.compact(history, { clear: ['tool-result'] });
 
     expect(original.content).toBe('original content');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// keepRecent
+// ═══════════════════════════════════════════════════════
+
+describe('compact — keepRecent', () => {
+  const buildToolHistory = (): Message[] => [
+    userMsg,
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'tc_1', type: 'function', function: { name: 'search', arguments: '{}' } }],
+    },
+    { role: 'tool', content: 'result 1', tool_call_id: 'tc_1' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'tc_2', type: 'function', function: { name: 'read', arguments: '{}' } }],
+    },
+    { role: 'tool', content: 'result 2', tool_call_id: 'tc_2' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'tc_3', type: 'function', function: { name: 'write', arguments: '{}' } }],
+    },
+    { role: 'tool', content: 'result 3', tool_call_id: 'tc_3' },
+    { role: 'assistant', content: 'done' },
+  ];
+
+  it('preserves the last N tool results when keepRecent is set', () => {
+    const history = buildToolHistory();
+    const result = janitor.compact(history, {
+      clear: [{ target: 'tool-result', keepRecent: 2 }],
+    });
+
+    // tool result 1 (idx 2) should be cleared
+    expect(result[2].content).toBe('[Old tool result content cleared]');
+    // tool result 2 (idx 4) should be preserved
+    expect(result[4].content).toBe('result 2');
+    // tool result 3 (idx 6) should be preserved
+    expect(result[6].content).toBe('result 3');
+  });
+
+  it('defaults keepRecent to 5 with plain string target', () => {
+    // With only 3 tool results and default keepRecent=5, nothing should be cleared
+    // because 'tool-result' string target clears ALL (no keepRecent)
+    const history = buildToolHistory();
+    const result = janitor.compact(history, { clear: ['tool-result'] });
+
+    // All cleared — string form has no keepRecent
+    expect(result[2].content).toBe('[Old tool result content cleared]');
+    expect(result[4].content).toBe('[Old tool result content cleared]');
+    expect(result[6].content).toBe('[Old tool result content cleared]');
+  });
+
+  it('floors keepRecent to 1 — never clears all tool results', () => {
+    const history = buildToolHistory();
+    const result = janitor.compact(history, {
+      clear: [{ target: 'tool-result', keepRecent: 0 }],
+    });
+
+    // keepRecent: 0 is floored to 1, so the last tool result is preserved
+    expect(result[2].content).toBe('[Old tool result content cleared]');
+    expect(result[4].content).toBe('[Old tool result content cleared]');
+    expect(result[6].content).toBe('result 3'); // last one preserved
+  });
+
+  it('handles keepRecent larger than total tool results', () => {
+    const history = buildToolHistory(); // 3 tool results
+    const result = janitor.compact(history, {
+      clear: [{ target: 'tool-result', keepRecent: 10 }],
+    });
+
+    // All preserved — keepRecent > total
+    expect(result[2].content).toBe('result 1');
+    expect(result[4].content).toBe('result 2');
+    expect(result[6].content).toBe('result 3');
+  });
+
+  it('works alongside thinking clear target', () => {
+    const history: Message[] = [
+      ...buildToolHistory().slice(0, -1), // remove last assistant
+      { role: 'assistant', content: 'final', thinking: { thinking: 'hmm', signature: 's' } },
+    ];
+    const result = janitor.compact(history, {
+      clear: [{ target: 'tool-result', keepRecent: 1 }, 'thinking'],
+    });
+
+    // Old tool results cleared, last preserved
+    expect(result[2].content).toBe('[Old tool result content cleared]');
+    expect(result[4].content).toBe('[Old tool result content cleared]');
+    expect(result[6].content).toBe('result 3');
+    // Thinking cleared
+    expect(result[7].thinking).toBeUndefined();
+    expect(result[7].content).toBe('final');
   });
 });
 

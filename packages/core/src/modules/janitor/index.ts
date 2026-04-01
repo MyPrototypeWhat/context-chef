@@ -54,9 +54,17 @@ export interface JanitorConfig {
   onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
 
   /**
-   * Hook triggered when the token budget is exceeded, BEFORE automatic compression.
+   * Hook triggered when the token budget is exceeded, BEFORE LLM compression.
    * Return a modified Message[] to replace the history before compression proceeds,
    * or return null/undefined to let the default compression handle it.
+   */
+  onBeforeCompress?: (
+    history: Message[],
+    tokenInfo: { currentTokens: number; limit: number },
+  ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
+
+  /**
+   * @deprecated Use `onBeforeCompress` instead. Will be removed in the next major version.
    */
   onBudgetExceeded?: (
     history: Message[],
@@ -131,9 +139,10 @@ export class Janitor {
     let { splitIndex } = evaluation;
     const { currentTokens } = evaluation;
 
-    // Fire onBudgetExceeded hook — developer gets a chance to intervene
-    if (this.config.onBudgetExceeded) {
-      const modified = await this.config.onBudgetExceeded(history, {
+    // Fire onBeforeCompress hook — developer gets a chance to intervene
+    const hook = this.config.onBeforeCompress ?? this.config.onBudgetExceeded;
+    if (hook) {
+      const modified = await hook(history, {
         currentTokens,
         limit: this.config.contextWindow,
       });
@@ -155,24 +164,56 @@ export class Janitor {
    * Pure function — no LLM call, no side effects, no state mutation.
    *
    * @example
-   * // Inside onBudgetExceeded hook
-   * onBudgetExceeded: (history) => {
-   *   return janitor.compact(history, { clear: ['tool-result'] });
-   * }
-   *
-   * // Proactive compaction in agent loop
+   * // Clear all tool results and thinking
    * history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
+   *
+   * // Keep the 5 most recent tool results, clear the rest
+   * history = janitor.compact(history, { clear: [{ target: 'tool-result', keepRecent: 5 }] });
    */
   public compact(history: Message[], options: CompactOptions): Message[] {
-    const targets = new Set(options.clear);
-    return history.map((msg) => {
+    // Parse targets: separate simple strings from object configs
+    let clearToolResult = false;
+    let toolResultKeepRecent: number | undefined;
+    let clearThinking = false;
+
+    for (const target of options.clear) {
+      if (target === 'tool-result') {
+        clearToolResult = true;
+      } else if (target === 'thinking') {
+        clearThinking = true;
+      } else if (typeof target === 'object' && target.target === 'tool-result') {
+        clearToolResult = true;
+        toolResultKeepRecent = target.keepRecent;
+      }
+    }
+
+    // Build the set of tool message indices to skip (keepRecent)
+    let toolResultSkipSet: Set<number> | undefined;
+    if (clearToolResult && toolResultKeepRecent !== undefined) {
+      const keepCount = Math.max(1, toolResultKeepRecent);
+      // Collect indices of all tool messages (in order)
+      const toolIndices: number[] = [];
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].role === 'tool') {
+          toolIndices.push(i);
+        }
+      }
+      // The last keepCount tool messages are preserved
+      const preserveIndices = toolIndices.slice(-keepCount);
+      toolResultSkipSet = new Set(preserveIndices);
+    }
+
+    return history.map((msg, idx) => {
       let result = msg;
 
-      if (targets.has('tool-result') && msg.role === 'tool') {
-        result = { ...result, content: '[Tool result cleared]' };
+      if (clearToolResult && msg.role === 'tool') {
+        // Skip (preserve) if this index is in the keepRecent set
+        if (!toolResultSkipSet || !toolResultSkipSet.has(idx)) {
+          result = { ...result, content: '[Old tool result content cleared]' };
+        }
       }
 
-      if (targets.has('thinking') && msg.role === 'assistant') {
+      if (clearThinking && msg.role === 'assistant') {
         if (msg.thinking || msg.redacted_thinking) {
           const { thinking, redacted_thinking, ...rest } = result;
           result = rest as Message;
@@ -346,7 +387,7 @@ export class Janitor {
 
     const summaryMessage: Message = {
       role: 'user',
-      content: summaryText,
+      content: Prompts.getCompactSummaryWrapper(summaryText),
     };
 
     if (this.config.onCompress) {

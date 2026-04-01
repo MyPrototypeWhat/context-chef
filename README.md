@@ -248,7 +248,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `preserveRecentMessages` | `number`                                    | `1`        | [reportTokenUsage path] Number of recent messages to keep when compressing.                    |
 | `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `onCompress`             | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
-| `onBudgetExceeded`       | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. |
+| `onBeforeCompress`   | `(history, tokenInfo) => Message[] \| null` | —          | Fires before LLM compression. Return modified history to intervene, or null to proceed normally. |
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
@@ -259,16 +259,16 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-#### `onBudgetExceeded` hook
+#### `onBeforeCompress` hook
 
-Fires when the token budget is exceeded, **before** automatic compression. Return a modified `Message[]` to replace the history (e.g., offload tool results to VFS), or return `null` to let default compression proceed.
+Fires when the token budget is exceeded, **before** LLM compression. Return a modified `Message[]` to replace the history, or return `null` to let default compression proceed.
 
 ```typescript
 const chef = new ContextChef({
   janitor: {
     contextWindow: 200000,
     tokenizer: (msgs) => countTokens(msgs),
-    onBudgetExceeded: (history, { currentTokens, limit }) => {
+    onBeforeCompress: (history, { currentTokens, limit }) => {
       // Example: offload large tool results to VFS before compression
       return history.map((msg) =>
         msg.role === "tool" && msg.content.length > 5000
@@ -278,6 +278,36 @@ const chef = new ContextChef({
     },
   },
 });
+```
+
+#### Mechanical Compaction (`compact`)
+
+Strip content from history at zero LLM cost. Use proactively in your agent loop to keep context lean.
+
+```typescript
+// Clear all tool results and thinking blocks
+history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
+
+// Keep the 5 most recent tool results, clear the rest (min: 1)
+history = janitor.compact(history, {
+  clear: [{ target: 'tool-result', keepRecent: 5 }],
+});
+
+// Combine: clear old tool results + all thinking
+history = janitor.compact(history, {
+  clear: [{ target: 'tool-result', keepRecent: 5 }, 'thinking'],
+});
+```
+
+#### `ensureValidHistory(history)`
+
+Standalone utility that sanitizes message history to satisfy LLM API invariants (tool pair completeness, message alternation). Use when loading history from a database or after manual modifications.
+
+```typescript
+import { ensureValidHistory } from '@context-chef/core';
+
+const safeHistory = ensureValidHistory(rawHistory);
+chef.setHistory(safeHistory);
 ```
 
 #### `chef.clearHistory(): this`
@@ -502,7 +532,7 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `memory:changed` | `{ type, key, value, oldValue }` | Emitted after any memory mutation (set, delete, expire) |
 | `memory:expired` | `MemoryEntry` | Emitted when a memory entry expires during `compile()` |
 
-Events are **observation-only** — they don't affect control flow. Intercept hooks (`onBudgetExceeded`, `onMemoryUpdate`, `onBeforeCompile`, `transformContext`) remain as config callbacks.
+Events are **observation-only** — they don't affect control flow. Intercept hooks (`onBeforeCompress`, `onMemoryUpdate`, `onBeforeCompile`, `transformContext`) remain as config callbacks.
 
 Events coexist with existing config callbacks: if you provide `onCompress` in `JanitorConfig`, it fires first, then the `compress` event is emitted.
 

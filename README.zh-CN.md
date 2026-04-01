@@ -216,7 +216,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `preserveRecentMessages` | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期消息数量。                     |
 | `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —      | 异步钩子，调用低成本 LLM 对旧消息进行摘要。                          |
 | `onCompress`             | `(summary, count) => void`                  | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。                     |
-| `onBudgetExceeded`       | `(history, tokenInfo) => Message[] \| null` | —      | 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
+| `onBeforeCompress`   | `(history, tokenInfo) => Message[] \| null` | —      | LLM 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
@@ -227,16 +227,16 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-#### `onBudgetExceeded` 钩子
+#### `onBeforeCompress` 钩子
 
-当 token 预算超标时，在自动压缩**之前**触发。返回修改后的 `Message[]` 替换历史（例如将工具结果卸载到 VFS），或返回 `null` 让默认压缩继续执行。
+当 token 预算超标时，在 LLM 压缩**之前**触发。返回修改后的 `Message[]` 替换历史，或返回 `null` 让默认压缩继续执行。
 
 ```typescript
 const chef = new ContextChef({
   janitor: {
     contextWindow: 200000,
     tokenizer: (msgs) => countTokens(msgs),
-    onBudgetExceeded: (history, { currentTokens, limit }) => {
+    onBeforeCompress: (history, { currentTokens, limit }) => {
       // 示例：压缩前将大型工具结果卸载到 VFS
       return history.map((msg) =>
         msg.role === "tool" && msg.content.length > 5000
@@ -246,6 +246,36 @@ const chef = new ContextChef({
     },
   },
 });
+```
+
+#### 机械压缩（`compact`）
+
+零 LLM 成本的内容清理。在 agent 循环中主动调用以保持上下文精简。
+
+```typescript
+// 清除所有 tool result 和 thinking 块
+history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
+
+// 保留最近 5 个 tool result，清除其余（最少保留 1 个）
+history = janitor.compact(history, {
+  clear: [{ target: 'tool-result', keepRecent: 5 }],
+});
+
+// 组合：清除旧 tool result + 所有 thinking
+history = janitor.compact(history, {
+  clear: [{ target: 'tool-result', keepRecent: 5 }, 'thinking'],
+});
+```
+
+#### `ensureValidHistory(history)`
+
+独立工具函数，修复消息历史以满足 LLM API 约束（tool 配对完整性、消息交替规则）。适用于从数据库加载历史或手动修改后的场景。
+
+```typescript
+import { ensureValidHistory } from '@context-chef/core';
+
+const safeHistory = ensureValidHistory(rawHistory);
+chef.setHistory(safeHistory);
 ```
 
 #### `chef.clearHistory(): this`
@@ -464,7 +494,7 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `memory:changed` | `{ type, key, value, oldValue }` | 任何记忆变更（set、delete、expire）后触发 |
 | `memory:expired` | `MemoryEntry` | `compile()` 期间记忆条目过期时触发 |
 
-事件是**纯观察型**的，不影响控制流。拦截型钩子（`onBudgetExceeded`、`onMemoryUpdate`、`onBeforeCompile`、`transformContext`）仍然通过 config 回调配置。
+事件是**纯观察型**的，不影响控制流。拦截型钩子（`onBeforeCompress`、`onMemoryUpdate`、`onBeforeCompile`、`transformContext`）仍然通过 config 回调配置。
 
 事件与现有 config 回调共存：如果在 `JanitorConfig` 中配置了 `onCompress`，它会先触发，然后再 emit `compress` 事件。
 

@@ -301,13 +301,13 @@ describe('round-trip', () => {
 
     const ir = fromAISDK(original);
     // Simulate what Janitor.compact() does: replace content
-    ir[0].content = '[Tool result cleared]';
+    ir[0].content = '[Old tool result content cleared]';
 
     const roundTripped = toAISDK(ir);
     if (roundTripped[0].role === 'tool') {
       const part = roundTripped[0].content[0];
       if (part.type === 'tool-result') {
-        expect(part.output).toEqual({ type: 'text', value: '[Tool result cleared]' });
+        expect(part.output).toEqual({ type: 'text', value: '[Old tool result content cleared]' });
         expect(part.toolName).toBe('run_cmd');
       }
     }

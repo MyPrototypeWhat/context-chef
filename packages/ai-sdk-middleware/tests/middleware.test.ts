@@ -355,7 +355,7 @@ describe('compact', () => {
     if (toolMsg?.role === 'tool') {
       const part = toolMsg.content[0];
       if (part.type === 'tool-result' && part.output.type === 'text') {
-        expect(part.output.value).toBe('[Tool result cleared]');
+        expect(part.output.value).toBe('[Old tool result content cleared]');
       }
     }
   });

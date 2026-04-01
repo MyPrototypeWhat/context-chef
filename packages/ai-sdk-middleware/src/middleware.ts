@@ -32,7 +32,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     onCompress: options.onCompress
       ? (summary, count) => options.onCompress?.(summary.content, count)
       : undefined,
-    onBudgetExceeded: options.onBudgetExceeded,
+    onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
   });
 
   return {

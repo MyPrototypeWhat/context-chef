@@ -74,9 +74,16 @@ export interface ContextChefOptions {
   /** Hook called after compression occurs. */
   onCompress?: (summary: string, truncatedCount: number) => void;
   /**
-   * Called when token budget is exceeded, before automatic compression.
+   * Called when token budget is exceeded, before LLM compression.
    * Return modified messages to replace history, or null/undefined to
    * let default compression handle it.
+   */
+  onBeforeCompress?: (
+    history: Message[],
+    tokenInfo: { currentTokens: number; limit: number },
+  ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
+  /**
+   * @deprecated Use `onBeforeCompress` instead. Will be removed in the next major version.
    */
   onBudgetExceeded?: (
     history: Message[],
