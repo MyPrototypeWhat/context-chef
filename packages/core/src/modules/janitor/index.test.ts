@@ -381,11 +381,17 @@ describe('Janitor — tool pair protection', () => {
     {
       role: 'assistant',
       content: 'I will search',
-      tool_calls: [{ id: 'c1', type: 'function' as const, function: { name: 'search', arguments: '{}' } }],
+      tool_calls: [
+        { id: 'c1', type: 'function' as const, function: { name: 'search', arguments: '{}' } },
+      ],
     },
     { role: 'tool', content: 'results...', tool_call_id: 'c1' },
-    { role: 'assistant', content: 'Found it. Let me read.' ,
-      tool_calls: [{ id: 'c2', type: 'function' as const, function: { name: 'read', arguments: '{}' } }],
+    {
+      role: 'assistant',
+      content: 'Found it. Let me read.',
+      tool_calls: [
+        { id: 'c2', type: 'function' as const, function: { name: 'read', arguments: '{}' } },
+      ],
     },
     { role: 'tool', content: 'file content', tool_call_id: 'c2' },
     { role: 'assistant', content: 'Here is the result' },
@@ -461,7 +467,9 @@ describe('Janitor — tool pair protection', () => {
       {
         role: 'assistant',
         content: 'searching',
-        tool_calls: [{ id: 'c1', type: 'function' as const, function: { name: 's', arguments: '{}' } }],
+        tool_calls: [
+          { id: 'c1', type: 'function' as const, function: { name: 's', arguments: '{}' } },
+        ],
       },
       { role: 'tool', content: 'found', tool_call_id: 'c1' },
       { role: 'assistant', content: 'done' },

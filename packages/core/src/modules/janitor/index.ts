@@ -222,7 +222,7 @@ export class Janitor {
       const msg = history[i];
       if (msg.role === 'assistant' && msg.tool_calls?.some((tc) => orphanIds.has(tc.id))) {
         adjusted = i;
-        for (const tc of msg.tool_calls!) {
+        for (const tc of msg.tool_calls) {
           orphanIds.delete(tc.id);
         }
       }

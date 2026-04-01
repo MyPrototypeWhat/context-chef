@@ -41,9 +41,7 @@ describe('ensureValidHistory', () => {
   });
 
   it('replaces with placeholder when removing all messages', () => {
-    const history: Message[] = [
-      { role: 'tool', content: 'orphan', tool_call_id: 'c1' },
-    ];
+    const history: Message[] = [{ role: 'tool', content: 'orphan', tool_call_id: 'c1' }];
 
     const result = ensureValidHistory(history);
     expect(result).toHaveLength(1);
@@ -69,7 +67,7 @@ describe('ensureValidHistory', () => {
     // Should have injected a tool result between assistant and next user
     const toolMsg = result.find((m) => m.role === 'tool' && m.tool_call_id === 'c1');
     expect(toolMsg).toBeDefined();
-    expect(toolMsg!.content).toBe('[Tool result missing]');
+    expect(toolMsg?.content).toBe('[Tool result missing]');
   });
 
   it('does not inject when tool result already exists', () => {
@@ -108,7 +106,7 @@ describe('ensureValidHistory', () => {
 
     const c2Tool = result.find((m) => m.role === 'tool' && m.tool_call_id === 'c2');
     expect(c2Tool).toBeDefined();
-    expect(c2Tool!.content).toBe('[Tool result missing]');
+    expect(c2Tool?.content).toBe('[Tool result missing]');
   });
 
   // ─── First message must be user ───
