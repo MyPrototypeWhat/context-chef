@@ -1,8 +1,8 @@
 # ContextChef
 
 [![npm version](https://img.shields.io/npm/v/@context-chef/core.svg)](https://www.npmjs.com/package/@context-chef/core)
-[![npm downloads](https://img.shields.io/npm/dm/@context-chef/core.svg)](https://www.npmjs.com/package/@context-chef/core)
-[![npm downloads](https://img.shields.io/npm/dm/@context-chef/ai-sdk-middleware.svg)](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
+[![core downloads](https://img.shields.io/npm/dm/@context-chef/core.svg?label=core%20downloads)](https://www.npmjs.com/package/@context-chef/core)
+[![middleware downloads](https://img.shields.io/npm/dm/@context-chef/ai-sdk-middleware.svg?label=middleware%20downloads)](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
 [![GitHub stars](https://img.shields.io/github/stars/MyPrototypeWhat/context-chef)](https://github.com/MyPrototypeWhat/context-chef)
 [![License](https://img.shields.io/npm/l/@context-chef/core.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
