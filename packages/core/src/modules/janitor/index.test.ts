@@ -48,7 +48,7 @@ describe('Janitor — tokenizer path', () => {
     const result = await janitor.compress(buildHistory(5));
 
     expect(mockModel).toHaveBeenCalledTimes(1);
-    expect(result[0].role).toBe('system');
+    expect(result[0].role).toBe('user');
     expect(result[0].content).toContain('COMPRESSED');
     expect(result.length).toBeLessThan(buildHistory(5).length + 1);
   });
@@ -65,7 +65,7 @@ describe('Janitor — tokenizer path', () => {
     const result = await janitor.compress(buildHistory(5));
 
     expect(mockModel).toHaveBeenCalledTimes(1);
-    expect(result[0].role).toBe('system');
+    expect(result[0].role).toBe('user');
     // summary + 3 kept messages = 4
     expect(result).toHaveLength(4);
   });
@@ -116,7 +116,7 @@ describe('Janitor — tokenizer path', () => {
     const result = await janitor.compress(buildHistory(5));
 
     expect(mockModel).toHaveBeenCalledTimes(1);
-    expect(result[0].role).toBe('system');
+    expect(result[0].role).toBe('user');
   });
 
   it('integrates with ContextChef.compile()', async () => {
@@ -134,7 +134,7 @@ describe('Janitor — tokenizer path', () => {
     const payload = await chef.compile();
 
     expect(mockModel).toHaveBeenCalledTimes(1);
-    expect(payload.messages[0].role).toBe('system');
+    expect(payload.messages[0].role).toBe('user');
     expect(payload.messages[0].content).toContain('VIA_CHEF');
   });
 });
@@ -171,7 +171,7 @@ describe('Janitor — feedTokenUsage path (no tokenizer)', () => {
     expect(mockModel).toHaveBeenCalledTimes(1);
     // summary + 1 preserved = 2
     expect(result).toHaveLength(2);
-    expect(result[0].role).toBe('system');
+    expect(result[0].role).toBe('user');
     expect(result[0].content).toContain('FULL');
     expect(result[1].content).toBe('msg-5'); // last message preserved
   });
@@ -366,7 +366,121 @@ describe('Janitor — onCompress hook', () => {
 
     expect(onCompress).toHaveBeenCalledTimes(1);
     const [summaryMsg, count] = onCompress.mock.calls[0] as [Message, number];
-    expect(summaryMsg.role).toBe('system');
+    expect(summaryMsg.role).toBe('user');
     expect(count).toBeGreaterThan(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Tool pair protection (adjustSplitIndex)
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — tool pair protection', () => {
+  const buildToolHistory = (): Message[] => [
+    { role: 'user', content: 'search for X' },
+    {
+      role: 'assistant',
+      content: 'I will search',
+      tool_calls: [{ id: 'c1', type: 'function' as const, function: { name: 'search', arguments: '{}' } }],
+    },
+    { role: 'tool', content: 'results...', tool_call_id: 'c1' },
+    { role: 'assistant', content: 'Found it. Let me read.' ,
+      tool_calls: [{ id: 'c2', type: 'function' as const, function: { name: 'read', arguments: '{}' } }],
+    },
+    { role: 'tool', content: 'file content', tool_call_id: 'c2' },
+    { role: 'assistant', content: 'Here is the result' },
+    { role: 'user', content: 'thanks' },
+  ];
+
+  it('pulls assistant backward when tool result would be orphaned', async () => {
+    const mockModel = vi.fn().mockResolvedValue('summary');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      preserveRecentMessages: 3, // would normally keep last 3: [assistant, user] but splitIndex=4 is tool
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000);
+    const history = buildToolHistory();
+    const result = await janitor.compress(history);
+
+    // Should NOT have orphan tool results
+    for (const msg of result) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        const hasMatchingAssistant = result.some(
+          (m) => m.role === 'assistant' && m.tool_calls?.some((tc) => tc.id === msg.tool_call_id),
+        );
+        expect(hasMatchingAssistant).toBe(true);
+      }
+    }
+  });
+
+  it('handles parallel tool_calls split', async () => {
+    const history: Message[] = [
+      { role: 'user', content: 'do both' },
+      {
+        role: 'assistant',
+        content: 'Running both',
+        tool_calls: [
+          { id: 'c1', type: 'function' as const, function: { name: 'a', arguments: '{}' } },
+          { id: 'c2', type: 'function' as const, function: { name: 'b', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'result a', tool_call_id: 'c1' },
+      { role: 'tool', content: 'result b', tool_call_id: 'c2' },
+      { role: 'assistant', content: 'Done' },
+      { role: 'user', content: 'ok' },
+    ];
+
+    const mockModel = vi.fn().mockResolvedValue('summary');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      preserveRecentMessages: 2, // splitIndex = 4 → assistant "Done", user "ok"
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000);
+    const result = await janitor.compress(history);
+
+    // No orphan tool results
+    for (const msg of result) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        const hasMatch = result.some(
+          (m) => m.role === 'assistant' && m.tool_calls?.some((tc) => tc.id === msg.tool_call_id),
+        );
+        expect(hasMatch).toBe(true);
+      }
+    }
+  });
+
+  it('ensures toKeep starts with assistant after adjustment', async () => {
+    const history: Message[] = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: 'search' },
+      {
+        role: 'assistant',
+        content: 'searching',
+        tool_calls: [{ id: 'c1', type: 'function' as const, function: { name: 's', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'found', tool_call_id: 'c1' },
+      { role: 'assistant', content: 'done' },
+    ];
+
+    const mockModel = vi.fn().mockResolvedValue('summary');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      preserveRecentMessages: 1,
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000);
+    const result = await janitor.compress(history);
+
+    // summary is user, next must be assistant
+    expect(result[0].role).toBe('user'); // summary
+    if (result.length > 1) {
+      expect(result[1].role).toBe('assistant');
+    }
   });
 });

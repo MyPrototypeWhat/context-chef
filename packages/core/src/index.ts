@@ -54,6 +54,7 @@ export type { ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { TokenUtils } from './utils/tokenUtils';
 export { XmlGenerator } from './utils/xmlGenerator';
+export { ensureValidHistory } from './utils/ensureValidHistory';
 
 /**
  * Read-only snapshot of the current context, passed to the onBeforeCompile hook.

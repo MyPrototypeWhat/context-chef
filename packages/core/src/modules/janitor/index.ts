@@ -184,6 +184,68 @@ export class Janitor {
   }
 
   /**
+   * Adjusts splitIndex to preserve tool_calls/tool pairing and valid message alternation.
+   *
+   * Two invariants:
+   * 1. Tool pair: every `role: 'tool'` in toKeep must have its matching
+   *    `role: 'assistant'` (with `tool_calls`) also in toKeep.
+   * 2. First-message: toKeep must start with an assistant message so that
+   *    `[user_summary, assistant, ...]` forms valid alternation.
+   *    If toKeep starts with user, push splitIndex forward (the user message
+   *    gets captured in the summary — no information loss).
+   */
+  private adjustSplitIndex(history: Message[], splitIndex: number): number {
+    if (splitIndex <= 0 || splitIndex >= history.length) return splitIndex;
+
+    let adjusted = splitIndex;
+
+    // ── Step 1: Tool pair protection ──
+    // Collect tool_call_ids from tool messages in kept range
+    const orphanIds = new Set<string>();
+    for (let i = adjusted; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        orphanIds.add(msg.tool_call_id);
+      }
+    }
+    // Remove ids already matched by assistant tool_calls in kept range
+    for (let i = adjusted; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          orphanIds.delete(tc.id);
+        }
+      }
+    }
+    // Pull matching assistants backward into kept range
+    for (let i = adjusted - 1; i >= 0 && orphanIds.size > 0; i--) {
+      const msg = history[i];
+      if (msg.role === 'assistant' && msg.tool_calls?.some((tc) => orphanIds.has(tc.id))) {
+        adjusted = i;
+        for (const tc of msg.tool_calls!) {
+          orphanIds.delete(tc.id);
+        }
+      }
+    }
+
+    // ── Step 2: Ensure toKeep starts with assistant (if possible) ──
+    // Summary is user role, so toKeep should start with assistant for valid alternation.
+    // If it starts with user or tool, try pushing forward to the next assistant.
+    // If no assistant exists ahead, keep current position (step 1 result).
+    if (adjusted < history.length && history[adjusted].role !== 'assistant') {
+      let candidate = adjusted;
+      while (candidate < history.length - 1 && history[candidate].role !== 'assistant') {
+        candidate++;
+      }
+      if (history[candidate].role === 'assistant') {
+        adjusted = candidate;
+      }
+    }
+
+    return adjusted;
+  }
+
+  /**
    * Evaluates token budgets and returns the split index for compression,
    * or null if no compression is needed.
    */
@@ -228,6 +290,8 @@ export class Janitor {
         splitIndex = history.length - 1;
       }
 
+      if (splitIndex <= 0) return null;
+      splitIndex = this.adjustSplitIndex(history, splitIndex);
       return splitIndex > 0 ? { splitIndex, currentTokens: effectiveTokens } : null;
     }
 
@@ -244,8 +308,10 @@ export class Janitor {
       this.config.preserveRecentMessages ?? DEFAULT_PRESERVE_RECENT_MESSAGES,
       history.length,
     );
-    const splitIndex = history.length - keepCount;
+    let splitIndex = history.length - keepCount;
 
+    if (splitIndex <= 0) return null;
+    splitIndex = this.adjustSplitIndex(history, splitIndex);
     return splitIndex > 0 ? { splitIndex, currentTokens } : null;
   }
 
@@ -279,7 +345,7 @@ export class Janitor {
     }
 
     const summaryMessage: Message = {
-      role: 'system',
+      role: 'user',
       content: summaryText,
     };
 
