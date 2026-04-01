@@ -40,6 +40,7 @@ ContextChef solves the most common context engineering problems in AI agent deve
 - **Can't remember across sessions?** — Memory lets the model persist key information (project rules, user preferences) via tool calls, auto-injected on the next session
 - **Need to rollback?** — Snapshot & Restore captures and rolls back full context state for branching and exploration
 - **Need external context?** — `onBeforeCompile` hook lets you inject RAG results, AST snippets, or MCP queries before compilation
+- **Need observability?** — Unified event system (`chef.on('compress', ...)`) for logging, metrics, and debugging across all internal modules
 
 ## Installation
 
@@ -437,6 +438,43 @@ const snap = chef.snapshot("before risky tool call");
 
 chef.restore(snap); // rolls back everything: history, dynamic state, janitor state, memory
 ```
+
+---
+
+### Lifecycle Events
+
+Unified event system for observability across all internal modules. Subscribe via `chef.on()`, unsubscribe via `chef.off()`.
+
+```typescript
+// Log when history gets compressed
+chef.on('compress', ({ summary, truncatedCount }) => {
+  console.log(`Compressed ${truncatedCount} messages`);
+});
+
+// Track compile metrics
+chef.on('compile:done', ({ payload }) => {
+  metrics.track('compile', { messageCount: payload.messages.length });
+});
+
+// Monitor memory changes
+chef.on('memory:changed', ({ type, key, value }) => {
+  console.log(`Memory ${type}: ${key}`);
+});
+```
+
+#### Available Events
+
+| Event | Payload | Description |
+|---|---|---|
+| `compile:start` | `{ systemPrompt, history }` | Emitted at the start of `compile()` |
+| `compile:done` | `{ payload }` | Emitted after `compile()` produces the final payload |
+| `compress` | `{ summary, truncatedCount }` | Emitted after Janitor compresses history |
+| `memory:changed` | `{ type, key, value, oldValue }` | Emitted after any memory mutation (set, delete, expire) |
+| `memory:expired` | `MemoryEntry` | Emitted when a memory entry expires during `compile()` |
+
+Events are **observation-only** — they don't affect control flow. Intercept hooks (`onBudgetExceeded`, `onMemoryUpdate`, `onBeforeCompile`, `transformContext`) remain as config callbacks.
+
+Events coexist with existing config callbacks: if you provide `onCompress` in `JanitorConfig`, it fires first, then the `compress` event is emitted.
 
 ---
 

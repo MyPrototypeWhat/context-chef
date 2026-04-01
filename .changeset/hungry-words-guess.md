@@ -1,5 +1,6 @@
 ---
 "@context-chef/core": minor
+"@context-chef/ai-sdk-middleware": patch
 ---
 
 ### Tool pair protection in Janitor
@@ -17,3 +18,7 @@ Standalone safety net that sanitizes any message history to satisfy LLM API inva
 - Removes orphan tool results (no matching assistant `tool_calls`)
 - Injects synthetic tool results for missing `tool_call_id`s
 - Ensures the first non-system message is `role: 'user'`
+
+### `@context-chef/ai-sdk-middleware`
+
+Bump to pick up `@context-chef/core` minor update.
