@@ -1,5 +1,14 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.0.3
+
+### Patch Changes
+
+- [`c96a04c`](https://github.com/MyPrototypeWhat/context-chef/commit/c96a04c4d5d55f2e50197137b8ba40d335259cf7) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Bump to pick up `@context-chef/core` v3 changes. Added `onBeforeCompress` alongside deprecated `onBudgetExceeded`.
+
+- Updated dependencies [[`c96a04c`](https://github.com/MyPrototypeWhat/context-chef/commit/c96a04c4d5d55f2e50197137b8ba40d335259cf7)]:
+  - @context-chef/core@3.0.0
+
 ## 1.0.2
 
 ### Patch Changes
