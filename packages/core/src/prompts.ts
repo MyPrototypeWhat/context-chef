@@ -173,4 +173,16 @@ Only remember things genuinely worth persisting.
 
     return block;
   },
+
+  /**
+   * System-level instruction explaining cleared tool results.
+   * Prevents the model from interpreting placeholders as errors.
+   * Auto-injected by the middleware when tool-result compaction is active.
+   * Core users can include this in their system prompt manually.
+   */
+  TOOL_RESULT_CLEARED_INSTRUCTION:
+    'Some old tool results have been automatically cleared to manage context length. ' +
+    'Messages showing "[Old tool result content cleared]" indicate the tool executed successfully — ' +
+    'the output was removed to save space, not due to any error. ' +
+    'Focus on the recent tool results which are preserved in full.',
 };

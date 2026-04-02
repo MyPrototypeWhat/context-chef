@@ -76,15 +76,15 @@ export interface Message {
 
 // ─── Compact options ───
 
+/** Object form for tool-result clearing with keepRecent support. */
+export interface ToolResultClearTarget {
+  target: 'tool-result';
+  /** Number of most recent tool results to preserve. Floored to 1 (never clears all). */
+  keepRecent?: number;
+}
+
 /** Clearing targets for `Janitor.compact()`. */
-export type ClearTarget =
-  | 'thinking'
-  | 'tool-result'
-  | {
-      target: 'tool-result';
-      /** Number of most recent tool results to preserve. Floored to 1 (never clears all). */
-      keepRecent?: number;
-    };
+export type ClearTarget = 'thinking' | 'tool-result' | ToolResultClearTarget;
 
 /** Options for `Janitor.compact()` — mechanical, zero-LLM-cost history compaction. */
 export interface CompactOptions {

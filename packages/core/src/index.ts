@@ -35,7 +35,13 @@ import { objectToXml } from './utils/xmlGenerator';
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
 export { type AssembleOptions, Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
-export { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
+export {
+  groupIntoTurns,
+  Janitor,
+  type JanitorConfig,
+  type JanitorSnapshot,
+  type Turn,
+} from './modules/janitor';
 export {
   Memory,
   type MemoryChangeEvent,

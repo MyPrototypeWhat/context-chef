@@ -134,81 +134,139 @@ const compacted = janitor.compact(history, {
 - Extensible via `ClearTarget` union — new clearing types added without breaking changes
 - Composable with `onBudgetExceeded` hook as first-pass compaction before LLM-based compression
 
+### ✅ Tool Pair Protection in Janitor
+
+`adjustSplitIndex()` ensures `compress()` never splits a `tool_calls` assistant message from its corresponding `tool` result. Two invariants:
+1. Every `role: 'tool'` in the kept range has its matching assistant in the kept range
+2. The kept range starts with an assistant message for valid alternation after the user-role summary
+
+**Known limitation**: `adjustSplitIndex` makes the final split point unpredictable when combined with `compact(keepRecent)`. See "Turn-Based Grouping" in Planned section.
+
+### ✅ Enhanced `compact()` — `keepRecent` Support
+
+`ClearTarget` supports object form for selective tool-result clearing:
+
+```typescript
+type ClearTarget = 'thinking' | 'tool-result' | ToolResultClearTarget;
+interface ToolResultClearTarget { target: 'tool-result'; keepRecent?: number; }
+```
+
+`keepRecent` preserves the last N tool results (floored to 1), clearing the rest.
+
 ---
 
 ## Planned
 
-### Tool Pair Protection in Janitor — Correctness Fix
+### Turn-Based Grouping for Janitor
 
-**Priority: Critical** — Without this, `compress()` can produce invalid API payloads.
+**Priority: High** — Replaces `adjustSplitIndex` with a structurally correct, predictable split mechanism. Also resolves the `compact(keepRecent)` vs `adjustSplitIndex` conflict where the two mechanisms have incompatible definitions of "recent."
 
-When Janitor splits history at `splitIndex`, it may separate a `tool_calls` assistant message from its corresponding `tool` result message. All LLM APIs (OpenAI, Anthropic, Gemini) require every `tool_use`/`tool_calls` to have a matching `tool_result`/`tool` response — splitting the pair causes a hard API error.
+**Problem**: `adjustSplitIndex` is a post-hoc patch that moves the split point unpredictably to preserve API invariants (tool pairs, message alternation). When combined with `compact(keepRecent)`, cleared tool results near the split boundary can trigger unnecessary pair protection, pulling already-cleared messages into the "clear present" range.
 
-**Reference**: Claude Code's `adjustIndexToPreserveAPIInvariants()` in `sessionMemoryCompact.ts` handles this by:
-1. Collecting all `tool_call_id`s in the kept range
-2. Scanning backwards for assistant messages with matching `tool_calls`
-3. Expanding `splitIndex` backwards to include the full pair
+Claude Code avoids this problem by using a very small, fixed `preserveRecentMessages` and running compact/compress in separate lifecycle events. ContextChef's token-ratio-based split + same-call compact/compress pipeline exposes the conflict.
 
-**Implementation**:
-- Add `adjustSplitIndex(history: Message[], splitIndex: number): number` to Janitor
-- After calculating `splitIndex` in `evaluateBudget()`, run the adjustment before returning
-- Walk kept messages for `role: 'tool'` entries, collect their `tool_call_id`s
-- Scan backwards from `splitIndex` for `role: 'assistant'` messages whose `tool_calls[].id` matches
-- Expand `splitIndex` backwards to include those assistant messages
+**Design**: Group messages into atomic "turns" before split calculation. Split only on turn boundaries.
 
 ```typescript
-// Pseudo-code
-private adjustSplitIndex(history: Message[], splitIndex: number): number {
-  // Collect tool_call_ids from kept messages (splitIndex..end)
-  const keptToolCallIds = new Set<string>();
-  for (let i = splitIndex; i < history.length; i++) {
-    if (history[i].role === 'tool' && history[i].tool_call_id) {
-      keptToolCallIds.add(history[i].tool_call_id!);
-    }
-  }
-  if (keptToolCallIds.size === 0) return splitIndex;
-
-  // Scan backwards for matching assistant tool_calls
-  let adjusted = splitIndex;
-  for (let i = splitIndex - 1; i >= 0; i--) {
-    const msg = history[i];
-    if (msg.role === 'assistant' && msg.tool_calls?.some(tc => keptToolCallIds.has(tc.id))) {
-      adjusted = i;
-    }
-  }
-  return adjusted;
+interface Turn {
+  messages: Message[];
+  startIndex: number;
+  endIndex: number;  // exclusive
 }
+
+// Grouping rules:
+// - user message → single-message turn
+// - system message → single-message turn
+// - assistant (no tool_calls) → single-message turn
+// - assistant (with tool_calls) + all subsequent tool results → one atomic turn
+```
+
+**Implementation**:
+- Add `groupIntoTurns(history: Message[]): Turn[]` utility
+- In `evaluateBudget()`, iterate turns (not messages) from the tail, accumulating token costs per turn
+- `splitIndex = turns[splitTurn].startIndex` — always lands on a turn boundary
+- Remove `adjustSplitIndex()` — tool pair protection and alternation are guaranteed by the grouping
+- Update `compact(keepRecent)` to count turns (not individual tool messages) for consistent "recent" semantics
+- `feedTokenUsage` path: `preserveRecentMessages` counts turns, not messages
+
+### `compact()` — `toolFilter` Support
+
+**Priority: Low** — Selective clearing by tool name.
+
+**Reference**: Claude Code's `microCompact.ts` uses a `COMPACTABLE_TOOLS` whitelist.
+
+**Design**: Extend `ToolResultClearTarget`:
+
+```typescript
+interface ToolResultClearTarget {
+  target: 'tool-result';
+  keepRecent?: number;
+  toolFilter?: string[];  // only clear results from these tool names
+}
+```
+
+Resolving the tool name requires scanning the preceding assistant message for the matching `tool_calls[].id` → `function.name`.
+
+---
+
+### Remove System Message Protection in `executeCompression`
+
+**Priority: High** — Current diff adds defensive code to filter system messages from the compressed range. This is unnecessary because:
+
+1. Core path: `setSystemPrompt()` and `setHistory()` are separate APIs — system messages shouldn't be in history
+2. Middleware path: system messages are filtered out before compression (`allIR.filter(m => m.role === 'system')`)
+3. Anthropic/Gemini APIs don't allow system messages in the messages array — adapters extract them to top-level
+4. OpenAI allows system anywhere, but developers don't put system messages in `setHistory()`
+
+**Action**: Remove the `systemMessages` filtering in `executeCompression()`. If a system message appears in history, that's a caller bug, not Janitor's responsibility.
+
+---
+
+### VFS Lifecycle Management
+
+**Priority: High** — `.context_vfs/` directory grows unboundedly in long-running agents. No cleanup mechanism exists.
+
+**Implementation**:
+- Add `maxAge?: number` (ms) to `VFSConfig` — files older than maxAge are eligible for cleanup
+- Add `maxFiles?: number` to `VFSConfig` — LRU eviction when file count exceeds limit
+- Add `Offloader.cleanup()` method — scans storage, deletes expired/excess files
+- Add `Offloader.cleanupAsync()` for async adapters
+- Cleanup is developer-triggered (mechanism, not policy) — call in agent loop, on session end, etc.
+- Optional: `autoCleanup?: boolean` in config to run cleanup on each `offload()` call
+
+---
+
+### Memory Injection Position Configurable
+
+**Priority: Medium** — When using Anthropic prompt caching, memory changes (new/updated/expired keys) invalidate the cache for all content after the injection point.
+
+Current hardcoded order in `compile()`:
+```
+[...systemPrompt, ...memoryMessages, ...compressedHistory, ...dynamicState]
+```
+
+If memory changes every turn, everything after `memoryMessages` loses cache.
+
+**Design**: Add `memoryPlacement` to `MemoryConfig`:
+```typescript
+memoryPlacement?: 'after_system' | 'before_history_tail';
+// 'after_system' (default): current behavior, memory between system prompt and history
+// 'before_history_tail': memory after history, before dynamic state — system prompt cache preserved
 ```
 
 ---
 
-### Enhanced `compact()` — Fine-Grained Tool Result Clearing
+### Strip Media Before Compression
 
-**Priority: High** — Current `compact({ clear: ['tool-result'] })` clears ALL tool results indiscriminately. Real agent loops need selective clearing.
+**Priority: Medium** — Prevents wasted tokens and potential prompt-too-long errors during compression.
 
-**Reference**: Claude Code's `microCompact.ts` uses a `COMPACTABLE_TOOLS` whitelist and `keepRecent` count to selectively clear old tool results while preserving recent ones and specific tool types.
-
-**Design**: Extend `ClearTarget` union to support object form with options:
-
-```typescript
-type ClearTarget =
-  | 'thinking'                               // simple targets stay as string
-  | {
-      target: 'tool-result';
-      keepRecent?: number;                    // preserve last N tool results (default: 0 = clear all)
-      toolFilter?: string[];                  // only clear results from these tool names (matches tool_call_id's corresponding function name)
-    };
-```
-
-The object form is only needed for `'tool-result'` since it's the only target that benefits from selective clearing. `'thinking'` remains a simple string — there's no meaningful "keep recent N thinking blocks" use case.
+**Reference**: Claude Code's `stripImagesFromMessages()` replaces image/document blocks with `[image]`/`[document]` text markers before sending to the compression model.
 
 **Implementation**:
-- Update `ClearTarget` type in `types/index.ts`
-- In `Janitor.compact()`, when processing a `tool-result` target object:
-  - Collect all `role: 'tool'` messages in reverse order
-  - Skip the last `keepRecent` entries
-  - If `toolFilter` is set, only clear messages whose corresponding `tool_calls` function name is in the filter
-  - Resolving function name requires scanning the preceding assistant message for the matching `tool_calls[].id` → `function.name`
+- Add `stripMediaFromHistory(history: Message[]): Message[]` utility
+- Pattern-based detection: if content exceeds 50KB and contains base64 data URI prefix, replace with `[large binary content cleared for compression]`
+- Call in `executeCompression()` before passing to `compressionModel`
+- Since IR uses `content: string`, detection is heuristic-based
 
 ---
 
@@ -256,21 +314,6 @@ const chef = new ContextChef({
   },
 });
 ```
-
----
-
-### Strip Media Before Compression
-
-**Priority: Low** — Small change, prevents wasted tokens and potential prompt-too-long errors during compression.
-
-**Reference**: Claude Code's `stripImagesFromMessages()` in `compact.ts` replaces image/document blocks with `[image]`/`[document]` text markers before sending to the compression model. Images waste compression model tokens and contribute nothing to a text summary.
-
-**Implementation**:
-- Add `stripMediaFromHistory(history: Message[]): Message[]` utility
-- Replace any message content containing base64 image data patterns or known media markers with `[media content]` placeholder
-- Call this in `executeCompression()` before passing `toCompress` to `compressionModel`
-- Since context-chef IR uses a flat `content: string`, detection is pattern-based (e.g., base64 data URI prefixes, or messages with `role: 'tool'` that contain very large content likely from image tools)
-- For now, scope to a simple heuristic: if a tool result message's content exceeds a threshold (e.g., 50KB) and looks like base64, replace with `[large binary content cleared for compression]`
 
 ---
 

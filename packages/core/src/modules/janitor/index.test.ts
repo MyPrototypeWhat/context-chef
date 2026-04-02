@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
 import type { Message } from '../../types';
-import { Janitor } from '.';
+import { groupIntoTurns, Janitor } from '.';
 
 // ─── Helpers ───
 
@@ -372,10 +372,97 @@ describe('Janitor — onCompress hook', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// Tool pair protection (adjustSplitIndex)
+// Turn-based grouping
 // ═══════════════════════════════════════════════════════
 
-describe('Janitor — tool pair protection', () => {
+describe('groupIntoTurns', () => {
+  it('groups single messages into individual turns', () => {
+    const history: Message[] = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: 'bye' },
+    ];
+    const turns = groupIntoTurns(history);
+    expect(turns).toEqual([
+      { startIndex: 0, endIndex: 1 },
+      { startIndex: 1, endIndex: 2 },
+      { startIndex: 2, endIndex: 3 },
+    ]);
+  });
+
+  it('groups assistant+tool_calls with subsequent tool results as atomic turn', () => {
+    const history: Message[] = [
+      { role: 'user', content: 'search' },
+      {
+        role: 'assistant',
+        content: 'searching',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 's', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'found', tool_call_id: 'c1' },
+      { role: 'assistant', content: 'done' },
+    ];
+    const turns = groupIntoTurns(history);
+    expect(turns).toEqual([
+      { startIndex: 0, endIndex: 1 },
+      { startIndex: 1, endIndex: 3 }, // assistant+tool atomic
+      { startIndex: 3, endIndex: 4 },
+    ]);
+  });
+
+  it('groups parallel tool_calls with all tool results', () => {
+    const history: Message[] = [
+      { role: 'user', content: 'do both' },
+      {
+        role: 'assistant',
+        content: 'running',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'a', arguments: '{}' } },
+          { id: 'c2', type: 'function', function: { name: 'b', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'result a', tool_call_id: 'c1' },
+      { role: 'tool', content: 'result b', tool_call_id: 'c2' },
+      { role: 'assistant', content: 'done' },
+    ];
+    const turns = groupIntoTurns(history);
+    expect(turns).toEqual([
+      { startIndex: 0, endIndex: 1 },
+      { startIndex: 1, endIndex: 4 }, // assistant + 2 tools
+      { startIndex: 4, endIndex: 5 },
+    ]);
+  });
+
+  it('handles consecutive user messages as separate turns', () => {
+    const history: Message[] = [
+      { role: 'user', content: 'first' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'response' },
+    ];
+    const turns = groupIntoTurns(history);
+    expect(turns).toHaveLength(3);
+    expect(turns[0]).toEqual({ startIndex: 0, endIndex: 1 });
+    expect(turns[1]).toEqual({ startIndex: 1, endIndex: 2 });
+  });
+
+  it('handles system messages as individual turns', () => {
+    const history: Message[] = [
+      { role: 'system', content: 'you are helpful' },
+      { role: 'user', content: 'hi' },
+    ];
+    const turns = groupIntoTurns(history);
+    expect(turns).toHaveLength(2);
+  });
+
+  it('handles empty history', () => {
+    expect(groupIntoTurns([])).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Turn-based compression (replaces adjustSplitIndex)
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — turn-based compression', () => {
   const buildToolHistory = (): Message[] => [
     { role: 'user', content: 'search for X' },
     {
@@ -398,11 +485,11 @@ describe('Janitor — tool pair protection', () => {
     { role: 'user', content: 'thanks' },
   ];
 
-  it('pulls assistant backward when tool result would be orphaned', async () => {
+  it('never splits tool pairs (atomic turn grouping)', async () => {
     const mockModel = vi.fn().mockResolvedValue('summary');
     const janitor = new Janitor({
       contextWindow: 200000,
-      preserveRecentMessages: 3, // would normally keep last 3: [assistant, user] but splitIndex=4 is tool
+      preserveRecentMessages: 3,
       compressionModel: mockModel,
     });
 
@@ -410,7 +497,7 @@ describe('Janitor — tool pair protection', () => {
     const history = buildToolHistory();
     const result = await janitor.compress(history);
 
-    // Should NOT have orphan tool results
+    // No orphan tool results — turn-based grouping guarantees this
     for (const msg of result) {
       if (msg.role === 'tool' && msg.tool_call_id) {
         const hasMatchingAssistant = result.some(
@@ -421,7 +508,7 @@ describe('Janitor — tool pair protection', () => {
     }
   });
 
-  it('handles parallel tool_calls split', async () => {
+  it('handles parallel tool_calls as atomic unit', async () => {
     const history: Message[] = [
       { role: 'user', content: 'do both' },
       {
@@ -441,7 +528,7 @@ describe('Janitor — tool pair protection', () => {
     const mockModel = vi.fn().mockResolvedValue('summary');
     const janitor = new Janitor({
       contextWindow: 200000,
-      preserveRecentMessages: 2, // splitIndex = 4 → assistant "Done", user "ok"
+      preserveRecentMessages: 2,
       compressionModel: mockModel,
     });
 
@@ -459,36 +546,77 @@ describe('Janitor — tool pair protection', () => {
     }
   });
 
-  it('ensures toKeep starts with assistant after adjustment', async () => {
+  it('preserveRecentMessages counts turns, not individual messages', async () => {
+    // History: [user, assistant+tool(c1), tool(c1), assistant, user]
+    // Turns:   [user], [assistant+tool], [assistant], [user]  = 4 turns
     const history: Message[] = [
-      { role: 'user', content: 'hello' },
-      { role: 'assistant', content: 'hi' },
-      { role: 'user', content: 'search' },
+      { role: 'user', content: 'go' },
       {
         role: 'assistant',
-        content: 'searching',
+        content: 'running',
         tool_calls: [
-          { id: 'c1', type: 'function' as const, function: { name: 's', arguments: '{}' } },
+          { id: 'c1', type: 'function' as const, function: { name: 'run', arguments: '{}' } },
         ],
       },
-      { role: 'tool', content: 'found', tool_call_id: 'c1' },
+      { role: 'tool', content: 'output', tool_call_id: 'c1' },
       { role: 'assistant', content: 'done' },
+      { role: 'user', content: 'thanks' },
     ];
 
     const mockModel = vi.fn().mockResolvedValue('summary');
     const janitor = new Janitor({
       contextWindow: 200000,
-      preserveRecentMessages: 1,
+      preserveRecentMessages: 2, // keep last 2 turns → [assistant "done", user "thanks"]
       compressionModel: mockModel,
     });
 
     janitor.feedTokenUsage(250000);
     const result = await janitor.compress(history);
 
-    // summary is user, next must be assistant
-    expect(result[0].role).toBe('user'); // summary
-    if (result.length > 1) {
-      expect(result[1].role).toBe('assistant');
-    }
+    // summary + assistant "done" + user "thanks" = 3
+    expect(result).toHaveLength(3);
+    expect(result[0].content).toContain('summary'); // compressed summary
+    expect(result[1]).toEqual({ role: 'assistant', content: 'done' });
+    expect(result[2]).toEqual({ role: 'user', content: 'thanks' });
+  });
+
+  it('keeps assistant+tools as single unit when preserving', async () => {
+    // History: [user, assistant+tools+2results, assistant, user]
+    // Turns:   [user], [assistant+tool+tool], [assistant], [user] = 4 turns
+    const history: Message[] = [
+      { role: 'user', content: 'start' },
+      {
+        role: 'assistant',
+        content: 'calling',
+        tool_calls: [
+          { id: 'c1', type: 'function' as const, function: { name: 'a', arguments: '{}' } },
+          { id: 'c2', type: 'function' as const, function: { name: 'b', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'r1', tool_call_id: 'c1' },
+      { role: 'tool', content: 'r2', tool_call_id: 'c2' },
+      { role: 'assistant', content: 'final' },
+      { role: 'user', content: 'ok' },
+    ];
+
+    const mockModel = vi.fn().mockResolvedValue('summary');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      preserveRecentMessages: 3, // keep last 3 turns → [assistant+2tools, assistant, user]
+      compressionModel: mockModel,
+    });
+
+    janitor.feedTokenUsage(250000);
+    const result = await janitor.compress(history);
+
+    // summary(1) + assistant+tool+tool(3) + assistant(1) + user(1) = 6
+    expect(result).toHaveLength(6);
+    expect(result[0].content).toContain('summary');
+    expect(result[1].role).toBe('assistant');
+    expect(result[1].tool_calls).toHaveLength(2);
+    expect(result[2].role).toBe('tool');
+    expect(result[3].role).toBe('tool');
+    expect(result[4].role).toBe('assistant');
+    expect(result[5].role).toBe('user');
   });
 });

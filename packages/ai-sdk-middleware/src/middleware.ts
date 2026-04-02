@@ -3,7 +3,7 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import { Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import { Janitor, type Message, Prompts, XmlGenerator } from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
@@ -46,37 +46,58 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         prompt = await truncateToolResults(prompt, options.truncate);
       }
 
-      // 2. Convert to IR
-      let irMessages = fromAISDK(prompt);
+      // 2. Convert to IR and separate system messages from conversation.
+      // System messages are standing instructions — they must not be
+      // compressed away. Only conversation history goes through compact/compress.
+      const allIR = fromAISDK(prompt);
+      let systemMessages = allIR.filter((m) => m.role === 'system');
+      let conversation = allIR.filter((m) => m.role !== 'system');
 
       // 3. Compact (mechanical, zero LLM cost) before compression
       if (options.compact) {
-        const preCompact = irMessages;
-        irMessages = janitor.compact(irMessages, options.compact);
+        const preCompact = conversation;
+        conversation = janitor.compact(conversation, options.compact);
 
         // When thinking is stripped, invalidate adapter pass-through
         // so toAISDK reconstructs from IR fields (without reasoning)
         if (options.compact.clear.includes('thinking')) {
-          for (let i = 0; i < irMessages.length; i++) {
-            if (preCompact[i].thinking && !irMessages[i].thinking) {
-              delete irMessages[i]._assistantContent;
+          for (let i = 0; i < conversation.length; i++) {
+            if (preCompact[i].thinking && !conversation[i].thinking) {
+              delete conversation[i]._assistantContent;
             }
           }
         }
       }
 
-      // 4. Compress history if over token budget
-      irMessages = await janitor.compress(irMessages);
+      // 4. Compress conversation history if over token budget
+      conversation = await janitor.compress(conversation);
 
-      // 5. Convert back to AI SDK format
+      // 5. Rebuild system layer: original system messages + middleware instructions.
+      // Appended (not prepended) to preserve the user's system prompt ordering.
+      if (options.compact) {
+        const hasToolResultTarget = options.compact.clear.some(
+          (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
+        );
+        if (hasToolResultTarget) {
+          systemMessages = [
+            ...systemMessages,
+            { role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION },
+          ];
+        }
+      }
+
+      // 6. Reassemble sandwich: system + conversation
+      const irMessages = [...systemMessages, ...conversation];
+
+      // 7. Convert back to AI SDK format
       prompt = toAISDK(irMessages);
 
-      // 6. Dynamic state injection
+      // 8. Dynamic state injection
       if (options.dynamicState) {
         prompt = await injectDynamicState(prompt, options.dynamicState);
       }
 
-      // 7. Custom transform hook
+      // 9. Custom transform hook
       if (options.transformContext) {
         prompt = await options.transformContext(prompt);
       }
