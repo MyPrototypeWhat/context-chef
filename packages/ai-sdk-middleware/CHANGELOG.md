@@ -1,5 +1,19 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.0.4
+
+### Patch Changes
+
+- [`bfa527b`](https://github.com/MyPrototypeWhat/context-chef/commit/bfa527bdf39e8f05bc20eff42bd74b5d8c416b25) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Separate system messages from conversation before compact/compress pipeline
+
+  - System messages are now filtered out before compact/compress, preventing them from being compressed or cleared
+  - Auto-inject `TOOL_RESULT_CLEARED_INSTRUCTION` into system prompt when tool-result compaction is active
+  - Add `Prompts.TOOL_RESULT_CLEARED_INSTRUCTION` to core — explains cleared tool results so the model doesn't interpret placeholders as errors
+  - Export `ToolResultClearTarget` type and refactor `ClearTarget` union for object-form tool-result clearing with `keepRecent`
+
+- Updated dependencies [[`bfa527b`](https://github.com/MyPrototypeWhat/context-chef/commit/bfa527bdf39e8f05bc20eff42bd74b5d8c416b25)]:
+  - @context-chef/core@3.0.1
+
 ## 1.0.3
 
 ### Patch Changes
