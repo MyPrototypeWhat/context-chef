@@ -86,7 +86,14 @@ export interface ToolResultClearTarget {
 /** Clearing targets for `Janitor.compact()`. */
 export type ClearTarget = 'thinking' | 'tool-result' | ToolResultClearTarget;
 
-/** Options for `Janitor.compact()` — mechanical, zero-LLM-cost history compaction. */
+/**
+ * Options for `Janitor.compact()` — mechanical, zero-LLM-cost history compaction.
+ *
+ * **Note:** When using compact together with `compress()`, only clear `thinking`.
+ * Clearing `tool-result` before compression causes the compression model to receive
+ * empty tool results, producing low-quality summaries. See `Janitor.compact()` JSDoc
+ * for recommended combinations.
+ */
 export interface CompactOptions {
   /** Which content types to clear from history. */
   clear: ClearTarget[];

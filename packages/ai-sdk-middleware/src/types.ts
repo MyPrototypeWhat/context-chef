@@ -27,6 +27,12 @@ export interface CompressOptions {
 /**
  * Mechanical compaction options — zero LLM cost.
  * Runs before LLM-based compression to reduce token usage at no cost.
+ *
+ * **Important:** When using together with `compress`, only clear `thinking`.
+ * Clearing `tool-result` before compression causes the compression model to
+ * receive empty placeholders instead of actual tool outputs, producing
+ * low-quality summaries. Leave tool-result management to compression's
+ * turn-based splitting.
  */
 export interface CompactConfig {
   /** Which content types to clear from history. */
@@ -62,6 +68,9 @@ export interface ContextChefOptions {
   /**
    * Mechanical compaction before LLM compression.
    * Clears specified content types (tool-result, thinking) at zero LLM cost.
+   *
+   * When combined with `compress`, use `clear: ['thinking']` only.
+   * See CompactConfig for details.
    */
   compact?: CompactConfig;
   /**

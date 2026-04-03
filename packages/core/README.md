@@ -215,7 +215,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `contextWindow`          | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds this.          |
 | `tokenizer`              | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
 | `preserveRatio`          | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
-| `preserveRecentMessages` | `number`                                    | `1`        | [reportTokenUsage path] Number of recent messages to keep when compressing.                    |
+| `preserveRecentMessages` | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing. A turn is a single message or an assistant with tool_calls plus its tool results. |
 | `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `onCompress`             | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
 | `onBudgetExceeded`       | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. |
@@ -253,6 +253,37 @@ const chef = new ContextChef({
 #### `chef.clearHistory(): this`
 
 Explicitly clear history and reset Janitor state when switching topics or completing sub-tasks.
+
+#### Compact (Mechanical Clearing)
+
+`compact()` strips content from history at zero LLM cost:
+
+```typescript
+// Clear old tool results, keep 5 most recent
+history = janitor.compact(history, {
+  clear: [{ target: 'tool-result', keepRecent: 5 }],
+});
+
+// Clear thinking blocks
+history = janitor.compact(history, { clear: ['thinking'] });
+```
+
+> **Important: compact + compress interaction**
+>
+> When using `compact()` together with `compress()`, only clear `thinking` in compact.
+> Clearing `tool-result` before compression causes the compression model to receive empty
+> placeholders (`[Old tool result content cleared]`) instead of actual outputs, producing
+> low-quality summaries.
+>
+> ```typescript
+> // Correct: thinking only in compact, let compress handle history
+> history = janitor.compact(history, { clear: ['thinking'] });
+> history = await janitor.compress(history);
+>
+> // Incorrect: clearing tool-result before compress degrades summary quality
+> history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
+> history = await janitor.compress(history); // compression model sees empty tool results
+> ```
 
 ---
 

@@ -98,6 +98,36 @@ const model = withContextChef(openai('gpt-4o'), {
 
 The middleware automatically extracts token usage from `generateText` and `streamText` responses and feeds it back to the compression engine. No manual `reportTokenUsage()` calls needed.
 
+### Compact (Mechanical Clearing)
+
+Zero-LLM-cost content clearing for thinking blocks and tool results:
+
+```typescript
+const model = withContextChef(openai('gpt-4o'), {
+  contextWindow: 128_000,
+  compact: {
+    clear: ['thinking', { target: 'tool-result', keepRecent: 5 }],
+  },
+});
+```
+
+> **Important: compact + compress interaction**
+>
+> When using `compact` together with `compress`, only clear `thinking` in compact:
+>
+> ```typescript
+> const model = withContextChef(openai('gpt-4o'), {
+>   contextWindow: 128_000,
+>   compact: { clear: ['thinking'] },                // thinking only
+>   compress: { model: openai('gpt-4o-mini') },
+> });
+> ```
+>
+> Clearing `tool-result` before compression causes the compression model to receive
+> empty placeholders instead of actual tool outputs, producing low-quality summaries.
+> Compression's turn-based splitting already manages history length — use `compact`
+> for `tool-result` clearing only when `compress` is **not** configured.
+
 ## API
 
 ### `withContextChef(model, options)`
@@ -123,6 +153,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |
 | `truncate.tailChars` | `number` | No | Characters to preserve from end (default: `1000`) |
 | `truncate.storage` | `VFSStorageAdapter` | No | Storage adapter to persist original content before truncation |
+| `compact` | `CompactConfig` | No | Mechanical content clearing (thinking, tool-result). When combined with `compress`, use `clear: ['thinking']` only |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
 | `onCompress` | `(summary, count) => void` | No | Hook called after compression |
 

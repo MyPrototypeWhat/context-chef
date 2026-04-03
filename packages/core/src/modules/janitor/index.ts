@@ -207,12 +207,26 @@ export class Janitor {
    * Mechanically strips content from history based on the specified clear targets.
    * Pure function — no LLM call, no side effects, no state mutation.
    *
+   * **Important:** When using compact together with compress, avoid clearing `tool-result`
+   * in compact — the compression model will receive empty tool results and produce a
+   * low-quality summary. Use compact for `thinking` only, and let compress handle
+   * history management via turn-based splitting.
+   *
+   * Recommended combinations:
+   * - compact alone: clear both `thinking` and `tool-result` freely
+   * - compress alone: turn-based summarization handles everything
+   * - compact + compress: clear `thinking` only in compact, leave `tool-result` to compress
+   *
    * @example
-   * // Clear all tool results and thinking
+   * // Clear all tool results and thinking (compact only, no compress)
    * history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
    *
    * // Keep the 5 most recent tool results, clear the rest
    * history = janitor.compact(history, { clear: [{ target: 'tool-result', keepRecent: 5 }] });
+   *
+   * // When using with compress — clear thinking only
+   * history = janitor.compact(history, { clear: ['thinking'] });
+   * history = await janitor.compress(history);
    */
   public compact(history: Message[], options: CompactOptions): Message[] {
     // Parse targets: separate simple strings from object configs
