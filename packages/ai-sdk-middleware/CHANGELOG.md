@@ -1,5 +1,18 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.0.5
+
+### Patch Changes
+
+- [`dd44437`](https://github.com/MyPrototypeWhat/context-chef/commit/dd4443746489a409826790271c282ac3b3439e59) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Add compact + compress interaction guidance to README and JSDoc
+
+  - Document that `compact` should only clear `thinking` when combined with `compress`
+  - Add Compact section to README with usage examples and interaction notes
+  - Add `compact` option to API reference table
+
+- Updated dependencies [[`dd44437`](https://github.com/MyPrototypeWhat/context-chef/commit/dd4443746489a409826790271c282ac3b3439e59)]:
+  - @context-chef/core@3.0.2
+
 ## 1.0.4
 
 ### Patch Changes
