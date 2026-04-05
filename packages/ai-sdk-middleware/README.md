@@ -8,6 +8,8 @@
 
 [Vercel AI SDK](https://ai-sdk.dev) middleware powered by [context-chef](https://github.com/MyPrototypeWhat/context-chef). Transparent history compression, tool result truncation, and token budget management — zero code changes required.
 
+![Quick Start](../../@context-chef_ai-sdk-middleware.png)
+
 ## Installation
 
 ```bash
@@ -27,7 +29,7 @@ const model = withContextChef(openai('gpt-4o'), {
   truncate: { threshold: 5000, headChars: 500, tailChars: 1000 },
 });
 
-// Everything below stays exactly the same — works with generateText and streamText
+// Everything below stays exactly the same — works with generateText, streamText, and ToolLoopAgent
 const result = await generateText({
   model,
   messages: conversationHistory,
@@ -186,7 +188,7 @@ const aiSdkPrompt = toAISDK(irMessages);
 ## How It Works
 
 ```
-generateText / streamText ({ model: wrappedModel, messages })
+generateText / streamText / ToolLoopAgent ({ model: wrappedModel, messages })
   |
   v
 transformParams (before LLM call)
@@ -217,3 +219,7 @@ The middleware covers the most common use case: transparent compression and trun
 ## License
 
 ISC
+
+---
+
+[中文文档](./README.zh-CN.md)
