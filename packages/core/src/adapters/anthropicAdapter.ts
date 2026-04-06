@@ -51,7 +51,8 @@ export class AnthropicAdapter implements ITargetAdapter {
             };
             content.push(redactedBlock);
           }
-          content.push({ type: 'text', text: msg.content || '' } as SDKTextBlockParam);
+          const textBlock: SDKTextBlockParam = { type: 'text', text: msg.content || '' };
+          content.push(textBlock);
           for (const tc of msg.tool_calls) {
             const block: SDKToolUseBlockParam = {
               type: 'tool_use',

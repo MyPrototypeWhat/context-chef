@@ -2,6 +2,13 @@ import type { ToolDefinition } from '../../types';
 
 export type { ToolDefinition };
 
+// ─── Internal helpers ───
+
+/** Type guard for plain records (not null, not arrays). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // ─── Core Types ───
 
 export interface ToolGroup {
@@ -231,11 +238,11 @@ export class Pruner {
       );
     }
 
-    const parsed =
+    const parsed: { action?: unknown; args?: unknown } =
       typeof toolCall.arguments === 'string' ? JSON.parse(toolCall.arguments) : toolCall.arguments;
 
-    const action = parsed.action as string;
-    const args = (parsed.args ?? {}) as Record<string, unknown>;
+    const action = typeof parsed.action === 'string' ? parsed.action : '';
+    const args: Record<string, unknown> = isRecord(parsed.args) ? { ...parsed.args } : {};
 
     const matchedTool = ns.tools.find((t) => t.name === action);
     if (!matchedTool) {
@@ -261,8 +268,10 @@ export class Pruner {
         if (t.parameters) {
           const params = Object.entries(t.parameters)
             .map(([k, v]) => {
-              const info = v as Record<string, unknown>;
-              return `    - ${k} (${info.type ?? 'any'})${info.description ? `: ${info.description}` : ''}`;
+              if (!isRecord(v)) return `    - ${k} (any)`;
+              const type = typeof v.type === 'string' ? v.type : 'any';
+              const description = typeof v.description === 'string' ? v.description : '';
+              return `    - ${k} (${type})${description ? `: ${description}` : ''}`;
             })
             .join('\n');
           if (params) doc += `\n${params}`;

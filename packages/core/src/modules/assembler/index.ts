@@ -20,18 +20,23 @@ export interface AssembleOptions {
  *    strategy (system message vs last-user-message injection).
  */
 export class Assembler {
-  public static orderKeysDeterministically(obj: unknown): unknown {
+  /**
+   * Deterministically sorts object keys for stable serialization (KV-cache friendliness).
+   * This is a purely structural transformation — the input type T is returned unchanged,
+   * but TypeScript cannot express "same shape with reordered keys" at the type level,
+   * so a single boundary assertion is used to preserve the caller's type.
+   */
+  public static orderKeysDeterministically<T>(obj: T): T {
+    return Assembler._orderKeysRecursive(obj) as T;
+  }
+
+  private static _orderKeysRecursive(obj: unknown): unknown {
     if (obj === null || typeof obj !== 'object') return obj;
-    if (Array.isArray(obj)) return obj.map(Assembler.orderKeysDeterministically);
+    if (Array.isArray(obj)) return obj.map(Assembler._orderKeysRecursive);
     const sortedObj: Record<string, unknown> = {};
-    const keys = Object.keys(obj as object).sort();
-    const src = obj as Record<string, unknown>;
-    for (const key of keys) {
-      if (key !== '_cache_breakpoint') {
-        sortedObj[key] = Assembler.orderKeysDeterministically(src[key]);
-      } else {
-        sortedObj[key] = src[key];
-      }
+    const sortedEntries = Object.entries(obj).sort(([a], [b]) => a.localeCompare(b));
+    for (const [key, value] of sortedEntries) {
+      sortedObj[key] = key === '_cache_breakpoint' ? value : Assembler._orderKeysRecursive(value);
     }
     return sortedObj;
   }
@@ -90,7 +95,7 @@ export class Assembler {
     }
 
     return {
-      messages: assembled.map((msg) => Assembler.orderKeysDeterministically(msg) as Message),
+      messages: assembled.map((msg) => Assembler.orderKeysDeterministically(msg)),
     };
   }
 }

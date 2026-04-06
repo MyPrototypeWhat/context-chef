@@ -1,7 +1,45 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
+import type { ToolDefinition } from '../../types';
 import { Memory } from '.';
 import { InMemoryStore } from './inMemoryStore';
+
+// ─── Test helpers ───────────────────────────────────────────────────────────
+
+/** Minimal JSON schema shape for tool parameter inspection. */
+interface JSONSchemaProperty {
+  type?: string;
+  description?: string;
+  enum?: unknown[];
+}
+
+interface JSONSchemaObject {
+  type?: string;
+  properties?: Record<string, JSONSchemaProperty>;
+  required?: string[];
+}
+
+/**
+ * Round-trips a tool's parameters through JSON so tests can navigate nested
+ * properties without chained type assertions. JSON.parse returns `any`, which
+ * TypeScript assigns to the target interface without an explicit cast.
+ */
+function getSchemaProperties(tool: ToolDefinition | undefined): Record<string, JSONSchemaProperty> {
+  if (!tool?.parameters) return {};
+  const schema: JSONSchemaObject = JSON.parse(JSON.stringify(tool.parameters));
+  return schema.properties ?? {};
+}
+
+/** Round-trips payload.messages to a plain shape for content/role inspection. */
+interface PlainMessage {
+  role: string;
+  content: string;
+}
+
+function getPlainMessages(payload: { messages: unknown }): PlainMessage[] {
+  const plain: PlainMessage[] = JSON.parse(JSON.stringify(payload.messages));
+  return plain;
+}
 
 // ─── Memory module unit tests ───────────────────────────────────────────────
 
@@ -390,14 +428,9 @@ describe('Memory getToolDefinitions', () => {
     await mem.set('style', 'functional');
 
     const tools = await mem.getToolDefinitions();
-    const modifyTool = tools.find((t) => t.name === 'modify_memory');
-    const keyParam = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<
-      string,
-      unknown
-    >;
-    const keyDef = keyParam?.key as Record<string, unknown>;
+    const props = getSchemaProperties(tools.find((t) => t.name === 'modify_memory'));
 
-    expect(keyDef.enum).toEqual(['lang', 'style']);
+    expect(props.key?.enum).toEqual(['lang', 'style']);
   });
 
   it('modify_memory action has update/delete enum', async () => {
@@ -405,14 +438,9 @@ describe('Memory getToolDefinitions', () => {
     await mem.set('lang', 'TS');
 
     const tools = await mem.getToolDefinitions();
-    const modifyTool = tools.find((t) => t.name === 'modify_memory');
-    const props = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<
-      string,
-      unknown
-    >;
-    const actionDef = props?.action as Record<string, unknown>;
+    const props = getSchemaProperties(tools.find((t) => t.name === 'modify_memory'));
 
-    expect(actionDef.enum).toEqual(['update', 'delete']);
+    expect(props.action?.enum).toEqual(['update', 'delete']);
   });
 
   it('create_memory key has allowedKeys enum when configured', async () => {
@@ -422,29 +450,19 @@ describe('Memory getToolDefinitions', () => {
     });
 
     const tools = await mem.getToolDefinitions();
-    const createTool = tools.find((t) => t.name === 'create_memory');
-    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<
-      string,
-      unknown
-    >;
-    const keyDef = props?.key as Record<string, unknown>;
+    const props = getSchemaProperties(tools.find((t) => t.name === 'create_memory'));
 
-    expect(keyDef.enum).toEqual(['lang', 'style', 'framework']);
+    expect(props.key?.enum).toEqual(['lang', 'style', 'framework']);
   });
 
   it('create_memory key is free-form when no allowedKeys', async () => {
     const mem = new Memory({ store: new InMemoryStore() });
 
     const tools = await mem.getToolDefinitions();
-    const createTool = tools.find((t) => t.name === 'create_memory');
-    const props = (createTool?.parameters as Record<string, unknown>)?.properties as Record<
-      string,
-      unknown
-    >;
-    const keyDef = props?.key as Record<string, unknown>;
+    const props = getSchemaProperties(tools.find((t) => t.name === 'create_memory'));
 
-    expect(keyDef.enum).toBeUndefined();
-    expect(keyDef.type).toBe('string');
+    expect(props.key?.enum).toBeUndefined();
+    expect(props.key?.type).toBe('string');
   });
 
   it('create_memory and modify_memory include description parameter', async () => {
@@ -452,20 +470,11 @@ describe('Memory getToolDefinitions', () => {
     await mem.set('lang', 'TS');
 
     const tools = await mem.getToolDefinitions();
-    const createTool = tools.find((t) => t.name === 'create_memory');
-    const modifyTool = tools.find((t) => t.name === 'modify_memory');
+    const createProps = getSchemaProperties(tools.find((t) => t.name === 'create_memory'));
+    expect(createProps.description).toBeDefined();
 
-    const createProps = (createTool?.parameters as Record<string, unknown>)?.properties as Record<
-      string,
-      unknown
-    >;
-    expect(createProps?.description).toBeDefined();
-
-    const modifyProps = (modifyTool?.parameters as Record<string, unknown>)?.properties as Record<
-      string,
-      unknown
-    >;
-    expect(modifyProps?.description).toBeDefined();
+    const modifyProps = getSchemaProperties(tools.find((t) => t.name === 'modify_memory'));
+    expect(modifyProps.description).toBeDefined();
   });
 });
 
@@ -895,7 +904,7 @@ describe('ContextChef + Memory', () => {
     chef.setHistory([{ role: 'user', content: 'hello' }]);
 
     const payload = await chef.compile({ target: 'openai' });
-    const messages = payload.messages as Array<{ role: string; content: string }>;
+    const messages = getPlainMessages(payload);
 
     const memMsg = messages.find((m) => m.content.includes('<memory>'));
     expect(memMsg).toBeDefined();
@@ -916,7 +925,7 @@ describe('ContextChef + Memory', () => {
     chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
-    const messages = payload.messages as Array<{ role: string; content: string }>;
+    const messages = getPlainMessages(payload);
 
     const memMsg = messages.find((m) => m.content.includes('<memory>'));
     expect(memMsg).toBeDefined();
@@ -930,7 +939,7 @@ describe('ContextChef + Memory', () => {
     chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
-    const messages = payload.messages as Array<{ role: string; content: string }>;
+    const messages = getPlainMessages(payload);
 
     expect(messages).toHaveLength(3);
     const memMsg = messages.find((m) => m.content.includes('memory tools'));
@@ -1016,7 +1025,7 @@ describe('ContextChef + Memory', () => {
 
     // Second compile: turn 1→2, sweep checks turnCount=1, 1 >= 1 → expired
     const payload = await chef.compile({ target: 'openai' });
-    const messages = payload.messages as Array<{ role: string; content: string }>;
+    const messages = getPlainMessages(payload);
 
     const memMsg = messages.find((m) => m.content.includes('<memory>'));
     expect(memMsg).toBeDefined();
@@ -1180,7 +1189,7 @@ describe('Memory selector', () => {
     chef.setHistory([{ role: 'user', content: 'hi' }]);
 
     const payload = await chef.compile({ target: 'openai' });
-    const messages = payload.messages as Array<{ role: string; content: string }>;
+    const messages = getPlainMessages(payload);
     const memMsg = messages.find((m) => m.content.includes('<memory>'));
 
     expect(memMsg).toBeDefined();

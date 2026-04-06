@@ -208,15 +208,20 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 #### `JanitorConfig`
 
-| 选项                     | 类型                                        | 默认值 | 说明                                                                 |
-| ------------------------ | ------------------------------------------- | ------ | -------------------------------------------------------------------- |
-| `contextWindow`          | `number`                                    | _必填_ | 模型的上下文窗口大小（token 数）。token 用量超过此值时触发压缩。     |
-| `tokenizer`              | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                   |
-| `preserveRatio`          | `number`                                    | `0.8`  | [Tokenizer 路径] `contextWindow` 中保留给近期消息的比例。            |
-| `preserveRecentMessages` | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期消息数量。                     |
-| `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —      | 异步钩子，调用低成本 LLM 对旧消息进行摘要。                          |
-| `onCompress`             | `(summary, count) => void`                  | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。                     |
-| `onBeforeCompress`   | `(history, tokenInfo) => Message[] \| null` | —      | LLM 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
+| 选项                            | 类型                                        | 默认值 | 说明                                                                 |
+| ------------------------------- | ------------------------------------------- | ------ | -------------------------------------------------------------------- |
+| `contextWindow`                 | `number`                                    | _必填_ | 模型的上下文窗口大小（token 数）。token 用量超过此值时触发压缩。     |
+| `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                   |
+| `preserveRatio`                 | `number`                                    | `0.8`  | [Tokenizer 路径] `contextWindow` 中保留给近期消息的比例。            |
+| `preserveRecentMessages`        | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期轮次数量（turn-based）。     |
+| `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —      | 异步钩子，调用低成本 LLM 对旧消息进行摘要。                          |
+| `customCompressionInstructions` | `string`                                    | —      | 追加到默认压缩 prompt 的额外聚焦指令（追加模式，不替换）。           |
+| `onCompress`                    | `(summary, count) => void`                  | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。                     |
+| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | LLM 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
+
+**压缩输出契约。** Janitor 默认 prompt 要求压缩模型输出两阶段响应：先在 `<analysis></analysis>` 里写草稿推理（会被剥除），再在 `<summary></summary>` 里输出 5 个领域无关的结构化章节（Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve）。Janitor 会自动用 `Prompts.formatCompactSummary` 清洗压缩模型返回值。详见 [core 包 README](./packages/core)。
+
+**熔断器。** 如果 `compressionModel` 连续 3 次失败，`compress()` 将直接返回原始历史（不再调用压缩模型），直到下一次成功或显式调用 `janitor.reset()` / `chef.clearHistory()`。失败计数由 `chef.snapshot()` / `chef.restore()` 保存。
 
 #### `chef.reportTokenUsage(tokenCount): this`
 

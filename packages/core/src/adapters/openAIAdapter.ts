@@ -23,12 +23,22 @@ export class OpenAIAdapter implements ITargetAdapter {
         if (prefillContent !== undefined && typeof prefillContent === 'string') {
           for (let i = formattedMessages.length - 1; i >= 0; i--) {
             const m = formattedMessages[i];
-            if (m.role === 'user' || m.role === 'system') {
-              const currentContent = 'content' in m ? m.content : '';
-              formattedMessages[i] = {
+            if (m.role === 'user') {
+              const currentContent = typeof m.content === 'string' ? m.content : '';
+              const injected: SDKMessageParam = {
                 ...m,
                 content: `${currentContent}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
-              } as SDKMessageParam;
+              };
+              formattedMessages[i] = injected;
+              break;
+            }
+            if (m.role === 'system') {
+              const currentContent = typeof m.content === 'string' ? m.content : '';
+              const injected: SDKMessageParam = {
+                ...m,
+                content: `${currentContent}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
+              };
+              formattedMessages[i] = injected;
               break;
             }
           }

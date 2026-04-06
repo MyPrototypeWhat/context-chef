@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../types';
+import type { Message, OpenAIPayload } from '../types';
 import { OpenAIAdapter } from './openAIAdapter';
 
 interface OAIMsg {
@@ -10,6 +10,16 @@ interface OAIMsg {
   thinking?: unknown;
   redacted_thinking?: unknown;
   _cache_breakpoint?: unknown;
+}
+
+/**
+ * Round-trips the SDK's complex union type through JSON so tests can work with
+ * a simple plain-object shape for structural assertions. JSON.parse returns `any`,
+ * which TypeScript allows assigning to `OAIMsg[]` without a cast.
+ */
+function toPlainMessages(payload: OpenAIPayload): OAIMsg[] {
+  const plain: OAIMsg[] = JSON.parse(JSON.stringify(payload.messages));
+  return plain;
 }
 
 const adapter = new OpenAIAdapter();
@@ -23,7 +33,7 @@ describe('OpenAIAdapter', () => {
       { role: 'user', content: 'Thanks' },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     expect(msgs).toHaveLength(4);
     expect(msgs[0]).toMatchObject({ role: 'system', content: 'You are helpful.' });
@@ -38,7 +48,7 @@ describe('OpenAIAdapter', () => {
       { role: 'user', content: 'Next' },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     expect(msgs[0]._cache_breakpoint).toBeUndefined();
   });
@@ -54,7 +64,7 @@ describe('OpenAIAdapter', () => {
       { role: 'user', content: 'Next' },
     ];
     const result = adapter.compile([...messages]);
-    const assistant = (result.messages as OAIMsg[]).find((m) => m.role === 'assistant');
+    const assistant = toPlainMessages(result).find((m) => m.role === 'assistant');
 
     expect(assistant?.thinking).toBeUndefined();
     expect(assistant?.redacted_thinking).toBeUndefined();
@@ -78,7 +88,7 @@ describe('OpenAIAdapter', () => {
       { role: 'tool', content: '{"temp":20}', tool_call_id: 'c1' },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     expect(msgs).toHaveLength(3);
     expect(msgs[1].tool_calls).toHaveLength(1);
@@ -93,7 +103,7 @@ describe('OpenAIAdapter', () => {
       { role: 'assistant', content: '<thinking>\n1. ' },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     // Prefill message is removed
     expect(msgs).toHaveLength(2);
@@ -113,7 +123,7 @@ describe('OpenAIAdapter', () => {
       },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     expect(msgs).toHaveLength(2);
     expect(msgs[1].tool_calls).toHaveLength(1);
@@ -125,7 +135,7 @@ describe('OpenAIAdapter', () => {
       { role: 'user', content: 'Hello' },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     expect(msgs).toHaveLength(2);
     expect(msgs[1].content).toBe('Hello');
@@ -142,7 +152,7 @@ describe('OpenAIAdapter', () => {
       { role: 'assistant', content: 'Start with this.' },
     ];
     const result = adapter.compile([...messages]);
-    const msgs = result.messages as OAIMsg[];
+    const msgs = toPlainMessages(result);
 
     expect(msgs).toHaveLength(1);
     expect(msgs[0].role).toBe('system');

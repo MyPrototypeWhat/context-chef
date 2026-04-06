@@ -4,6 +4,7 @@ import { TokenUtils } from '../../utils/tokenUtils';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
 const DEFAULT_PRESERVE_RECENT_MESSAGES = 1;
+const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
 
 // ─── Turn-based grouping ───
 
@@ -92,6 +93,20 @@ export interface JanitorConfig {
   compressionModel?: (messagesToCompress: Message[]) => Promise<string>;
 
   /**
+   * Additional focused instructions appended to the default compression prompt.
+   * Does NOT replace the default — the scaffolding that enforces the
+   * <analysis>/<summary> contract is always preserved. This is appended as an
+   * "Additional Instructions" section before the compression model is called.
+   *
+   * Use this to steer the summary toward specific domain concerns without
+   * breaking the parsing contract.
+   *
+   * @example
+   * customCompressionInstructions: 'Focus on customer sentiment, unresolved issues, and any commitments made. Preserve ticket IDs verbatim.'
+   */
+  customCompressionInstructions?: string;
+
+  /**
    * Hook triggered ONLY when compression actually happens.
    * Useful for UI loaders ("Compressing memory..."), logging, or saving the compressed state.
    */
@@ -119,6 +134,7 @@ export interface JanitorConfig {
 export interface JanitorSnapshot {
   externalTokenUsage: number | null;
   suppressNextCompression: boolean;
+  consecutiveFailures: number;
 }
 
 export class Janitor {
@@ -126,6 +142,12 @@ export class Janitor {
   private _externalTokenUsage: number | null = null;
   /** Suppresses the next compression check after a successful compression (E10). */
   private _suppressNextCompression = false;
+  /**
+   * Circuit breaker counter — incremented on compressionModel failure, reset on success.
+   * When it reaches MAX_CONSECUTIVE_COMPRESSION_FAILURES, compress() becomes a no-op
+   * to prevent hammering a broken compression model on every turn.
+   */
+  private _consecutiveFailures = 0;
 
   constructor(private config: JanitorConfig) {
     // Warn if feedTokenUsage path is likely used without a compressionModel
@@ -142,12 +164,14 @@ export class Janitor {
     return {
       externalTokenUsage: this._externalTokenUsage,
       suppressNextCompression: this._suppressNextCompression,
+      consecutiveFailures: this._consecutiveFailures,
     };
   }
 
   public restoreState(state: JanitorSnapshot): void {
     this._externalTokenUsage = state.externalTokenUsage;
     this._suppressNextCompression = state.suppressNextCompression;
+    this._consecutiveFailures = state.consecutiveFailures ?? 0;
   }
 
   /**
@@ -157,6 +181,7 @@ export class Janitor {
   public reset(): void {
     this._externalTokenUsage = null;
     this._suppressNextCompression = false;
+    this._consecutiveFailures = 0;
   }
 
   /**
@@ -175,8 +200,16 @@ export class Janitor {
    * Two paths:
    * - Tokenizer path: precise splitIndex based on per-turn token costs.
    * - FeedTokenUsage path: full compression, keeping only the last N turns.
+   *
+   * Circuit breaker: if the compressionModel has failed MAX_CONSECUTIVE_COMPRESSION_FAILURES
+   * times in a row, compress() returns history unchanged to avoid futile retries.
    */
   public async compress(history: Message[]): Promise<Message[]> {
+    // Circuit breaker: bail out if compression is consistently failing.
+    if (this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
+      return history;
+    }
+
     const evaluation = this.evaluateBudget(history);
     if (evaluation === null) return history;
 
@@ -273,8 +306,9 @@ export class Janitor {
 
       if (clearThinking && msg.role === 'assistant') {
         if (msg.thinking || msg.redacted_thinking) {
-          const { thinking, redacted_thinking, ...rest } = result;
-          result = rest as Message;
+          // Set to undefined rather than destructure-delete: keeps Message typing
+          // clean (adapters use truthy checks, undefined is dropped by JSON.stringify).
+          result = { ...result, thinking: undefined, redacted_thinking: undefined };
         }
       }
 
@@ -381,14 +415,30 @@ export class Janitor {
       return history;
     }
 
+    // Build the compression instruction: default prompt + optional additional instructions.
+    // The default scaffolding (which enforces the <analysis>/<summary> contract) is always
+    // preserved — customCompressionInstructions is additive, not a replacement.
+    let instruction = Prompts.CONTEXT_COMPACTION_INSTRUCTION;
+    const extra = this.config.customCompressionInstructions?.trim();
+    if (extra) {
+      instruction += `\n\nAdditional Instructions:\n${extra}`;
+    }
+
     let summaryText: string;
     try {
       const compressionMessages: Message[] = [
         ...toCompress,
-        { role: 'user', content: Prompts.CONTEXT_COMPACTION_INSTRUCTION },
+        { role: 'user', content: instruction },
       ];
-      summaryText = await this.config.compressionModel(compressionMessages);
+      const raw = await this.config.compressionModel(compressionMessages);
+      // Strip <analysis> scratchpad and extract <summary> content.
+      summaryText = Prompts.formatCompactSummary(raw);
+      // Reset circuit breaker on success.
+      this._consecutiveFailures = 0;
     } catch (error) {
+      // Increment circuit breaker. After MAX_CONSECUTIVE_COMPRESSION_FAILURES,
+      // compress() will short-circuit to avoid futile retries.
+      this._consecutiveFailures++;
       summaryText =
         Prompts.getFallbackCompressionSummary(toCompress.length) +
         `\n(Compression failed: ${error})`;

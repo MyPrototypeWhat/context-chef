@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../types';
+import type { AnthropicPayload, Message } from '../types';
 import { AnthropicAdapter } from './anthropicAdapter';
 
 interface AnthropicBlock {
@@ -14,6 +14,21 @@ interface AnthropicBlock {
   name?: string;
   input?: unknown;
   cache_control?: { type: string };
+}
+
+/**
+ * Round-trips the SDK's complex union type through JSON so tests can work with
+ * a simple plain-object shape for structural assertions. JSON.parse returns `any`,
+ * which TypeScript allows assigning to plain interfaces without an explicit cast.
+ */
+function getContentBlocks(result: AnthropicPayload, messageIndex = 0): AnthropicBlock[] {
+  const plain: AnthropicBlock[] = JSON.parse(JSON.stringify(result.messages[messageIndex].content));
+  return plain;
+}
+
+function getSystemBlock(result: AnthropicPayload, index = 0): AnthropicBlock {
+  const plain: AnthropicBlock = JSON.parse(JSON.stringify(result.system?.[index]));
+  return plain;
 }
 
 const adapter = new AnthropicAdapter();
@@ -63,7 +78,7 @@ describe('AnthropicAdapter', () => {
 
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].role).toBe('user');
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getContentBlocks(result);
     expect(content[0].type).toBe('tool_result');
     expect(content[0].tool_use_id).toBe('call_1');
     expect(content[0].content).toBe('{"result": "ok"}');
@@ -72,7 +87,7 @@ describe('AnthropicAdapter', () => {
   it('uses empty string for tool_call_id when missing', () => {
     const messages: Message[] = [{ role: 'tool', content: 'result' }];
     const result = adapter.compile([...messages]);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getContentBlocks(result);
     expect(content[0].tool_use_id).toBe('');
   });
 
@@ -91,7 +106,7 @@ describe('AnthropicAdapter', () => {
       },
     ];
     const result = adapter.compile([...messages]);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getContentBlocks(result);
 
     expect(content).toHaveLength(2); // text + tool_use
     expect(content[0]).toMatchObject({ type: 'text', text: '' });
@@ -115,7 +130,7 @@ describe('AnthropicAdapter', () => {
       },
     ];
     const result = adapter.compile([...messages]);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getContentBlocks(result);
 
     expect(content).toHaveLength(3); // text + 2 tool_use
     expect(content[0].type).toBe('text');
@@ -130,7 +145,7 @@ describe('AnthropicAdapter', () => {
     ];
     const result = adapter.compile([...messages]);
 
-    const sysBlock = result.system?.[0] as AnthropicBlock;
+    const sysBlock = getSystemBlock(result);
     expect(sysBlock.cache_control).toEqual({ type: 'ephemeral' });
   });
 
@@ -139,7 +154,7 @@ describe('AnthropicAdapter', () => {
       { role: 'user', content: 'Important message', _cache_breakpoint: true },
     ];
     const result = adapter.compile([...messages]);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getContentBlocks(result);
 
     expect(content[0].cache_control).toEqual({ type: 'ephemeral' });
   });
@@ -147,7 +162,7 @@ describe('AnthropicAdapter', () => {
   it('does not set cache_control when _cache_breakpoint is absent', () => {
     const messages: Message[] = [{ role: 'system', content: 'Normal prompt' }];
     const result = adapter.compile([...messages]);
-    const sysBlock = result.system?.[0] as AnthropicBlock;
+    const sysBlock = getSystemBlock(result);
     expect(sysBlock.cache_control).toBeUndefined();
   });
 

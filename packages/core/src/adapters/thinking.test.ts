@@ -15,12 +15,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../types';
+import type { AnthropicPayload, GeminiPayload, Message, OpenAIPayload } from '../types';
 import { AnthropicAdapter } from './anthropicAdapter';
 import { GeminiAdapter } from './geminiAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
 
-// ─── Local inspection types (avoid as-unknown casts in assertions) ──────────
+// ─── Local inspection types (plain shapes for structural assertions) ───────
 
 /** Shape of an Anthropic content block for assertion purposes. */
 interface AnthropicBlock {
@@ -47,6 +47,26 @@ interface GeminiAssertPart {
   functionCall?: unknown;
 }
 
+// ─── Plain-object inspection helpers ───────────────────────────────────────
+//
+// Round-trip via JSON to strip the complex SDK union types. JSON.parse returns
+// `any`, which TypeScript assigns to local interfaces without explicit casts.
+
+function getAnthropicContent(result: AnthropicPayload, msgIndex = 0): AnthropicBlock[] {
+  const plain: AnthropicBlock[] = JSON.parse(JSON.stringify(result.messages[msgIndex].content));
+  return plain;
+}
+
+function findOpenAIAssistant(result: OpenAIPayload): OpenAIAssertMsg | undefined {
+  const msgs: OpenAIAssertMsg[] = JSON.parse(JSON.stringify(result.messages));
+  return msgs.find((m) => m.role === 'assistant');
+}
+
+function getGeminiParts(modelMsg: GeminiPayload['messages'][number]): GeminiAssertPart[] {
+  const plain: GeminiAssertPart[] = JSON.parse(JSON.stringify(modelMsg.parts));
+  return plain;
+}
+
 // ─── Adapters ───────────────────────────────────────────────────────────────
 
 const anthropic = new AnthropicAdapter();
@@ -67,7 +87,7 @@ describe('AnthropicAdapter — thinking field', () => {
     const result = anthropic.compile(messages);
     const msg = result.messages[0];
     expect(msg.role).toBe('assistant');
-    const content = msg.content as AnthropicBlock[];
+    const content = getAnthropicContent(result);
     expect(content).toHaveLength(2);
     expect(content[0].type).toBe('thinking');
     expect(content[0].thinking).toBe('Let me reason about this...');
@@ -85,7 +105,7 @@ describe('AnthropicAdapter — thinking field', () => {
       },
     ];
     const result = anthropic.compile(messages);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getAnthropicContent(result);
     expect(content[0].type).toBe('thinking');
     expect(content[0].signature).toBe('');
   });
@@ -99,7 +119,7 @@ describe('AnthropicAdapter — thinking field', () => {
       },
     ];
     const result = anthropic.compile(messages);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getAnthropicContent(result);
     expect(content[0].type).toBe('redacted_thinking');
     expect(content[0].data).toBe('encrypted_blob_xyz');
     expect(content[1]).toMatchObject({ type: 'text', text: 'Result.' });
@@ -121,7 +141,7 @@ describe('AnthropicAdapter — thinking field', () => {
       },
     ];
     const result = anthropic.compile(messages);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getAnthropicContent(result);
     expect(content[0].type).toBe('thinking');
     expect(content[1].type).toBe('text');
     expect(content[2].type).toBe('tool_use');
@@ -130,7 +150,7 @@ describe('AnthropicAdapter — thinking field', () => {
   it('does not add thinking block when thinking is absent', () => {
     const messages: Message[] = [{ role: 'assistant', content: 'Hello!' }];
     const result = anthropic.compile(messages);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getAnthropicContent(result);
     expect(content).toHaveLength(1);
     expect(content[0].type).toBe('text');
   });
@@ -145,7 +165,7 @@ describe('AnthropicAdapter — thinking field', () => {
       },
     ];
     const result = anthropic.compile(messages);
-    const content = result.messages[0].content as AnthropicBlock[];
+    const content = getAnthropicContent(result);
     expect(content[0].type).toBe('thinking');
     expect(content[1].type).toBe('redacted_thinking');
     expect(content[2].type).toBe('text');
@@ -169,9 +189,7 @@ describe('OpenAIAdapter — thinking field', () => {
       { role: 'user', content: 'Thanks' }, // prevent prefill degradation
     ];
     const result = openai.compile(messages);
-    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as
-      | OpenAIAssertMsg
-      | undefined;
+    const assistantMsg = findOpenAIAssistant(result);
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     expect(assistantMsg.thinking).toBeUndefined();
@@ -189,9 +207,7 @@ describe('OpenAIAdapter — thinking field', () => {
       { role: 'user', content: 'Next' }, // prevent prefill degradation
     ];
     const result = openai.compile(messages);
-    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as
-      | OpenAIAssertMsg
-      | undefined;
+    const assistantMsg = findOpenAIAssistant(result);
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     expect(assistantMsg.redacted_thinking).toBeUndefined();
@@ -208,9 +224,7 @@ describe('OpenAIAdapter — thinking field', () => {
       { role: 'user', content: 'cont' }, // prevent prefill degradation
     ];
     const result = openai.compile(messages);
-    const assistantMsg = result.messages.find((m) => m.role === 'assistant') as
-      | OpenAIAssertMsg
-      | undefined;
+    const assistantMsg = findOpenAIAssistant(result);
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     expect(assistantMsg._cache_breakpoint).toBeUndefined();
@@ -239,7 +253,7 @@ describe('GeminiAdapter — thinking field', () => {
     const modelMsg = result.messages.find((m) => m.role === 'model');
     expect(modelMsg).toBeDefined();
     if (!modelMsg) return;
-    const parts = modelMsg.parts as GeminiAssertPart[];
+    const parts = getGeminiParts(modelMsg);
     // Only the text part — thinking is silently discarded, no thought:true part
     expect(parts).toHaveLength(1);
     expect(parts[0].text).toBe('The answer is 7.');
@@ -259,11 +273,11 @@ describe('GeminiAdapter — thinking field', () => {
       },
     ];
     const result = gemini.compile(messages);
-    const parts = result.messages[0].parts as GeminiAssertPart[];
+    const parts = getGeminiParts(result.messages[0]);
     // Only the functionCall part — thinking is silently discarded
     expect(parts).toHaveLength(1);
     expect(parts[0]).toHaveProperty('functionCall');
-    expect((parts[0] as GeminiAssertPart).thought).toBeUndefined();
+    expect(parts[0].thought).toBeUndefined();
   });
 
   it('silently discards redacted_thinking (no Gemini equivalent)', () => {
@@ -281,7 +295,7 @@ describe('GeminiAdapter — thinking field', () => {
     const modelMsg = result.messages.find((m) => m.role === 'model');
     expect(modelMsg).toBeDefined();
     if (!modelMsg) return;
-    const parts = modelMsg.parts as GeminiAssertPart[];
+    const parts = getGeminiParts(modelMsg);
     expect(parts).toHaveLength(1);
     expect(parts[0].text).toBe('Answer.');
     expect(parts[0].thought).toBeUndefined();
@@ -297,7 +311,7 @@ describe('GeminiAdapter — thinking field', () => {
     const modelMsg = result.messages.find((m) => m.role === 'model');
     expect(modelMsg).toBeDefined();
     if (!modelMsg) return;
-    const parts = modelMsg.parts as GeminiAssertPart[];
+    const parts = getGeminiParts(modelMsg);
     expect(parts).toHaveLength(1);
     expect(parts[0].thought).toBeUndefined();
   });

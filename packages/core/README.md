@@ -210,15 +210,73 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 #### `JanitorConfig`
 
-| Option                   | Type                                        | Default    | Description                                                                                  |
-| ------------------------ | ------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
-| `contextWindow`          | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds this.          |
-| `tokenizer`              | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
-| `preserveRatio`          | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
-| `preserveRecentMessages` | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing. A turn is a single message or an assistant with tool_calls plus its tool results. |
-| `compressionModel`       | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
-| `onCompress`             | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
-| `onBudgetExceeded`       | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. |
+| Option                          | Type                                        | Default    | Description                                                                                  |
+| ------------------------------- | ------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
+| `contextWindow`                 | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds this.          |
+| `tokenizer`                     | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
+| `preserveRatio`                 | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
+| `preserveRecentMessages`        | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing. A turn is a single message or an assistant with tool_calls plus its tool results. |
+| `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
+| `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). See "Custom compression instructions" below. |
+| `onCompress`                    | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
+| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. `onBudgetExceeded` is the deprecated alias. |
+
+#### Compression Output Contract
+
+Janitor's default prompt (`Prompts.CONTEXT_COMPACTION_INSTRUCTION`) instructs the compression model to produce a two-phase response:
+
+```
+<analysis>
+[scratchpad reasoning — stripped from the final output]
+</analysis>
+
+<summary>
+1. Task Overview: ...
+2. Current State: ...
+3. Important Discoveries: ...
+4. Next Steps: ...
+5. Context to Preserve: ...
+</summary>
+```
+
+The `<analysis>` block is a drafting scratchpad that measurably improves summary quality (pattern borrowed from Claude Code). Janitor automatically pipes the compression model's raw output through `Prompts.formatCompactSummary`, which:
+
+- Strips `<analysis>...</analysis>` blocks (case-insensitive, all occurrences)
+- Extracts content from `<summary>...</summary>` when present
+- Falls back to the stripped text if no `<summary>` tag is found
+- Collapses excessive blank lines and trims whitespace
+
+The 5 output sections are intentionally **domain-agnostic** (Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve) so the prompt works for coding, customer support, research, shopping, or any other conversational agent.
+
+You can call `Prompts.formatCompactSummary(raw)` directly if you're building a custom `compressionModel` that needs to handle the same output shape.
+
+#### Custom compression instructions
+
+Use `customCompressionInstructions` to focus the summary on your domain's concerns without breaking the `<analysis>`/`<summary>` parsing contract. The string is appended as an "Additional Instructions:" section after the default prompt.
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
+    customCompressionInstructions: `
+Focus on:
+- Customer sentiment changes across the conversation
+- Unresolved issues and any commitments made by the agent
+- Preserve ticket IDs and SKUs verbatim
+Ignore tangential small talk.
+`.trim(),
+  },
+});
+```
+
+This is an **additive** mechanism — the default scaffolding that enforces the output contract is always preserved. If you need a completely different compression behavior, provide your own `compressionModel` instead.
+
+#### Compression circuit breaker
+
+If `compressionModel` throws on three consecutive `compress()` calls, Janitor trips a circuit breaker: subsequent `compress()` calls become no-ops (history passes through unchanged) until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. This prevents sessions from hammering a broken compression endpoint on every turn.
+
+The failure counter is part of `JanitorSnapshot` and is preserved by `chef.snapshot()` / `chef.restore()`.
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
@@ -229,16 +287,16 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-#### `onBudgetExceeded` hook
+#### `onBeforeCompress` hook
 
-Fires when the token budget is exceeded, **before** automatic compression. Return a modified `Message[]` to replace the history (e.g., offload tool results to VFS), or return `null` to let default compression proceed.
+Fires when the token budget is exceeded, **before** automatic compression. Return a modified `Message[]` to replace the history (e.g., offload tool results to VFS), or return `null` to let default compression proceed. `onBudgetExceeded` is the deprecated alias.
 
 ```typescript
 const chef = new ContextChef({
   janitor: {
     contextWindow: 200000,
     tokenizer: (msgs) => countTokens(msgs),
-    onBudgetExceeded: (history, { currentTokens, limit }) => {
+    onBeforeCompress: (history, { currentTokens, limit }) => {
       // Example: offload large tool results to VFS before compression
       return history.map((msg) =>
         msg.role === "tool" && msg.content.length > 5000

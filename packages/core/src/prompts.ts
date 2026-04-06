@@ -48,67 +48,102 @@ You are acting as an automated system component. Your final output MUST be machi
 
   /**
    * Used by Janitor as the default instruction for compressing rolling history.
-   * Based on Claude Code's "system-prompt-context-compaction-summary.md".
-   * It provides a very short, aggressive compression prompt.
+   * Structured as a two-phase response: an <analysis> scratchpad (stripped from
+   * the final output) followed by a <summary> block. The scratchpad pattern
+   * measurably improves summary quality; formatCompactSummary() removes it
+   * before the summary reaches the next context window.
+   *
+   * Domain-agnostic — applicable to coding agents, support agents, research
+   * agents, and any other conversational use case.
    */
   CONTEXT_COMPACTION_INSTRUCTION: `
-You have been working on the task described above but have not yet completed it. Write a continuation summary that will allow you (or another instance of yourself) to resume work efficiently in a future context window where the conversation history will be replaced with this summary. Your summary should be structured, concise, and actionable. Include:
+You have been working on the task described above but have not yet completed it. Write a continuation summary that will allow you (or another instance of yourself) to resume work efficiently in a future context window where the conversation history will be replaced with this summary.
+
+Before providing your final summary, wrap your analysis in <analysis></analysis> tags to organize your thoughts and ensure you've covered all necessary points. This analysis scratchpad will be stripped from the final output — use it freely to reason through the conversation.
+
+In your analysis:
+- Chronologically review what happened in the conversation
+- Identify the user's explicit requests, intents, and any clarifications
+- Note key decisions, constraints, and information discovered
+- Track errors or obstacles encountered and how they were addressed
+- Pay attention to specific user feedback, especially corrections
+
+Your final summary (inside <summary></summary> tags) should be structured, concise, and actionable. Include:
+
 1. Task Overview
-The user's core request and success criteria
-Any clarifications or constraints they specified
+   The user's core request and success criteria. Any clarifications or constraints specified.
+
 2. Current State
-What has been completed so far
-Files created, modified, or analyzed (with paths if relevant)
-Key outputs or artifacts produced
+   What has been completed so far. Key outputs, artifacts, or findings produced. Any state or identifiers that need to persist (file paths, URLs, ticket IDs, etc.) — preserve these verbatim.
+
 3. Important Discoveries
-Technical constraints or requirements uncovered
-Decisions made and their rationale
-Errors encountered and how they were resolved
-What approaches were tried that didn't work (and why)
+   Constraints or requirements uncovered. Decisions made and their rationale. Approaches that were tried and didn't work (and why). Errors encountered and how they were resolved.
+
 4. Next Steps
-Specific actions needed to complete the task
-Any blockers or open questions to resolve
-Priority order if multiple steps remain
+   Specific actions needed to complete the task. Any blockers or open questions. Priority order if multiple steps remain.
+
 5. Context to Preserve
-User preferences or style requirements
-Domain-specific details that aren't obvious
-Any promises made to the user
-Be concise but complete—err on the side of including information that would prevent duplicate work or repeated mistakes. Write in a way that enables immediate resumption of the task.
-Wrap your summary in <summary></summary> tags.
+   User preferences or style requirements. Domain-specific details that aren't obvious from the conversation. Any promises or commitments made to the user.
+
+Here's an example of the expected format:
+
+<example>
+<analysis>
+[Your thought process reviewing the conversation, identifying what matters]
+</analysis>
+
+<summary>
+1. Task Overview:
+   [User's core request and success criteria]
+
+2. Current State:
+   - [What has been completed]
+   - [Key outputs or identifiers to preserve verbatim]
+
+3. Important Discoveries:
+   - [Key constraints, decisions, failed approaches, errors resolved]
+
+4. Next Steps:
+   - [Specific actions in priority order]
+
+5. Context to Preserve:
+   - [Preferences, commitments, domain details]
+</summary>
+</example>
+
+Be concise but complete — err on the side of including information that would prevent duplicate work or repeated mistakes. Write in a way that enables immediate resumption of the task.
 `.trim(),
 
   /**
-   * A much larger, detailed variant (1121 tokens in Claude Code) for deep conversational memory.
-   * Derived from Claude Code's "agent-prompt-conversation-summarization.md".
-   * Use this when you need absolute precision and error-tracking in your Janitor module.
+   * Cleans the raw output of a compression model by stripping XML scaffolding.
+   *
+   * - Removes <analysis>...</analysis> scratchpad blocks (stripped from final output)
+   * - Extracts content from <summary>...</summary> when present
+   * - Falls back to the stripped text if no <summary> tag is found
+   * - Collapses excessive blank lines and trims whitespace
+   *
+   * Called by Janitor on the compressionModel return value before wrapping
+   * with getCompactSummaryWrapper.
+   *
+   * @example
+   * formatCompactSummary('<analysis>thinking</analysis><summary>result</summary>')
+   * // → 'result'
    */
-  DEEP_CONVERSATION_SUMMARIZATION: `
-Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
-This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
+  formatCompactSummary: (raw: string): string => {
+    let out = raw;
 
-Before providing your final summary, wrap your analysis in tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
+    // Strip <analysis> scratchpad blocks (case-insensitive, all occurrences)
+    out = out.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '');
 
-1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
- - The user's explicit requests and intents
- - Your approach to addressing the user's requests
- - Key decisions, technical concepts and code patterns
- - Specific details like file names, full code snippets, function signatures, file edits.
- - Errors that you ran into and how you fixed them
- - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
+    // Extract <summary> content if present
+    const match = out.match(/<summary>([\s\S]*?)<\/summary>/i);
+    if (match) {
+      out = match[1];
+    }
 
-Your summary should include the following sections:
-1. Primary Request and Intent
-2. Key Technical Concepts
-3. Files and Code Sections (including full code snippets and summary of changes)
-4. Errors and fixes
-5. Problem Solving
-6. All user messages (not tool results)
-7. Pending Tasks
-8. Current Work
-9. Optional Next Step (must be DIRECTLY in line with the user's most recent explicit requests)
-
-Wrap your final structured summary in <history_summary> tags.
-`.trim(),
+    // Collapse 3+ consecutive newlines into 2, then trim
+    return out.replace(/\n{3,}/g, '\n\n').trim();
+  },
 
   /**
    * Wraps a compression summary with context explanation.

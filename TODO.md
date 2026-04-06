@@ -153,41 +153,44 @@ interface ToolResultClearTarget { target: 'tool-result'; keepRecent?: number; }
 
 `keepRecent` preserves the last N tool results (floored to 1), clearing the rest.
 
+### ✅ Turn-Based Grouping for Janitor
+
+Replaced `adjustSplitIndex` with structurally correct turn-based splitting. Released in 3.0.1.
+
+- `groupIntoTurns(history)` utility exported from public API, returns `Turn[]` with atomic boundaries (user/system/plain-assistant = single-message turn; assistant+tool_calls + all subsequent tool results = one atomic turn)
+- `evaluateBudget()` iterates turns (not messages) from the tail on both tokenizer and feedTokenUsage paths — splits always land on turn boundaries, tool pair integrity guaranteed by design
+- `adjustSplitIndex()` fully removed
+- `preserveRecentMessages` now counts turns (behavioral change documented in 3.0.1)
+
+### ✅ Remove System Message Protection in `executeCompression`
+
+`executeCompression()` no longer contains defensive system-message filtering (removed in 3.0.1). The middleware path (`ai-sdk-middleware/src/middleware.ts`) splits system messages out before `compress()` is called, and core-path callers don't put system messages in `setHistory()`. Janitor is no longer responsible for this.
+
+### ✅ Built-in Compression Prompt Utilities + Prompt Scaffolding Upgrade
+
+Upgraded `CONTEXT_COMPACTION_INSTRUCTION` to use Claude Code's two-phase `<analysis>` + `<summary>` pattern with an `<example>` block, while keeping the domain-agnostic section headings (Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve) so the prompt works for any use case, not just coding agents.
+
+- New `Prompts.formatCompactSummary(raw)` — strips `<analysis>` scratchpad blocks (any case, multiple occurrences) and extracts `<summary>` content. Falls back to cleaned raw text when tags are absent. Collapses 3+ consecutive blank lines and trims.
+- `executeCompression()` now pipes `compressionModel` output through `formatCompactSummary` before wrapping with `getCompactSummaryWrapper`, so `<analysis>` scratchpads and XML scaffolding never leak into the next context window.
+- Deleted `DEEP_CONVERSATION_SUMMARIZATION` — it was dead code (defined but never referenced internally) and its `<history_summary>` vs `<summary>` divergence from `CONTEXT_COMPACTION_INSTRUCTION` created an inconsistent parsing contract.
+- New `JanitorConfig.customCompressionInstructions?: string` — additive (not replacement), appended as an "Additional Instructions:" section after the default prompt. Claude Code-style: users can focus the summary on their domain concerns without being able to break the `<analysis>`/`<summary>` contract.
+
+Design decision: **no preset-swapping mechanism** (considered `compressionPrompt: string` full-swap; rejected). Claude Code doesn't let users swap the wholesale prompt for the same reason — it would break the parser contract. Users who need radically different compression behavior can still provide their own `compressionModel` entirely.
+
+### ✅ Compression Circuit Breaker
+
+Prevents infinite retry loops when `compressionModel` consistently fails. Inspired by Claude Code's `autoCompact.ts` (`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`).
+
+- New private `_consecutiveFailures` counter in `Janitor`, constant `MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3`
+- `compress()` short-circuits (returns history unchanged) when `_consecutiveFailures` reaches the limit — no wasted API calls
+- `executeCompression()` try/catch: resets counter to 0 on success, increments on failure
+- `JanitorSnapshot` gains `consecutiveFailures: number`; `snapshotState()` / `restoreState()` / `reset()` updated accordingly
+- `restoreState()` uses `?? 0` for defensive backward compatibility with serialized snapshots from older versions
+- No `onCompressError` hook added — YAGNI; the breaker trip is observable via subsequent `compress()` becoming a no-op, and developers who want failure notifications can already wrap their own `compressionModel`
+
 ---
 
 ## Planned
-
-### Turn-Based Grouping for Janitor
-
-**Priority: High** — Replaces `adjustSplitIndex` with a structurally correct, predictable split mechanism. Also resolves the `compact(keepRecent)` vs `adjustSplitIndex` conflict where the two mechanisms have incompatible definitions of "recent."
-
-**Problem**: `adjustSplitIndex` is a post-hoc patch that moves the split point unpredictably to preserve API invariants (tool pairs, message alternation). When combined with `compact(keepRecent)`, cleared tool results near the split boundary can trigger unnecessary pair protection, pulling already-cleared messages into the "clear present" range.
-
-Claude Code avoids this problem by using a very small, fixed `preserveRecentMessages` and running compact/compress in separate lifecycle events. ContextChef's token-ratio-based split + same-call compact/compress pipeline exposes the conflict.
-
-**Design**: Group messages into atomic "turns" before split calculation. Split only on turn boundaries.
-
-```typescript
-interface Turn {
-  messages: Message[];
-  startIndex: number;
-  endIndex: number;  // exclusive
-}
-
-// Grouping rules:
-// - user message → single-message turn
-// - system message → single-message turn
-// - assistant (no tool_calls) → single-message turn
-// - assistant (with tool_calls) + all subsequent tool results → one atomic turn
-```
-
-**Implementation**:
-- Add `groupIntoTurns(history: Message[]): Turn[]` utility
-- In `evaluateBudget()`, iterate turns (not messages) from the tail, accumulating token costs per turn
-- `splitIndex = turns[splitTurn].startIndex` — always lands on a turn boundary
-- Remove `adjustSplitIndex()` — tool pair protection and alternation are guaranteed by the grouping
-- Update `compact(keepRecent)` to count turns (not individual tool messages) for consistent "recent" semantics
-- `feedTokenUsage` path: `preserveRecentMessages` counts turns, not messages
 
 ### `compact()` — `toolFilter` Support
 
@@ -206,19 +209,6 @@ interface ToolResultClearTarget {
 ```
 
 Resolving the tool name requires scanning the preceding assistant message for the matching `tool_calls[].id` → `function.name`.
-
----
-
-### Remove System Message Protection in `executeCompression`
-
-**Priority: High** — Current diff adds defensive code to filter system messages from the compressed range. This is unnecessary because:
-
-1. Core path: `setSystemPrompt()` and `setHistory()` are separate APIs — system messages shouldn't be in history
-2. Middleware path: system messages are filtered out before compression (`allIR.filter(m => m.role === 'system')`)
-3. Anthropic/Gemini APIs don't allow system messages in the messages array — adapters extract them to top-level
-4. OpenAI allows system anywhere, but developers don't put system messages in `setHistory()`
-
-**Action**: Remove the `systemMessages` filtering in `executeCompression()`. If a system message appears in history, that's a caller bug, not Janitor's responsibility.
 
 ---
 
@@ -270,50 +260,24 @@ memoryPlacement?: 'after_system' | 'before_history_tail';
 
 ---
 
-### Compression Circuit Breaker
+### Strip Reasoning Model `<think>` Tags in `compact()`
 
-**Priority: Medium** — Prevents infinite retry loops when `compressionModel` consistently fails.
+**Priority: Low** — Defensive cleanup for reasoning models (DeepSeek-R1, QwQ, gpt-oss, locally hosted reasoning models).
 
-**Reference**: Claude Code's `autoCompact.ts` tracks `consecutiveFailures` and stops retrying after `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`.
+**Context**: When an assistant message's `content` string contains `<think>...</think>` blocks (common in non-official APIs or local inference of reasoning models), these reasoning traces leak into the final context and waste tokens. The current `compact()` only strips the Anthropic-native `thinking` / `redacted_thinking` message fields, not XML-tagged reasoning in the content string.
 
-**Implementation**:
-- Add `consecutiveFailures: number` to Janitor private state
-- Add `MAX_FAILURES = 3` constant
-- In `compress()`: if `consecutiveFailures >= MAX_FAILURES`, return `history` unchanged
-- In `executeCompression()`: on success, reset to 0; on catch, increment
-- Add to `JanitorSnapshot` and `snapshotState()`/`restoreState()`/`reset()`
-- Add optional `onCompressError?: (info: { failures: number; tripped: boolean }) => void` to `JanitorConfig`
+**Reference**: Mem0's `remove_code_blocks` in `mem0/memory/utils.py` uses `re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)` for this exact purpose.
 
----
+**Design**: Extend `ClearTarget` to support a new target that strips XML-tagged reasoning from content strings:
 
-### Built-in Compression Prompt Utilities
-
-**Priority: Medium** — Reduces boilerplate for developers using `compressionModel`.
-
-**Reference**: Claude Code's `prompt.ts` uses a two-phase `<analysis>` + `<summary>` pattern where the LLM first reasons in an `<analysis>` scratchpad (stripped from final output), then produces a structured `<summary>`. This measurably improves summary quality.
-
-**Implementation**:
-- `Prompts.COMPACT_PROMPT` — structured prompt with the analysis+summary pattern, usable as the final user message in a `compressionModel` call
-- `Prompts.formatCompactSummary(raw: string): string` — strips `<analysis>...</analysis>`, extracts content from `<summary>...</summary>`, cleans whitespace
-- `Prompts.PARTIAL_COMPACT_PROMPT` — variant for partial history compression (only summarize the old portion, recent messages are preserved separately)
-
-These are pure utilities, not policies — developers choose whether to use them.
-
-Example:
 ```typescript
-const chef = new ContextChef({
-  janitor: {
-    contextWindow: 128_000,
-    compressionModel: async (msgs) => {
-      const resp = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [...msgs, { role: 'user', content: Prompts.COMPACT_PROMPT }],
-      });
-      return Prompts.formatCompactSummary(resp.choices[0].message.content);
-    },
-  },
-});
+type ClearTarget = 'thinking' | 'tool-result' | 'reasoning-tags' | ToolResultClearTarget;
 ```
+
+- `'thinking'` (existing): strips Anthropic native `thinking` / `redacted_thinking` fields
+- `'reasoning-tags'` (new): strips `<think>...</think>` XML blocks from the content string
+
+Only applies when `compact()` is called; does not auto-trigger. Out of scope for `formatCompactSummary` — that handles compression model output, this handles history messages.
 
 ---
 

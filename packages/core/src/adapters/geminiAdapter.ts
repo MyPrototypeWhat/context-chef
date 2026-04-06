@@ -34,14 +34,16 @@ export class GeminiAdapter implements ITargetAdapter {
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        systemParts.push({ text: msg.content } as SDKTextPart);
+        const textPart: SDKTextPart = { text: msg.content };
+        systemParts.push(textPart);
         continue;
       }
 
       if (msg.role === 'tool') {
         let parsedResponse: object;
         try {
-          parsedResponse = JSON.parse(msg.content) as object;
+          // JSON.parse returns `any`; the typed variable coerces without a cast.
+          parsedResponse = JSON.parse(msg.content);
         } catch {
           parsedResponse = { result: msg.content };
         }
@@ -50,7 +52,7 @@ export class GeminiAdapter implements ITargetAdapter {
             name: msg.name ?? msg.tool_call_id ?? 'unknown',
             response: parsedResponse,
           },
-        } as SDKFunctionResponsePart;
+        };
         contents.push({ role: 'user', parts: [part] });
         continue;
       }
@@ -64,28 +66,32 @@ export class GeminiAdapter implements ITargetAdapter {
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           if (msg.content) {
-            parts.push({ text: msg.content } as SDKTextPart);
+            const textPart: SDKTextPart = { text: msg.content };
+            parts.push(textPart);
           }
           for (const tc of msg.tool_calls) {
+            const args: object = JSON.parse(tc.function.arguments);
             const part: SDKFunctionCallPart = {
               functionCall: {
                 name: tc.function.name,
-                args: JSON.parse(tc.function.arguments) as object,
+                args,
               },
-            } as SDKFunctionCallPart;
+            };
             parts.push(part);
           }
         } else {
-          parts.push({ text: msg.content } as SDKTextPart);
+          const textPart: SDKTextPart = { text: msg.content };
+          parts.push(textPart);
         }
 
         contents.push({ role: 'model', parts });
         continue;
       }
 
+      const userTextPart: SDKTextPart = { text: msg.content };
       contents.push({
         role: 'user',
-        parts: [{ text: msg.content } as SDKTextPart],
+        parts: [userTextPart],
       });
     }
 
@@ -107,20 +113,22 @@ export class GeminiAdapter implements ITargetAdapter {
         for (let i = contents.length - 1; i >= 0; i--) {
           const firstPart = contents[i].parts[0];
           if (contents[i].role === 'user' && 'text' in firstPart && firstPart.text !== undefined) {
+            const injectedText: SDKTextPart = {
+              text: `${firstPart.text}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
+            };
             contents[i] = {
               ...contents[i],
-              parts: [
-                {
-                  text: `${firstPart.text}\n\n${Prompts.getPrefillEnforcement(prefillContent)}`,
-                } as SDKTextPart,
-              ],
+              parts: [injectedText],
             };
             break;
           }
         }
 
         if (contents.every((c) => c.role !== 'user')) {
-          systemParts.push({ text: Prompts.getPrefillEnforcement(prefillContent) } as SDKTextPart);
+          const enforcementPart: SDKTextPart = {
+            text: Prompts.getPrefillEnforcement(prefillContent),
+          };
+          systemParts.push(enforcementPart);
         }
       }
     }

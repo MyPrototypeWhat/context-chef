@@ -1,6 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../types';
+import type { GeminiPayload, Message } from '../types';
 import { GeminiAdapter } from './geminiAdapter';
+
+/**
+ * Unified plain-object inspection shape. Covers every field tests touch
+ * (text, functionCall, functionResponse, systemInstruction with optional
+ * cache_control). Used as the target type for a JSON round-trip helper so
+ * tests don't need per-assertion shape casts.
+ */
+interface GeminiPlainResult {
+  messages: Array<{
+    role: string;
+    parts: Array<{
+      text?: string;
+      functionCall?: { name: string; args: Record<string, unknown> };
+      functionResponse?: { name: string; response: unknown };
+    }>;
+  }>;
+  systemInstruction?: {
+    parts: Array<{ text: string; cache_control?: unknown }>;
+  };
+}
+
+/**
+ * Round-trip via JSON strips the SDK's complex union types to plain objects.
+ * JSON.parse returns `any`, which TypeScript assigns to the target interface
+ * without an explicit cast.
+ */
+function toPlain(result: GeminiPayload): GeminiPlainResult {
+  const plain: GeminiPlainResult = JSON.parse(JSON.stringify(result));
+  return plain;
+}
 
 describe('GeminiAdapter', () => {
   const adapter = new GeminiAdapter();
@@ -12,10 +42,7 @@ describe('GeminiAdapter', () => {
       { role: 'user', content: 'Hello' },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{ role: string; parts: Array<{ text?: string }> }>;
-      systemInstruction?: { parts: Array<{ text: string }> };
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     expect(result.systemInstruction).toBeDefined();
     expect(result.systemInstruction?.parts).toHaveLength(2);
@@ -30,7 +57,7 @@ describe('GeminiAdapter', () => {
   it('should omit systemInstruction when no system messages exist', () => {
     const messages: Message[] = [{ role: 'user', content: 'Hello' }];
 
-    const result = adapter.compile([...messages]) as unknown as Record<string, unknown>;
+    const result = toPlain(adapter.compile([...messages]));
     expect(result.systemInstruction).toBeUndefined();
   });
 
@@ -41,9 +68,7 @@ describe('GeminiAdapter', () => {
       { role: 'user', content: 'How are you?' },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{ role: string; parts: Array<{ text?: string }> }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     expect(result.messages).toHaveLength(3);
     expect(result.messages[0].role).toBe('user');
@@ -71,15 +96,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{
-          text?: string;
-          functionCall?: { name: string; args: Record<string, unknown> };
-        }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     expect(result.messages).toHaveLength(2);
     const modelMsg = result.messages[1];
@@ -109,15 +126,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{
-          text?: string;
-          functionCall?: { name: string; args: Record<string, unknown> };
-        }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     const modelMsg = result.messages[1];
     expect(modelMsg.parts).toHaveLength(2);
@@ -151,12 +160,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{ functionCall?: { name: string; args: Record<string, unknown> } }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     const modelMsg = result.messages[1];
     expect(modelMsg.parts).toHaveLength(3);
@@ -187,14 +191,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{
-          functionResponse?: { name: string; response: unknown };
-        }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     expect(result.messages).toHaveLength(3);
     const toolResultMsg = result.messages[2];
@@ -217,14 +214,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{
-          functionResponse?: { name: string; response: unknown };
-        }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     expect(result.messages[0].parts[0].functionResponse?.response).toEqual({
       result: 'File not found',
@@ -240,14 +230,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{
-          functionResponse?: { name: string; response: unknown };
-        }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     expect(result.messages[0].parts[0].functionResponse?.name).toBe('call_fallback');
   });
@@ -258,11 +241,10 @@ describe('GeminiAdapter', () => {
       { role: 'user', content: 'Hello' },
     ];
 
-    const result = adapter.compile([...messages]) as unknown as {
-      systemInstruction: { parts: Array<{ text: string; cache_control?: unknown }> };
-    };
-
-    const sysPart = result.systemInstruction.parts[0];
+    const result = toPlain(adapter.compile([...messages]));
+    const sysPart = result.systemInstruction?.parts[0];
+    expect(sysPart).toBeDefined();
+    if (!sysPart) return;
     expect(sysPart.text).toBe('System prompt.');
     expect(sysPart).not.toHaveProperty('cache_control');
     expect(sysPart).not.toHaveProperty('_cache_breakpoint');
@@ -275,10 +257,7 @@ describe('GeminiAdapter', () => {
       { role: 'assistant', content: '<thinking>\n1. ' },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{ role: string; parts: Array<{ text?: string }> }>;
-      systemInstruction?: { parts: Array<{ text: string }> };
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     // Model prefill message should be removed, only user message remains
     expect(result.messages).toHaveLength(1);
@@ -309,14 +288,7 @@ describe('GeminiAdapter', () => {
       },
     ];
 
-    const result = adapter.compile([...messages]) as {
-      messages: Array<{
-        role: string;
-        parts: Array<{
-          functionCall?: { name: string; args: Record<string, unknown> };
-        }>;
-      }>;
-    };
+    const result = toPlain(adapter.compile([...messages]));
 
     // Should keep the model message as-is, no degradation
     expect(result.messages).toHaveLength(2);

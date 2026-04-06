@@ -17,7 +17,10 @@ export class VFSMemoryStore implements MemoryStore {
     const file = this._keyToFile(key);
     if (!fs.existsSync(file)) return null;
     try {
-      return JSON.parse(fs.readFileSync(file, 'utf-8')) as MemoryStoreEntry;
+      // JSON.parse returns `any`, which TypeScript allows assigning to a typed variable.
+      // The runtime contract is trusted — files under storageDir are written by set().
+      const entry: MemoryStoreEntry = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      return entry;
     } catch {
       return null;
     }
@@ -82,7 +85,8 @@ export class VFSMemoryStore implements MemoryStore {
   private _loadIndex(): string[] {
     if (!fs.existsSync(this.indexPath)) return [];
     try {
-      return JSON.parse(fs.readFileSync(this.indexPath, 'utf-8')) as string[];
+      const parsed: string[] = JSON.parse(fs.readFileSync(this.indexPath, 'utf-8'));
+      return parsed;
     } catch {
       return [];
     }

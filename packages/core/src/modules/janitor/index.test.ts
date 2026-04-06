@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
+import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { groupIntoTurns, Janitor } from '.';
 
@@ -71,7 +72,7 @@ describe('Janitor — tokenizer path', () => {
   });
 
   it('calls tokenizer with Message[] directly', async () => {
-    const spy = vi.fn().mockReturnValue(999999);
+    const spy = vi.fn<(messages: Message[]) => number>().mockReturnValue(999999);
     const mockModel = vi.fn().mockResolvedValue('<history_summary>X</history_summary>');
     const janitor = new Janitor({
       contextWindow: 100,
@@ -83,7 +84,7 @@ describe('Janitor — tokenizer path', () => {
     await janitor.compress(buildHistory(3));
 
     expect(spy).toHaveBeenCalled();
-    const firstCallArg = spy.mock.calls[0][0] as Message[];
+    const firstCallArg = spy.mock.calls[0][0];
     expect(Array.isArray(firstCallArg)).toBe(true);
     expect(firstCallArg[0]).toHaveProperty('role');
   });
@@ -354,7 +355,7 @@ describe('Janitor — snapshot & restore', () => {
 
 describe('Janitor — onCompress hook', () => {
   it('fires with summary message and truncated count', async () => {
-    const onCompress = vi.fn();
+    const onCompress = vi.fn<(summary: Message, count: number) => void>();
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
@@ -365,7 +366,7 @@ describe('Janitor — onCompress hook', () => {
     await janitor.compress(buildHistory(5));
 
     expect(onCompress).toHaveBeenCalledTimes(1);
-    const [summaryMsg, count] = onCompress.mock.calls[0] as [Message, number];
+    const [summaryMsg, count] = onCompress.mock.calls[0];
     expect(summaryMsg.role).toBe('user');
     expect(count).toBeGreaterThan(0);
   });
@@ -618,5 +619,297 @@ describe('Janitor — turn-based compression', () => {
     expect(result[3].role).toBe('tool');
     expect(result[4].role).toBe('assistant');
     expect(result[5].role).toBe('user');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Prompts.formatCompactSummary — XML tag cleanup utility
+// ═══════════════════════════════════════════════════════
+
+describe('Prompts.formatCompactSummary', () => {
+  it('extracts <summary> content and strips <analysis> scratchpad', () => {
+    const raw =
+      '<analysis>thinking through the conversation</analysis>\n<summary>Final result</summary>';
+    expect(Prompts.formatCompactSummary(raw)).toBe('Final result');
+  });
+
+  it('returns content when only <summary> tag is present', () => {
+    const raw = '<summary>Just the summary</summary>';
+    expect(Prompts.formatCompactSummary(raw)).toBe('Just the summary');
+  });
+
+  it('strips <analysis> blocks even when no <summary> tag is present', () => {
+    const raw = '<analysis>draft</analysis>\n\nRaw text without summary tag';
+    expect(Prompts.formatCompactSummary(raw)).toBe('Raw text without summary tag');
+  });
+
+  it('returns plain text unchanged when no tags are present', () => {
+    expect(Prompts.formatCompactSummary('plain text no tags')).toBe('plain text no tags');
+  });
+
+  it('handles empty input', () => {
+    expect(Prompts.formatCompactSummary('')).toBe('');
+  });
+
+  it('is case-insensitive for tags', () => {
+    const raw = '<ANALYSIS>draft</ANALYSIS><SUMMARY>final</SUMMARY>';
+    expect(Prompts.formatCompactSummary(raw)).toBe('final');
+  });
+
+  it('strips multiple <analysis> blocks', () => {
+    const raw = '<analysis>first</analysis><analysis>second</analysis><summary>result</summary>';
+    expect(Prompts.formatCompactSummary(raw)).toBe('result');
+  });
+
+  it('collapses 3+ consecutive newlines into 2', () => {
+    const raw = '<summary>line1\n\n\n\n\nline2</summary>';
+    expect(Prompts.formatCompactSummary(raw)).toBe('line1\n\nline2');
+  });
+
+  it('handles multiline <summary> content correctly', () => {
+    const raw = `<analysis>
+reviewing...
+</analysis>
+<summary>
+1. Task Overview:
+   User requested X
+
+2. Current State:
+   - Done Y
+</summary>`;
+    const result = Prompts.formatCompactSummary(raw);
+    expect(result).toContain('1. Task Overview:');
+    expect(result).toContain('2. Current State:');
+    expect(result).not.toContain('reviewing');
+    expect(result).not.toContain('<analysis>');
+    expect(result).not.toContain('<summary>');
+  });
+
+  it('preserves content when <summary> contains nested code blocks', () => {
+    const raw = '<summary>Here is code:\n```ts\nfoo();\n```\nEnd.</summary>';
+    const result = Prompts.formatCompactSummary(raw);
+    expect(result).toContain('```ts');
+    expect(result).toContain('foo();');
+  });
+
+  it('trims leading/trailing whitespace from extracted content', () => {
+    const raw = '<summary>\n\n   content   \n\n</summary>';
+    expect(Prompts.formatCompactSummary(raw)).toBe('content');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// customCompressionInstructions — additive prompt customization
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — customCompressionInstructions', () => {
+  it('appends additional instructions to the default prompt', async () => {
+    const compressionModel = vi
+      .fn<(msgs: Message[]) => Promise<string>>()
+      .mockResolvedValue('<summary>s</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+      customCompressionInstructions: 'Focus on ticket IDs and customer sentiment.',
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    const msgs = compressionModel.mock.calls[0][0];
+    const lastMessage = msgs[msgs.length - 1];
+    expect(lastMessage.role).toBe('user');
+    expect(lastMessage.content).toContain(Prompts.CONTEXT_COMPACTION_INSTRUCTION);
+    expect(lastMessage.content).toContain('Additional Instructions:');
+    expect(lastMessage.content).toContain('Focus on ticket IDs and customer sentiment.');
+  });
+
+  it('does not add "Additional Instructions" section when empty', async () => {
+    const compressionModel = vi
+      .fn<(msgs: Message[]) => Promise<string>>()
+      .mockResolvedValue('<summary>s</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+      customCompressionInstructions: '   ', // whitespace only
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    const msgs = compressionModel.mock.calls[0][0];
+    const lastMessage = msgs[msgs.length - 1];
+    expect(lastMessage.content).not.toContain('Additional Instructions:');
+  });
+
+  it('works without customCompressionInstructions (backward compatibility)', async () => {
+    const compressionModel = vi
+      .fn<(msgs: Message[]) => Promise<string>>()
+      .mockResolvedValue('<summary>s</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    const msgs = compressionModel.mock.calls[0][0];
+    const lastMessage = msgs[msgs.length - 1];
+    expect(lastMessage.content).toBe(Prompts.CONTEXT_COMPACTION_INSTRUCTION);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// formatCompactSummary integration in executeCompression
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — compression output cleanup', () => {
+  it('strips <analysis> and extracts <summary> from compressionModel output', async () => {
+    const rawOutput = '<analysis>scratchpad content</analysis>\n<summary>CLEAN_SUMMARY</summary>';
+    const compressionModel = vi.fn().mockResolvedValue(rawOutput);
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(result[0].role).toBe('user');
+    expect(result[0].content).toContain('CLEAN_SUMMARY');
+    expect(result[0].content).not.toContain('scratchpad content');
+    expect(result[0].content).not.toContain('<analysis>');
+    expect(result[0].content).not.toContain('<summary>');
+  });
+
+  it('passes through raw text when no recognized tags present', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('just plain text');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+    expect(result[0].content).toContain('just plain text');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Circuit breaker — prevents infinite retry on compression failures
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — compression circuit breaker', () => {
+  it('short-circuits compress() after 3 consecutive failures', async () => {
+    const compressionModel = vi.fn().mockRejectedValue(new Error('API down'));
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    // Each call exceeds budget and tries to compress. E10 suppression alternates,
+    // so we need to alternate calls to exercise the breaker.
+    // First failure
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(janitor['_consecutiveFailures']).toBe(1);
+
+    // E10 suppresses next call (no compressionModel invocation)
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+
+    // Second failure
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(janitor['_consecutiveFailures']).toBe(2);
+
+    // E10 suppresses
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+
+    // Third failure — breaker trips after this
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(3);
+    expect(janitor['_consecutiveFailures']).toBe(3);
+
+    // Further calls: breaker is tripped, compress() returns history unchanged
+    // and never calls compressionModel
+    const history = buildHistory(5);
+    const result = await janitor.compress(history);
+    expect(compressionModel).toHaveBeenCalledTimes(3); // unchanged
+    expect(result).toEqual(history); // history returned as-is
+
+    // Keep trying — breaker stays tripped
+    await janitor.compress(buildHistory(5));
+    await janitor.compress(buildHistory(5));
+    expect(compressionModel).toHaveBeenCalledTimes(3);
+  });
+
+  it('resets failure counter on successful compression', async () => {
+    let shouldFail = true;
+    const compressionModel = vi.fn().mockImplementation(async () => {
+      if (shouldFail) throw new Error('fail');
+      return '<summary>ok</summary>';
+    });
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    // Fail twice
+    await janitor.compress(buildHistory(5));
+    await janitor.compress(buildHistory(5)); // E10 suppressed
+    await janitor.compress(buildHistory(5));
+    expect(janitor['_consecutiveFailures']).toBe(2);
+
+    // Flip to success
+    shouldFail = false;
+    await janitor.compress(buildHistory(5)); // E10 suppressed
+    await janitor.compress(buildHistory(5)); // success
+    expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  it('reset() clears failure counter', async () => {
+    const compressionModel = vi.fn().mockRejectedValue(new Error('fail'));
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    await janitor.compress(buildHistory(5));
+    await janitor.compress(buildHistory(5)); // E10 suppressed
+    await janitor.compress(buildHistory(5));
+    expect(janitor['_consecutiveFailures']).toBe(2);
+
+    janitor.reset();
+    expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  it('snapshot/restore preserves failure counter', async () => {
+    const compressionModel = vi.fn().mockRejectedValue(new Error('fail'));
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    await janitor.compress(buildHistory(5));
+    await janitor.compress(buildHistory(5)); // E10 suppressed
+    await janitor.compress(buildHistory(5));
+    expect(janitor['_consecutiveFailures']).toBe(2);
+
+    const snap = janitor.snapshotState();
+    expect(snap.consecutiveFailures).toBe(2);
+
+    janitor.reset();
+    expect(janitor['_consecutiveFailures']).toBe(0);
+
+    janitor.restoreState(snap);
+    expect(janitor['_consecutiveFailures']).toBe(2);
   });
 });
