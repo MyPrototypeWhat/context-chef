@@ -49,9 +49,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 
       // 2. Compact (mechanical, zero LLM cost) via pruneMessages
       if (options.compact) {
-        prompt = fromModelMessages(
-          pruneMessages({ messages: toModelMessages(prompt), ...options.compact }),
-        );
+        prompt = compactPrompt(prompt, options.compact);
       }
 
       // 3. Convert to IR and separate system messages from conversation.
@@ -127,44 +125,35 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 }
 
 /**
- * Maps LanguageModelV3Prompt to ModelMessage[] for pruneMessages.
+ * Prunes a LanguageModelV3Prompt via AI SDK's pruneMessages.
  *
- * Both types share identical runtime structure but have different
- * TypeScript definitions (from @ai-sdk/provider vs @ai-sdk/provider-utils).
+ * LanguageModelV3Message (from @ai-sdk/provider) and ModelMessage
+ * (from @ai-sdk/provider-utils) share identical runtime structure but
+ * differ at the TypeScript level (e.g. ImagePart, FilePart.data).
+ * Since pruneMessages only filters — never transforms — every content
+ * part in the output is an original V3 part, making the casts safe.
  */
-function toModelMessages(prompt: LanguageModelV3Prompt): ModelMessage[] {
-  return prompt.map((msg): ModelMessage => {
-    const { providerOptions } = msg;
-    switch (msg.role) {
-      case 'system':
-        return { role: 'system', content: msg.content, providerOptions };
-      case 'user':
-        return { role: 'user', content: msg.content, providerOptions };
-      case 'assistant':
-        return { role: 'assistant', content: msg.content, providerOptions };
-      default:
-        return { role: 'tool', content: msg.content, providerOptions };
-    }
-  });
-}
-
-/**
- * Maps ModelMessage[] back to LanguageModelV3Prompt after pruning.
- */
-function fromModelMessages(messages: ModelMessage[]): LanguageModelV3Prompt {
-  return messages.map((msg): LanguageModelV3Message => {
-    const { providerOptions } = msg;
-    switch (msg.role) {
-      case 'system':
-        return { role: 'system', content: msg.content, providerOptions };
-      case 'user':
-        return { role: 'user', content: msg.content, providerOptions };
-      case 'assistant':
-        return { role: 'assistant', content: msg.content, providerOptions };
-      default:
-        return { role: 'tool', content: msg.content, providerOptions };
-    }
-  });
+function compactPrompt(
+  prompt: LanguageModelV3Prompt,
+  config: Omit<Parameters<typeof pruneMessages>[0], 'messages'>,
+): LanguageModelV3Prompt {
+  const messages = prompt.map(
+    (msg) =>
+      ({
+        role: msg.role,
+        content: msg.content,
+        providerOptions: msg.providerOptions,
+      }) as ModelMessage,
+  );
+  const pruned = pruneMessages({ messages, ...config });
+  return pruned.map(
+    (msg) =>
+      ({
+        role: msg.role,
+        content: msg.content,
+        providerOptions: msg.providerOptions,
+      }) as LanguageModelV3Message,
+  );
 }
 
 /**
