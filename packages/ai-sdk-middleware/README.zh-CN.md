@@ -102,34 +102,29 @@ const model = withContextChef(openai('gpt-4o'), {
 
 中间件自动从 `generateText` 和 `streamText` 响应中提取 token 用量，并回传给压缩引擎。无需手动调用 `reportTokenUsage()`。
 
-### Compact（机械清理）
+### Compact（机械裁剪）
 
-零 LLM 成本的 thinking 块和工具结果清理：
+零 LLM 成本的消息裁剪，基于 AI SDK 的 `pruneMessages` — 移除 reasoning、工具调用和空消息：
 
 ```typescript
 const model = withContextChef(openai('gpt-4o'), {
   contextWindow: 128_000,
   compact: {
-    clear: ['thinking', { target: 'tool-result', keepRecent: 5 }],
+    reasoning: 'all',                          // 移除所有 reasoning
+    toolCalls: 'before-last-message',          // 仅保留最后一条消息中的工具调用
   },
 });
 ```
 
-> **注意：compact + compress 交互**
->
-> 同时使用 `compact` 和 `compress` 时，compact 中仅清理 `thinking`：
->
-> ```typescript
-> const model = withContextChef(openai('gpt-4o'), {
->   contextWindow: 128_000,
->   compact: { clear: ['thinking'] },                // 仅 thinking
->   compress: { model: openai('gpt-4o-mini') },
-> });
-> ```
->
-> 在压缩之前清理 `tool-result` 会导致压缩模型收到空占位符而非实际工具输出，
-> 产生低质量摘要。压缩的 turn 分组机制已经管理了历史长度 — 仅在**未配置**
-> `compress` 时使用 `compact` 清理 `tool-result`。
+也支持按工具名称精细控制：
+
+```typescript
+compact: {
+  toolCalls: [
+    { type: 'before-last-message', tools: ['search', 'calculator'] },
+  ],
+}
+```
 
 ## API
 
@@ -156,7 +151,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.headChars` | `number` | 否 | 保留开头的字符数（默认：`0`） |
 | `truncate.tailChars` | `number` | 否 | 保留结尾的字符数（默认：`1000`） |
 | `truncate.storage` | `VFSStorageAdapter` | 否 | 截断前持久化原始内容的存储适配器 |
-| `compact` | `CompactConfig` | 否 | 机械内容清理（thinking、tool-result）。与 `compress` 同时使用时，仅使用 `clear: ['thinking']` |
+| `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
 | `onCompress` | `(summary, count) => void` | 否 | 压缩完成后的回调 |
 

@@ -308,10 +308,10 @@ describe('withContextChef wrapper', () => {
 });
 
 describe('compact', () => {
-  it('clears tool-result content before compression', async () => {
+  it('prunes tool-call and tool-result messages', async () => {
     const middleware = createMiddleware({
       contextWindow: 1_000_000,
-      compact: { clear: ['tool-result'] },
+      compact: { toolCalls: 'all' },
     });
 
     const prompt: LanguageModelV3Prompt = [
@@ -350,20 +350,24 @@ describe('compact', () => {
       model: createMockModel(),
     });
 
+    // tool message should be removed entirely
     const toolMsg = result.prompt.find((m) => m.role === 'tool');
-    expect(toolMsg).toBeDefined();
-    if (toolMsg?.role === 'tool') {
-      const part = toolMsg.content[0];
-      if (part.type === 'tool-result' && part.output.type === 'text') {
-        expect(part.output.value).toBe('[Old tool result content cleared]');
+    expect(toolMsg).toBeUndefined();
+
+    // assistant tool-call message should also be removed (empty after pruning)
+    const assistantMsgs = result.prompt.filter((m) => m.role === 'assistant');
+    for (const msg of assistantMsgs) {
+      if (msg.role === 'assistant') {
+        const hasToolCall = msg.content.some((p) => p.type === 'tool-call');
+        expect(hasToolCall).toBe(false);
       }
     }
   });
 
-  it('clears thinking content', async () => {
+  it('prunes reasoning content', async () => {
     const middleware = createMiddleware({
       contextWindow: 1_000_000,
-      compact: { clear: ['thinking'] },
+      compact: { reasoning: 'all' },
     });
 
     const prompt: LanguageModelV3Prompt = [

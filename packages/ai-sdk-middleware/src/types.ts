@@ -1,5 +1,5 @@
 import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
-import type { ClearTarget, Message, VFSStorageAdapter } from '@context-chef/core';
+import type { Message, VFSStorageAdapter } from '@context-chef/core';
 
 export interface TruncateOptions {
   /** Character count threshold to trigger truncation. */
@@ -26,17 +26,40 @@ export interface CompressOptions {
 
 /**
  * Mechanical compaction options — zero LLM cost.
+ * Delegates to AI SDK's `pruneMessages` before IR conversion.
  * Runs before LLM-based compression to reduce token usage at no cost.
- *
- * **Important:** When using together with `compress`, only clear `thinking`.
- * Clearing `tool-result` before compression causes the compression model to
- * receive empty placeholders instead of actual tool outputs, producing
- * low-quality summaries. Leave tool-result management to compression's
- * turn-based splitting.
  */
 export interface CompactConfig {
-  /** Which content types to clear from history. */
-  clear: ClearTarget[];
+  /**
+   * Controls removal of reasoning content from assistant messages.
+   * - `'all'`: Remove reasoning from all messages.
+   * - `'before-last-message'`: Keep reasoning only in the final message.
+   * - `'none'` (default): Keep all reasoning.
+   */
+  reasoning?: 'all' | 'before-last-message' | 'none';
+  /**
+   * Controls removal of tool-call, tool-result, and tool-approval chunks.
+   * - `'all'`: Remove all tool-related chunks.
+   * - `'before-last-message'`: Keep tool chunks only in the final message.
+   * - `'before-last-${N}-messages'`: Keep tool chunks in the last N messages.
+   * - `'none'`: Keep all tool chunks.
+   * - Array form allows per-tool control.
+   */
+  toolCalls?:
+    | 'all'
+    | 'before-last-message'
+    | `before-last-${number}-messages`
+    | 'none'
+    | Array<{
+        type: 'all' | 'before-last-message' | `before-last-${number}-messages`;
+        tools?: string[];
+      }>;
+  /**
+   * Whether to retain messages with no content after pruning.
+   * - `'remove'` (default): Exclude empty messages.
+   * - `'keep'`: Retain them.
+   */
+  emptyMessages?: 'keep' | 'remove';
 }
 
 /**
@@ -66,10 +89,9 @@ export interface ContextChefOptions {
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
-   * Mechanical compaction before LLM compression.
-   * Clears specified content types (tool-result, thinking) at zero LLM cost.
+   * Mechanical compaction via AI SDK's `pruneMessages`.
+   * Prunes reasoning, tool calls, and empty messages at zero LLM cost.
    *
-   * When combined with `compress`, use `clear: ['thinking']` only.
    * See CompactConfig for details.
    */
   compact?: CompactConfig;

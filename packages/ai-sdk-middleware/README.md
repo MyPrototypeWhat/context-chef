@@ -100,35 +100,29 @@ const model = withContextChef(openai('gpt-4o'), {
 
 The middleware automatically extracts token usage from `generateText` and `streamText` responses and feeds it back to the compression engine. No manual `reportTokenUsage()` calls needed.
 
-### Compact (Mechanical Clearing)
+### Compact (Mechanical Pruning)
 
-Zero-LLM-cost content clearing for thinking blocks and tool results:
+Zero-LLM-cost message pruning via AI SDK's `pruneMessages` — removes reasoning, tool calls, and empty messages:
 
 ```typescript
 const model = withContextChef(openai('gpt-4o'), {
   contextWindow: 128_000,
   compact: {
-    clear: ['thinking', { target: 'tool-result', keepRecent: 5 }],
+    reasoning: 'all',                          // Remove all reasoning
+    toolCalls: 'before-last-message',          // Keep tools only in the last message
   },
 });
 ```
 
-> **Important: compact + compress interaction**
->
-> When using `compact` together with `compress`, only clear `thinking` in compact:
->
-> ```typescript
-> const model = withContextChef(openai('gpt-4o'), {
->   contextWindow: 128_000,
->   compact: { clear: ['thinking'] },                // thinking only
->   compress: { model: openai('gpt-4o-mini') },
-> });
-> ```
->
-> Clearing `tool-result` before compression causes the compression model to receive
-> empty placeholders instead of actual tool outputs, producing low-quality summaries.
-> Compression's turn-based splitting already manages history length — use `compact`
-> for `tool-result` clearing only when `compress` is **not** configured.
+Per-tool control is also supported:
+
+```typescript
+compact: {
+  toolCalls: [
+    { type: 'before-last-message', tools: ['search', 'calculator'] },
+  ],
+}
+```
 
 ## API
 
@@ -155,7 +149,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |
 | `truncate.tailChars` | `number` | No | Characters to preserve from end (default: `1000`) |
 | `truncate.storage` | `VFSStorageAdapter` | No | Storage adapter to persist original content before truncation |
-| `compact` | `CompactConfig` | No | Mechanical content clearing (thinking, tool-result). When combined with `compress`, use `clear: ['thinking']` only |
+| `compact` | `CompactConfig` | No | Mechanical message pruning (reasoning, tool calls). Delegates to AI SDK's `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
 | `onCompress` | `(summary, count) => void` | No | Hook called after compression |
 
