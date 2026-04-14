@@ -1,5 +1,11 @@
 # context-chef
 
+## 3.1.1
+
+### Patch Changes
+
+- [`246175c`](https://github.com/MyPrototypeWhat/context-chef/commit/246175c31f713af6d7a50c303391f8409595871a) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Change license from ISC to MIT
+
 ## 3.1.0
 
 ### Minor Changes
