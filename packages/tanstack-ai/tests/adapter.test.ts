@@ -153,7 +153,8 @@ describe('toTanStackAI', () => {
     ];
     const ir = fromTanStackAI(original);
     // Simulate compact stripping one tool call
-    ir[0].tool_calls = [ir[0].tool_calls?.[0] ?? ir[0].tool_calls[0]];
+    // biome-ignore lint/style/noNonNullAssertion: tool_calls guaranteed by fromTanStackAI above
+    ir[0].tool_calls = [ir[0].tool_calls![0]];
     const roundTripped = toTanStackAI(ir);
     // Tool calls were modified (different length), so providerMetadata is lost
     expect(roundTripped[0].toolCalls).toHaveLength(1);
