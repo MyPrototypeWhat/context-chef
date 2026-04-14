@@ -1,5 +1,14 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.1.2
+
+### Patch Changes
+
+- [`246175c`](https://github.com/MyPrototypeWhat/context-chef/commit/246175c31f713af6d7a50c303391f8409595871a) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Change license from ISC to MIT
+
+- Updated dependencies [[`246175c`](https://github.com/MyPrototypeWhat/context-chef/commit/246175c31f713af6d7a50c303391f8409595871a)]:
+  - @context-chef/core@3.1.1
+
 ## 1.1.1
 
 ### Patch Changes
