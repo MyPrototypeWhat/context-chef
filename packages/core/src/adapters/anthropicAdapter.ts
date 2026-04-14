@@ -1,6 +1,5 @@
 import type {
   ContentBlockParam as SDKContentBlockParam,
-  ContentBlockSource as SDKContentBlockSource,
   DocumentBlockParam as SDKDocumentBlockParam,
   ImageBlockParam as SDKImageBlockParam,
   MessageParam as SDKMessageParam,
@@ -152,7 +151,13 @@ export function fromAnthropic(
     }
 
     // Only push a message for the role if there's meaningful content
-    if (textParts.length || toolCalls.length || attachments.length || thinking || redactedThinking) {
+    if (
+      textParts.length ||
+      toolCalls.length ||
+      attachments.length ||
+      thinking ||
+      redactedThinking
+    ) {
       const ir: HistoryMessage = {
         role: msg.role,
         content: textParts.join('\n'),

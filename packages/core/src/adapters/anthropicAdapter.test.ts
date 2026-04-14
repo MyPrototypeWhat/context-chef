@@ -1,10 +1,7 @@
+import type { MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it } from 'vitest';
 import type { AnthropicPayload, Message } from '../types';
 import { AnthropicAdapter, fromAnthropic } from './anthropicAdapter';
-import type {
-  MessageParam,
-  TextBlockParam,
-} from '@anthropic-ai/sdk/resources/messages/messages';
 
 interface AnthropicBlock {
   type: string;
@@ -258,7 +255,7 @@ describe('fromAnthropic', () => {
     expect(history).toHaveLength(1);
     expect(history[0].content).toBe('Look at this');
     expect(history[0].attachments).toHaveLength(1);
-    expect(history[0].attachments![0]).toEqual({
+    expect(history[0].attachments?.[0]).toEqual({
       mediaType: 'image/png',
       data: 'abc123',
     });
@@ -278,7 +275,7 @@ describe('fromAnthropic', () => {
     ];
     const { history } = fromAnthropic(messages);
 
-    expect(history[0].attachments![0]).toEqual({
+    expect(history[0].attachments?.[0]).toEqual({
       mediaType: 'image/*',
       data: 'https://example.com/img.jpg',
     });
@@ -298,7 +295,7 @@ describe('fromAnthropic', () => {
     ];
     const { history } = fromAnthropic(messages);
 
-    expect(history[0].attachments![0]).toEqual({
+    expect(history[0].attachments?.[0]).toEqual({
       mediaType: 'application/pdf',
       data: 'pdf-data',
     });
@@ -323,7 +320,7 @@ describe('fromAnthropic', () => {
 
     expect(history[0].content).toBe('Let me check.');
     expect(history[0].tool_calls).toHaveLength(1);
-    expect(history[0].tool_calls![0]).toMatchObject({
+    expect(history[0].tool_calls?.[0]).toMatchObject({
       id: 'call_1',
       type: 'function',
       function: { name: 'get_weather', arguments: '{"city":"London"}' },

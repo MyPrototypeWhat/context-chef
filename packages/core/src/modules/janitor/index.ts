@@ -423,7 +423,7 @@ export class Janitor {
     // Detect media attachments in messages being compressed.
     // When present, guide the compression model to describe media content in the summary.
     if (toCompress.some((m) => m.attachments?.length)) {
-      instruction += '\n\n' + Prompts.MEDIA_DESCRIPTION_INSTRUCTION;
+      instruction += `\n\n${Prompts.MEDIA_DESCRIPTION_INSTRUCTION}`;
     }
 
     const extra = this.config.customCompressionInstructions?.trim();

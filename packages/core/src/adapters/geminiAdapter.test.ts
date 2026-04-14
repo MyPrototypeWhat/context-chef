@@ -1,7 +1,7 @@
+import type { Content, TextPart } from '@google/generative-ai';
 import { describe, expect, it } from 'vitest';
 import type { GeminiPayload, Message } from '../types';
 import { fromGemini, GeminiAdapter } from './geminiAdapter';
-import type { Content, TextPart } from '@google/generative-ai';
 
 /**
  * Unified plain-object inspection shape. Covers every field tests touch
@@ -385,7 +385,7 @@ describe('fromGemini', () => {
 
     expect(history[0].content).toBe('Look at this');
     expect(history[0].attachments).toHaveLength(1);
-    expect(history[0].attachments![0]).toEqual({
+    expect(history[0].attachments?.[0]).toEqual({
       mediaType: 'image/png',
       data: 'base64data',
     });
@@ -395,14 +395,12 @@ describe('fromGemini', () => {
     const contents: Content[] = [
       {
         role: 'user',
-        parts: [
-          { fileData: { mimeType: 'application/pdf', fileUri: 'gs://bucket/file.pdf' } },
-        ],
+        parts: [{ fileData: { mimeType: 'application/pdf', fileUri: 'gs://bucket/file.pdf' } }],
       },
     ];
     const { history } = fromGemini(contents);
 
-    expect(history[0].attachments![0]).toEqual({
+    expect(history[0].attachments?.[0]).toEqual({
       mediaType: 'application/pdf',
       data: 'gs://bucket/file.pdf',
     });
@@ -412,16 +410,14 @@ describe('fromGemini', () => {
     const contents: Content[] = [
       {
         role: 'model',
-        parts: [
-          { functionCall: { name: 'get_weather', args: { city: 'London' } } },
-        ],
+        parts: [{ functionCall: { name: 'get_weather', args: { city: 'London' } } }],
       },
     ];
     const { history } = fromGemini(contents);
 
     expect(history[0].role).toBe('assistant');
     expect(history[0].tool_calls).toHaveLength(1);
-    expect(history[0].tool_calls![0]).toMatchObject({
+    expect(history[0].tool_calls?.[0]).toMatchObject({
       id: 'gemini-fc-get_weather-0',
       type: 'function',
       function: { name: 'get_weather', arguments: '{"city":"London"}' },
@@ -432,26 +428,22 @@ describe('fromGemini', () => {
     const contents: Content[] = [
       {
         role: 'model',
-        parts: [
-          { functionCall: { name: 'get_weather', args: { city: 'London' } } },
-        ],
+        parts: [{ functionCall: { name: 'get_weather', args: { city: 'London' } } }],
       },
       {
         role: 'user',
-        parts: [
-          { functionResponse: { name: 'get_weather', response: { temp: 15 } } },
-        ],
+        parts: [{ functionResponse: { name: 'get_weather', response: { temp: 15 } } }],
       },
     ];
     const { history } = fromGemini(contents);
 
     // The functionCall message
-    expect(history[0].tool_calls![0].id).toBe('gemini-fc-get_weather-0');
+    expect(history[0].tool_calls?.[0].id).toBe('gemini-fc-get_weather-0');
     // The functionResponse message should have the matching tool_call_id
     const toolMsg = history.find((m) => m.role === 'tool');
     expect(toolMsg).toBeDefined();
-    expect(toolMsg!.tool_call_id).toBe('gemini-fc-get_weather-0');
-    expect(toolMsg!.content).toBe('{"temp":15}');
+    expect(toolMsg?.tool_call_id).toBe('gemini-fc-get_weather-0');
+    expect(toolMsg?.content).toBe('{"temp":15}');
   });
 
   it('handles image-only messages (no text)', () => {

@@ -1,7 +1,7 @@
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions';
 import { describe, expect, it } from 'vitest';
 import type { Message, OpenAIPayload } from '../types';
 import { fromOpenAI, OpenAIAdapter } from './openAIAdapter';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions';
 
 interface OAIMsg {
   role: string;
@@ -183,9 +183,7 @@ describe('fromOpenAI', () => {
   });
 
   it('returns empty system when no system messages', () => {
-    const messages: ChatCompletionMessageParam[] = [
-      { role: 'user', content: 'Hello' },
-    ];
+    const messages: ChatCompletionMessageParam[] = [{ role: 'user', content: 'Hello' }];
     const { system, history } = fromOpenAI(messages);
 
     expect(system).toHaveLength(0);
@@ -207,7 +205,7 @@ describe('fromOpenAI', () => {
     expect(history).toHaveLength(1);
     expect(history[0].content).toBe('What is this?');
     expect(history[0].attachments).toHaveLength(1);
-    expect(history[0].attachments![0]).toEqual({
+    expect(history[0].attachments?.[0]).toEqual({
       mediaType: 'image/png',
       data: 'data:image/png;base64,abc123',
     });
@@ -225,7 +223,7 @@ describe('fromOpenAI', () => {
     ];
     const { history } = fromOpenAI(messages);
 
-    expect(history[0].attachments![0].mediaType).toBe('image/*');
+    expect(history[0].attachments?.[0].mediaType).toBe('image/*');
   });
 
   it('maps tool_calls on assistant messages', () => {
@@ -234,14 +232,18 @@ describe('fromOpenAI', () => {
         role: 'assistant',
         content: '',
         tool_calls: [
-          { id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"NYC"}' } },
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'get_weather', arguments: '{"city":"NYC"}' },
+          },
         ],
       },
     ];
     const { history } = fromOpenAI(messages);
 
     expect(history[0].tool_calls).toHaveLength(1);
-    expect(history[0].tool_calls![0]).toMatchObject({
+    expect(history[0].tool_calls?.[0]).toMatchObject({
       id: 'c1',
       type: 'function',
       function: { name: 'get_weather', arguments: '{"city":"NYC"}' },
@@ -277,9 +279,7 @@ describe('fromOpenAI', () => {
   });
 
   it('no attachments field when no media parts', () => {
-    const messages: ChatCompletionMessageParam[] = [
-      { role: 'user', content: 'Just text' },
-    ];
+    const messages: ChatCompletionMessageParam[] = [{ role: 'user', content: 'Just text' }];
     const { history } = fromOpenAI(messages);
 
     expect(history[0].attachments).toBeUndefined();
@@ -326,9 +326,7 @@ describe('OpenAIAdapter — attachments output', () => {
   });
 
   it('preserves messages without attachments as string content', () => {
-    const messages: Message[] = [
-      { role: 'user', content: 'Plain text' },
-    ];
+    const messages: Message[] = [{ role: 'user', content: 'Plain text' }];
     const result = adapter.compile([...messages]);
     const msg = toPlainMessages(result)[0];
 

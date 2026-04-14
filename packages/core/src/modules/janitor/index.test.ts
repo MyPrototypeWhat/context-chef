@@ -920,7 +920,9 @@ describe('Janitor — compression circuit breaker', () => {
 
 describe('Janitor — media-aware compression', () => {
   it('appends MEDIA_DESCRIPTION_INSTRUCTION when toCompress contains attachments', async () => {
-    const compressionModel = vi.fn().mockResolvedValue('<summary>Summary with image desc</summary>');
+    const compressionModel = vi
+      .fn()
+      .mockResolvedValue('<summary>Summary with image desc</summary>');
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
@@ -987,6 +989,6 @@ describe('Janitor — media-aware compression', () => {
     // toCompress messages (excluding the appended instruction) should carry attachments
     const userMsgWithAttachment = passedMessages.find((m) => m.attachments?.length);
     expect(userMsgWithAttachment).toBeDefined();
-    expect(userMsgWithAttachment!.attachments![0]).toEqual(attachment);
+    expect(userMsgWithAttachment?.attachments?.[0]).toEqual(attachment);
   });
 });
