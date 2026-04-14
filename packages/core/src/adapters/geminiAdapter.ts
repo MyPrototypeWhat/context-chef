@@ -46,7 +46,11 @@ export function fromGemini(
     const role: 'user' | 'assistant' = content.role === 'model' ? 'assistant' : 'user';
     const textParts: string[] = [];
     const attachments: Attachment[] = [];
-    const toolCalls: { id: string; type: 'function'; function: { name: string; arguments: string } }[] = [];
+    const toolCalls: {
+      id: string;
+      type: 'function';
+      function: { name: string; arguments: string };
+    }[] = [];
 
     for (const part of content.parts) {
       if ('text' in part && part.text != null) {
