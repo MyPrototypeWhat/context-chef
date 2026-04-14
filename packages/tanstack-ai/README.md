@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@context-chef/tanstack-ai.svg)](https://www.npmjs.com/package/@context-chef/tanstack-ai)
 [![License](https://img.shields.io/npm/l/@context-chef/tanstack-ai.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![TanStack AI](https://img.shields.io/badge/TanStack%20AI-v0.10-ff4154.svg)](https://tanstack.com/ai)
+[![TanStack AI](https://img.shields.io/badge/TanStack%20AI-v0.10.2-ff4154.svg)](https://tanstack.com/ai)
 
 [TanStack AI](https://tanstack.com/ai) middleware powered by [context-chef](https://github.com/MyPrototypeWhat/context-chef). Transparent history compression, tool result truncation, and token budget management — drop in as a single middleware.
 
