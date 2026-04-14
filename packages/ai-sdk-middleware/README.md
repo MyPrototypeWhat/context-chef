@@ -212,7 +212,7 @@ The middleware covers the most common use case: transparent compression and trun
 
 ## License
 
-ISC
+MIT
 
 ---
 

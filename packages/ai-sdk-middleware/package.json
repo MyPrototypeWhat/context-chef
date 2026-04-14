@@ -32,7 +32,7 @@
     "token-management"
   ],
   "author": "MyPrototypeWhat",
-  "license": "ISC",
+  "license": "MIT",
   "description": "AI SDK middleware for context-chef. Transparent history compression, tool result truncation, and token budget management.",
   "repository": {
     "type": "git",

@@ -631,4 +631,4 @@ Claude will:
 
 ## License
 
-ISC
+MIT

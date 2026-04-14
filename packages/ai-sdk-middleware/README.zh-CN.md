@@ -214,4 +214,4 @@ wrapGenerate / wrapStream（LLM 调用后）
 
 ## 许可证
 
-ISC
+MIT

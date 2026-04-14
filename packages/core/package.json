@@ -41,7 +41,7 @@
     "typescript"
   ],
   "author": "MyPrototypeWhat",
-  "license": "ISC",
+  "license": "MIT",
   "description": "Context compiler for TypeScript/JavaScript AI agents. Automatically compiles agent state into optimized LLM payloads with history compression, tool pruning, multi-provider support, and more.",
   "repository": {
     "type": "git",

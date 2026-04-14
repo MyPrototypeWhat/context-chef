@@ -76,4 +76,4 @@ Use the [bug report template](https://github.com/MyPrototypeWhat/context-chef/is
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the ISC License.
+By contributing, you agree that your contributions will be licensed under the MIT License.
