@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@context-chef/core.svg)](https://www.npmjs.com/package/@context-chef/core)
 [![@context-chef/core Downloads](https://img.shields.io/npm/dm/@context-chef/core.svg?label=%40context-chef%2Fcore%20downloads)](https://www.npmjs.com/package/@context-chef/core)
 [![@context-chef/ai-sdk-middleware Downloads](https://img.shields.io/npm/dm/@context-chef/ai-sdk-middleware.svg?label=%40context-chef%2Fai-sdk-middleware%20downloads)](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
+[![@context-chef/tanstack-ai Downloads](https://img.shields.io/npm/dm/@context-chef/tanstack-ai.svg?label=%40context-chef%2Ftanstack-ai%20downloads)](https://www.npmjs.com/package/@context-chef/tanstack-ai)
 [![License](https://img.shields.io/npm/l/@context-chef/core.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![CI](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml/badge.svg)](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml)
@@ -23,6 +24,7 @@ ContextChef solves the most common context engineering problems in AI agent deve
 |---|---|
 | [`@context-chef/core`](./packages/core) | Core context compiler — history compression, tool pruning, memory, VFS offloading, multi-provider adapters |
 | [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware) | [Vercel AI SDK](https://sdk.vercel.ai) middleware — drop-in context engineering with zero code changes |
+| [`@context-chef/tanstack-ai`](./packages/tanstack-ai) | [TanStack AI](https://tanstack.com/ai) middleware — compression, truncation, and dynamic state via `ChatMiddleware` |
 
 ### Zero-config AI SDK integration
 
@@ -44,6 +46,30 @@ const result = await generateText({ model, messages, tools });
 ```
 
 See the [`@context-chef/ai-sdk-middleware` README](./packages/ai-sdk-middleware/README.md) for full documentation.
+
+### TanStack AI middleware
+
+If you use TanStack AI, drop in the middleware for transparent context management:
+
+```typescript
+import { contextChefMiddleware } from '@context-chef/tanstack-ai';
+import { chat } from '@tanstack/ai';
+import { openaiText } from '@tanstack/ai-openai';
+
+const stream = chat({
+  adapter: openaiText('gpt-4o'),
+  messages,
+  middleware: [
+    contextChefMiddleware({
+      contextWindow: 128_000,
+      compress: { adapter: openaiText('gpt-4o-mini') },
+      truncate: { threshold: 5000 },
+    }),
+  ],
+});
+```
+
+See the [`@context-chef/tanstack-ai` README](./packages/tanstack-ai/README.md) for full documentation.
 
 ### Full control with `@context-chef/core`
 
@@ -621,6 +647,7 @@ ContextChef provides [Claude Code Skills](https://docs.anthropic.com/en/docs/cla
 |---|---|
 | `context-chef-core` | Integrate `@context-chef/core` — full control over compilation pipeline, multi-provider support |
 | `context-chef-middleware` | Integrate `@context-chef/ai-sdk-middleware` — drop-in AI SDK middleware, zero code changes |
+| `context-chef-tanstack` | Integrate `@context-chef/tanstack-ai` — TanStack AI ChatMiddleware with compression and state injection |
 
 ### Install
 
@@ -633,7 +660,10 @@ npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
 # AI SDK middleware (Vercel AI SDK v6+)
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
 
-# Both
+# TanStack AI middleware (TanStack AI v0.10+)
+npx skills add MyPrototypeWhat/context-chef --skill context-chef-tanstack
+
+# All
 npx skills add MyPrototypeWhat/context-chef
 ```
 

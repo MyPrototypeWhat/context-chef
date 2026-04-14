@@ -583,6 +583,7 @@ ContextChef 提供了 [Claude Code Skills](https://docs.anthropic.com/en/docs/cl
 |---|---|
 | `context-chef-core` | 集成 `@context-chef/core` — 完全控制编译流程，多供应商支持 |
 | `context-chef-middleware` | 集成 `@context-chef/ai-sdk-middleware` — AI SDK 即插即用中间件，零代码改动 |
+| `context-chef-tanstack` | 集成 `@context-chef/tanstack-ai` — TanStack AI ChatMiddleware，带压缩和状态注入 |
 
 ### 安装 Skill
 
@@ -594,6 +595,9 @@ npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
 
 # AI SDK 中间件（Vercel AI SDK v6+）
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
+
+# TanStack AI 中间件（TanStack AI v0.10+）
+npx skills add MyPrototypeWhat/context-chef --skill context-chef-tanstack
 
 # 全部安装
 npx skills add MyPrototypeWhat/context-chef
@@ -607,6 +611,8 @@ npx skills add MyPrototypeWhat/context-chef
 /context-chef-core
 # 或
 /context-chef-middleware
+# 或
+/context-chef-tanstack
 ```
 
 Claude 会：
