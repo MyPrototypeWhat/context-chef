@@ -1,0 +1,58 @@
+{
+  "name": "@context-chef/tanstack-ai",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "tanstack-ai",
+    "context-chef",
+    "middleware",
+    "context-engineering",
+    "llm",
+    "compression",
+    "token-management"
+  ],
+  "author": "MyPrototypeWhat",
+  "license": "MIT",
+  "description": "TanStack AI middleware for context-chef. Transparent history compression, tool result truncation, and token budget management.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MyPrototypeWhat/context-chef.git",
+    "directory": "packages/tanstack-ai"
+  },
+  "homepage": "https://github.com/MyPrototypeWhat/context-chef#readme",
+  "bugs": {
+    "url": "https://github.com/MyPrototypeWhat/context-chef/issues"
+  },
+  "dependencies": {
+    "@context-chef/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": "^0.10"
+  },
+  "devDependencies": {
+    "@tanstack/ai": "^0.10.1",
+    "@types/node": "^25.3.0",
+    "tsdown": "^0.20.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
