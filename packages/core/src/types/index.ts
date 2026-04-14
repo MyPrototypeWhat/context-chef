@@ -50,6 +50,20 @@ export interface RedactedThinking {
   data: string;
 }
 
+/**
+ * Media attachment on a message — images, files, audio, etc.
+ * Provider-neutral IR representation; adapters convert to/from provider-specific formats
+ * (OpenAI `image_url`/`file`, Anthropic `image`/`document`, Gemini `inline_data`/`file_data`).
+ */
+export interface Attachment {
+  /** MIME type, e.g. 'image/png', 'application/pdf', 'audio/mp3' */
+  mediaType: string;
+  /** base64 encoded data or URL string */
+  data: string;
+  /** Optional filename */
+  filename?: string;
+}
+
 export interface Message {
   role: Role;
   content: string;
@@ -70,6 +84,14 @@ export interface Message {
    * Must be echoed verbatim. Not applicable to OpenAI or Gemini.
    */
   redacted_thinking?: RedactedThinking;
+  /**
+   * Media attachments (images, files, etc.) on this message.
+   * `content` always holds the text-only representation.
+   * Adapters convert provider-specific formats to/from this field.
+   * When present during compression, Janitor augments the prompt
+   * to guide the model toward describing media content in the summary.
+   */
+  attachments?: Attachment[];
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }
@@ -100,6 +122,19 @@ export interface CompactOptions {
 }
 
 export type TargetProvider = 'openai' | 'anthropic' | 'gemini';
+
+// ─── Input adapter types ───
+
+/** A Message whose role excludes 'system'. Used by setHistory to enforce separation. */
+export type HistoryMessage = Message & { role: 'user' | 'assistant' | 'tool' };
+
+/** Return type of input adapters (fromOpenAI, fromAnthropic, fromGemini). */
+export interface ParsedMessages {
+  /** System messages extracted from the provider messages. */
+  system: Message[];
+  /** Conversation history (user/assistant/tool messages). */
+  history: HistoryMessage[];
+}
 
 export interface CompileOptions {
   target: TargetProvider;

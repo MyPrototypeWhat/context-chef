@@ -560,6 +560,38 @@ const chef = new ContextChef({
 
 ---
 
+### Input Adapters (Provider → IR)
+
+Convert OpenAI / Anthropic / Gemini native messages to ContextChef IR, automatically separating system and history:
+
+```typescript
+import { fromOpenAI, fromAnthropic, fromGemini } from "@context-chef/core";
+
+// OpenAI
+const { system, history } = fromOpenAI(openaiMessages);
+chef.setSystemPrompt(system).setHistory(history);
+
+// Anthropic (system is a separate top-level parameter)
+const { system, history } = fromAnthropic(anthropicMessages, anthropicSystem);
+chef.setSystemPrompt(system).setHistory(history);
+
+// Gemini (systemInstruction is a separate top-level parameter)
+const { system, history } = fromGemini(geminiContents, systemInstruction);
+chef.setSystemPrompt(system).setHistory(history);
+```
+
+Multimodal content (images, files) is automatically converted to IR `attachments`:
+
+| Provider Format | IR Field |
+|---|---|
+| OpenAI `image_url` / `file` | `attachments: [{ mediaType, data }]` |
+| Anthropic `image` / `document` | `attachments: [{ mediaType, data }]` |
+| Gemini `inlineData` / `fileData` | `attachments: [{ mediaType, data }]` |
+
+`compile()` converts `attachments` back to the corresponding provider format. During compression, Janitor guides the compression model to describe image content.
+
+---
+
 ### Target Adapters
 
 | Feature                      | OpenAI                      | Anthropic                              | Gemini                                     |
@@ -569,6 +601,7 @@ const chef = new ContextChef({
 | Prefill (trailing assistant) | Degraded to `[System Note]` | Native support                         | Degraded to `[System Note]`                |
 | `thinking` field             | Stripped                    | Mapped to `ThinkingBlockParam`         | Stripped                                   |
 | Tool calls                   | `tool_calls` array          | `tool_use` blocks                      | `functionCall` parts                       |
+| `attachments`                | `image_url` / `file` content parts | `image` / `document` blocks   | `inlineData` / `fileData` parts            |
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 

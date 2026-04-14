@@ -33,6 +33,9 @@ import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 import { objectToXml } from './utils/xmlGenerator';
 
 export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
+export { fromAnthropic } from './adapters/anthropicAdapter';
+export { fromGemini } from './adapters/geminiAdapter';
+export { fromOpenAI } from './adapters/openAIAdapter';
 export { type AssembleOptions, Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {

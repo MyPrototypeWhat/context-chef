@@ -6,7 +6,7 @@ import type {
   TextPart as SDKTextPart,
 } from '@google/generative-ai';
 import { Prompts } from '../prompts';
-import type { GeminiPayload, Message } from '../types';
+import type { Attachment, GeminiPayload, HistoryMessage, Message, ParsedMessages } from '../types';
 import type { ITargetAdapter } from './targetAdapter';
 
 // Re-export Gemini-specific types for consumers who want strong typing without importing the SDK
@@ -15,6 +15,90 @@ export type GeminiFunctionCallPart = SDKFunctionCallPart;
 export type GeminiFunctionResponsePart = SDKFunctionResponsePart;
 export type GeminiPart = SDKPart;
 export type GeminiContent = SDKContent;
+
+// ─── Input: Gemini → IR ───
+
+/**
+ * Converts Gemini generateContent messages to ContextChef IR.
+ * Separates system instruction from conversation history.
+ *
+ * @param contents - Gemini content array (user/model messages with parts)
+ * @param systemInstruction - Optional top-level system instruction
+ *
+ * @example
+ * const { system, history } = fromGemini(geminiContents, systemInstruction);
+ * chef.setSystemPrompt(system).setHistory(history);
+ */
+export function fromGemini(
+  contents: SDKContent[],
+  systemInstruction?: { parts: SDKTextPart[] },
+): ParsedMessages {
+  const system: Message[] = [];
+  const history: HistoryMessage[] = [];
+
+  if (systemInstruction) {
+    for (const part of systemInstruction.parts) {
+      system.push({ role: 'system', content: part.text });
+    }
+  }
+
+  for (const content of contents) {
+    const role: 'user' | 'assistant' = content.role === 'model' ? 'assistant' : 'user';
+    const textParts: string[] = [];
+    const attachments: Attachment[] = [];
+    const toolCalls: { id: string; type: 'function'; function: { name: string; arguments: string } }[] = [];
+
+    for (const part of content.parts) {
+      if ('text' in part && part.text != null) {
+        textParts.push(part.text);
+      } else if ('inlineData' in part && part.inlineData) {
+        attachments.push({
+          mediaType: part.inlineData.mimeType,
+          data: part.inlineData.data,
+        });
+      } else if ('fileData' in part && part.fileData) {
+        attachments.push({
+          mediaType: part.fileData.mimeType,
+          data: part.fileData.fileUri,
+        });
+      } else if ('functionCall' in part && part.functionCall) {
+        const id = `gemini-fc-${part.functionCall.name}-${toolCalls.length}`;
+        toolCalls.push({
+          id,
+          type: 'function',
+          function: {
+            name: part.functionCall.name,
+            arguments: JSON.stringify(part.functionCall.args),
+          },
+        });
+      } else if ('functionResponse' in part && part.functionResponse) {
+        // Gemini has no native tool call IDs. Use a synthetic ID derived from
+        // the function name to enable cross-provider compilation (e.g. → OpenAI).
+        const name = part.functionResponse.name;
+        // Try to match a preceding functionCall by name for ID correlation
+        const matchingCall = toolCalls.find((tc) => tc.function.name === name);
+        history.push({
+          role: 'tool',
+          content: JSON.stringify(part.functionResponse.response),
+          name,
+          tool_call_id: matchingCall?.id ?? `gemini-fc-${name}-0`,
+        });
+      }
+    }
+
+    // Only push if there's meaningful content (skip if only functionResponses were extracted)
+    if (textParts.length || toolCalls.length || attachments.length) {
+      const ir: HistoryMessage = { role, content: textParts.join('\n') };
+      if (attachments.length) ir.attachments = attachments;
+      if (toolCalls.length) ir.tool_calls = toolCalls;
+      history.push(ir);
+    }
+  }
+
+  return { system, history };
+}
+
+// ─── Output: IR → Gemini ───
 
 /**
  * Adapts ContextChef IR to Google Gemini's generateContent format.
@@ -89,9 +173,20 @@ export class GeminiAdapter implements ITargetAdapter {
       }
 
       const userTextPart: SDKTextPart = { text: msg.content };
+      const userParts: SDKPart[] = [userTextPart];
+      // Convert attachments to Gemini inlineData/fileData parts
+      if (msg.attachments?.length) {
+        for (const att of msg.attachments) {
+          if (att.data.startsWith('http') || att.data.startsWith('gs://')) {
+            userParts.push({ fileData: { mimeType: att.mediaType, fileUri: att.data } });
+          } else {
+            userParts.push({ inlineData: { mimeType: att.mediaType, data: att.data } });
+          }
+        }
+      }
       contents.push({
         role: 'user',
-        parts: [userTextPart],
+        parts: userParts,
       });
     }
 

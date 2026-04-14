@@ -419,6 +419,13 @@ export class Janitor {
     // The default scaffolding (which enforces the <analysis>/<summary> contract) is always
     // preserved — customCompressionInstructions is additive, not a replacement.
     let instruction = Prompts.CONTEXT_COMPACTION_INSTRUCTION;
+
+    // Detect media attachments in messages being compressed.
+    // When present, guide the compression model to describe media content in the summary.
+    if (toCompress.some((m) => m.attachments?.length)) {
+      instruction += '\n\n' + Prompts.MEDIA_DESCRIPTION_INSTRUCTION;
+    }
+
     const extra = this.config.customCompressionInstructions?.trim();
     if (extra) {
       instruction += `\n\nAdditional Instructions:\n${extra}`;

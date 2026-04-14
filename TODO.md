@@ -188,6 +188,30 @@ Prevents infinite retry loops when `compressionModel` consistently fails. Inspir
 - `restoreState()` uses `?? 0` for defensive backward compatibility with serialized snapshots from older versions
 - No `onCompressError` hook added — YAGNI; the breaker trip is observable via subsequent `compress()` becoming a no-op, and developers who want failure notifications can already wrap their own `compressionModel`
 
+### ✅ Multimodal Attachment IR + Media-Aware Compression Prompt
+
+Added `Attachment` interface (`mediaType`, `data`, `filename`) and `Message.attachments` field to core IR as a provider-neutral representation of media content. Provider adapters convert to/from this field (OpenAI `image_url`/`file`, Anthropic `image`/`document`, Gemini `inline_data`/`file_data`).
+
+- `executeCompression()` detects `attachments` on `toCompress` messages → appends `MEDIA_DESCRIPTION_INSTRUCTION` to guide the compression model toward describing media content in the summary
+- Replaces the original "Strip Media Before Compression" plan (which assumed base64 in `content: string` — incorrect; multimodal data lives in structured content parts, not in the IR string)
+
+### ✅ Input Adapters (Provider → IR)
+
+Added `fromOpenAI()`, `fromAnthropic()`, `fromGemini()` input adapter functions — the reverse direction of the existing output adapters. Users no longer need to manually construct IR `Message` objects.
+
+- `fromOpenAI(messages)` → `ParsedMessages { system, history }` — maps `image_url`/`file` content parts → `attachments`, tool_calls, tool messages
+- `fromAnthropic(messages, system?)` → `ParsedMessages` — maps `image`/`document` blocks → `attachments`, `tool_use` → `tool_calls`, `tool_result` → IR tool messages, `thinking`/`redacted_thinking` → IR fields. Handles all 4 document source types (base64, url, text, content)
+- `fromGemini(contents, systemInstruction?)` → `ParsedMessages` — maps `inlineData`/`fileData` → `attachments`, `functionCall`/`functionResponse` → IR tool messages with correlated synthetic `tool_call_id`
+- New types: `HistoryMessage` (Message with role excluding 'system'), `ParsedMessages` ({ system, history })
+- All functions exported from `@context-chef/core`
+
+Usage:
+```typescript
+import { fromOpenAI } from '@context-chef/core';
+const { system, history } = fromOpenAI(openaiMessages);
+chef.setSystemPrompt(system).setHistory(history);
+```
+
 ---
 
 ## Planned
@@ -246,17 +270,17 @@ memoryPlacement?: 'after_system' | 'before_history_tail';
 
 ---
 
-### Strip Media Before Compression
+### Output Adapters: `attachments` → Provider Format
 
-**Priority: Medium** — Prevents wasted tokens and potential prompt-too-long errors during compression.
+**Priority: Medium** — Core output adapters (openAIAdapter, anthropicAdapter, geminiAdapter) don't yet convert IR `attachments` to provider-specific multimodal content parts during `compile()`. Currently attachments are stripped by the JSON serialization in the OpenAI adapter and silently ignored by Anthropic/Gemini adapters.
 
-**Reference**: Claude Code's `stripImagesFromMessages()` replaces image/document blocks with `[image]`/`[document]` text markers before sending to the compression model.
+### Middleware: Multimodal Compression Pipeline
 
-**Implementation**:
-- Add `stripMediaFromHistory(history: Message[]): Message[]` utility
-- Pattern-based detection: if content exceeds 50KB and contains base64 data URI prefix, replace with `[large binary content cleared for compression]`
-- Call in `executeCompression()` before passing to `compressionModel`
-- Since IR uses `content: string`, detection is heuristic-based
+**Priority: Medium** — Three changes needed in `@context-chef/ai-sdk-middleware`:
+
+1. `fromAISDK()`: map AI SDK `FilePart` → IR `attachments`
+2. `createCompressionAdapter`: read `attachments` and pass file parts to `generateText()` so the compression model can see and describe images
+3. Post-compression: strip `_userContent` file parts from `toKeep` messages so images are not re-sent on future turns
 
 ---
 

@@ -913,3 +913,80 @@ describe('Janitor — compression circuit breaker', () => {
     expect(janitor['_consecutiveFailures']).toBe(2);
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// Media-aware compression prompt
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — media-aware compression', () => {
+  it('appends MEDIA_DESCRIPTION_INSTRUCTION when toCompress contains attachments', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>Summary with image desc</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const history: Message[] = [
+      {
+        role: 'user',
+        content: 'Look at this image',
+        attachments: [{ mediaType: 'image/png', data: 'base64data' }],
+      },
+      { role: 'assistant', content: 'I see a cat' },
+      { role: 'user', content: 'Thanks' },
+      { role: 'assistant', content: 'You are welcome' },
+      { role: 'user', content: 'Latest message' },
+    ];
+
+    await janitor.compress(history);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    const passedMessages = compressionModel.mock.calls[0][0] as Message[];
+    // Last message is the instruction appended by Janitor
+    const instruction = passedMessages[passedMessages.length - 1].content;
+    expect(instruction).toContain(Prompts.MEDIA_DESCRIPTION_INSTRUCTION);
+  });
+
+  it('does NOT append media instruction when no attachments present', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>Normal summary</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    await janitor.compress(buildHistory(5));
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    const passedMessages = compressionModel.mock.calls[0][0] as Message[];
+    const instruction = passedMessages[passedMessages.length - 1].content;
+    expect(instruction).not.toContain(Prompts.MEDIA_DESCRIPTION_INSTRUCTION);
+  });
+
+  it('passes attachments through to compressionModel on the original messages', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>Described</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const attachment = { mediaType: 'image/jpeg', data: 'imgdata' };
+    const history: Message[] = [
+      { role: 'user', content: 'Check this', attachments: [attachment] },
+      { role: 'assistant', content: 'Looks good' },
+      { role: 'user', content: 'Recent' },
+      { role: 'assistant', content: 'OK' },
+      { role: 'user', content: 'Latest' },
+    ];
+
+    await janitor.compress(history);
+
+    const passedMessages = compressionModel.mock.calls[0][0] as Message[];
+    // toCompress messages (excluding the appended instruction) should carry attachments
+    const userMsgWithAttachment = passedMessages.find((m) => m.attachments?.length);
+    expect(userMsgWithAttachment).toBeDefined();
+    expect(userMsgWithAttachment!.attachments![0]).toEqual(attachment);
+  });
+});

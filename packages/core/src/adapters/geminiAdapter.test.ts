@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GeminiPayload, Message } from '../types';
-import { GeminiAdapter } from './geminiAdapter';
+import { fromGemini, GeminiAdapter } from './geminiAdapter';
+import type { Content, TextPart } from '@google/generative-ai';
 
 /**
  * Unified plain-object inspection shape. Covers every field tests touch
@@ -330,5 +331,216 @@ describe('GeminiAdapter', () => {
     expect(result.messages[2].role).toBe('user'); // functionResponse
     expect(result.messages[3].role).toBe('model'); // assistant response
     expect(result.messages[4].role).toBe('user'); // follow-up
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// fromGemini — input adapter
+// ═══════════════════════════════════════════════════════
+
+describe('fromGemini', () => {
+  it('extracts systemInstruction into system messages', () => {
+    const systemInstruction = {
+      parts: [{ text: 'You are an expert.' } as TextPart, { text: 'Be concise.' } as TextPart],
+    };
+    const contents: Content[] = [{ role: 'user', parts: [{ text: 'Hello' }] }];
+    const result = fromGemini(contents, systemInstruction);
+
+    expect(result.system).toHaveLength(2);
+    expect(result.system[0]).toMatchObject({ role: 'system', content: 'You are an expert.' });
+    expect(result.system[1]).toMatchObject({ role: 'system', content: 'Be concise.' });
+    expect(result.history).toHaveLength(1);
+  });
+
+  it('returns empty system when no systemInstruction', () => {
+    const contents: Content[] = [{ role: 'user', parts: [{ text: 'Hi' }] }];
+    const { system, history } = fromGemini(contents);
+
+    expect(system).toHaveLength(0);
+    expect(history).toHaveLength(1);
+  });
+
+  it('maps model role to assistant', () => {
+    const contents: Content[] = [
+      { role: 'user', parts: [{ text: 'Hi' }] },
+      { role: 'model', parts: [{ text: 'Hello!' }] },
+    ];
+    const { history } = fromGemini(contents);
+
+    expect(history[0]).toMatchObject({ role: 'user', content: 'Hi' });
+    expect(history[1]).toMatchObject({ role: 'assistant', content: 'Hello!' });
+  });
+
+  it('converts inlineData to attachments', () => {
+    const contents: Content[] = [
+      {
+        role: 'user',
+        parts: [
+          { text: 'Look at this' },
+          { inlineData: { mimeType: 'image/png', data: 'base64data' } },
+        ],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    expect(history[0].content).toBe('Look at this');
+    expect(history[0].attachments).toHaveLength(1);
+    expect(history[0].attachments![0]).toEqual({
+      mediaType: 'image/png',
+      data: 'base64data',
+    });
+  });
+
+  it('converts fileData to attachments', () => {
+    const contents: Content[] = [
+      {
+        role: 'user',
+        parts: [
+          { fileData: { mimeType: 'application/pdf', fileUri: 'gs://bucket/file.pdf' } },
+        ],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    expect(history[0].attachments![0]).toEqual({
+      mediaType: 'application/pdf',
+      data: 'gs://bucket/file.pdf',
+    });
+  });
+
+  it('converts functionCall to tool_calls with synthetic IDs', () => {
+    const contents: Content[] = [
+      {
+        role: 'model',
+        parts: [
+          { functionCall: { name: 'get_weather', args: { city: 'London' } } },
+        ],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    expect(history[0].role).toBe('assistant');
+    expect(history[0].tool_calls).toHaveLength(1);
+    expect(history[0].tool_calls![0]).toMatchObject({
+      id: 'gemini-fc-get_weather-0',
+      type: 'function',
+      function: { name: 'get_weather', arguments: '{"city":"London"}' },
+    });
+  });
+
+  it('converts functionResponse to tool message with correlated tool_call_id', () => {
+    const contents: Content[] = [
+      {
+        role: 'model',
+        parts: [
+          { functionCall: { name: 'get_weather', args: { city: 'London' } } },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          { functionResponse: { name: 'get_weather', response: { temp: 15 } } },
+        ],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    // The functionCall message
+    expect(history[0].tool_calls![0].id).toBe('gemini-fc-get_weather-0');
+    // The functionResponse message should have the matching tool_call_id
+    const toolMsg = history.find((m) => m.role === 'tool');
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.tool_call_id).toBe('gemini-fc-get_weather-0');
+    expect(toolMsg!.content).toBe('{"temp":15}');
+  });
+
+  it('handles image-only messages (no text)', () => {
+    const contents: Content[] = [
+      {
+        role: 'user',
+        parts: [{ inlineData: { mimeType: 'image/jpeg', data: 'img-only' } }],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    expect(history).toHaveLength(1);
+    expect(history[0].content).toBe('');
+    expect(history[0].attachments).toHaveLength(1);
+  });
+
+  it('no attachments field when no media parts', () => {
+    const contents: Content[] = [{ role: 'user', parts: [{ text: 'Just text' }] }];
+    const { history } = fromGemini(contents);
+
+    expect(history[0].attachments).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// GeminiAdapter.compile — attachments output
+// ═══════════════════════════════════════════════════════
+
+describe('GeminiAdapter — attachments output', () => {
+  const adapter = new GeminiAdapter();
+
+  it('converts base64 image attachments to inlineData parts', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'Look at this',
+        attachments: [{ mediaType: 'image/png', data: 'base64imgdata' }],
+      },
+    ];
+    const result = toPlain(adapter.compile([...messages]));
+    const parts = result.messages[0].parts;
+
+    expect(parts).toHaveLength(2);
+    expect(parts[0].text).toBe('Look at this');
+    expect((parts[1] as { inlineData: { mimeType: string; data: string } }).inlineData).toEqual({
+      mimeType: 'image/png',
+      data: 'base64imgdata',
+    });
+  });
+
+  it('converts URL attachments to fileData parts', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'Check this',
+        attachments: [{ mediaType: 'application/pdf', data: 'https://example.com/doc.pdf' }],
+      },
+    ];
+    const result = toPlain(adapter.compile([...messages]));
+    const parts = result.messages[0].parts;
+
+    expect((parts[1] as { fileData: { mimeType: string; fileUri: string } }).fileData).toEqual({
+      mimeType: 'application/pdf',
+      fileUri: 'https://example.com/doc.pdf',
+    });
+  });
+
+  it('converts gs:// URIs to fileData parts', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'Read this',
+        attachments: [{ mediaType: 'application/pdf', data: 'gs://bucket/file.pdf' }],
+      },
+    ];
+    const result = toPlain(adapter.compile([...messages]));
+    const parts = result.messages[0].parts;
+
+    expect((parts[1] as { fileData: { mimeType: string; fileUri: string } }).fileData).toEqual({
+      mimeType: 'application/pdf',
+      fileUri: 'gs://bucket/file.pdf',
+    });
+  });
+
+  it('does not add attachment parts when no attachments', () => {
+    const messages: Message[] = [{ role: 'user', content: 'Plain text' }];
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.messages[0].parts).toHaveLength(1);
+    expect(result.messages[0].parts[0].text).toBe('Plain text');
   });
 });

@@ -522,6 +522,38 @@ const chef = new ContextChef({
 
 ---
 
+### Input Adapters（Provider → IR）
+
+将 OpenAI / Anthropic / Gemini 原生消息转换为 ContextChef IR，自动分离 system 和 history：
+
+```typescript
+import { fromOpenAI, fromAnthropic, fromGemini } from "context-chef";
+
+// OpenAI
+const { system, history } = fromOpenAI(openaiMessages);
+chef.setSystemPrompt(system).setHistory(history);
+
+// Anthropic（system 是独立的 top-level 参数）
+const { system, history } = fromAnthropic(anthropicMessages, anthropicSystem);
+chef.setSystemPrompt(system).setHistory(history);
+
+// Gemini（systemInstruction 是独立的 top-level 参数）
+const { system, history } = fromGemini(geminiContents, systemInstruction);
+chef.setSystemPrompt(system).setHistory(history);
+```
+
+多模态内容（图片、文件）自动转换为 IR `attachments` 字段：
+
+| Provider 格式 | IR 字段 |
+|---|---|
+| OpenAI `image_url` / `file` | `attachments: [{ mediaType, data }]` |
+| Anthropic `image` / `document` | `attachments: [{ mediaType, data }]` |
+| Gemini `inlineData` / `fileData` | `attachments: [{ mediaType, data }]` |
+
+`compile()` 时 `attachments` 自动转换回对应 provider 格式。压缩时 Janitor 会引导压缩模型描述图片内容。
+
+---
+
 ### Target Adapters
 
 | 特性                      | OpenAI                 | Anthropic                              | Gemini                               |
@@ -531,6 +563,7 @@ const chef = new ContextChef({
 | Prefill（尾部 assistant） | 降级为 `[System Note]` | 原生支持                               | 降级为 `[System Note]`               |
 | `thinking` 字段           | 忽略                   | 映射为 `ThinkingBlockParam`            | 忽略                                 |
 | 工具调用                  | `tool_calls` 数组      | `tool_use` blocks                      | `functionCall` parts                 |
+| `attachments`             | `image_url` / `file` content parts | `image` / `document` blocks    | `inlineData` / `fileData` parts      |
 
 适配器由 `compile({ target })` 自动选择。也可以独立使用：
 
