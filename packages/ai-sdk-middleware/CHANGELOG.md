@@ -1,5 +1,16 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.1.3
+
+### Patch Changes
+
+- [`2e13c66`](https://github.com/MyPrototypeWhat/context-chef/commit/2e13c662be94e288371291d6fb8f54e11eacd3c1) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - `fromAISDK()` now maps AI SDK `FilePart` (type `'file'`) on user and assistant messages to IR `attachments`, so multimodal turns participate in the new core compression placeholder logic (`[image]` / `[document]` markers in the compression payload).
+
+  `Attachment.data` in the middleware path is a presence/metadata signal only — Janitor reads `m.attachments?.length` for placeholder injection but never the binary itself. The actual `Uint8Array` / `URL` / string payload round-trips losslessly through `_userContent` / `_assistantContent`, which `toAISDK()` hands back to the underlying AI SDK provider verbatim. No re-encoding, no data loss.
+
+- Updated dependencies [[`2e13c66`](https://github.com/MyPrototypeWhat/context-chef/commit/2e13c662be94e288371291d6fb8f54e11eacd3c1)]:
+  - @context-chef/core@3.2.0
+
 ## 1.1.2
 
 ### Patch Changes
