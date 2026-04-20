@@ -192,7 +192,7 @@ Prevents infinite retry loops when `compressionModel` consistently fails. Inspir
 
 Added `Attachment` interface (`mediaType`, `data`, `filename`) and `Message.attachments` field to core IR as a provider-neutral representation of media content. Provider adapters convert to/from this field (OpenAI `image_url`/`file`, Anthropic `image`/`document`, Gemini `inline_data`/`file_data`).
 
-- `executeCompression()` detects `attachments` on `toCompress` messages → appends `MEDIA_DESCRIPTION_INSTRUCTION` to guide the compression model toward describing media content in the summary
+- `executeCompression()` strips binary attachments from `toCompress` messages before the compression call, replacing each with an inline `[image]` / `[document: filename]` text placeholder. Avoids shipping base64 through the compression payload (which the user-supplied `compressionModel` function couldn't actually forward to the LLM anyway, since it has no adapter pipeline). Mirrors Claude Code's `stripImagesFromMessages` strategy. `toKeep` retains its attachments, which still reach the main model via the target adapter.
 - Replaces the original "Strip Media Before Compression" plan (which assumed base64 in `content: string` — incorrect; multimodal data lives in structured content parts, not in the IR string)
 
 ### ✅ Input Adapters (Provider → IR)
@@ -211,6 +211,20 @@ import { fromOpenAI } from '@context-chef/core';
 const { system, history } = fromOpenAI(openaiMessages);
 chef.setSystemPrompt(system).setHistory(history);
 ```
+
+### ✅ Output Adapters: `attachments` → Provider Format
+
+All three output adapters now convert IR `attachments` to provider-specific multimodal content parts during `compile()`.
+
+- `openAIAdapter`: converts to `image_url` (images) and `file` (documents) content parts
+- `anthropicAdapter`: `attachmentsToBlocks()` converts to Anthropic SDK image/document content blocks
+- `geminiAdapter`: converts to `fileData` (HTTP/GCS URLs) or `inlineData` (base64)
+- Full round-trip support with input adapters (`fromOpenAI`, `fromAnthropic`, `fromGemini`)
+- Complete test coverage across all three adapters
+
+### ✅ Middleware: `fromAISDK()` Attachment Mapping
+
+`fromAISDK()` now maps AI SDK `FilePart` (type `'file'`) to IR `attachments` on both user and assistant messages. This feeds `executeCompression()`'s placeholder-injection logic in the middleware path, so multimodal turns get `[image]` / `[document]` markers in the compression payload instead of raw binary. Actual file data round-trips through `_userContent`/`_assistantContent` — `attachments` serves as the metadata signal for the Janitor.
 
 ---
 
@@ -270,17 +284,7 @@ memoryPlacement?: 'after_system' | 'before_history_tail';
 
 ---
 
-### Output Adapters: `attachments` → Provider Format
-
-**Priority: Medium** — Core output adapters (openAIAdapter, anthropicAdapter, geminiAdapter) don't yet convert IR `attachments` to provider-specific multimodal content parts during `compile()`. Currently attachments are stripped by the JSON serialization in the OpenAI adapter and silently ignored by Anthropic/Gemini adapters.
-
-### Middleware: Multimodal Compression Pipeline
-
-**Priority: Medium** — Three changes needed in `@context-chef/ai-sdk-middleware`:
-
-1. `fromAISDK()`: map AI SDK `FilePart` → IR `attachments`
-2. `createCompressionAdapter`: read `attachments` and pass file parts to `generateText()` so the compression model can see and describe images
-3. Post-compression: strip `_userContent` file parts from `toKeep` messages so images are not re-sent on future turns
+---
 
 ---
 

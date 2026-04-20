@@ -915,14 +915,12 @@ describe('Janitor — compression circuit breaker', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// Media-aware compression prompt
+// Media-aware compression: attachments → text placeholders
 // ═══════════════════════════════════════════════════════
 
 describe('Janitor — media-aware compression', () => {
-  it('appends MEDIA_DESCRIPTION_INSTRUCTION when toCompress contains attachments', async () => {
-    const compressionModel = vi
-      .fn()
-      .mockResolvedValue('<summary>Summary with image desc</summary>');
+  it('replaces attachments in toCompress with [image]/[document] placeholders before the compression call', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
@@ -932,26 +930,39 @@ describe('Janitor — media-aware compression', () => {
     const history: Message[] = [
       {
         role: 'user',
-        content: 'Look at this image',
-        attachments: [{ mediaType: 'image/png', data: 'base64data' }],
+        content: 'Look at this',
+        attachments: [
+          { mediaType: 'image/png', data: 'BIG_BASE64_IMG', filename: 'photo.png' },
+          { mediaType: 'application/pdf', data: 'PDF_BASE64' },
+        ],
       },
-      { role: 'assistant', content: 'I see a cat' },
-      { role: 'user', content: 'Thanks' },
-      { role: 'assistant', content: 'You are welcome' },
-      { role: 'user', content: 'Latest message' },
+      { role: 'assistant', content: 'I see' },
+      { role: 'user', content: 'Mid' },
+      { role: 'assistant', content: 'OK' },
+      { role: 'user', content: 'Latest' },
     ];
 
     await janitor.compress(history);
 
-    expect(compressionModel).toHaveBeenCalledTimes(1);
     const passedMessages = compressionModel.mock.calls[0][0] as Message[];
-    // Last message is the instruction appended by Janitor
-    const instruction = passedMessages[passedMessages.length - 1].content;
-    expect(instruction).toContain(Prompts.MEDIA_DESCRIPTION_INSTRUCTION);
+    const userMsg = passedMessages.find(
+      (m) =>
+        m.role === 'user' && typeof m.content === 'string' && m.content.includes('Look at this'),
+    );
+    expect(userMsg).toBeDefined();
+    expect(userMsg?.attachments).toBeUndefined();
+    // Filename surfaces in the placeholder when available; non-image media renders as [document]
+    expect(userMsg?.content).toContain('[image: photo.png]');
+    expect(userMsg?.content).toContain('[document]');
+    // Original text remains
+    expect(userMsg?.content).toContain('Look at this');
+    // Binary payloads must never reach the compression model
+    expect(userMsg?.content).not.toContain('BIG_BASE64_IMG');
+    expect(userMsg?.content).not.toContain('PDF_BASE64');
   });
 
-  it('does NOT append media instruction when no attachments present', async () => {
-    const compressionModel = vi.fn().mockResolvedValue('<summary>Normal summary</summary>');
+  it('passes through messages without attachments unchanged (no synthetic markers)', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
@@ -960,25 +971,86 @@ describe('Janitor — media-aware compression', () => {
 
     await janitor.compress(buildHistory(5));
 
-    expect(compressionModel).toHaveBeenCalledTimes(1);
     const passedMessages = compressionModel.mock.calls[0][0] as Message[];
-    const instruction = passedMessages[passedMessages.length - 1].content;
-    expect(instruction).not.toContain(Prompts.MEDIA_DESCRIPTION_INSTRUCTION);
+    // The trailing message is the appended instruction; skip it.
+    const compressedMessages = passedMessages.slice(0, -1);
+    for (const m of compressedMessages) {
+      expect(m.attachments).toBeUndefined();
+      expect(typeof m.content).toBe('string');
+      expect(m.content as string).not.toMatch(/\[(?:image|document)/);
+    }
   });
 
-  it('passes attachments through to compressionModel on the original messages', async () => {
-    const compressionModel = vi.fn().mockResolvedValue('<summary>Described</summary>');
+  it('preserves attachments on toKeep messages — only the toCompress slice is rewritten', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
       compressionModel,
     });
 
-    const attachment = { mediaType: 'image/jpeg', data: 'imgdata' };
+    const oldAttachment = { mediaType: 'image/jpeg', data: 'OLD_DATA' };
+    const recentAttachment = { mediaType: 'image/png', data: 'RECENT_DATA' };
     const history: Message[] = [
-      { role: 'user', content: 'Check this', attachments: [attachment] },
-      { role: 'assistant', content: 'Looks good' },
-      { role: 'user', content: 'Recent' },
+      { role: 'user', content: 'Old', attachments: [oldAttachment] },
+      { role: 'assistant', content: 'Saw old' },
+      { role: 'user', content: 'Mid' },
+      { role: 'assistant', content: 'Reply' },
+      { role: 'user', content: 'Recent', attachments: [recentAttachment] },
+    ];
+
+    const result = await janitor.compress(history);
+
+    // toCompress slice: attachments stripped → placeholders injected
+    const passedMessages = compressionModel.mock.calls[0][0] as Message[];
+    const compressedUser = passedMessages.find(
+      (m) => typeof m.content === 'string' && m.content.includes('Old'),
+    );
+    expect(compressedUser?.attachments).toBeUndefined();
+    expect(compressedUser?.content).toContain('[image]');
+
+    // Compressed return value: toKeep messages retain their original attachments verbatim
+    const recentInResult = result.find((m) => m.attachments?.length);
+    expect(recentInResult).toBeDefined();
+    expect(recentInResult?.attachments?.[0]).toEqual(recentAttachment);
+  });
+
+  it('does not mutate the input history', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const attachment = { mediaType: 'image/png', data: 'ORIGINAL' };
+    const history: Message[] = [
+      { role: 'user', content: 'Hi', attachments: [attachment] },
+      { role: 'assistant', content: 'Hello' },
+      { role: 'user', content: 'Mid' },
+      { role: 'assistant', content: 'OK' },
+      { role: 'user', content: 'Latest' },
+    ];
+
+    await janitor.compress(history);
+
+    // Original history object must remain untouched
+    expect(history[0].attachments).toEqual([attachment]);
+    expect(history[0].content).toBe('Hi');
+  });
+
+  it('uses [attachment] for empty mediaType, never the misleading [document]', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const history: Message[] = [
+      { role: 'user', content: 'Mystery file', attachments: [{ mediaType: '', data: 'X' }] },
+      { role: 'assistant', content: 'Got it' },
+      { role: 'user', content: 'Mid' },
       { role: 'assistant', content: 'OK' },
       { role: 'user', content: 'Latest' },
     ];
@@ -986,9 +1058,75 @@ describe('Janitor — media-aware compression', () => {
     await janitor.compress(history);
 
     const passedMessages = compressionModel.mock.calls[0][0] as Message[];
-    // toCompress messages (excluding the appended instruction) should carry attachments
-    const userMsgWithAttachment = passedMessages.find((m) => m.attachments?.length);
-    expect(userMsgWithAttachment).toBeDefined();
-    expect(userMsgWithAttachment?.attachments?.[0]).toEqual(attachment);
+    const userMsg = passedMessages.find(
+      (m) =>
+        m.role === 'user' && typeof m.content === 'string' && m.content.includes('Mystery file'),
+    );
+    expect(userMsg).toBeDefined();
+    expect(userMsg?.content).toContain('[attachment]');
+    expect(userMsg?.content).not.toContain('[document]');
+  });
+
+  it('treats empty attachments array as no attachments (no synthetic markers)', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const history: Message[] = [
+      { role: 'user', content: 'Plain', attachments: [] },
+      { role: 'assistant', content: 'Reply' },
+      { role: 'user', content: 'Mid' },
+      { role: 'assistant', content: 'OK' },
+      { role: 'user', content: 'Latest' },
+    ];
+
+    await janitor.compress(history);
+
+    const passedMessages = compressionModel.mock.calls[0][0] as Message[];
+    const passedMsg = passedMessages.find(
+      (m) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('Plain'),
+    );
+    expect(passedMsg).toBeDefined();
+    expect(passedMsg?.content).not.toContain('[image');
+    expect(passedMsg?.content).not.toContain('[document');
+    expect(passedMsg?.content).not.toContain('[attachment');
+    // stripAttachmentsForCompression returns the original message by reference when
+    // attachments is empty, so the empty array survives rather than being deleted.
+    expect(passedMsg?.attachments).toEqual([]);
+  });
+
+  it('case-insensitive mediaType prefix matching', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+    });
+
+    const history: Message[] = [
+      {
+        role: 'user',
+        content: 'Photo upload',
+        attachments: [{ mediaType: 'IMAGE/PNG', data: 'X' }],
+      },
+      { role: 'assistant', content: 'Nice' },
+      { role: 'user', content: 'Mid' },
+      { role: 'assistant', content: 'OK' },
+      { role: 'user', content: 'Latest' },
+    ];
+
+    await janitor.compress(history);
+
+    const passedMessages = compressionModel.mock.calls[0][0] as Message[];
+    const userMsg = passedMessages.find(
+      (m) =>
+        m.role === 'user' && typeof m.content === 'string' && m.content.includes('Photo upload'),
+    );
+    expect(userMsg).toBeDefined();
+    expect(userMsg?.content).toContain('[image]');
+    expect(userMsg?.content).not.toContain('[document]');
   });
 });

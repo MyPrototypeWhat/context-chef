@@ -1,6 +1,6 @@
 import { Prompts } from '../../prompts';
-import type { CompactOptions, Message } from '../../types';
-import { TokenUtils } from '../../utils/tokenUtils';
+import type { Attachment, CompactOptions, Message } from '../../types';
+import { estimateObject } from '../../utils/tokenUtils';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
 const DEFAULT_PRESERVE_RECENT_MESSAGES = 1;
@@ -48,6 +48,54 @@ export function groupIntoTurns(history: Message[]): Turn[] {
   }
 
   return turns;
+}
+
+// ─── Attachment stripping for compression ───
+
+/**
+ * Builds a single-line text placeholder for an attachment.
+ * Includes the filename when available so the summary can reference it by name.
+ *
+ *   { mediaType: 'image/png', filename: 'photo.png' }   → '[image: photo.png]'
+ *   { mediaType: 'image/png' }                          → '[image]'
+ *   { mediaType: 'application/pdf', filename: 'r.pdf' } → '[document: r.pdf]'
+ *   { mediaType: 'application/pdf' }                    → '[document]'
+ *   { mediaType: '' }                                  → '[attachment]'
+ *
+ * Categorization mirrors Claude Code's binary image-vs-document split — keeping
+ * the placeholder vocabulary small reduces surprises for the compression model.
+ */
+function attachmentToPlaceholder(att: Attachment): string {
+  const mt = att.mediaType.toLowerCase();
+  const kind = mt.startsWith('image/') ? 'image' : mt ? 'document' : 'attachment';
+  return att.filename ? `[${kind}: ${att.filename}]` : `[${kind}]`;
+}
+
+/**
+ * Replaces media attachments with text placeholders for the compression model.
+ *
+ * The compression model never sees binary attachment data — it only sees text
+ * markers like `[image]` or `[document: report.pdf]` prepended to the message
+ * content. This avoids shipping base64 payloads through the compression call
+ * (which can balloon token cost and trip prompt-too-long limits on the
+ * compression call itself), while still letting the summarizer note that
+ * media existed at this point in the conversation.
+ *
+ * Pure function — does not mutate the input array or any Message inside it.
+ * Messages without attachments pass through by reference (no allocation).
+ *
+ * Modeled on Claude Code's `stripImagesFromMessages` strategy.
+ */
+function stripAttachmentsForCompression(messages: Message[]): Message[] {
+  return messages.map((msg) => {
+    if (!msg.attachments?.length) return msg;
+
+    const placeholders = msg.attachments.map(attachmentToPlaceholder).join('\n');
+    const newContent = msg.content ? `${placeholders}\n${msg.content}` : placeholders;
+
+    const { attachments: _attachments, ...rest } = msg;
+    return { ...rest, content: newContent };
+  });
 }
 
 export interface JanitorConfig {
@@ -376,7 +424,7 @@ export class Janitor {
     }
 
     // ─── FeedTokenUsage path: simple total comparison, keep last N turns ───
-    const currentTokens = this._externalTokenUsage ?? TokenUtils.estimateObject(history);
+    const currentTokens = this._externalTokenUsage ?? estimateObject(history);
     this._externalTokenUsage = null;
 
     if (currentTokens <= this.config.contextWindow) {
@@ -420,12 +468,6 @@ export class Janitor {
     // preserved — customCompressionInstructions is additive, not a replacement.
     let instruction = Prompts.CONTEXT_COMPACTION_INSTRUCTION;
 
-    // Detect media attachments in messages being compressed.
-    // When present, guide the compression model to describe media content in the summary.
-    if (toCompress.some((m) => m.attachments?.length)) {
-      instruction += `\n\n${Prompts.MEDIA_DESCRIPTION_INSTRUCTION}`;
-    }
-
     const extra = this.config.customCompressionInstructions?.trim();
     if (extra) {
       instruction += `\n\nAdditional Instructions:\n${extra}`;
@@ -433,8 +475,15 @@ export class Janitor {
 
     let summaryText: string;
     try {
+      // Strip binary attachments from toCompress before the compression call:
+      // each attachment becomes an inline `[image]` or `[document: name.pdf]`-style marker
+      // (filenames are surfaced when present),
+      // so the summarizer sees that media existed without us shipping base64 through
+      // the compression payload (which is expensive and risks prompt-too-long on the
+      // compression call itself). toKeep is untouched — its attachments still reach
+      // the main model via the adapter pipeline. Mirrors Claude Code's strategy.
       const compressionMessages: Message[] = [
-        ...toCompress,
+        ...stripAttachmentsForCompression(toCompress),
         { role: 'user', content: instruction },
       ];
       const raw = await this.config.compressionModel(compressionMessages);

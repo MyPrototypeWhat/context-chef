@@ -5,7 +5,7 @@ import type {
   LanguageModelV3ToolResultPart,
   SharedV3ProviderOptions,
 } from '@ai-sdk/provider';
-import type { Message, ToolCall } from '@context-chef/core';
+import type { Attachment, Message, ToolCall } from '@context-chef/core';
 
 /** Content types for each AI SDK message role */
 type UserContent = Extract<LanguageModelV3Message, { role: 'user' }>['content'];
@@ -50,19 +50,41 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
         .filter((p) => p.type === 'text')
         .map((p) => p.text)
         .join('\n');
-      messages.push({
+
+      const attachments: Attachment[] = [];
+      for (const part of msg.content) {
+        if (part.type === 'file') {
+          // `attachment.data` here is just a presence/metadata signal for Janitor
+          // (used by `m.attachments?.length` checks and the `[image]`/`[document]`
+          // placeholder helper, neither of which read `data`). The real binary
+          // payload — including `Uint8Array` / `URL` shapes — round-trips losslessly
+          // through `_userContent`, which `toAISDK` hands back to the AI SDK
+          // provider verbatim. We only record `data` when it's already a string,
+          // so we never invent a fake encoding for non-string inputs.
+          attachments.push({
+            mediaType: part.mediaType,
+            data: typeof part.data === 'string' ? part.data : '',
+            ...(part.filename ? { filename: part.filename } : {}),
+          });
+        }
+      }
+
+      const m: AISDKMessage = {
         role: 'user',
         content: text,
         _userContent: msg.content,
         _originalText: text,
         ...(msg.providerOptions ? { _providerOptions: msg.providerOptions } : {}),
-      });
+      };
+      if (attachments.length) m.attachments = attachments;
+      messages.push(m);
       continue;
     }
 
     if (msg.role === 'assistant') {
       const text: string[] = [];
       const toolCalls: ToolCall[] = [];
+      const attachments: Attachment[] = [];
       let thinking: { thinking: string } | undefined;
 
       for (const part of msg.content) {
@@ -78,6 +100,14 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
           });
         } else if (part.type === 'reasoning') {
           thinking = { thinking: part.text };
+        } else if (part.type === 'file') {
+          // See user-side comment above: data is a presence signal only;
+          // _assistantContent carries the actual payload through round-trip.
+          attachments.push({
+            mediaType: part.mediaType,
+            data: typeof part.data === 'string' ? part.data : '',
+            ...(part.filename ? { filename: part.filename } : {}),
+          });
         }
       }
 
@@ -91,6 +121,7 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
       };
       if (toolCalls.length > 0) m.tool_calls = toolCalls;
       if (thinking) m.thinking = thinking;
+      if (attachments.length) m.attachments = attachments;
       messages.push(m);
       continue;
     }

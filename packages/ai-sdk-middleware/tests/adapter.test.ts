@@ -36,6 +36,90 @@ describe('fromAISDK', () => {
     const result = fromAISDK(prompt);
     expect(result[0].content).toBe('Look at this');
     expect(result[0]._userContent).toEqual(content);
+    expect(result[0].attachments).toEqual([{ mediaType: 'image/png', data: 'base64data' }]);
+  });
+
+  it('maps multiple file parts to attachments', () => {
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Check these' },
+          { type: 'file', data: 'img1', mediaType: 'image/png' },
+          { type: 'file', data: 'doc1', mediaType: 'application/pdf', filename: 'report.pdf' },
+        ],
+      },
+    ];
+    const result = fromAISDK(prompt);
+    expect(result[0].attachments).toEqual([
+      { mediaType: 'image/png', data: 'img1' },
+      { mediaType: 'application/pdf', data: 'doc1', filename: 'report.pdf' },
+    ]);
+  });
+
+  it('does not set attachments when no file parts exist', () => {
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Just text' }] },
+    ];
+    const result = fromAISDK(prompt);
+    expect(result[0].attachments).toBeUndefined();
+  });
+
+  it('preserves Uint8Array file data verbatim through _userContent (no encoding into Attachment.data)', () => {
+    const bytes = new Uint8Array([72, 101, 108, 108, 111]); // "Hello"
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Binary please' },
+          { type: 'file', data: bytes, mediaType: 'image/png' },
+        ],
+      },
+    ];
+    const result = fromAISDK(prompt);
+    // Attachment.data is empty here — it's only a presence signal for Janitor.
+    // The real binary lives on _userContent for the AI SDK round-trip.
+    expect(result[0].attachments).toEqual([{ mediaType: 'image/png', data: '' }]);
+    const filePart = result[0]._userContent?.find((p) => p.type === 'file');
+    expect(filePart?.data).toBe(bytes); // same reference, not a copy
+  });
+
+  it('preserves URL file data verbatim through _userContent (no toString into Attachment.data)', () => {
+    const url = new URL('https://example.com/img.png');
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Remote image' },
+          { type: 'file', data: url, mediaType: 'image/png' },
+        ],
+      },
+    ];
+    const result = fromAISDK(prompt);
+    expect(result[0].attachments).toEqual([{ mediaType: 'image/png', data: '' }]);
+    const filePart = result[0]._userContent?.find((p) => p.type === 'file');
+    expect(filePart?.data).toBe(url); // same URL instance, not toString'd
+  });
+
+  it('toAISDK round-trips Uint8Array binary back to the AI SDK provider verbatim', () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'binary' },
+          { type: 'file', data: bytes, mediaType: 'image/png' },
+        ],
+      },
+    ];
+    const ir = fromAISDK(prompt);
+    const roundTripped = toAISDK(ir);
+    const userMsg = roundTripped.find((m) => m.role === 'user');
+    expect(Array.isArray(userMsg?.content)).toBe(true);
+    const filePart = (userMsg?.content as Array<{ type: string; data?: unknown }>).find(
+      (p) => p.type === 'file',
+    );
+    expect(filePart?.data).toBe(bytes); // same reference
   });
 
   it('converts assistant messages with text + tool calls', () => {
@@ -78,6 +162,21 @@ describe('fromAISDK', () => {
     const result = fromAISDK(prompt);
     expect(result[0].thinking).toEqual({ thinking: 'I need to think...' });
     expect(result[0].content).toBe('Here is my answer.');
+  });
+
+  it('maps assistant file parts to attachments', () => {
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Here is the image.' },
+          { type: 'file', data: 'generated_img', mediaType: 'image/png' },
+        ],
+      },
+    ];
+    const result = fromAISDK(prompt);
+    expect(result[0].content).toBe('Here is the image.');
+    expect(result[0].attachments).toEqual([{ mediaType: 'image/png', data: 'generated_img' }]);
   });
 
   it('converts tool messages to individual IR messages', () => {

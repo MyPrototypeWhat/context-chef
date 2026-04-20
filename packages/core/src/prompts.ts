@@ -220,14 +220,4 @@ Only remember things genuinely worth persisting.
     'Messages showing "[Old tool result content cleared]" indicate the tool executed successfully — ' +
     'the output was removed to save space, not due to any error. ' +
     'Focus on the recent tool results which are preserved in full.',
-
-  /**
-   * Appended to the compression instruction when messages contain media attachments.
-   * Guides the compression model to describe visual/media content in the summary
-   * so the information is preserved after the original media is discarded.
-   */
-  MEDIA_DESCRIPTION_INSTRUCTION:
-    'Some messages in this conversation contain images or media attachments. ' +
-    'Describe their visual content or key information in your summary so the ' +
-    'context is preserved after the original media is discarded.',
 };
