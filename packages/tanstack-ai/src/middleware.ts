@@ -76,14 +76,21 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       // 5. Convert back to TanStack AI format
       messages = toTanStackAI(irMessages);
 
-      // 6. Dynamic state injection
+      // 6. Skill instructions injection (appended after user system prompts,
+      //    before dynamicState — matches @context-chef/core compile() ordering).
+      if (options.skill) {
+        const instructions = await resolveSkillInstructions(options.skill);
+        if (instructions) systemPrompts = [...systemPrompts, instructions];
+      }
+
+      // 7. Dynamic state injection
       if (options.dynamicState) {
         const injected = await injectDynamicState(messages, systemPrompts, options.dynamicState);
         messages = injected.messages;
         systemPrompts = injected.systemPrompts;
       }
 
-      // 7. Custom transform hook
+      // 8. Custom transform hook
       if (options.transformContext) {
         const transformed = await options.transformContext(messages, systemPrompts);
         messages = transformed.messages;
@@ -219,4 +226,19 @@ async function injectDynamicState(
 function toCompressRole(role: string): CompressRole {
   if (role === 'system' || role === 'user' || role === 'assistant') return role;
   return 'user';
+}
+
+/**
+ * Resolves the `skill` option to its instructions string.
+ * Returns the instructions when a Skill is active and has non-empty
+ * instructions; returns undefined otherwise (no injection).
+ */
+async function resolveSkillInstructions(
+  skill: NonNullable<ContextChefOptions['skill']>,
+): Promise<string | undefined> {
+  const resolved = typeof skill === 'function' ? await skill() : skill;
+  const instructions = resolved?.instructions;
+  // Treat whitespace-only instructions as empty — they would otherwise pollute
+  // the systemPrompts array and create a needless cache breakpoint.
+  return instructions?.trim() ? instructions : undefined;
 }

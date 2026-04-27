@@ -1,5 +1,5 @@
 import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
-import type { Message, VFSStorageAdapter } from '@context-chef/core';
+import type { Message, Skill, VFSStorageAdapter } from '@context-chef/core';
 
 export interface TruncateOptions {
   /** Character count threshold to trigger truncation. */
@@ -100,6 +100,24 @@ export interface ContextChefOptions {
    * for maximum LLM attention (last_user or system position).
    */
   dynamicState?: DynamicStateConfig;
+  /**
+   * Inject the active skill's instructions as a dedicated system message
+   * before the LLM call. Mirrors the `dynamicState` pattern.
+   *
+   * - Pass a `Skill` object for static activation.
+   * - Pass a function returning `Skill | null | undefined` for dynamic
+   *   activation (called on every request — return null/undefined to skip).
+   * - Function may be async.
+   *
+   * The instructions are injected as `{ role: 'system', content: skill.instructions }`
+   * AFTER user-provided system messages and BEFORE the conversation history,
+   * matching `@context-chef/core` `compile()` ordering (see SKILL_SPEC §6.3).
+   *
+   * Decoupled from tool restriction — `skill.allowedTools` is annotation only;
+   * chef does NOT enforce it (Claude Code semantics). Empty `instructions`
+   * are skipped to avoid emitting an empty system message.
+   */
+  skill?: Skill | (() => Skill | null | undefined | Promise<Skill | null | undefined>);
   /** Optional tokenizer for precise per-message token counting. */
   tokenizer?: (messages: unknown[]) => number;
   /** Hook called after compression occurs. */

@@ -1,3 +1,4 @@
+import type { Skill } from '@context-chef/core';
 import type { ChatMiddlewareConfig, ChatMiddlewareContext, ModelMessage } from '@tanstack/ai';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { contextChefMiddleware } from '../src/middleware';
@@ -268,6 +269,210 @@ describe('contextChefMiddleware', () => {
     expect(localWarnSpy).not.toHaveBeenCalled();
 
     localWarnSpy.mockRestore();
+  });
+});
+
+describe('skill', () => {
+  const planning: Skill = {
+    name: 'planning',
+    description: 'Plan changes before editing',
+    instructions: 'Read code, list affected files, write a plan to the scratchpad.',
+    allowedTools: ['read_file', 'grep'],
+  };
+
+  it('injects a static Skill object into systemPrompts', async () => {
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: planning });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['You are helpful'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toEqual(['You are helpful', planning.instructions]);
+  });
+
+  it('does not enforce skill.allowedTools (annotation only)', async () => {
+    // Sanity-check: presence of allowedTools must NOT affect tools/messages.
+    // chef does not consult allowedTools — Claude Code semantics.
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: planning });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }]);
+
+    const result = await mw.onConfig?.(ctx, config);
+    // Result must contain only messages + systemPrompts (no `tools` mutation).
+    expect(Object.keys(result ?? {}).sort()).toEqual(['messages', 'systemPrompts']);
+  });
+
+  it('calls the function form on every request', async () => {
+    const fn = vi.fn(() => planning);
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: fn });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }]);
+
+    await mw.onConfig?.(ctx, config);
+    await mw.onConfig?.(ctx, config);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips injection when the function returns null', async () => {
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: () => null });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['original'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toEqual(['original']);
+  });
+
+  it('skips injection when the function returns undefined', async () => {
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: () => undefined });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['original'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toEqual(['original']);
+  });
+
+  it('supports an async function returning a Skill', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      skill: async () => planning,
+    });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }]);
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toContain(planning.instructions);
+  });
+
+  it('leaves systemPrompts untouched when no skill option is provided', async () => {
+    // Regression: existing usage must keep its system prompts byte-identical.
+    const mw = contextChefMiddleware({ contextWindow: 100_000 });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['You are helpful', 'Be concise'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toEqual(['You are helpful', 'Be concise']);
+  });
+
+  it('skips injection when skill.instructions is an empty string', async () => {
+    const empty: Skill = { name: 'noop', description: 'nothing', instructions: '' };
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: empty });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['original'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toEqual(['original']);
+  });
+
+  it('skips injection when skill.instructions is whitespace-only', async () => {
+    const blank: Skill = { name: 'blank', description: 'blank', instructions: '   \n\t  ' };
+    const mw = contextChefMiddleware({ contextWindow: 100_000, skill: blank });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['original'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toEqual(['original']);
+  });
+
+  it('coexists with dynamicState — skill in systemPrompts, dynamicState in last user', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      skill: planning,
+      dynamicState: {
+        getState: () => ({ step: 1 }),
+        placement: 'last_user',
+      },
+    });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'do something' }]);
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { messages, systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+
+    // Skill went to systemPrompts.
+    expect(systemPrompts).toEqual([planning.instructions]);
+    // dynamicState went into the user message, not systemPrompts.
+    const userMsg = messages.find((m) => m.role === 'user');
+    expect(userMsg?.content).toContain('<dynamic_state>');
+    expect(userMsg?.content).toContain('<step>1</step>');
+  });
+
+  it('coexists with dynamicState placement=system — skill comes before dynamicState', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      skill: planning,
+      dynamicState: {
+        getState: () => ({ step: 1 }),
+        placement: 'system',
+      },
+    });
+    const ctx = createMockCtx();
+    const config = createMockConfig([{ role: 'user', content: 'hi' }], {
+      systemPrompts: ['You are helpful'],
+    });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(systemPrompts).toHaveLength(3);
+    expect(systemPrompts[0]).toBe('You are helpful');
+    expect(systemPrompts[1]).toBe(planning.instructions);
+    expect(systemPrompts[2]).toContain('CURRENT TASK STATE');
+  });
+
+  it('coexists with compress — skill still injected after compression runs', async () => {
+    const chunks = [
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'msg_1', delta: 'summary' },
+      { type: 'RUN_FINISHED', messageId: 'msg_1' },
+    ];
+    const mockAdapter = {
+      kind: 'text' as const,
+      name: 'mock',
+      model: 'mock-model',
+      '~types': {} as Record<string, unknown>,
+      chatStream: vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]: async function* () {
+          for (const chunk of chunks) yield chunk;
+        },
+      }),
+      structuredOutput: vi.fn(),
+    };
+    const mw = contextChefMiddleware({
+      contextWindow: 10,
+      compress: { adapter: mockAdapter as never },
+      tokenizer: (msgs) => msgs.length * 100,
+      skill: planning,
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'reply2' },
+      { role: 'user', content: 'third' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages);
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+    expect(mockAdapter.chatStream).toHaveBeenCalled();
+    expect(systemPrompts).toContain(planning.instructions);
   });
 });
 

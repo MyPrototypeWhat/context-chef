@@ -8,6 +8,7 @@ import type {
   LanguageModelV3StreamPart,
   LanguageModelV3StreamResult,
 } from '@ai-sdk/provider';
+import type { Skill } from '@context-chef/core';
 import { describe, expect, it, vi } from 'vitest';
 import { withContextChef } from '../src/index';
 import { createMiddleware } from '../src/middleware';
@@ -689,5 +690,270 @@ describe('transformContext', () => {
         m.role === 'system' && m.content.includes('<injected>true</injected>'),
     );
     expect(hasState).toBe(true);
+  });
+});
+
+describe('skill', () => {
+  const planningSkill: Skill = {
+    name: 'planning',
+    description: 'Plan before editing',
+    instructions: 'Read code, list affected files, write plan to scratchpad.',
+  };
+
+  it('injects a static Skill object as a dedicated system message', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: planningSkill,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Hello!' }] },
+      { role: 'user', content: [{ type: 'text', text: 'What next?' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    // Skill message should sit AFTER user system, BEFORE conversation.
+    const systemMsgs = result.prompt.filter((m) => m.role === 'system');
+    expect(systemMsgs.length).toBe(2);
+    const skillSysMsg = systemMsgs[1];
+    if (skillSysMsg.role === 'system') {
+      expect(skillSysMsg.content).toBe(planningSkill.instructions);
+    }
+
+    const skillIdx = result.prompt.findIndex(
+      (m) => m.role === 'system' && m.content === planningSkill.instructions,
+    );
+    const firstUserIdx = result.prompt.findIndex((m) => m.role === 'user');
+    const userSysIdx = result.prompt.findIndex(
+      (m) => m.role === 'system' && m.content === 'You are helpful.',
+    );
+    expect(userSysIdx).toBeLessThan(skillIdx);
+    expect(skillIdx).toBeLessThan(firstUserIdx);
+  });
+
+  it('invokes the function form on every transformParams call', async () => {
+    const skillFn = vi.fn(() => planningSkill);
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: skillFn,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    expect(skillFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips injection when the function returns null', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: () => null,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const systemMsgs = result.prompt.filter((m) => m.role === 'system');
+    expect(systemMsgs.length).toBe(1);
+  });
+
+  it('toggles between active and inactive on subsequent calls', async () => {
+    let active: Skill | null = planningSkill;
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: () => active,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const first = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+    expect(first.prompt.filter((m) => m.role === 'system').length).toBe(2);
+
+    active = null;
+    const second = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+    expect(second.prompt.filter((m) => m.role === 'system').length).toBe(1);
+  });
+
+  it('supports async skill resolvers', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: async () => planningSkill,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const systemMsgs = result.prompt.filter((m) => m.role === 'system');
+    expect(systemMsgs.length).toBe(1);
+    if (systemMsgs[0].role === 'system') {
+      expect(systemMsgs[0].content).toBe(planningSkill.instructions);
+    }
+  });
+
+  it('does not modify the prompt when the option is omitted', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    expect(result.prompt).toEqual(prompt);
+  });
+
+  it('skips injection when instructions is an empty string', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: { name: 'noop', description: 'noop', instructions: '' },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const systemMsgs = result.prompt.filter((m) => m.role === 'system');
+    expect(systemMsgs.length).toBe(1);
+  });
+
+  it('skips injection when instructions is whitespace-only', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: { name: 'blank', description: 'blank', instructions: '   \n\t  ' },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const systemMsgs = result.prompt.filter((m) => m.role === 'system');
+    expect(systemMsgs.length).toBe(1);
+  });
+
+  it('coexists with dynamicState — skill is system, state is last_user', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 1_000_000,
+      skill: planningSkill,
+      dynamicState: {
+        getState: () => ({ step: 'analysis' }),
+      },
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    // Skill instructions appear once as a system message
+    const skillSysMsgs = result.prompt.filter(
+      (m) => m.role === 'system' && m.content === planningSkill.instructions,
+    );
+    expect(skillSysMsgs.length).toBe(1);
+
+    // dynamicState was injected into the last user message, not system
+    const userMsg = result.prompt.find((m) => m.role === 'user');
+    if (userMsg?.role === 'user') {
+      const lastPart = userMsg.content[userMsg.content.length - 1];
+      if (lastPart.type === 'text') {
+        expect(lastPart.text).toContain('<step>analysis</step>');
+      }
+    }
+  });
+
+  it('coexists with compress — skill survives over-budget compression', async () => {
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      skill: planningSkill,
+    });
+
+    const model = createMockModel({ inputTokens: 200 });
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+
+    // Push token usage so the next transform triggers compression.
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({ doGenerate, doStream, params: { prompt: [] }, model });
+
+    const longPrompt = makeConversation(10);
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt: longPrompt }, type: 'generate', model });
+
+    const skillSysMsgs = result.prompt.filter(
+      (m) => m.role === 'system' && m.content === planningSkill.instructions,
+    );
+    expect(skillSysMsgs.length).toBe(1);
+    // Conversation should still have been compressed.
+    expect(result.prompt.length).toBeLessThan(longPrompt.length);
   });
 });

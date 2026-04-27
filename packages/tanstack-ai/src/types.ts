@@ -1,4 +1,4 @@
-import type { Message, VFSStorageAdapter } from '@context-chef/core';
+import type { Message, Skill, VFSStorageAdapter } from '@context-chef/core';
 import type { AnyTextAdapter, ModelMessage } from '@tanstack/ai';
 
 export interface TruncateOptions {
@@ -78,6 +78,30 @@ export interface ContextChefOptions {
    * for maximum LLM attention (last_user or system position).
    */
   dynamicState?: DynamicStateConfig;
+  /**
+   * Inject the active skill's instructions as an additional system prompt
+   * before the chat() call. Mirrors the `dynamicState` pattern.
+   *
+   * - Pass a `Skill` object for static activation.
+   * - Pass a function returning `Skill | null | undefined` for dynamic
+   *   activation (called on every request — return null/undefined to skip).
+   * - Function may be async.
+   *
+   * Skill instructions are appended to `systemPrompts` AFTER any existing
+   * user system prompts, matching `@context-chef/core` compile() ordering
+   * (see SKILL_SPEC §6.3 — instructions sit between userSystemPrompt and
+   * memoryMessages; in TanStack AI all `systemPrompts` collapse to system
+   * messages prepended to the conversation, so appending here yields the
+   * equivalent ordering).
+   *
+   * Decoupled from tool restriction — `skill.allowedTools` is annotation
+   * only; chef does NOT enforce it (Claude Code semantics, see SKILL_SPEC
+   * §5.4). Wire it to the Pruner yourself if you want hard restriction.
+   *
+   * Skipped when the resolved skill is null/undefined or its instructions
+   * are an empty string.
+   */
+  skill?: Skill | (() => Skill | null | undefined | Promise<Skill | null | undefined>);
   /** Optional tokenizer for precise per-message token counting. */
   tokenizer?: (messages: unknown[]) => number;
   /** Hook called after compression occurs. */

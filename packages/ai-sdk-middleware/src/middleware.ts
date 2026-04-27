@@ -62,8 +62,13 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       // 4. Compress conversation history if over token budget
       conversation = await janitor.compress(conversation);
 
-      // 5. Reassemble sandwich: system + conversation
-      const irMessages = [...systemMessages, ...conversation];
+      // 5. Reassemble sandwich: user system + skill instructions + conversation.
+      //    The skill slot mirrors @context-chef/core compile() ordering
+      //    (SKILL_SPEC §6.3): a dedicated system message AFTER user system
+      //    and BEFORE the conversation history. Empty instructions are
+      //    skipped to avoid emitting an empty system message.
+      const skillMessages = await resolveSkillMessages(options.skill);
+      const irMessages = [...systemMessages, ...skillMessages, ...conversation];
 
       // 6. Convert back to AI SDK format
       prompt = toAISDK(irMessages);
@@ -154,6 +159,23 @@ function compactPrompt(
         providerOptions: msg.providerOptions,
       }) as LanguageModelV3Message,
   );
+}
+
+/**
+ * Resolves the `skill` option into IR system messages to insert between
+ * user system messages and conversation. Returns `[]` when no skill is
+ * active, the resolver returns null/undefined, or instructions are empty.
+ *
+ * The function form is invoked on every transformParams call so the
+ * caller can swap skills dynamically without recreating the middleware.
+ */
+async function resolveSkillMessages(skill: ContextChefOptions['skill']): Promise<Message[]> {
+  if (!skill) return [];
+  const resolved = typeof skill === 'function' ? await skill() : skill;
+  // Treat whitespace-only instructions as empty — they would otherwise pollute
+  // the prompt and create a needless cache breakpoint between system and history.
+  if (!resolved || !resolved.instructions || !resolved.instructions.trim()) return [];
+  return [{ role: 'system', content: resolved.instructions }];
 }
 
 /**
