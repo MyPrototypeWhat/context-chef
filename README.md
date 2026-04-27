@@ -90,6 +90,8 @@ For direct control over the compilation pipeline — dynamic state injection, to
 
 - **Conversations too long?** — Automatically compress history, preserve recent memory, delegate old messages to a small model for summarization
 - **Too many tools?** — Dynamically prune the tool list per task, or use a two-layer architecture (stable namespaces + on-demand loading) to eliminate tool hallucinations
+- **Need to block tools at runtime?** — Pruner blocklist + `checkToolCall` gate for permission, environment safety, rate limits, and sandboxing — KV-cache preserving by default
+- **Mode-based behavior?** — `Skill` primitive bundles instructions and tool annotations per phase; loadable from `SKILL.md` files (compatible with Claude Code / Mastra / OpenCode formats)
 - **Switching providers?** — Same prompt architecture compiles to OpenAI / Anthropic / Gemini with automatic prefill, cache, and tool call format adaptation
 - **Long tasks drifting?** — Zod schema-based state injection forces the model to stay aligned with the current task on every call
 - **Terminal output too large?** — Auto-truncate and offload to VFS, keeping error lines + a `context://` URI pointer for on-demand retrieval
@@ -396,6 +398,31 @@ const { tools, removed } = chef.getPruner().pruneByTask("Read the auth.ts file")
 
 Also supports `allowOnly(names)` and `pruneByTaskAndAllowlist(task, names)`.
 
+#### Runtime Blocklist (Permission Gate)
+
+Block specific tools at dispatch time without breaking KV cache. Useful for permission control, environment safety, sandboxing, rate limits, and feature flags. The compiled `tools` array stays unchanged — enforcement happens via `checkToolCall` in your agent loop.
+
+```typescript
+// Set policy (rare event — startup, on user role change, prod env, etc.)
+chef.getPruner().setBlockedTools(["delete_file", "tail_logs"]);
+
+// In your agent loop, gate every tool call before dispatch:
+for (const call of response.tool_calls) {
+  const check = chef.checkToolCall(call);
+  if (!check.allowed) {
+    history.push({
+      role: "tool",
+      tool_call_id: call.id,
+      content: check.reason, // e.g. 'Tool "delete_file" is currently blocked.'
+    });
+    continue;
+  }
+  await executeTool(call);
+}
+```
+
+`checkToolCall` returns a discriminated union (`ToolCallCheckResult`), so TypeScript guarantees `reason` is present iff the call is rejected. KV cache is preserved across blocklist changes — the LLM continues to see the full tool set; the gate is dispatch-side only.
+
 #### Namespace + Lazy Loading (Two-Layer Architecture)
 
 **Layer 1 — Namespaces**: Core tools grouped into stable tool definitions. The tool list never changes across turns.
@@ -515,6 +542,77 @@ const value = await chef.getMemory().get("persona");
 // - Memory tools (create_memory, modify_memory) are auto-injected into payload.tools
 // - Existing memories are injected as <memory> XML between systemPrompt and history
 ```
+
+---
+
+### Skill (Behavior Bundle)
+
+A `Skill` is a portable bundle of `(name + description + instructions + ...)` that scopes the agent's behavior for a specific phase or domain. Activating a skill injects its instructions as a dedicated system message between your system prompt and the memory block — no prompt rewriting on your side. Skills can be inline JS objects or loaded from `SKILL.md` files (same frontmatter shape as Claude Code / Mastra / OpenCode).
+
+```typescript
+import { ContextChef, type Skill } from "@context-chef/core";
+
+const planning: Skill = {
+  name: "planning",
+  description: "Plan changes before editing",
+  whenToUse: "When the task is non-trivial and requires multiple steps",
+  instructions: "Read code, list affected files, write plan to scratchpad.",
+  allowedTools: ["read_file", "grep"], // annotation only — chef does NOT enforce
+};
+
+const chef = new ContextChef();
+chef.registerSkills([planning]);
+chef.activateSkill("planning");
+// activateSkill also accepts a Skill object directly, or null to deactivate.
+
+const { messages, meta } = await chef.compile({ target: "openai" });
+// messages = [...systemPrompt, { role: 'system', content: planning.instructions }, ...rest]
+// meta.activeSkillName === 'planning'
+```
+
+#### Loading from `SKILL.md`
+
+```typescript
+import {
+  loadSkill,
+  loadSkillsDir,
+  formatSkillListing,
+} from "@context-chef/core";
+
+// Load a single skill file
+const skill = await loadSkill("./skills/db-debug/SKILL.md");
+
+// Or scan a directory: each subdir/SKILL.md becomes a Skill (tolerant — bad files surface in `errors`)
+const { skills, errors } = await loadSkillsDir("./skills");
+chef.registerSkills(skills);
+
+// Render a system-prompt-friendly listing (useful for LLM-driven `load_skill` tool)
+const listing = formatSkillListing(skills, { format: "plain" });
+```
+
+The listing is typically used as the description of a `load_skill` tool, letting the LLM pick a skill itself:
+
+```typescript
+const loadSkillTool = {
+  name: "load_skill",
+  description:
+    "Load a skill to specialize for the current task. Available:\n" + listing,
+  parameters: {
+    skill_name: {
+      type: "string",
+      enum: chef.getRegisteredSkills().map((s) => s.name),
+    },
+  },
+};
+
+// In your dispatch loop:
+if (call.name === "load_skill") {
+  chef.activateSkill(call.args.skill_name);
+  /* push tool result, continue loop */
+}
+```
+
+For the design rationale (Skill ⊥ Pruner decoupling, SKILL.md frontmatter shape, mode-wiring recipes, LLM-driven skill loading, reference files) see [`SKILL_SPEC.md`](./SKILL_SPEC.md).
 
 ---
 

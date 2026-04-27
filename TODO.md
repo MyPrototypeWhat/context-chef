@@ -309,6 +309,19 @@ Only applies when `compact()` is called; does not auto-trigger. Out of scope for
 
 ---
 
+### Pruner — State-Scoped Tool Whitelists
+
+**Status: Replaced** — see [`SKILL_SPEC.md`](./SKILL_SPEC.md).
+
+The original "Pruner state machine + tool whitelist" design was redesigned and split into two fully independent modules:
+
+- **Module A — Pruner Blocklist** (`Pruner.setBlockedTools` + `ContextChef.checkToolCall`): runtime tool gate for permission, environment, sandbox, rate-limiting, etc.
+- **Module B — Skill Primitive** (`Skill` type + `loadSkill` / `loadSkillsDir` + `ContextChef.activateSkill`): named behavior bundle (instructions + metadata). `Skill.allowedTools` is annotation only; chef does NOT enforce it.
+
+The original "registerStates / transitionTo / pruneByState" state-machine design and the `onToolCallReceived` config hook are explicitly dropped (see `SKILL_SPEC.md` §11). Mode-based agents wire Skill annotation to Pruner blocklist in user code; the wiring recipe is `SKILL_SPEC.md` §7.3.
+
+---
+
 ## Not Planned
 
 The following patterns from the industry are intentionally out of scope for ContextChef:

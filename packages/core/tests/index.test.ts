@@ -166,3 +166,67 @@ describe('ContextChef API', () => {
     expect(textContent).toContain('<task>Fix bug</task>');
   });
 });
+
+describe('ContextChef.checkToolCall', () => {
+  it('should allow any tool when no blocklist is set', () => {
+    const chef = new ContextChef();
+    expect(chef.checkToolCall({ name: 'write_file' })).toEqual({ allowed: true });
+    expect(chef.checkToolCall({ name: 'anything' })).toEqual({ allowed: true });
+  });
+
+  it('should block a tool whose name is in the blocklist', () => {
+    const chef = new ContextChef();
+    chef.getPruner().setBlockedTools(['write_file', 'delete_file']);
+
+    const result = chef.checkToolCall({ name: 'write_file' });
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toBeDefined();
+    }
+  });
+
+  it('should include the offending tool name in the rejection reason', () => {
+    const chef = new ContextChef();
+    chef.getPruner().setBlockedTools(['delete_file']);
+
+    const result = chef.checkToolCall({ name: 'delete_file' });
+    if (!result.allowed) {
+      expect(result.reason).toContain('delete_file');
+    } else {
+      throw new Error('expected the call to be blocked');
+    }
+  });
+
+  it('should still allow tools that are not in the blocklist', () => {
+    const chef = new ContextChef();
+    chef.getPruner().setBlockedTools(['write_file']);
+
+    expect(chef.checkToolCall({ name: 'read_file' })).toEqual({ allowed: true });
+  });
+
+  it('should reflect a cleared blocklist on subsequent calls', () => {
+    const chef = new ContextChef();
+    chef.getPruner().setBlockedTools(['write_file']);
+    chef.getPruner().setBlockedTools([]);
+
+    expect(chef.checkToolCall({ name: 'write_file' })).toEqual({ allowed: true });
+  });
+
+  it('should reject malformed tool calls with empty or non-string name', () => {
+    const chef = new ContextChef();
+
+    const empty = chef.checkToolCall({ name: '' });
+    expect(empty.allowed).toBe(false);
+    if (!empty.allowed) {
+      expect(empty.reason.toLowerCase()).toContain('missing or empty');
+    }
+
+    // Cast to bypass the type signature — exercises the runtime guard for
+    // SDK adapters that produce malformed shapes.
+    const undef = chef.checkToolCall({ name: undefined } as unknown as { name: string });
+    expect(undef.allowed).toBe(false);
+    if (!undef.allowed) {
+      expect(undef.reason.toLowerCase()).toContain('missing or empty');
+    }
+  });
+});

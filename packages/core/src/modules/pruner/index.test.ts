@@ -446,3 +446,101 @@ describe('Pruner — Combined Namespace + Lazy Loading', () => {
     expect(expandedTools).toHaveLength(5);
   });
 });
+
+// ─── Blocklist (Dispatch Gate) ───
+
+describe('Pruner — Blocklist (Dispatch Gate)', () => {
+  let pruner: Pruner;
+
+  beforeEach(() => {
+    pruner = new Pruner();
+    pruner.registerTools(MOCK_TOOLS);
+  });
+
+  it('should default to an empty blocklist', () => {
+    expect(pruner.getBlockedTools()).toEqual([]);
+  });
+
+  it('should round-trip names through setBlockedTools / getBlockedTools', () => {
+    pruner.setBlockedTools(['write_file', 'run_bash']);
+    expect(pruner.getBlockedTools()).toEqual(['write_file', 'run_bash']);
+  });
+
+  it('should support chaining', () => {
+    expect(pruner.setBlockedTools(['write_file'])).toBe(pruner);
+  });
+
+  it('should replace, not append, on subsequent calls', () => {
+    pruner.setBlockedTools(['write_file']);
+    pruner.setBlockedTools(['run_bash', 'search_web']);
+    expect(pruner.getBlockedTools()).toEqual(['run_bash', 'search_web']);
+  });
+
+  it('should clear the blocklist when called with []', () => {
+    pruner.setBlockedTools(['write_file', 'run_bash']);
+    pruner.setBlockedTools([]);
+    expect(pruner.getBlockedTools()).toEqual([]);
+  });
+
+  it('should not let external mutation of the input leak into internal state', () => {
+    const input = ['write_file', 'run_bash'];
+    pruner.setBlockedTools(input);
+    input.push('search_web');
+    expect(pruner.getBlockedTools()).toEqual(['write_file', 'run_bash']);
+  });
+
+  it('should return a fresh copy from getBlockedTools (mutating it does not affect state)', () => {
+    pruner.setBlockedTools(['write_file']);
+    const snapshot = pruner.getBlockedTools();
+    snapshot.push('run_bash');
+    expect(pruner.getBlockedTools()).toEqual(['write_file']);
+  });
+
+  it('should NOT modify compile() output (cache preservation)', () => {
+    const namespacePruner = new Pruner();
+    namespacePruner.registerNamespaces(MOCK_NAMESPACES);
+    const beforeNames = namespacePruner.compile().tools.map((t) => t.name);
+
+    namespacePruner.setBlockedTools(['file_ops', 'terminal']);
+    const afterNames = namespacePruner.compile().tools.map((t) => t.name);
+
+    expect(afterNames).toEqual(beforeNames);
+  });
+
+  describe('snapshot / restore', () => {
+    it('should preserve blockedTools across snapshot/restore', () => {
+      pruner.setBlockedTools(['write_file', 'run_bash']);
+      const snap = pruner.snapshotState();
+
+      const restored = new Pruner();
+      restored.registerTools(MOCK_TOOLS);
+      restored.restoreState(snap);
+
+      expect(restored.getBlockedTools()).toEqual(['write_file', 'run_bash']);
+    });
+
+    it('should isolate snapshot from later in-place mutations', () => {
+      pruner.setBlockedTools(['write_file']);
+      const snap = pruner.snapshotState();
+      pruner.setBlockedTools(['run_bash', 'search_web']);
+
+      const restored = new Pruner();
+      restored.restoreState(snap);
+      expect(restored.getBlockedTools()).toEqual(['write_file']);
+    });
+
+    it('should restore an old snapshot without blockedTools field to an empty list', () => {
+      const legacySnap = {
+        flatTools: [...MOCK_TOOLS],
+        namespaces: [],
+        lazyToolkits: [],
+      };
+
+      const restored = new Pruner();
+      restored.setBlockedTools(['stale']);
+      restored.restoreState(legacySnap);
+
+      expect(restored.getBlockedTools()).toEqual([]);
+    });
+  });
+});

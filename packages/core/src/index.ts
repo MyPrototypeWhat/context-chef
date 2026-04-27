@@ -19,9 +19,11 @@ import {
   type ResolvedToolCall,
   type ToolGroup,
 } from './modules/pruner';
+import type { Skill } from './modules/skill';
 import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
+  CompileMeta,
   CompileOptions,
   GeminiPayload,
   Message,
@@ -65,6 +67,14 @@ export {
   type VFSStorageAdapter,
 } from './modules/offloader';
 export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner';
+export {
+  type FormatSkillListingOptions,
+  formatSkillListing,
+  loadSkill,
+  loadSkillsDir,
+  type Skill,
+  type SkillLoadResult,
+} from './modules/skill';
 export * from './prompts';
 export type { ClearTarget, CompactOptions } from './types';
 export * from './types';
@@ -87,6 +97,13 @@ export interface BeforeCompileContext {
  * An immutable snapshot of ContextChef's full internal state.
  * Created by chef.snapshot() and consumed by chef.restore().
  */
+/**
+ * Result of {@link ContextChef.checkToolCall}. Discriminated by `allowed`:
+ * `reason` is mandatory exactly when the call was rejected, so consumers cannot
+ * accidentally read it on an allowed call (or omit it on a rejection).
+ */
+export type ToolCallCheckResult = { allowed: true } | { allowed: false; reason: string };
+
 export interface ChefSnapshot {
   readonly systemPrompt: Message[];
   readonly history: Message[];
@@ -98,6 +115,20 @@ export interface ChefSnapshot {
     readonly memory: MemorySnapshot | null;
     readonly pruner: PrunerSnapshot;
   };
+  /**
+   * Name of the active skill at snapshot time.
+   * On restore: re-resolved against the current skill registry. Skills are NOT
+   * persisted in the snapshot — `registerSkills` must be called again before
+   * `restore` if name-based re-activation is required.
+   */
+  readonly activeSkillName?: string;
+  /**
+   * Verbatim instructions of the active skill at snapshot time.
+   * Persisted so the message-sandwich injection survives `restore()` even when
+   * the skill registry is empty (e.g., a fresh `ContextChef` restoring an
+   * older snapshot).
+   */
+  readonly skillInstructions?: string;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -179,6 +210,11 @@ export class ContextChef {
   private dynamicState: Message[] = [];
   private dynamicStatePlacement: DynamicStatePlacement = 'last_user';
   private dynamicStateXml: string = '';
+
+  // Skill state. Independent of Pruner — activateSkill() does NOT call any Pruner method.
+  private _registeredSkills: Skill[] = [];
+  private _activeSkill: Skill | undefined;
+  private _skillInstructions: string = '';
 
   constructor(config: ChefConfig = {}) {
     this.assembler = new Assembler();
@@ -363,6 +399,114 @@ export class ContextChef {
   }
 
   /**
+   * Dispatch-time gate against the Pruner's blocklist.
+   *
+   * Call this for every tool call returned by the LLM before invoking the tool.
+   * Returns `{ allowed: true }` when the tool is not blocked, otherwise
+   * `{ allowed: false, reason }` where `reason` is a structured rejection string
+   * that can be surfaced back to the LLM as a tool error message.
+   *
+   * Does not modify any state and does not consult Skill annotations — the blocklist
+   * is the single source of truth (see Pruner.setBlockedTools).
+   *
+   * @example
+   * for (const call of response.tool_calls) {
+   *   const check = chef.checkToolCall(call);
+   *   if (!check.allowed) {
+   *     history.push({ role: 'tool', tool_call_id: call.id, content: check.reason });
+   *     continue;
+   *   }
+   *   // ... dispatch
+   * }
+   */
+  public checkToolCall(toolCall: { name: string }): ToolCallCheckResult {
+    // Defensive guard: SDK adapters and malformed LLM output occasionally
+    // produce tool-call shapes whose `name` violates the type signature.
+    // Refuse rather than silently letting them past the gate.
+    if (typeof toolCall?.name !== 'string' || toolCall.name === '') {
+      return {
+        allowed: false,
+        reason: 'Tool call rejected: missing or empty tool name.',
+      };
+    }
+    const blocked = this.pruner.getBlockedTools();
+    if (blocked.includes(toolCall.name)) {
+      return {
+        allowed: false,
+        reason: `Tool "${toolCall.name}" is currently blocked.`,
+      };
+    }
+    return { allowed: true };
+  }
+
+  // ─── Skill API ─────────────────────────────────────────────────────────
+  //
+  // Skill is fully decoupled from Pruner. None of these methods touch
+  // `this.pruner` — they only manage the active-skill instructions slot
+  // and the optional name-based registry.
+
+  /**
+   * Register a set of skills the chef can later activate by name. Replaces any
+   * previously registered set. Stores defensive copies so caller mutations do
+   * not bleed in.
+   */
+  public registerSkills(skills: Skill[]): this {
+    this._registeredSkills = skills.map((s) => structuredClone(s));
+    return this;
+  }
+
+  /**
+   * Returns a defensive copy of the registered skill list.
+   */
+  public getRegisteredSkills(): Skill[] {
+    return this._registeredSkills.map((s) => structuredClone(s));
+  }
+
+  /**
+   * Activate a skill. Pass:
+   *   - a Skill object   → activated directly (does not need to be registered)
+   *   - a string         → resolved by name from `registerSkills`; throws if not found
+   *   - null             → clears the active skill and instructions slot
+   *
+   * On activation the skill's `instructions` are placed into the message
+   * sandwich on the next `compile()` as a dedicated `{ role: 'system' }`
+   * message. Pruner state is NOT touched (Skill ⊥ Pruner).
+   */
+  public activateSkill(skill: Skill | string | null): this {
+    if (skill === null) {
+      this._activeSkill = undefined;
+      this._skillInstructions = '';
+      return this;
+    }
+
+    let resolved: Skill;
+    if (typeof skill === 'string') {
+      const found = this._registeredSkills.find((s) => s.name === skill);
+      if (!found) {
+        const available = this._registeredSkills.map((s) => s.name).join(', ') || '(none)';
+        throw new Error(
+          `ContextChef.activateSkill: no skill named "${skill}" is registered. Available: ${available}.`,
+        );
+      }
+      resolved = found;
+    } else {
+      resolved = skill;
+    }
+
+    this._activeSkill = structuredClone(resolved);
+    this._skillInstructions = resolved.instructions ?? '';
+    return this;
+  }
+
+  /**
+   * Returns the currently-active skill, or undefined if none is active.
+   * Returns a defensive copy.
+   */
+  public getActiveSkill(): Skill | undefined {
+    return this._activeSkill ? structuredClone(this._activeSkill) : undefined;
+  }
+
+  /**
    * Returns the Memory instance for direct access to memory operations.
    * Requires `memory` to be configured in ChefConfig.
    *
@@ -452,6 +596,11 @@ export class ContextChef {
         memory: this.memory?.snapshot() ?? null,
         pruner: this.pruner.snapshotState(),
       },
+      activeSkillName: this._activeSkill?.name,
+      // Persist verbatim only when a skill is actually active. Guards against
+      // the `'' || undefined` trap that would silently drop an active skill
+      // whose instructions happen to be empty.
+      skillInstructions: this._activeSkill ? this._skillInstructions : undefined,
       label,
       createdAt: Date.now(),
     };
@@ -460,6 +609,12 @@ export class ContextChef {
   /**
    * Restores ContextChef to a previously captured snapshot.
    * All state — including Janitor compression flags — is rolled back.
+   *
+   * Skills are NOT persisted in the snapshot itself, so the active skill is
+   * re-resolved against the current registry by name. When the snapshot
+   * carries `skillInstructions` they are restored verbatim, ensuring the
+   * compile()-time instructions slot survives even when the registry is
+   * empty (e.g., a fresh chef restoring an old snapshot).
    */
   public restore(snapshot: ChefSnapshot): this {
     this.systemPrompt = structuredClone(snapshot.systemPrompt);
@@ -472,6 +627,34 @@ export class ContextChef {
       this.memory.restore(snapshot.modules.memory);
     }
     this.pruner.restoreState(snapshot.modules.pruner);
+
+    // Skill restoration. Two slots (`_activeSkill` and `_skillInstructions`)
+    // must always agree on which instructions are live, so they are written
+    // together from the same source:
+    //   1. Registry hit → both come from the registry (authoritative; matches
+    //      whatever the developer just registered, even if the snapshot's
+    //      persisted instructions are stale).
+    //   2. Registry miss but persisted instructions exist → synthesize a
+    //      degenerate stub so the message-sandwich injection survives.
+    //   3. Otherwise → no active skill.
+    const name = snapshot.activeSkillName ?? undefined;
+    const persistedInstructions = snapshot.skillInstructions ?? undefined;
+    if (name) {
+      const fromRegistry = this._registeredSkills.find((s) => s.name === name);
+      if (fromRegistry) {
+        this._activeSkill = structuredClone(fromRegistry);
+        this._skillInstructions = fromRegistry.instructions;
+      } else if (persistedInstructions !== undefined) {
+        this._activeSkill = { name, description: '', instructions: persistedInstructions };
+        this._skillInstructions = persistedInstructions;
+      } else {
+        this._activeSkill = undefined;
+        this._skillInstructions = '';
+      }
+    } else {
+      this._activeSkill = undefined;
+      this._skillInstructions = '';
+    }
     return this;
   }
 
@@ -534,8 +717,22 @@ export class ContextChef {
       injectedMemoryKeys = (await this.memory.getSelectedEntries()).map((e) => e.key);
     }
 
+    // 5b. Skill instructions slot — single dedicated system message between
+    //     userSystemPrompt and memoryMessages. NOT appended to user system
+    //     so the cache breakpoint stays clean and LLM attribution is direct.
+    const skillMessages: Message[] =
+      this._skillInstructions.length > 0
+        ? [{ role: 'system', content: this._skillInstructions }]
+        : [];
+
     // 6. Sandwich assembly
-    let messages = [...this.systemPrompt, ...memoryMessages, ...compressedHistory, ...dynamicState];
+    let messages = [
+      ...this.systemPrompt,
+      ...skillMessages,
+      ...memoryMessages,
+      ...compressedHistory,
+      ...dynamicState,
+    ];
 
     // 7. Transform hook
     if (this.transformContext) {
@@ -556,7 +753,8 @@ export class ContextChef {
     const prunerTools = this._getPrunerTools();
     const memoryTools = this.memory ? await this.memory.getToolDefinitions() : [];
     const tools = [...prunerTools, ...memoryTools];
-    const meta = { injectedMemoryKeys, memoryExpiredKeys };
+    const meta: CompileMeta = { injectedMemoryKeys, memoryExpiredKeys };
+    if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;
     const payload: TargetPayload = { ...adapterPayload, meta };
     if (tools.length > 0) payload.tools = tools;
 

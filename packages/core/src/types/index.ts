@@ -148,6 +148,8 @@ export interface CompileMeta {
   injectedMemoryKeys: string[];
   /** Memory keys that expired and were removed this turn. */
   memoryExpiredKeys: string[];
+  /** Name of the active skill at compile time, if any was activated. */
+  activeSkillName?: string;
 }
 
 // ─── Per-provider payload types ───

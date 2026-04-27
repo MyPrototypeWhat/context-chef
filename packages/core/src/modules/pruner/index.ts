@@ -26,6 +26,11 @@ export interface PrunerSnapshot {
   flatTools: ToolDefinition[];
   namespaces: ToolGroup[];
   lazyToolkits: ToolGroup[];
+  /**
+   * Names of tools currently blocked from dispatch.
+   * Optional for backward compatibility — older snapshots restore to an empty list.
+   */
+  blockedTools?: string[];
 }
 
 export interface PrunerResult {
@@ -71,6 +76,7 @@ export class Pruner {
   private flatTools: ToolDefinition[] = [];
   private namespaces: ToolGroup[] = [];
   private lazyToolkits: ToolGroup[] = [];
+  private blockedTools: string[] = [];
   private config: Required<PrunerConfig>;
 
   constructor(config: PrunerConfig = {}) {
@@ -150,6 +156,31 @@ export class Pruner {
   public registerToolkits(toolkits: ToolGroup[]): this {
     this.lazyToolkits = toolkits.map((g) => ({ ...g, tools: [...g.tools] }));
     return this;
+  }
+
+  // ─── Blocklist (Dispatch Gate) ───
+
+  /**
+   * Sets the runtime blocklist of tool names that should be rejected at dispatch time.
+   *
+   * Replace semantics: each call overrides the previous blocklist. Pass `[]` to clear.
+   * Does NOT mutate compiled tool arrays — `compile()` output is unchanged. The LLM
+   * continues to see every registered tool; the gate is enforced via
+   * `ContextChef.checkToolCall(...)` before the developer dispatches the call.
+   *
+   * KV-cache is preserved across blocklist changes.
+   */
+  public setBlockedTools(names: string[]): this {
+    this.blockedTools = [...names];
+    return this;
+  }
+
+  /**
+   * Returns the current blocklist as a fresh array. Mutating the returned value
+   * does not affect Pruner's internal state.
+   */
+  public getBlockedTools(): string[] {
+    return [...this.blockedTools];
   }
 
   // ─── Compilation ───
@@ -347,6 +378,7 @@ export class Pruner {
       flatTools: this.flatTools,
       namespaces: this.namespaces,
       lazyToolkits: this.lazyToolkits,
+      blockedTools: this.blockedTools,
     });
   }
 
@@ -355,6 +387,7 @@ export class Pruner {
     this.flatTools = cloned.flatTools;
     this.namespaces = cloned.namespaces;
     this.lazyToolkits = cloned.lazyToolkits;
+    this.blockedTools = cloned.blockedTools ?? [];
   }
 
   private _buildResult(kept: ToolDefinition[]): PrunerResult {
