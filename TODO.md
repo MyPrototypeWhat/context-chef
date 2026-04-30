@@ -222,6 +222,16 @@ All three output adapters now convert IR `attachments` to provider-specific mult
 - Full round-trip support with input adapters (`fromOpenAI`, `fromAnthropic`, `fromGemini`)
 - Complete test coverage across all three adapters
 
+### ✅ VFS Lifecycle Management
+
+`Offloader` gains `cleanup()` / `cleanupAsync()` (sweeps expired and over-cap entries) and `reconcile()` / `reconcileAsync()` (adopts orphan files into the in-memory index after process restart, modeled on `npm`'s `cacache verify`). New `VFSConfig` fields: `maxAge` (ms since `createdAt`), `maxFiles`, `maxBytes` (true UTF-8 byte length via `Buffer.byteLength`), and `onVFSEvicted(entry, reason)` per-entry hook (errors logged via `console.warn` and swallowed). `VFSStorageAdapter` gains optional `list()` / `delete()` methods — capability-checked at runtime via `VFSCleanupNotSupportedError`, so existing custom adapters keep working unchanged; built-in `FileSystemAdapter` implements both. New types: `VFSEntryMeta`, `VFSCleanupResult`, `VFSEvictionReason`, `CleanupOptions`. `chef.getOffloader()` exposes the underlying instance for `cleanupAsync()` / `reconcileAsync()`.
+
+Eviction algorithm mirrors `lru-cache`'s `dispose` + `maxSize` + `sizeCalculation` model: Phase A — `maxAge` sweep (reason `'maxAge'`); Phase B — single-pass LRU by `accessedAt` ascending until both count and byte caps are satisfied (reason `'maxFiles'` if count cap is binding, else `'maxBytes'`). The in-memory index keeps eviction adapter-agnostic: any backend (filesystem, S3, KV) gets LRU semantics for free without `stat()` round-trips. `cleanup()` overrides accept `Infinity` to disable a single cap for one call.
+
+Cleanup is **manual only** — never auto-triggered by `compile()` (mechanism, not policy). Wire to `compile:done` event hook for per-turn enforcement, or call from your agent loop / on session end. **Out of scope (deferred)**: snapshot/restore for the VFS index (the index points at moving external state — restoring stale entries is unsound), sliding TTL (renew on access), and an `autoCleanup` config flag.
+
+---
+
 ### ✅ Middleware: `fromAISDK()` Attachment Mapping
 
 `fromAISDK()` now maps AI SDK `FilePart` (type `'file'`) to IR `attachments` on both user and assistant messages. This feeds `executeCompression()`'s placeholder-injection logic in the middleware path, so multimodal turns get `[image]` / `[document]` markers in the compression payload instead of raw binary. Actual file data round-trips through `_userContent`/`_assistantContent` — `attachments` serves as the metadata signal for the Janitor.
@@ -247,20 +257,6 @@ interface ToolResultClearTarget {
 ```
 
 Resolving the tool name requires scanning the preceding assistant message for the matching `tool_calls[].id` → `function.name`.
-
----
-
-### VFS Lifecycle Management
-
-**Priority: High** — `.context_vfs/` directory grows unboundedly in long-running agents. No cleanup mechanism exists.
-
-**Implementation**:
-- Add `maxAge?: number` (ms) to `VFSConfig` — files older than maxAge are eligible for cleanup
-- Add `maxFiles?: number` to `VFSConfig` — LRU eviction when file count exceeds limit
-- Add `Offloader.cleanup()` method — scans storage, deletes expired/excess files
-- Add `Offloader.cleanupAsync()` for async adapters
-- Cleanup is developer-triggered (mechanism, not policy) — call in agent loop, on session end, etc.
-- Optional: `autoCleanup?: boolean` in config to run cleanup on each `offload()` call
 
 ---
 

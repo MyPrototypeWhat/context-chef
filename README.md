@@ -154,7 +154,7 @@ const response = await anthropic.messages.create(payload);
 
 ```typescript
 const chef = new ContextChef({
-  vfs?: { threshold?: number, storageDir?: string },
+  vfs?: { threshold?: number, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
   janitor?: JanitorConfig,
   pruner?: { strategy?: 'union' | 'intersection' },
   memory?: MemoryConfig,
@@ -375,6 +375,43 @@ import { Offloader } from "@context-chef/core";
 const offloader = new Offloader({ storageDir: ".context_vfs" });
 const fullContent = offloader.resolve(uri);
 ```
+
+#### Cleanup & Lifecycle
+
+`.context_vfs/` grows unboundedly without intervention. Configure caps and trigger cleanup yourself — never automatic.
+
+```typescript
+const chef = new ContextChef({
+  vfs: {
+    threshold: 5000,
+    maxAge: 24 * 60 * 60 * 1000, // ms since createdAt
+    maxFiles: 200,                // LRU evict by accessedAt
+    maxBytes: 50 * 1024 * 1024,   // true UTF-8 size (Buffer.byteLength)
+    onVFSEvicted: (entry, reason) => {
+      // 'maxAge' | 'maxFiles' | 'maxBytes' — errors logged and swallowed
+      logger.debug("evicted", entry.uri, reason);
+    },
+  },
+});
+
+// Manual sweep — call from your agent loop, on session end, or wire to compile:done.
+const result = await chef.getOffloader().cleanupAsync();
+// { evicted, evictedBytes, evictedByAge, evictedByCount, evictedByBytes, failed }
+
+// Override caps for one call (Infinity disables a single cap).
+await chef.getOffloader().cleanupAsync({ maxFiles: 0 }); // evict all over-age + all
+```
+
+After a process restart, `reconcile()` walks the adapter and adopts orphan files into the in-memory index so subsequent `cleanup()` can see them:
+
+```typescript
+const adopted = await chef.getOffloader().reconcileAsync({ measureBytes: true });
+// createdAt parsed from filename (vfs_<ts>_<hash>.txt); bytes measured if requested.
+```
+
+Cleanup is **mechanism, not policy** — it is never triggered by `compile()`. Wire it to `compile:done` for per-turn enforcement, or call it on a timer / on session end. Custom `VFSStorageAdapter` implementations must add optional `list()` / `delete()` methods to enable cleanup; if either is missing, `cleanup()` throws `VFSCleanupNotSupportedError` (the built-in `FileSystemAdapter` implements both).
+
+> **Production patterns** — see [`docs/vfs-lifecycle-recipes.md`](./docs/vfs-lifecycle-recipes.md) for runnable recipes covering long-running servers, serverless cold-start `reconcile()`, AI SDK middleware integration, custom storage adapters (Redis example), and choosing your eviction strategy.
 
 ---
 

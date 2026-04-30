@@ -60,10 +60,15 @@ export { InMemoryStore } from './modules/memory/inMemoryStore';
 export type { MemoryStore, MemoryStoreEntry } from './modules/memory/memoryStore';
 export { VFSMemoryStore } from './modules/memory/vfsMemoryStore';
 export {
+  type CleanupOptions,
   FileSystemAdapter,
   Offloader,
   type OffloadOptions,
+  VFSCleanupNotSupportedError,
+  type VFSCleanupResult,
   type VFSConfig,
+  type VFSEntryMeta,
+  type VFSEvictionReason,
   type VFSStorageAdapter,
 } from './modules/offloader';
 export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner';
@@ -519,6 +524,17 @@ export class ContextChef {
       throw new Error('ContextChef: getMemory() requires a memoryStore in ChefConfig.');
     }
     return this.memory;
+  }
+
+  /**
+   * Returns the underlying Offloader for advanced operations like cleanup() and reconcile().
+   *
+   * @example
+   * await chef.getOffloader().cleanupAsync();   // sweep expired/over-cap entries
+   * await chef.getOffloader().reconcileAsync(); // adopt orphan files after restart
+   */
+  public getOffloader(): Offloader {
+    return this.offloader;
   }
 
   /**
