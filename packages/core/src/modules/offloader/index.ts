@@ -359,7 +359,7 @@ export class Offloader {
     return Array.from(this._index.values()).map((e) => ({ ...e }));
   }
 
-  private _missingCapabilities(): ('list' | 'delete')[] {
+  private _missingCleanupCapabilities(): ('list' | 'delete')[] {
     const missing: ('list' | 'delete')[] = [];
     if (!this.adapter.list) missing.push('list');
     if (!this.adapter.delete) missing.push('delete');
@@ -443,11 +443,13 @@ export class Offloader {
    * Throws if the adapter is asynchronous (use cleanupAsync() instead).
    */
   public cleanup(overrides?: CleanupOptions): VFSCleanupResult {
-    const missing = this._missingCapabilities();
-    if (missing.length > 0) throw new VFSCleanupNotSupportedError(missing);
+    const adapter = this.adapter;
+    if (!adapter.list || !adapter.delete) {
+      throw new VFSCleanupNotSupportedError(this._missingCleanupCapabilities());
+    }
 
     // Sync-ness probe: if adapter.list() returns a Promise, we cannot proceed synchronously.
-    const probedList = this.adapter.list!();
+    const probedList = adapter.list();
     if (probedList instanceof Promise) {
       throw new Error(
         'Offloader.cleanup() was called synchronously, but the VFSStorageAdapter is asynchronous. Use cleanupAsync() instead.',
@@ -459,14 +461,15 @@ export class Offloader {
 
     for (const { entry, reason } of plan) {
       try {
-        const deleteResult = this.adapter.delete!(entry.filename);
+        const deleteResult = adapter.delete(entry.filename);
         if (deleteResult instanceof Promise) {
           throw new Error(
             'Offloader.cleanup() was called synchronously, but the VFSStorageAdapter is asynchronous. Use cleanupAsync() instead.',
           );
         }
       } catch (error) {
-        result.failed.push({ entry, error: error as Error });
+        const err = error instanceof Error ? error : new Error(String(error));
+        result.failed.push({ entry, error: err });
         continue;
       }
 
@@ -504,17 +507,20 @@ export class Offloader {
   }
 
   private async _cleanupAsyncImpl(overrides?: CleanupOptions): Promise<VFSCleanupResult> {
-    const missing = this._missingCapabilities();
-    if (missing.length > 0) throw new VFSCleanupNotSupportedError(missing);
+    const adapter = this.adapter;
+    if (!adapter.list || !adapter.delete) {
+      throw new VFSCleanupNotSupportedError(this._missingCleanupCapabilities());
+    }
 
     const plan = this._planEvictions(Date.now(), overrides);
     const result = this._emptyResult();
 
     for (const { entry, reason } of plan) {
       try {
-        await this.adapter.delete!(entry.filename);
+        await adapter.delete(entry.filename);
       } catch (error) {
-        result.failed.push({ entry, error: error as Error });
+        const err = error instanceof Error ? error : new Error(String(error));
+        result.failed.push({ entry, error: err });
         continue;
       }
 

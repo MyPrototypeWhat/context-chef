@@ -5,7 +5,6 @@ import {
   FileSystemAdapter,
   Offloader,
   VFSCleanupNotSupportedError,
-  type VFSCleanupResult,
   type VFSEntryMeta,
   type VFSEvictionReason,
   type VFSStorageAdapter,
@@ -298,7 +297,10 @@ describe('Offloader', () => {
           caught = e;
         }
         expect(caught).toBeInstanceOf(VFSCleanupNotSupportedError);
-        expect((caught as VFSCleanupNotSupportedError).missing).toEqual(['list', 'delete']);
+        if (!(caught instanceof VFSCleanupNotSupportedError)) {
+          throw new Error('expected VFSCleanupNotSupportedError');
+        }
+        expect(caught.missing).toEqual(['list', 'delete']);
       });
 
       it('cleanup() throws with missing=[delete] when adapter has only list', () => {
@@ -319,7 +321,10 @@ describe('Offloader', () => {
           caught = e;
         }
         expect(caught).toBeInstanceOf(VFSCleanupNotSupportedError);
-        expect((caught as VFSCleanupNotSupportedError).missing).toEqual(['delete']);
+        if (!(caught instanceof VFSCleanupNotSupportedError)) {
+          throw new Error('expected VFSCleanupNotSupportedError');
+        }
+        expect(caught.missing).toEqual(['delete']);
       });
 
       it('cleanup() throws with missing=[list] when adapter has only delete', () => {
@@ -338,7 +343,10 @@ describe('Offloader', () => {
           caught = e;
         }
         expect(caught).toBeInstanceOf(VFSCleanupNotSupportedError);
-        expect((caught as VFSCleanupNotSupportedError).missing).toEqual(['list']);
+        if (!(caught instanceof VFSCleanupNotSupportedError)) {
+          throw new Error('expected VFSCleanupNotSupportedError');
+        }
+        expect(caught.missing).toEqual(['list']);
       });
 
       it('sync cleanup() on a fully-async adapter throws BEFORE any deletes', () => {
@@ -585,18 +593,18 @@ describe('Offloader', () => {
 
       it('async onVFSEvicted is awaited by cleanupAsync() before next eviction', async () => {
         const order: string[] = [];
+        const db = new Map<string, string>();
         const adapter: VFSStorageAdapter = {
           write: async (f, c) => {
-            (adapter as unknown as { db: Map<string, string> }).db.set(f, c);
+            db.set(f, c);
           },
-          read: async (f) => (adapter as unknown as { db: Map<string, string> }).db.get(f) ?? null,
-          list: async () => Array.from((adapter as unknown as { db: Map<string, string> }).db.keys()),
+          read: async (f) => db.get(f) ?? null,
+          list: async () => Array.from(db.keys()),
           delete: async (f) => {
             order.push(`delete:${f}`);
-            (adapter as unknown as { db: Map<string, string> }).db.delete(f);
+            db.delete(f);
           },
         };
-        (adapter as unknown as { db: Map<string, string> }).db = new Map();
 
         const hook = async (entry: VFSEntryMeta) => {
           order.push(`hook-start:${entry.filename}`);
@@ -1026,4 +1034,3 @@ describe('Offloader', () => {
     });
   });
 });
-
