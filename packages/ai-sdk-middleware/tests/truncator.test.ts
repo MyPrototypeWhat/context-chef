@@ -146,4 +146,119 @@ describe('truncateToolResults', () => {
       }
     }
   });
+
+  it('preserves a tool listed by name (string entry) and bypasses storage', async () => {
+    const stored: Record<string, string> = {};
+    const mockStorage: VFSStorageAdapter = {
+      write(filename: string, content: string) {
+        stored[filename] = content;
+      },
+      read(filename: string) {
+        return stored[filename] ?? null;
+      },
+    };
+
+    const longOutput = 'x'.repeat(500);
+    const prompt = makeToolPrompt(longOutput); // toolName: 'run_cmd'
+    const result = await truncateToolResults(prompt, {
+      threshold: 50,
+      headChars: 10,
+      tailChars: 10,
+      storage: mockStorage,
+      perTool: ['run_cmd'],
+    });
+
+    expect(result).toEqual(prompt);
+    expect(Object.keys(stored)).toHaveLength(0);
+  });
+
+  it('respects per-tool threshold override', async () => {
+    const longOutput = 'x'.repeat(500);
+    const prompt = makeToolPrompt(longOutput);
+    const result = await truncateToolResults(prompt, {
+      threshold: 100,
+      headChars: 10,
+      tailChars: 10,
+      perTool: [{ name: 'run_cmd', threshold: 1000 }],
+    });
+
+    // Bumped threshold above content length → no truncation
+    expect(result).toEqual(prompt);
+  });
+
+  it('respects per-tool tailChars override', async () => {
+    const output = `${'A'.repeat(200)}TAIL_MARKER`;
+    const prompt = makeToolPrompt(output);
+    const result = await truncateToolResults(prompt, {
+      threshold: 50,
+      headChars: 0,
+      tailChars: 5,
+      perTool: [{ name: 'run_cmd', tailChars: 50 }],
+    });
+
+    if (result[0].role === 'tool') {
+      const part = result[0].content[0];
+      if (part.type === 'tool-result' && part.output.type === 'text') {
+        // With overridden tailChars=50, the marker should survive
+        expect(part.output.value).toContain('TAIL_MARKER');
+        expect(part.output.value).toContain('truncated');
+      }
+    }
+  });
+
+  it('last entry wins on duplicate tool name', async () => {
+    const longOutput = 'x'.repeat(500);
+    const prompt = makeToolPrompt(longOutput);
+    const result = await truncateToolResults(prompt, {
+      threshold: 50,
+      headChars: 10,
+      tailChars: 10,
+      perTool: [{ name: 'run_cmd', threshold: 999 }, 'run_cmd'],
+    });
+
+    // String 'run_cmd' wins → preserved as-is
+    expect(result).toEqual(prompt);
+  });
+
+  it('filters per-part: preserves one tool while truncating another in the same message', async () => {
+    const keepOutput = 'k'.repeat(500);
+    const truncOutput = 't'.repeat(500);
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_keep',
+            toolName: 'keep_me',
+            output: { type: 'text', value: keepOutput },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'call_trunc',
+            toolName: 'trunc_me',
+            output: { type: 'text', value: truncOutput },
+          },
+        ],
+      },
+    ];
+
+    const result = await truncateToolResults(prompt, {
+      threshold: 50,
+      headChars: 5,
+      tailChars: 5,
+      perTool: ['keep_me'],
+    });
+
+    if (result[0].role === 'tool') {
+      const [keepPart, truncPart] = result[0].content;
+      if (keepPart.type === 'tool-result' && keepPart.output.type === 'text') {
+        expect(keepPart.output.value).toBe(keepOutput);
+      }
+      if (truncPart.type === 'tool-result' && truncPart.output.type === 'text') {
+        expect(truncPart.output.value).toContain('truncated');
+        expect(truncPart.output.value.length).toBeLessThan(truncOutput.length);
+      }
+    }
+  });
 });

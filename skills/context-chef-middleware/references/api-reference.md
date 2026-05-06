@@ -67,6 +67,7 @@ The main configuration object passed to `withContextChef()` or `createMiddleware
 | `headChars` | `number` | No | Characters to preserve from start. Default: `0` |
 | `tailChars` | `number` | No | Characters to preserve from end. Default: `1000` |
 | `storage` | `VFSStorageAdapter` | No | Storage adapter for persisting originals before truncation. Provides `context://vfs/` URI for retrieval. |
+| `perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. AI SDK: filters per `tool-result` part via `toolName`. TanStack: filters per message via `msg.name`, falling back to the preceding assistant turn's `toolCalls[].function.name` when `name` is absent. |
 
 ---
 

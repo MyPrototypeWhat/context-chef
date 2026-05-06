@@ -98,6 +98,25 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
+通过 `perTool` 做按工具覆写 —— 字符串条目完全保留该工具（同时跳过 VFS 写入），对象条目则只针对该工具覆盖 `threshold` / `headChars` / `tailChars`：
+
+```typescript
+const model = withContextChef(openai('gpt-4o'), {
+  contextWindow: 128_000,
+  truncate: {
+    threshold: 5000,
+    tailChars: 1000,
+    perTool: [
+      'read_file',                                 // 永不截断；也不写入 VFS
+      { name: 'fetch_logs', threshold: 50_000 },   // 提高阈值
+      { name: 'big_query', tailChars: 5000 },      // 保留更多尾部
+    ],
+  },
+});
+```
+
+未列出的工具继续使用顶层默认值。查找键是 `tool-result.toolName`，过滤粒度是**单个 `tool-result` part** —— 因此同一条 tool 消息可以混合保留与截断的 part。（TanStack 中间件的同名选项粒度是**单条消息**，因为 TanStack 的一条 tool 消息对应一次 tool 调用。）不支持通配符，`storage` 也无法按工具覆写。`perTool` 只控制 truncate 这一步 —— 保留下来的消息仍可能被 `compact` 整条删除（若 `compact.toolCalls` 命中）、被 `compress` 在超出 token 预算时摘要，或被 `transformContext` 改写。
+
 ### Token 预算追踪
 
 中间件自动从 `generateText` 和 `streamText` 响应中提取 token 用量，并回传给压缩引擎。无需手动调用 `reportTokenUsage()`。
@@ -151,6 +170,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.headChars` | `number` | 否 | 保留开头的字符数（默认：`0`） |
 | `truncate.tailChars` | `number` | 否 | 保留结尾的字符数（默认：`1000`） |
 | `truncate.storage` | `VFSStorageAdapter` | 否 | 截断前持久化原始内容的存储适配器 |
+| `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | 否 | 按工具覆写。字符串 = 保留（同时跳过存储）；对象 = 为该工具覆写参数。重复名称时后者胜出。 |
 | `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
 | `onCompress` | `(summary, count) => void` | 否 | 压缩完成后的回调 |

@@ -13,17 +13,42 @@ export async function truncateToolResults(
   const { threshold, headChars = 0, tailChars = 1000, storage } = options;
 
   const offloader = storage ? new Offloader({ threshold, adapter: storage }) : null;
+  const policy = buildPolicyMap(options.perTool);
+  // TanStack's UIMessage → ModelMessage path constructs tool messages with only
+  // `role / content / toolCallId` (no `name`). Resolve the tool name by
+  // tracking each preceding assistant turn's toolCalls so `perTool` works for
+  // standard chat() consumers, not just for callers who set `msg.name` by hand.
+  const toolCallIdToName = new Map<string, string>();
 
   const result: ModelMessage[] = [];
 
   for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.toolCalls) {
+      for (const tc of msg.toolCalls) {
+        toolCallIdToName.set(tc.id, tc.function.name);
+      }
+    }
+
     if (msg.role !== 'tool') {
       result.push(msg);
       continue;
     }
 
+    const toolName =
+      msg.name ?? (msg.toolCallId ? toolCallIdToName.get(msg.toolCallId) : undefined);
+    const toolPolicy = toolName ? policy.get(toolName) : undefined;
+    if (toolPolicy?.preserve) {
+      // Preserve = full bypass: no truncation, no storage write.
+      result.push(msg);
+      continue;
+    }
+
+    const effThreshold = toolPolicy?.threshold ?? threshold;
+    const effHeadChars = toolPolicy?.headChars ?? headChars;
+    const effTailChars = toolPolicy?.tailChars ?? tailChars;
+
     const text = extractToolText(msg.content);
-    if (text.length <= threshold || headChars + tailChars >= text.length) {
+    if (text.length <= effThreshold || effHeadChars + effTailChars >= text.length) {
       result.push(msg);
       continue;
     }
@@ -32,9 +57,9 @@ export async function truncateToolResults(
     if (offloader) {
       try {
         const vfsResult = await offloader.offloadAsync(text, {
-          threshold,
-          headChars,
-          tailChars,
+          threshold: effThreshold,
+          headChars: effHeadChars,
+          tailChars: effTailChars,
         });
         result.push({ ...msg, content: vfsResult.content });
         continue;
@@ -48,8 +73,8 @@ export async function truncateToolResults(
     }
 
     // Without storage: simple truncation, original is discarded
-    const head = text.slice(0, headChars);
-    const tail = text.slice(text.length - tailChars);
+    const head = text.slice(0, effHeadChars);
+    const tail = text.slice(text.length - effTailChars);
     const totalLines = text.split('\n').length;
 
     const truncated = [
@@ -65,6 +90,37 @@ export async function truncateToolResults(
   }
 
   return result;
+}
+
+type ToolPolicy =
+  | { preserve: true }
+  | {
+      preserve?: false;
+      threshold?: number;
+      headChars?: number;
+      tailChars?: number;
+    };
+
+/**
+ * Normalises `perTool` into a name → policy lookup.
+ * Bare strings become `{ preserve: true }`; objects keep their partial overrides.
+ * Last entry wins on duplicate names.
+ */
+function buildPolicyMap(perTool: TruncateOptions['perTool']): Map<string, ToolPolicy> {
+  const map = new Map<string, ToolPolicy>();
+  if (!perTool) return map;
+  for (const entry of perTool) {
+    if (typeof entry === 'string') {
+      map.set(entry, { preserve: true });
+    } else {
+      map.set(entry.name, {
+        threshold: entry.threshold,
+        headChars: entry.headChars,
+        tailChars: entry.tailChars,
+      });
+    }
+  }
+  return map;
 }
 
 /** Extracts text from tool message content. */

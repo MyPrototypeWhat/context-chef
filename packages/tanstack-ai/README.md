@@ -93,6 +93,25 @@ contextChefMiddleware({
 })
 ```
 
+Per-tool overrides via `perTool` — bare strings preserve a tool entirely (storage is also bypassed), object entries override `threshold` / `headChars` / `tailChars` for that one tool:
+
+```typescript
+contextChefMiddleware({
+  contextWindow: 128_000,
+  truncate: {
+    threshold: 5000,
+    tailChars: 1000,
+    perTool: [
+      'read_file',                                 // never truncate; not stored in VFS
+      { name: 'fetch_logs', threshold: 50_000 },   // higher threshold
+      { name: 'big_query', tailChars: 5000 },      // bigger tail
+    ],
+  },
+})
+```
+
+The lookup key is the tool's name — read from `ModelMessage.name` when set, otherwise resolved from the preceding assistant turn's `toolCalls[].function.name` via `toolCallId`. This fallback is what makes `perTool` work for the canonical `chat()` flow, where `convertMessagesToModelMessages` constructs tool messages without `name`. Filtering is applied **per message** here (one tool message = one tool call); the AI SDK middleware applies the same option **per `tool-result` part**, so a single tool message can mix preserved and truncated parts. Wildcards are not supported, and `storage` cannot be overridden per-tool. `perTool` only affects the truncate step itself — a preserved message may still be dropped by `compact` (when `compact.toolCalls` targets it), summarized by `compress` over the token budget, or rewritten by `transformContext`.
+
 ### Token Budget Tracking
 
 The middleware automatically extracts token usage from `onUsage` callbacks and feeds it back to the compression engine. No manual tracking needed.
@@ -166,6 +185,7 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |
 | `truncate.tailChars` | `number` | No | Characters to preserve from end (default: `1000`) |
 | `truncate.storage` | `VFSStorageAdapter` | No | Storage adapter to persist original content |
+| `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides keyed by `ModelMessage.name`. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. |
 | `compact` | `CompactConfig` | No | Mechanical pruning of tool calls and empty messages |
 | `dynamicState` | `DynamicStateConfig` | No | Runtime state injection as XML |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |

@@ -15,6 +15,34 @@ export interface TruncateOptions {
    * When omitted, original content is discarded after truncation.
    */
   storage?: VFSStorageAdapter;
+  /**
+   * Per-tool overrides applied on top of the defaults above.
+   *
+   * - String entry → preserve: never truncate this tool's result. Storage
+   *   is bypassed entirely (nothing written to VFS).
+   * - Object entry → override `threshold` / `headChars` / `tailChars` for
+   *   that tool only. Storage behavior unchanged.
+   *
+   * Tools not listed fall back to the top-level defaults. If the same
+   * `name` appears more than once, the last entry wins (a bare string
+   * after an object discards that object → becomes preserve).
+   *
+   * Notes:
+   * - Wildcards / globs are NOT supported.
+   * - `storage` cannot be overridden per-tool.
+   * - `perTool` only affects the truncate step; a preserved message may
+   *   still be dropped by `compact`, summarized by `compress`, or
+   *   rewritten by `transformContext`.
+   */
+  perTool?: Array<
+    | string
+    | {
+        name: string;
+        threshold?: number;
+        headChars?: number;
+        tailChars?: number;
+      }
+  >;
 }
 
 export interface CompressOptions {

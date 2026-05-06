@@ -96,6 +96,25 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
+Per-tool overrides via `perTool` — bare strings preserve a tool entirely (storage is also bypassed), object entries override `threshold` / `headChars` / `tailChars` for that one tool:
+
+```typescript
+const model = withContextChef(openai('gpt-4o'), {
+  contextWindow: 128_000,
+  truncate: {
+    threshold: 5000,
+    tailChars: 1000,
+    perTool: [
+      'read_file',                                 // never truncate; not stored in VFS
+      { name: 'fetch_logs', threshold: 50_000 },   // higher threshold
+      { name: 'big_query', tailChars: 5000 },      // bigger tail
+    ],
+  },
+});
+```
+
+Tools not listed fall back to the top-level defaults. The lookup key is `tool-result.toolName`, and filtering is applied **per `tool-result` part** — so a single tool message can mix preserved and truncated parts. (The TanStack middleware applies the same option per message instead, since one TanStack tool message corresponds to a single tool call.) Wildcards are not supported, and `storage` cannot be overridden per-tool. `perTool` only affects the truncate step itself — a preserved message may still be dropped by `compact` (when `compact.toolCalls` targets it), summarized by `compress` over the token budget, or rewritten by `transformContext`.
+
 ### Token Budget Tracking
 
 The middleware automatically extracts token usage from `generateText` and `streamText` responses and feeds it back to the compression engine. No manual `reportTokenUsage()` calls needed.
@@ -149,6 +168,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |
 | `truncate.tailChars` | `number` | No | Characters to preserve from end (default: `1000`) |
 | `truncate.storage` | `VFSStorageAdapter` | No | Storage adapter to persist original content before truncation |
+| `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. |
 | `compact` | `CompactConfig` | No | Mechanical message pruning (reasoning, tool calls). Delegates to AI SDK's `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
 | `onCompress` | `(summary, count) => void` | No | Hook called after compression |

@@ -13,6 +13,42 @@ export interface TruncateOptions {
    * When provided, truncated output includes a `context://vfs/` URI for retrieval.
    */
   storage?: VFSStorageAdapter;
+  /**
+   * Per-tool overrides applied on top of the defaults above.
+   *
+   * - String entry → preserve: never truncate this tool's result. Storage
+   *   is bypassed entirely (nothing written to VFS).
+   * - Object entry → override `threshold` / `headChars` / `tailChars` for
+   *   that tool only. Storage behavior unchanged.
+   *
+   * Tools not listed fall back to the top-level defaults. If the same
+   * `name` appears more than once, the last entry wins (a bare string
+   * after an object discards that object → becomes preserve).
+   *
+   * The lookup key is the tool's name. It is read from `msg.name` when set,
+   * otherwise resolved from the preceding assistant turn's
+   * `toolCalls[].function.name` via `toolCallId`. The standard
+   * UIMessage → ModelMessage path constructs tool messages without `name`,
+   * so this fallback is what makes `perTool` work for typical chat()
+   * consumers. If neither signal is present, the tool falls through to
+   * the top-level defaults.
+   *
+   * Notes:
+   * - Wildcards / globs are NOT supported.
+   * - `storage` cannot be overridden per-tool.
+   * - `perTool` only affects the truncate step; a preserved message may
+   *   still be dropped by `compact`, summarized by `compress`, or
+   *   rewritten by `transformContext`.
+   */
+  perTool?: Array<
+    | string
+    | {
+        name: string;
+        threshold?: number;
+        headChars?: number;
+        tailChars?: number;
+      }
+  >;
 }
 
 export interface CompressOptions {

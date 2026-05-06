@@ -17,6 +17,7 @@ export async function truncateToolResults(
   const { threshold, headChars = 0, tailChars = 1000, storage } = options;
 
   const offloader = storage ? new Offloader({ threshold, adapter: storage, storageDir: '' }) : null;
+  const policy = buildPolicyMap(options.perTool);
 
   const result: LanguageModelV3Prompt = [];
 
@@ -34,8 +35,19 @@ export async function truncateToolResults(
         continue;
       }
 
+      const toolPolicy = policy.get(part.toolName);
+      if (toolPolicy?.preserve) {
+        // Preserve = full bypass: no truncation, no storage write.
+        newContent.push(part);
+        continue;
+      }
+
+      const effThreshold = toolPolicy?.threshold ?? threshold;
+      const effHeadChars = toolPolicy?.headChars ?? headChars;
+      const effTailChars = toolPolicy?.tailChars ?? tailChars;
+
       const text = extractText(part.output);
-      if (text.length <= threshold || headChars + tailChars >= text.length) {
+      if (text.length <= effThreshold || effHeadChars + effTailChars >= text.length) {
         newContent.push(part);
         continue;
       }
@@ -43,7 +55,11 @@ export async function truncateToolResults(
       // With storage: use Offloader to persist original and get a URI-annotated truncation
       if (offloader) {
         try {
-          const vfsResult = await offloader.offloadAsync(text, { threshold, headChars, tailChars });
+          const vfsResult = await offloader.offloadAsync(text, {
+            threshold: effThreshold,
+            headChars: effHeadChars,
+            tailChars: effTailChars,
+          });
           newContent.push({
             ...part,
             output: {
@@ -62,8 +78,8 @@ export async function truncateToolResults(
       }
 
       // Without storage: simple truncation, original is discarded
-      const head = text.slice(0, headChars);
-      const tail = text.slice(text.length - tailChars);
+      const head = text.slice(0, effHeadChars);
+      const tail = text.slice(text.length - effTailChars);
       const totalLines = text.split('\n').length;
 
       const truncated = [
@@ -85,6 +101,37 @@ export async function truncateToolResults(
   }
 
   return result;
+}
+
+type ToolPolicy =
+  | { preserve: true }
+  | {
+      preserve?: false;
+      threshold?: number;
+      headChars?: number;
+      tailChars?: number;
+    };
+
+/**
+ * Normalises `perTool` into a name → policy lookup.
+ * Bare strings become `{ preserve: true }`; objects keep their partial overrides.
+ * Last entry wins on duplicate names.
+ */
+function buildPolicyMap(perTool: TruncateOptions['perTool']): Map<string, ToolPolicy> {
+  const map = new Map<string, ToolPolicy>();
+  if (!perTool) return map;
+  for (const entry of perTool) {
+    if (typeof entry === 'string') {
+      map.set(entry, { preserve: true });
+    } else {
+      map.set(entry.name, {
+        threshold: entry.threshold,
+        headChars: entry.headChars,
+        tailChars: entry.tailChars,
+      });
+    }
+  }
+  return map;
 }
 
 function extractText(output: LanguageModelV3ToolResultOutput): string {
