@@ -50,6 +50,17 @@ export interface CompressOptions {
   model: LanguageModelV3;
   /** Ratio of context window to preserve for recent messages. Default: 0.8 */
   preserveRatio?: number;
+  /**
+   * Replace tool-result content longer than this many characters with a
+   * one-line metadata stub (`[Tool name returned N chars; omitted before
+   * summarization]`) before the to-be-summarized history is sent to the
+   * compression model. Recent (preserved) tool results are untouched.
+   *
+   * Saves summarizer tokens on big tool outputs while preserving the
+   * "what happened" semantics needed for a useful summary. Default:
+   * undefined (disabled). Recommended starting value: `5000`.
+   */
+  toolResultStubThreshold?: number;
 }
 
 /**

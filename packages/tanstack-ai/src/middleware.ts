@@ -41,6 +41,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     contextWindow: options.contextWindow,
     tokenizer: options.tokenizer ? (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0 : undefined,
     preserveRatio: options.compress?.preserveRatio ?? 0.8,
+    toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.adapter
       ? createCompressionAdapter(options.compress.adapter)
       : undefined,

@@ -20,7 +20,24 @@ You are acting as an automated system component. Your final output MUST be machi
 
   /**
    * Used by Offloader to indicate content has been offloaded to VFS.
-   * Shows head/tail content with truncation metadata and a retrieval URI.
+   * Shows head/tail content with truncation metadata and a retrieval handle.
+   *
+   * The marker is wrapped in `<persisted-output>...</persisted-output>` so
+   * the LLM clearly distinguishes the chef-injected metadata from the
+   * surrounding head/tail (which are real content). XML wrappers match the
+   * style used elsewhere in this Prompts module and follow Claude Code's
+   * `<persisted-output>` convention.
+   *
+   * The metadata line includes a `shown above / shown below` descriptor so
+   * the LLM doesn't have to infer from positional context which chunks are
+   * the head, tail, or omitted middle. Particularly load-bearing for the
+   * tail-only case where the tag appears BEFORE the visible content.
+   *
+   * When `physicalPath` is provided, the marker advertises the on-disk path
+   * as the primary retrieval handle (so the model can read it back with its
+   * existing file-read tool) and demotes the URI to an alternative for
+   * URI-aware tools. When `physicalPath` is null (e.g. DB or in-memory
+   * adapters), only the URI is shown — recovery requires a custom tool.
    */
   getVFSOffloadReminder: (
     uri: string,
@@ -28,6 +45,7 @@ You are acting as an automated system component. Your final output MUST be machi
     totalChars: number,
     headStr: string,
     tailStr: string,
+    physicalPath: string | null = null,
   ) => {
     const parts: string[] = [];
 
@@ -35,8 +53,27 @@ You are acting as an automated system component. Your final output MUST be machi
       parts.push(headStr);
     }
 
+    // Use the *actual* slice lengths (post line-snap), not the requested
+    // headChars/tailChars — they can differ when snapping rounds inward.
+    const showsHead = headStr.length > 0;
+    const showsTail = tailStr.length > 0;
+    let descriptor: string;
+    if (showsHead && showsTail) {
+      descriptor = `; first ${headStr.length} chars shown above, last ${tailStr.length} chars shown below`;
+    } else if (showsHead) {
+      descriptor = `; first ${headStr.length} chars shown above, rest omitted`;
+    } else if (showsTail) {
+      descriptor = `; preceding content omitted, last ${tailStr.length} chars shown below`;
+    } else {
+      descriptor = '; preview omitted';
+    }
+
+    const handleLines = physicalPath
+      ? `Full output saved to: ${physicalPath}\nURI (alternative): ${uri}`
+      : `Full output: ${uri}`;
+
     parts.push(
-      `\n--- output truncated (${totalLines} lines, ${totalChars} chars) ---\nFull output: ${uri}\n`,
+      `\n<persisted-output>\noutput truncated (${totalLines} lines, ${totalChars} chars total${descriptor})\n${handleLines}\n</persisted-output>\n`,
     );
 
     if (tailStr) {

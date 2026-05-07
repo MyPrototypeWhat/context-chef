@@ -78,6 +78,15 @@ interface JanitorConfig {
   // --- Compression ---
   compressionModel?: (msgs: Message[]) => Promise<string>;
 
+  /**
+   * Replace tool-result content longer than N chars with a one-line stub
+   * (`[Tool name returned N chars; omitted before summarization]`) inside
+   * the to-be-summarized portion only. Recent (preserved) tool results are
+   * untouched. Tool name resolved via preceding assistant.tool_calls.
+   * Default: undefined (disabled). Recommended starting value: 5000.
+   */
+  toolResultStubThreshold?: number;
+
   // --- Hooks ---
   /** Fires AFTER compression with the summary Message and truncated count. */
   onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
@@ -146,6 +155,14 @@ Custom adapter for storing offloaded content (e.g. S3, Redis, cloud storage):
 interface VFSStorageAdapter {
   write(filename: string, content: string): void | Promise<void>;
   read(filename: string): string | null | Promise<string | null>;
+  /**
+   * Optional. When implemented, the Offloader surfaces the underlying
+   * physical path in the truncation marker so the model can read the
+   * original content back with its existing file-read tool — no custom
+   * URI-aware tool needed. Adapters that don't map to a filesystem (DB,
+   * in-memory) should leave this unset; the marker falls back to the URI.
+   */
+  getPhysicalPath?(filename: string): string | null | Promise<string | null>;
 }
 ```
 

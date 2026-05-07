@@ -51,7 +51,62 @@ describe('Offloader', () => {
     // Default tailChars=2000, so last lines are included
     expect(result.content).toContain('Line 50');
     expect(result.content).toContain('output truncated');
+    // Marker is wrapped in <persisted-output> so the LLM clearly
+    // distinguishes chef-injected metadata from surrounding head/tail.
+    expect(result.content).toContain('<persisted-output>');
+    expect(result.content).toContain('</persisted-output>');
+    // Tail-only case: explicit "preceding content omitted, last N shown below" descriptor
+    expect(result.content).toMatch(/preceding content omitted, last \d+ chars shown below/);
+    // FileSystemAdapter exposes a physical path; marker advertises it as the primary handle
+    expect(result.content).toContain('Full output saved to:');
+    expect(result.content).toContain(TEST_DIR);
+    expect(result.content).toContain('URI (alternative):');
+  });
+
+  it('falls back to URI-only marker when adapter does not expose getPhysicalPath', () => {
+    // Adapter implements only the required methods — no getPhysicalPath
+    const memDb = new Map<string, string>();
+    const minimalAdapter: VFSStorageAdapter = {
+      write(filename, content) {
+        memDb.set(filename, content);
+      },
+      read(filename) {
+        return memDb.get(filename) ?? null;
+      },
+    };
+    const local = new Offloader({ adapter: minimalAdapter, threshold: 50 });
+    const longText = 'x'.repeat(500);
+
+    const result = local.offload(longText, { tailChars: 10, headChars: 10 });
+
+    expect(result.isOffloaded).toBe(true);
     expect(result.content).toContain('Full output:');
+    expect(result.content).toContain('context://vfs/');
+    expect(result.content).not.toContain('Full output saved to:');
+    expect(result.content).not.toContain('URI (alternative):');
+  });
+
+  it('awaits async getPhysicalPath in offloadAsync and includes the resolved path', async () => {
+    const memDb = new Map<string, string>();
+    const asyncAdapter: VFSStorageAdapter = {
+      async write(filename, content) {
+        memDb.set(filename, content);
+      },
+      async read(filename) {
+        return memDb.get(filename) ?? null;
+      },
+      async getPhysicalPath(filename) {
+        return `/virtual/store/${filename}`;
+      },
+    };
+    const local = new Offloader({ adapter: asyncAdapter, threshold: 50 });
+    const longText = 'y'.repeat(500);
+
+    const result = await local.offloadAsync(longText, { tailChars: 10, headChars: 10 });
+
+    expect(result.isOffloaded).toBe(true);
+    expect(result.content).toContain('Full output saved to: /virtual/store/vfs_');
+    expect(result.content).toContain('URI (alternative):');
   });
 
   it('should offload with tailChars: 0 and headChars: 0 (no content preserved)', () => {
@@ -62,6 +117,8 @@ describe('Offloader', () => {
     expect(result.isOffloaded).toBe(true);
     expect(result.content).toContain('output truncated');
     expect(result.content).toContain('100 chars');
+    // Case 4 (no head, no tail): explicit "preview omitted" descriptor
+    expect(result.content).toContain('preview omitted');
     expect(result.content).not.toContain('AAAA');
   });
 
@@ -74,6 +131,8 @@ describe('Offloader', () => {
     expect(result.isOffloaded).toBe(true);
     expect(result.content).toContain('Line 1');
     expect(result.content).toContain('output truncated');
+    // Head-only case: explicit "first N shown above, rest omitted" descriptor
+    expect(result.content).toMatch(/first \d+ chars shown above, rest omitted/);
     expect(result.content).not.toContain('Line 50');
   });
 
@@ -87,6 +146,8 @@ describe('Offloader', () => {
     expect(result.content).toContain('Line 1');
     expect(result.content).toContain('Line 50');
     expect(result.content).toContain('output truncated');
+    // Head + tail case: explicit "first N above, last M below" descriptor
+    expect(result.content).toMatch(/first \d+ chars shown above, last \d+ chars shown below/);
   });
 
   it('should not offload when headChars + tailChars cover entire content', () => {
@@ -108,7 +169,7 @@ describe('Offloader', () => {
 
     expect(result.isOffloaded).toBe(true);
     // Head should contain complete lines only
-    const headPart = result.content.split('--- output truncated')[0];
+    const headPart = result.content.split('<persisted-output>')[0];
     // Should not have a partial line
     expect(headPart.trim()).toMatch(/Line \d+$/m);
   });

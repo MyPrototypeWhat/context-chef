@@ -56,6 +56,7 @@ The main configuration object passed to `withContextChef()` or `createMiddleware
 |---|---|---|---|
 | `model` | `LanguageModelV3` | Yes | A cheap model for summarization (e.g. `openai('gpt-4o-mini')`) |
 | `preserveRatio` | `number` | No | Ratio of context window to preserve for recent messages. Default: `0.8` |
+| `toolResultStubThreshold` | `number` | No | Replace tool-result content longer than this many chars with a one-line metadata stub (`[Tool name returned N chars; omitted before summarization]`) before the to-be-summarized history is sent to the compression model. Recent (preserved) tool results are untouched. Default: undefined (disabled). |
 
 ---
 

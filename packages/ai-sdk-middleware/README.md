@@ -80,7 +80,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-Optionally persist the original content via a storage adapter so the LLM can retrieve it later via a `context://vfs/` URI:
+Optionally persist the original content via a storage adapter so it can be retrieved later by a tool, audit pipeline, or replay layer:
 
 ```typescript
 import { FileSystemAdapter } from '@context-chef/core';
@@ -95,6 +95,8 @@ const model = withContextChef(openai('gpt-4o'), {
   },
 });
 ```
+
+When the adapter exposes a physical path (`FileSystemAdapter` does this out of the box via `getPhysicalPath`), the truncation marker advertises that path as the primary retrieval handle — the model can read it back with its standard file-read tool, no custom URI-aware tool needed. Adapters that don't map to a filesystem (DB, in-memory) leave `getPhysicalPath` unset and the marker falls back to the `context://vfs/` URI alone.
 
 Per-tool overrides via `perTool` — bare strings preserve a tool entirely (storage is also bypassed), object entries override `threshold` / `headChars` / `tailChars` for that one tool:
 
@@ -163,6 +165,7 @@ const wrappedModel = withContextChef(model, options);
 | `compress` | `CompressOptions` | No | Enable LLM-based compression |
 | `compress.model` | `LanguageModelV3` | Yes (if compress) | Cheap model for summarization |
 | `compress.preserveRatio` | `number` | No | Ratio of context to preserve (default: `0.8`) |
+| `compress.toolResultStubThreshold` | `number` | No | Replace tool-result content longer than this many chars with a one-line metadata stub (`[Tool name returned N chars; omitted before summarization]`) before sending the to-be-summarized history to the compression model. Recent (preserved) tool results untouched. Default: undefined (disabled). |
 | `truncate` | `TruncateOptions` | No | Enable tool result truncation |
 | `truncate.threshold` | `number` | Yes (if truncate) | Character count to trigger truncation |
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |

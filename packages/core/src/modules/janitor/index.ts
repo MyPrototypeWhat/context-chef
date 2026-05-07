@@ -98,6 +98,55 @@ function stripAttachmentsForCompression(messages: Message[]): Message[] {
   });
 }
 
+/**
+ * Builds a map from `tool_call_id` → tool name by walking the messages and
+ * collecting the names declared on every assistant turn's `tool_calls`.
+ * The same map covers all tool messages because tool_call ids are unique
+ * per invocation.
+ */
+function buildToolNameMap(messages: Message[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        map.set(tc.id, tc.function.name);
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * Replaces large tool-result content with a metadata stub for the
+ * compression model.
+ *
+ * The summarizer only needs to know "what happened" at each turn — feeding
+ * it 87 KB of raw `fs_read` output wastes tokens and tends to drown the
+ * actual conversation arc in noise. Each oversized tool message is
+ * rewritten to a one-line stub like
+ * `[Tool fs_read returned 87123 chars; omitted before summarization]`,
+ * preserving tool name + size so the summary can still reference the
+ * operation meaningfully. tool_use ↔ tool_result pairing is structurally
+ * preserved.
+ *
+ * Tool name is resolved from the preceding assistant turn's
+ * `tool_calls[].function.name` via `tool_call_id` — falls back to
+ * `'unknown'` if the link is missing.
+ *
+ * Pure function — does not mutate inputs. Only acts on `role: 'tool'`
+ * messages whose content length exceeds `threshold`.
+ */
+function stripLargeToolResultsForCompression(messages: Message[], threshold: number): Message[] {
+  const nameMap = buildToolNameMap(messages);
+  return messages.map((msg) => {
+    if (msg.role !== 'tool') return msg;
+    if (msg.content.length <= threshold) return msg;
+    const name = (msg.tool_call_id && nameMap.get(msg.tool_call_id)) ?? 'unknown';
+    const stub = `[Tool ${name} returned ${msg.content.length} chars; omitted before summarization]`;
+    return { ...msg, content: stub };
+  });
+}
+
 export interface JanitorConfig {
   /**
    * The model's context window size (in tokens).
@@ -139,6 +188,21 @@ export interface JanitorConfig {
    * If not provided, a simple placeholder message is used.
    */
   compressionModel?: (messagesToCompress: Message[]) => Promise<string>;
+
+  /**
+   * Replace tool-result content longer than this many characters with a
+   * one-line metadata stub (`[Tool name returned N chars; omitted before
+   * summarization]`) before the to-be-summarized history is sent to the
+   * compression model. Saves summarizer tokens on big tool outputs while
+   * preserving "what happened" semantics for the summary.
+   *
+   * Only affects content sent to the compression model — recent (preserved)
+   * tool results, and tool results below the threshold, pass through
+   * unchanged. tool_use ↔ tool_result pairing is structurally preserved.
+   *
+   * Default: undefined (disabled). Recommended starting value: `5000`.
+   */
+  toolResultStubThreshold?: number;
 
   /**
    * Additional focused instructions appended to the default compression prompt.
@@ -288,15 +352,24 @@ export class Janitor {
    * Mechanically strips content from history based on the specified clear targets.
    * Pure function — no LLM call, no side effects, no state mutation.
    *
-   * **Important:** When using compact together with compress, avoid clearing `tool-result`
-   * in compact — the compression model will receive empty tool results and produce a
-   * low-quality summary. Use compact for `thinking` only, and let compress handle
-   * history management via turn-based splitting.
+   * **Interaction with `compress`:** If you want tool-result content trimmed
+   * *before* it reaches the compression model, prefer
+   * `JanitorConfig.toolResultStubThreshold` over `compact({ clear: ['tool-result'] })`.
+   * The stub-threshold path operates inside compress on the same boundary that
+   * compress uses, so the "preserve recent / summarize old" split stays
+   * coherent. Using `compact` with a separate `keepRecent` cursor risks the
+   * two windows disagreeing — recent tool results may end up cleared, or
+   * summarizer input may end up empty, depending on which boundary is
+   * tighter. Use `compact` for `thinking` (where this concern doesn't apply)
+   * or when you're not running `compress` at all.
    *
    * Recommended combinations:
    * - compact alone: clear both `thinking` and `tool-result` freely
-   * - compress alone: turn-based summarization handles everything
-   * - compact + compress: clear `thinking` only in compact, leave `tool-result` to compress
+   * - compress alone: turn-based summarization handles everything; pair with
+   *   `toolResultStubThreshold` to mechanically trim large tool results
+   *   inside the to-be-summarized portion
+   * - compact + compress: clear `thinking` only in compact, leave tool-result
+   *   trimming to `toolResultStubThreshold`
    *
    * @example
    * // Clear all tool results and thinking (compact only, no compress)
@@ -305,7 +378,8 @@ export class Janitor {
    * // Keep the 5 most recent tool results, clear the rest
    * history = janitor.compact(history, { clear: [{ target: 'tool-result', keepRecent: 5 }] });
    *
-   * // When using with compress — clear thinking only
+   * // When using with compress — clear thinking only, configure stub threshold
+   * // on the Janitor for tool-result trimming
    * history = janitor.compact(history, { clear: ['thinking'] });
    * history = await janitor.compress(history);
    */
@@ -482,8 +556,18 @@ export class Janitor {
       // the compression payload (which is expensive and risks prompt-too-long on the
       // compression call itself). toKeep is untouched — its attachments still reach
       // the main model via the adapter pipeline. Mirrors Claude Code's strategy.
+      //
+      // Likewise, when toolResultStubThreshold is set, replace large tool-result
+      // content with a one-line metadata stub. Same motivation: don't pay
+      // summarizer tokens for raw tool output the summary won't reproduce
+      // anyway. toKeep stays intact regardless.
+      const stubThreshold = this.config.toolResultStubThreshold;
+      const stubbed =
+        stubThreshold !== undefined
+          ? stripLargeToolResultsForCompression(toCompress, stubThreshold)
+          : toCompress;
       const compressionMessages: Message[] = [
-        ...stripAttachmentsForCompression(toCompress),
+        ...stripAttachmentsForCompression(stubbed),
         { role: 'user', content: instruction },
       ];
       const raw = await this.config.compressionModel(compressionMessages);

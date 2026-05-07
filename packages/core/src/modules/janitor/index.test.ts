@@ -1130,3 +1130,191 @@ describe('Janitor — media-aware compression', () => {
     expect(userMsg?.content).not.toContain('[document]');
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// toolResultStubThreshold — mechanical tool-result trim
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — toolResultStubThreshold', () => {
+  // Helper: build a history with assistant.tool_calls + matching tool result.
+  // contentSize controls the tool result body length so the test can decide
+  // whether it should land above or below the stub threshold.
+  const makeToolHistory = (toolName: string, contentSize: number): Message[] => [
+    { role: 'user', content: 'find the bug' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'call_x',
+          type: 'function',
+          function: { name: toolName, arguments: '{}' },
+        },
+      ],
+    },
+    { role: 'tool', content: 'X'.repeat(contentSize), tool_call_id: 'call_x' },
+    { role: 'user', content: 'thanks' },
+  ];
+
+  it('replaces large tool-result content with a stub before summarization', async () => {
+    const captured: Message[][] = [];
+    const mockModel = vi.fn(async (msgs: Message[]) => {
+      captured.push(msgs);
+      return '<history_summary>S</history_summary>';
+    });
+    const janitor = new Janitor({
+      contextWindow: 10,
+      tokenizer: makeTokenizer(10), // 4 × 10 = 40 > 10 → triggers compress
+      preserveRatio: 0.1, // keep ~1 token → ~0 messages preserved
+      compressionModel: mockModel,
+      toolResultStubThreshold: 100,
+    });
+
+    await janitor.compress(makeToolHistory('fs_read', 5000));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    const sentToSummarizer = captured[0];
+    const toolMsg = sentToSummarizer.find((m) => m.role === 'tool');
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg?.content).toBe(
+      '[Tool fs_read returned 5000 chars; omitted before summarization]',
+    );
+    // Tool messages keep their tool_call_id (structural pairing intact)
+    expect(toolMsg?.tool_call_id).toBe('call_x');
+  });
+
+  it('passes tool results below threshold through unchanged', async () => {
+    const captured: Message[][] = [];
+    const mockModel = vi.fn(async (msgs: Message[]) => {
+      captured.push(msgs);
+      return '<history_summary>S</history_summary>';
+    });
+    const janitor = new Janitor({
+      contextWindow: 10,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.1,
+      compressionModel: mockModel,
+      toolResultStubThreshold: 1000,
+    });
+
+    await janitor.compress(makeToolHistory('fs_read', 50));
+
+    const toolMsg = captured[0].find((m) => m.role === 'tool');
+    expect(toolMsg?.content).toBe('X'.repeat(50));
+  });
+
+  it('falls back to "unknown" when tool name cannot be resolved', async () => {
+    const captured: Message[][] = [];
+    const mockModel = vi.fn(async (msgs: Message[]) => {
+      captured.push(msgs);
+      return '<history_summary>S</history_summary>';
+    });
+    const janitor = new Janitor({
+      contextWindow: 10,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.1,
+      compressionModel: mockModel,
+      toolResultStubThreshold: 100,
+    });
+
+    // History has a tool message whose tool_call_id matches NO assistant.tool_calls
+    const history: Message[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'tool', content: 'X'.repeat(2000), tool_call_id: 'orphan_id' },
+      { role: 'user', content: 'next' },
+    ];
+
+    await janitor.compress(history);
+
+    const toolMsg = captured[0].find((m) => m.role === 'tool');
+    expect(toolMsg?.content).toBe(
+      '[Tool unknown returned 2000 chars; omitted before summarization]',
+    );
+  });
+
+  it('does NOT stub when toolResultStubThreshold is unset (default behavior preserved)', async () => {
+    const captured: Message[][] = [];
+    const mockModel = vi.fn(async (msgs: Message[]) => {
+      captured.push(msgs);
+      return '<history_summary>S</history_summary>';
+    });
+    const janitor = new Janitor({
+      contextWindow: 10,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.1,
+      compressionModel: mockModel,
+      // toolResultStubThreshold intentionally omitted
+    });
+
+    await janitor.compress(makeToolHistory('fs_read', 5000));
+
+    const toolMsg = captured[0].find((m) => m.role === 'tool');
+    expect(toolMsg?.content).toBe('X'.repeat(5000));
+  });
+
+  it('does NOT stub tool results inside the preserved (recent) portion', async () => {
+    const captured: Message[][] = [];
+    const mockModel = vi.fn(async (msgs: Message[]) => {
+      captured.push(msgs);
+      return '<history_summary>S</history_summary>';
+    });
+    // 8 messages × 10 tokens = 80 tokens current
+    // contextWindow=50 → triggers compress; preserveTarget = 50 × 0.6 = 30
+    // Iterating turns from tail: q4(10) + assistant+tool_b(20) = 30 exactly fit
+    // → splitIndex lands between turn 3 (q3) and turn 4 (assistant_b),
+    //   so toCompress = first 5 messages (call_a tool included),
+    //   toKeep    = last 3 messages (call_b tool preserved verbatim).
+    const janitor = new Janitor({
+      contextWindow: 50,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.6,
+      compressionModel: mockModel,
+      toolResultStubThreshold: 100,
+    });
+
+    const history: Message[] = [
+      { role: 'user', content: 'q1' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call_a', type: 'function', function: { name: 'old_tool', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'A'.repeat(2000), tool_call_id: 'call_a' },
+      { role: 'user', content: 'q2' },
+      { role: 'user', content: 'q3' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call_b', type: 'function', function: { name: 'recent_tool', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'B'.repeat(2000), tool_call_id: 'call_b' },
+      { role: 'user', content: 'q4' },
+    ];
+
+    const result = await janitor.compress(history);
+
+    // The recent tool message must survive untouched in the final result.
+    const recentToolInResult = result.find((m) => m.role === 'tool' && m.tool_call_id === 'call_b');
+    expect(recentToolInResult).toBeDefined();
+    expect(recentToolInResult?.content).toBe('B'.repeat(2000));
+
+    // What was sent to the summarizer should have the OLD tool stubbed.
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    const toolInSummarizerInput = captured[0].find(
+      (m) => m.role === 'tool' && m.tool_call_id === 'call_a',
+    );
+    expect(toolInSummarizerInput?.content).toBe(
+      '[Tool old_tool returned 2000 chars; omitted before summarization]',
+    );
+    // Recent tool should NOT have been sent to the summarizer at all.
+    const recentToolInSummarizerInput = captured[0].find(
+      (m) => m.role === 'tool' && m.tool_call_id === 'call_b',
+    );
+    expect(recentToolInSummarizerInput).toBeUndefined();
+  });
+});

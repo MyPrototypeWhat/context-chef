@@ -10,6 +10,14 @@ export interface VFSStorageAdapter {
   list?(): string[] | Promise<string[]>;
   /** Optional. Required for Offloader.cleanup(). Must be idempotent (no-op on missing files). */
   delete?(filename: string): void | Promise<void>;
+  /**
+   * Optional. When implemented, the Offloader exposes the underlying physical
+   * path in the truncation marker, letting the model retrieve the original
+   * content with its existing file-read tool — no custom URI-aware tool needed.
+   * Adapters that don't map to a filesystem (DB, in-memory) should leave this
+   * unset; the marker then falls back to the URI alone.
+   */
+  getPhysicalPath?(filename: string): string | null | Promise<string | null>;
 }
 
 export class FileSystemAdapter implements VFSStorageAdapter {
@@ -45,6 +53,10 @@ export class FileSystemAdapter implements VFSStorageAdapter {
     if (fs.existsSync(filepath)) {
       fs.unlinkSync(filepath);
     }
+  }
+
+  getPhysicalPath(filename: string): string {
+    return path.join(this.storageDir, filename);
   }
 }
 
@@ -180,11 +192,20 @@ export class Offloader {
     return nextNewline === -1 ? charIndex : nextNewline + 1;
   }
 
-  private _prepareOffload(content: string, headChars: number, tailChars: number) {
+  private _generateFilename(content: string): { filename: string; uri: string } {
     const hash = crypto.createHash('md5').update(content).digest('hex').substring(0, 8);
     const filename = `vfs_${Date.now()}_${hash}.txt`;
     const uri = `${this.config.uriScheme}${filename}`;
+    return { filename, uri };
+  }
 
+  private _buildTruncatedMarker(
+    content: string,
+    uri: string,
+    headChars: number,
+    tailChars: number,
+    physicalPath: string | null,
+  ): string {
     const totalLines = content.split('\n').length;
     const totalChars = content.length;
 
@@ -197,9 +218,31 @@ export class Offloader {
     const headStr = headEnd > 0 ? content.slice(0, headEnd) : '';
     const tailStr = tailStart < content.length ? content.slice(tailStart) : '';
 
-    const truncated = Prompts.getVFSOffloadReminder(uri, totalLines, totalChars, headStr, tailStr);
+    return Prompts.getVFSOffloadReminder(
+      uri,
+      totalLines,
+      totalChars,
+      headStr,
+      tailStr,
+      physicalPath,
+    );
+  }
 
-    return { filename, uri, truncated };
+  /**
+   * Resolves the adapter's physical path for `filename` synchronously.
+   * Returns null when the adapter doesn't expose paths or returns a Promise
+   * (degrading to URI-only marker on the sync code path).
+   */
+  private _resolvePhysicalPathSync(filename: string): string | null {
+    if (!this.adapter.getPhysicalPath) return null;
+    const result = this.adapter.getPhysicalPath(filename);
+    return typeof result === 'string' ? result : null;
+  }
+
+  /** Async variant — awaits Promise-returning adapters. */
+  private async _resolvePhysicalPathAsync(filename: string): Promise<string | null> {
+    if (!this.adapter.getPhysicalPath) return null;
+    return await this.adapter.getPhysicalPath(filename);
   }
 
   private _registerEntry(filename: string, uri: string, content: string): void {
@@ -231,7 +274,9 @@ export class Offloader {
       return { isOffloaded: false, content };
     }
 
-    const { filename, uri, truncated } = this._prepareOffload(content, headChars, tailChars);
+    const { filename, uri } = this._generateFilename(content);
+    const physicalPath = this._resolvePhysicalPathSync(filename);
+    const truncated = this._buildTruncatedMarker(content, uri, headChars, tailChars, physicalPath);
 
     const writeResult = this.adapter.write(filename, content);
     if (writeResult instanceof Promise) {
@@ -267,7 +312,9 @@ export class Offloader {
       return { isOffloaded: false, content };
     }
 
-    const { filename, uri, truncated } = this._prepareOffload(content, headChars, tailChars);
+    const { filename, uri } = this._generateFilename(content);
+    const physicalPath = await this._resolvePhysicalPathAsync(filename);
+    const truncated = this._buildTruncatedMarker(content, uri, headChars, tailChars, physicalPath);
 
     await this.adapter.write(filename, content);
 

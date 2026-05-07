@@ -27,6 +27,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     contextWindow: options.contextWindow,
     tokenizer: options.tokenizer ? (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0 : undefined,
     preserveRatio: options.compress?.preserveRatio ?? 0.8,
+    toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.model
       ? createCompressionAdapter(options.compress.model)
       : undefined,

@@ -82,7 +82,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-可选地通过存储适配器持久化原始内容，LLM 后续可通过 `context://vfs/` URI 按需检索：
+可选地通过存储适配器持久化原始内容，方便后续被工具、审计流水线或回放层取回：
 
 ```typescript
 import { FileSystemAdapter } from '@context-chef/core';
@@ -97,6 +97,8 @@ const model = withContextChef(openai('gpt-4o'), {
   },
 });
 ```
+
+当适配器暴露物理路径（`FileSystemAdapter` 通过 `getPhysicalPath` 默认就支持），截断 marker 会把该路径作为首选的取回句柄输出 —— 模型用现成的 file-read 工具直接读取即可，不必另写一个识别自定义 URI 的工具。不映射到文件系统的适配器（DB、内存）则不实现 `getPhysicalPath`，marker 退化为单独的 `context://vfs/` URI。
 
 通过 `perTool` 做按工具覆写 —— 字符串条目完全保留该工具（同时跳过 VFS 写入），对象条目则只针对该工具覆盖 `threshold` / `headChars` / `tailChars`：
 
@@ -165,6 +167,7 @@ const wrappedModel = withContextChef(model, options);
 | `compress` | `CompressOptions` | 否 | 启用基于 LLM 的压缩 |
 | `compress.model` | `LanguageModelV3` | 是（如启用 compress） | 用于摘要的便宜模型 |
 | `compress.preserveRatio` | `number` | 否 | 保留上下文的比例（默认：`0.8`） |
+| `compress.toolResultStubThreshold` | `number` | 否 | 在把待摘要历史送给 compression model 之前，将超过该字符数的 tool-result 内容替换为一行元信息桩（`[Tool name returned N chars; omitted before summarization]`）。近期保留的 tool-result 不动。默认：undefined（关闭）。 |
 | `truncate` | `TruncateOptions` | 否 | 启用工具结果截断 |
 | `truncate.threshold` | `number` | 是（如启用 truncate） | 触发截断的字符数 |
 | `truncate.headChars` | `number` | 否 | 保留开头的字符数（默认：`0`） |
