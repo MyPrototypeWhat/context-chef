@@ -123,7 +123,11 @@ describe('truncateToolResults', () => {
       },
     };
 
-    const longOutput = 'x'.repeat(200);
+    // Use a content size large enough that the marker overhead (path,
+    // wrapper, descriptor) cannot exceed the original — otherwise the
+    // toBeLessThan assertion is environment-sensitive (CI's tempdir paths
+    // are longer than typical local paths).
+    const longOutput = 'x'.repeat(5000);
     const prompt = makeToolPrompt(longOutput);
     const result = await truncateToolResults(prompt, {
       threshold: 50,
