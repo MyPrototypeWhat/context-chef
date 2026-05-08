@@ -67,7 +67,7 @@ describe('ensureValidHistory', () => {
     // Should have injected a tool result between assistant and next user
     const toolMsg = result.find((m) => m.role === 'tool' && m.tool_call_id === 'c1');
     expect(toolMsg).toBeDefined();
-    expect(toolMsg?.content).toBe('[Tool result missing]');
+    expect(toolMsg?.content).toBe('[No tool result available]');
   });
 
   it('does not inject when tool result already exists', () => {
@@ -106,7 +106,7 @@ describe('ensureValidHistory', () => {
 
     const c2Tool = result.find((m) => m.role === 'tool' && m.tool_call_id === 'c2');
     expect(c2Tool).toBeDefined();
-    expect(c2Tool?.content).toBe('[Tool result missing]');
+    expect(c2Tool?.content).toBe('[No tool result available]');
   });
 
   // ─── First message must be user ───

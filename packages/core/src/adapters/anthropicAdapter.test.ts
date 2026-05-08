@@ -303,6 +303,7 @@ describe('fromAnthropic', () => {
 
   it('converts tool_use blocks to tool_calls', () => {
     const messages: MessageParam[] = [
+      { role: 'user', content: 'weather?' },
       {
         role: 'assistant',
         content: [
@@ -315,12 +316,16 @@ describe('fromAnthropic', () => {
           },
         ],
       },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'call_1', content: '{"temp": 15}' }],
+      },
     ];
     const { history } = fromAnthropic(messages);
 
-    expect(history[0].content).toBe('Let me check.');
-    expect(history[0].tool_calls).toHaveLength(1);
-    expect(history[0].tool_calls?.[0]).toMatchObject({
+    expect(history[1].content).toBe('Let me check.');
+    expect(history[1].tool_calls).toHaveLength(1);
+    expect(history[1].tool_calls?.[0]).toMatchObject({
       id: 'call_1',
       type: 'function',
       function: { name: 'get_weather', arguments: '{"city":"London"}' },
@@ -329,6 +334,18 @@ describe('fromAnthropic', () => {
 
   it('flattens tool_result blocks to separate IR tool messages', () => {
     const messages: MessageParam[] = [
+      { role: 'user', content: 'weather?' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_1',
+            name: 'get_weather',
+            input: { city: 'London' },
+          },
+        ],
+      },
       {
         role: 'user',
         content: [
@@ -342,8 +359,8 @@ describe('fromAnthropic', () => {
     ];
     const { history } = fromAnthropic(messages);
 
-    expect(history).toHaveLength(1);
-    expect(history[0]).toMatchObject({
+    const toolMsg = history.find((m) => m.role === 'tool');
+    expect(toolMsg).toMatchObject({
       role: 'tool',
       content: '{"temp": 15}',
       tool_call_id: 'call_1',
@@ -352,6 +369,7 @@ describe('fromAnthropic', () => {
 
   it('maps thinking blocks to IR thinking field', () => {
     const messages: MessageParam[] = [
+      { role: 'user', content: 'reason about this' },
       {
         role: 'assistant',
         content: [
@@ -362,15 +380,16 @@ describe('fromAnthropic', () => {
     ];
     const { history } = fromAnthropic(messages);
 
-    expect(history[0].thinking).toEqual({
+    expect(history[1].thinking).toEqual({
       thinking: 'Let me reason...',
       signature: 'sig123',
     });
-    expect(history[0].content).toBe('The answer is 42.');
+    expect(history[1].content).toBe('The answer is 42.');
   });
 
   it('maps redacted_thinking blocks to IR', () => {
     const messages: MessageParam[] = [
+      { role: 'user', content: 'reason about this' },
       {
         role: 'assistant',
         content: [
@@ -381,7 +400,7 @@ describe('fromAnthropic', () => {
     ];
     const { history } = fromAnthropic(messages);
 
-    expect(history[0].redacted_thinking).toEqual({ data: 'opaque-blob' });
+    expect(history[1].redacted_thinking).toEqual({ data: 'opaque-blob' });
   });
 
   it('preserves image-only messages (no text)', () => {
@@ -401,6 +420,30 @@ describe('fromAnthropic', () => {
     expect(history).toHaveLength(1);
     expect(history[0].content).toBe('');
     expect(history[0].attachments).toHaveLength(1);
+  });
+
+  // ─── Boundary sanitization ───
+  it('injects placeholder for missing tool result at boundary', () => {
+    const messages: MessageParam[] = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_1',
+            name: 'run',
+            input: {},
+          },
+        ],
+      },
+      // Missing: tool_result for call_1
+      { role: 'user', content: 'what happened?' },
+    ];
+    const { history } = fromAnthropic(messages);
+
+    const placeholder = history.find((m) => m.role === 'tool' && m.tool_call_id === 'call_1');
+    expect(placeholder?.content).toBe('[No tool result available]');
   });
 });
 

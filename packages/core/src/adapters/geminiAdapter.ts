@@ -7,6 +7,7 @@ import type {
 } from '@google/generative-ai';
 import { Prompts } from '../prompts';
 import type { Attachment, GeminiPayload, HistoryMessage, Message, ParsedMessages } from '../types';
+import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
 // Re-export Gemini-specific types for consumers who want strong typing without importing the SDK
@@ -21,6 +22,11 @@ export type GeminiContent = SDKContent;
 /**
  * Converts Gemini generateContent messages to ContextChef IR.
  * Separates system instruction from conversation history.
+ *
+ * Boundary sanitization: history is run through {@link ensureValidHistory}
+ * to fix orphan tool results, missing tool results, and ensure the first
+ * non-system message is a user message. This is a system boundary — IR
+ * downstream of `setHistory` is trusted to satisfy invariants.
  *
  * @param contents - Gemini content array (user/model messages with parts)
  * @param systemInstruction - Optional top-level system instruction
@@ -99,7 +105,9 @@ export function fromGemini(
     }
   }
 
-  return { system, history };
+  // Sanitize at boundary: enforce IR invariants before handing to caller.
+  // Cast is safe — ensureValidHistory only inserts user/tool messages, never system.
+  return { system, history: ensureValidHistory(history) as HistoryMessage[] };
 }
 
 // ─── Output: IR → Gemini ───

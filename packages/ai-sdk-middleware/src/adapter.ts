@@ -5,7 +5,12 @@ import type {
   LanguageModelV3ToolResultPart,
   SharedV3ProviderOptions,
 } from '@ai-sdk/provider';
-import type { Attachment, Message, ToolCall } from '@context-chef/core';
+import {
+  type Attachment,
+  ensureValidHistory,
+  type Message,
+  type ToolCall,
+} from '@context-chef/core';
 
 /** Content types for each AI SDK message role */
 type UserContent = Extract<LanguageModelV3Message, { role: 'user' }>['content'];
@@ -31,6 +36,11 @@ export interface AISDKMessage extends Message {
  * Original AI SDK content is stored in per-role fields for lossless round-trip.
  * `_originalText` caches the extracted text so `toAISDK` can detect Janitor modifications.
  * `_providerOptions` preserves message-level provider options (e.g. Anthropic cache control).
+ *
+ * Boundary sanitization: the result is run through {@link ensureValidHistory}
+ * to fix orphan tool results, missing tool results, and ensure the first
+ * non-system message is a user message. This is a system boundary — IR
+ * downstream is trusted to satisfy invariants.
  */
 export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
   const messages: AISDKMessage[] = [];
@@ -143,7 +153,11 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
     }
   }
 
-  return messages;
+  // Sanitize at boundary: enforce IR invariants before handing to caller.
+  // Cast is safe — ensureValidHistory only inserts plain user/tool messages without
+  // _userContent/_toolContent fields; toAISDK falls back to constructing from IR fields
+  // for any message lacking those (see toAISDK below).
+  return ensureValidHistory(messages) as AISDKMessage[];
 }
 
 /**
@@ -221,7 +235,12 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
           toolResults.push({
             type: 'tool-result',
             toolCallId: toolMsg.tool_call_id ?? '',
-            toolName: toolMsg._toolName ?? 'unknown',
+            // Prefer the round-trip pass-through field; fall back to IR `name`
+            // (set by `ensureValidHistory` for sanitized placeholders), then
+            // to a literal as last resort. Skipping `name` here would emit
+            // `'unknown'` for sanitized placeholders, which strict providers
+            // (Gemini, AI SDK validators) reject.
+            toolName: toolMsg._toolName ?? toolMsg.name ?? 'unknown',
             output: { type: 'text', value: toolMsg.content },
           });
         }

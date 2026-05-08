@@ -39,6 +39,7 @@ describe('fromTanStackAI', () => {
 
   it('converts assistant message with tool calls', () => {
     const messages: ModelMessage[] = [
+      { role: 'user', content: 'q' },
       {
         role: 'assistant',
         content: 'Let me check',
@@ -50,11 +51,12 @@ describe('fromTanStackAI', () => {
           },
         ],
       },
+      { role: 'tool', content: 'result', toolCallId: 'tc_1' },
     ];
     const result = fromTanStackAI(messages);
-    expect(result[0].role).toBe('assistant');
-    expect(result[0].content).toBe('Let me check');
-    expect(result[0].tool_calls).toEqual([
+    const assistant = result.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Let me check');
+    expect(assistant?.tool_calls).toEqual([
       {
         id: 'tc_1',
         type: 'function',
@@ -64,17 +66,67 @@ describe('fromTanStackAI', () => {
   });
 
   it('converts tool message with toolCallId', () => {
-    const messages: ModelMessage[] = [{ role: 'tool', content: 'Result data', toolCallId: 'tc_1' }];
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'tc_1', type: 'function', function: { name: 'f', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'Result data', toolCallId: 'tc_1' },
+    ];
     const result = fromTanStackAI(messages);
-    expect(result[0].role).toBe('tool');
-    expect(result[0].content).toBe('Result data');
-    expect(result[0].tool_call_id).toBe('tc_1');
+    const toolMsg = result.find((m) => m.role === 'tool');
+    expect(toolMsg?.content).toBe('Result data');
+    expect(toolMsg?.tool_call_id).toBe('tc_1');
   });
 
   it('preserves name field', () => {
     const messages: ModelMessage[] = [{ role: 'user', content: 'Hi', name: 'alice' }];
     const result = fromTanStackAI(messages);
     expect(result[0].name).toBe('alice');
+  });
+
+  // ─── Boundary sanitization ───
+  it('injects placeholder for missing tool result at boundary', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'tc_1', type: 'function', function: { name: 'run', arguments: '{}' } }],
+      },
+      // Missing: tool result for tc_1
+      { role: 'user', content: 'what happened?' },
+    ];
+    const result = fromTanStackAI(messages);
+
+    const placeholder = result.find((m) => m.role === 'tool' && m.tool_call_id === 'tc_1');
+    expect(placeholder?.content).toBe('[No tool result available]');
+    // Placeholder carries the originating tool name so output adapters that
+    // need it (e.g. AI SDK toolName, Gemini functionResponse.name) can emit
+    // a real value instead of falling back to 'unknown'.
+    expect(placeholder?.name).toBe('run');
+  });
+
+  it('round-trips sanitized placeholder content through toTanStackAI', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'tc_1', type: 'function', function: { name: 'run', arguments: '{}' } }],
+      },
+      // Missing: tool result — sanitization will inject one
+      { role: 'user', content: 'next' },
+    ];
+    const ir = fromTanStackAI(messages);
+    const roundTripped = toTanStackAI(ir);
+
+    const toolMessage = roundTripped.find((m) => m.role === 'tool');
+    expect(toolMessage).toBeDefined();
+    expect(toolMessage?.content).toBe('[No tool result available]');
+    expect(toolMessage?.toolCallId).toBe('tc_1');
   });
 });
 
@@ -91,6 +143,7 @@ describe('toTanStackAI', () => {
 
   it('round-trips tool call messages', () => {
     const original: ModelMessage[] = [
+      { role: 'user', content: 'find something' },
       {
         role: 'assistant',
         content: 'Calling tool',
@@ -111,6 +164,7 @@ describe('toTanStackAI', () => {
 
   it('preserves providerMetadata on tool calls during round-trip', () => {
     const original: ModelMessage[] = [
+      { role: 'user', content: 'find something' },
       {
         role: 'assistant',
         content: 'Calling tool',
@@ -123,16 +177,19 @@ describe('toTanStackAI', () => {
           },
         ],
       },
+      { role: 'tool', content: 'Result', toolCallId: 'tc_1' },
     ];
     const ir = fromTanStackAI(original);
     const roundTripped = toTanStackAI(ir);
-    expect(roundTripped[0].toolCalls?.[0].providerMetadata).toEqual({
+    const assistant = roundTripped.find((m) => m.role === 'assistant');
+    expect(assistant?.toolCalls?.[0].providerMetadata).toEqual({
       openai: { index: 0 },
     });
   });
 
   it('reconstructs tool calls from IR when modified', () => {
     const original: ModelMessage[] = [
+      { role: 'user', content: 'do two things' },
       {
         role: 'assistant',
         content: 'Calling tool',
@@ -150,15 +207,19 @@ describe('toTanStackAI', () => {
           },
         ],
       },
+      { role: 'tool', content: 'Result 1', toolCallId: 'tc_1' },
+      { role: 'tool', content: 'Result 2', toolCallId: 'tc_2' },
     ];
     const ir = fromTanStackAI(original);
     // Simulate compact stripping one tool call
+    const assistant = ir.find((m) => m.role === 'assistant');
     // biome-ignore lint/style/noNonNullAssertion: tool_calls guaranteed by fromTanStackAI above
-    ir[0].tool_calls = [ir[0].tool_calls![0]];
+    assistant!.tool_calls = [assistant!.tool_calls![0]];
     const roundTripped = toTanStackAI(ir);
+    const roundTrippedAssistant = roundTripped.find((m) => m.role === 'assistant');
     // Tool calls were modified (different length), so providerMetadata is lost
-    expect(roundTripped[0].toolCalls).toHaveLength(1);
-    expect(roundTripped[0].toolCalls?.[0].providerMetadata).toBeUndefined();
+    expect(roundTrippedAssistant?.toolCalls).toHaveLength(1);
+    expect(roundTrippedAssistant?.toolCalls?.[0].providerMetadata).toBeUndefined();
   });
 
   it('detects modified content and reconstructs from IR', () => {
@@ -187,14 +248,24 @@ describe('toTanStackAI', () => {
 
   it('keeps tool messages independent (no merging)', () => {
     const original: ModelMessage[] = [
+      { role: 'user', content: 'do two things' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'tc_1', type: 'function', function: { name: 'a', arguments: '{}' } },
+          { id: 'tc_2', type: 'function', function: { name: 'b', arguments: '{}' } },
+        ],
+      },
       { role: 'tool', content: 'Result 1', toolCallId: 'tc_1' },
       { role: 'tool', content: 'Result 2', toolCallId: 'tc_2' },
     ];
     const ir = fromTanStackAI(original);
     const roundTripped = toTanStackAI(ir);
-    expect(roundTripped).toHaveLength(2);
-    expect(roundTripped[0]).toEqual({ role: 'tool', content: 'Result 1', toolCallId: 'tc_1' });
-    expect(roundTripped[1]).toEqual({ role: 'tool', content: 'Result 2', toolCallId: 'tc_2' });
+    const toolMessages = roundTripped.filter((m) => m.role === 'tool');
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages[0]).toEqual({ role: 'tool', content: 'Result 1', toolCallId: 'tc_1' });
+    expect(toolMessages[1]).toEqual({ role: 'tool', content: 'Result 2', toolCallId: 'tc_2' });
   });
 
   it('converts system IR messages to user messages', () => {

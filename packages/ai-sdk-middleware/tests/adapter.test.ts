@@ -124,6 +124,7 @@ describe('fromAISDK', () => {
 
   it('converts assistant messages with text + tool calls', () => {
     const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'weather?' }] },
       {
         role: 'assistant',
         content: [
@@ -136,21 +137,33 @@ describe('fromAISDK', () => {
           },
         ],
       },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_1',
+            toolName: 'get_weather',
+            output: { type: 'text', value: 'Sunny' },
+          },
+        ],
+      },
     ];
     const result = fromAISDK(prompt);
-    expect(result[0].content).toBe('Let me check.');
-    expect(result[0].tool_calls).toEqual([
+    expect(result[1].content).toBe('Let me check.');
+    expect(result[1].tool_calls).toEqual([
       {
         id: 'call_1',
         type: 'function',
         function: { name: 'get_weather', arguments: '{"city":"Tokyo"}' },
       },
     ]);
-    expect(result[0]._assistantContent).toBeDefined();
+    expect(result[1]._assistantContent).toBeDefined();
   });
 
   it('converts assistant reasoning to thinking', () => {
     const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'reason about this' }] },
       {
         role: 'assistant',
         content: [
@@ -160,12 +173,13 @@ describe('fromAISDK', () => {
       },
     ];
     const result = fromAISDK(prompt);
-    expect(result[0].thinking).toEqual({ thinking: 'I need to think...' });
-    expect(result[0].content).toBe('Here is my answer.');
+    expect(result[1].thinking).toEqual({ thinking: 'I need to think...' });
+    expect(result[1].content).toBe('Here is my answer.');
   });
 
   it('maps assistant file parts to attachments', () => {
     const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'generate an image' }] },
       {
         role: 'assistant',
         content: [
@@ -175,12 +189,30 @@ describe('fromAISDK', () => {
       },
     ];
     const result = fromAISDK(prompt);
-    expect(result[0].content).toBe('Here is the image.');
-    expect(result[0].attachments).toEqual([{ mediaType: 'image/png', data: 'generated_img' }]);
+    expect(result[1].content).toBe('Here is the image.');
+    expect(result[1].attachments).toEqual([{ mediaType: 'image/png', data: 'generated_img' }]);
   });
 
   it('converts tool messages to individual IR messages', () => {
     const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'get_weather',
+            input: {},
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'call_2',
+            toolName: 'get_time',
+            input: {},
+          },
+        ],
+      },
       {
         role: 'tool',
         content: [
@@ -200,14 +232,15 @@ describe('fromAISDK', () => {
       },
     ];
     const result = fromAISDK(prompt);
-    expect(result).toHaveLength(2);
-    expect(result[0]).toMatchObject({
+    const toolMessages = result.filter((m) => m.role === 'tool');
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages[0]).toMatchObject({
       role: 'tool',
       content: 'Sunny, 25°C',
       tool_call_id: 'call_1',
     });
-    expect(result[0]._toolContent).toBeDefined();
-    expect(result[1]).toMatchObject({
+    expect(toolMessages[0]._toolContent).toBeDefined();
+    expect(toolMessages[1]).toMatchObject({
       role: 'tool',
       content: '14:30',
       tool_call_id: 'call_2',
@@ -216,6 +249,18 @@ describe('fromAISDK', () => {
 
   it('handles json tool result output', () => {
     const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'query' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'query_db',
+            input: {},
+          },
+        ],
+      },
       {
         role: 'tool',
         content: [
@@ -229,7 +274,69 @@ describe('fromAISDK', () => {
       },
     ];
     const result = fromAISDK(prompt);
-    expect(result[0].content).toBe('{"rows":42}');
+    const toolMsg = result.find((m) => m.role === 'tool');
+    expect(toolMsg?.content).toBe('{"rows":42}');
+  });
+
+  // ─── Boundary sanitization ───
+  it('injects placeholder for missing tool result at boundary', () => {
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'do it' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'run',
+            input: {},
+          },
+        ],
+      },
+      // Missing: tool message for call_1
+      { role: 'user', content: [{ type: 'text', text: 'what happened?' }] },
+    ];
+    const result = fromAISDK(prompt);
+
+    const placeholder = result.find((m) => m.role === 'tool' && m.tool_call_id === 'call_1');
+    expect(placeholder?.content).toBe('[No tool result available]');
+    // Placeholder must carry the original tool name on IR `name` so toAISDK
+    // can emit a real toolName instead of 'unknown' (strict providers reject 'unknown').
+    expect(placeholder?.name).toBe('run');
+  });
+
+  it('round-trips sanitized placeholder with original toolName (not "unknown")', () => {
+    // Regression guard for the boundary-sanitize bug where injected placeholders
+    // round-tripped as `toolName: 'unknown'` because toAISDK only read _toolName.
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'do it' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'run',
+            input: {},
+          },
+        ],
+      },
+      // Missing: tool message — sanitization will inject one
+      { role: 'user', content: [{ type: 'text', text: 'next' }] },
+    ];
+    const ir = fromAISDK(prompt);
+    const roundTripped = toAISDK(ir);
+
+    const toolMessage = roundTripped.find((m) => m.role === 'tool');
+    expect(toolMessage).toBeDefined();
+    if (toolMessage?.role !== 'tool') throw new Error('expected tool role');
+    const toolPart = toolMessage.content[0];
+    expect(toolPart.type).toBe('tool-result');
+    if (toolPart.type !== 'tool-result') throw new Error('expected tool-result part');
+    expect(toolPart.toolCallId).toBe('call_1');
+    // Critical: toolName must match the originating assistant's tool call,
+    // not the literal string 'unknown'.
+    expect(toolPart.toolName).toBe('run');
   });
 });
 
@@ -337,6 +444,7 @@ describe('round-trip', () => {
 
   it('preserves tool call + result through round-trip', () => {
     const original: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'find something' }] },
       {
         role: 'assistant',
         content: [

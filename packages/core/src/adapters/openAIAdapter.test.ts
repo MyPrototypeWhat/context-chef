@@ -228,6 +228,7 @@ describe('fromOpenAI', () => {
 
   it('maps tool_calls on assistant messages', () => {
     const messages: ChatCompletionMessageParam[] = [
+      { role: 'user', content: 'weather?' },
       {
         role: 'assistant',
         content: '',
@@ -239,11 +240,12 @@ describe('fromOpenAI', () => {
           },
         ],
       },
+      { role: 'tool', content: '{"temp":20}', tool_call_id: 'c1' },
     ];
     const { history } = fromOpenAI(messages);
 
-    expect(history[0].tool_calls).toHaveLength(1);
-    expect(history[0].tool_calls?.[0]).toMatchObject({
+    expect(history[1].tool_calls).toHaveLength(1);
+    expect(history[1].tool_calls?.[0]).toMatchObject({
       id: 'c1',
       type: 'function',
       function: { name: 'get_weather', arguments: '{"city":"NYC"}' },
@@ -252,11 +254,23 @@ describe('fromOpenAI', () => {
 
   it('maps tool messages with tool_call_id', () => {
     const messages: ChatCompletionMessageParam[] = [
+      { role: 'user', content: 'weather?' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'get_weather', arguments: '{}' },
+          },
+        ],
+      },
       { role: 'tool', content: '{"temp":20}', tool_call_id: 'c1' },
     ];
     const { history } = fromOpenAI(messages);
 
-    expect(history[0]).toMatchObject({
+    expect(history[2]).toMatchObject({
       role: 'tool',
       content: '{"temp":20}',
       tool_call_id: 'c1',
@@ -283,6 +297,37 @@ describe('fromOpenAI', () => {
     const { history } = fromOpenAI(messages);
 
     expect(history[0].attachments).toBeUndefined();
+  });
+
+  // ─── Boundary sanitization ───
+  it('sanitizes orphan tool results at boundary', () => {
+    // Tool result without matching assistant.tool_calls — would be rejected by OpenAI API.
+    const messages: ChatCompletionMessageParam[] = [
+      { role: 'user', content: 'q' },
+      { role: 'tool', content: 'orphan', tool_call_id: 'missing' },
+      { role: 'assistant', content: 'hi' },
+    ];
+    const { history } = fromOpenAI(messages);
+
+    expect(history.find((m) => m.role === 'tool')).toBeUndefined();
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('injects placeholder for missing tool result at boundary', () => {
+    const messages: ChatCompletionMessageParam[] = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run', arguments: '{}' } }],
+      },
+      // Missing: tool { tool_call_id: 'c1' }
+      { role: 'user', content: 'what happened?' },
+    ];
+    const { history } = fromOpenAI(messages);
+
+    const placeholder = history.find((m) => m.role === 'tool' && m.tool_call_id === 'c1');
+    expect(placeholder?.content).toBe('[No tool result available]');
   });
 });
 

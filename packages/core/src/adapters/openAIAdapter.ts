@@ -4,6 +4,7 @@ import type {
 } from 'openai/resources/chat/completions/completions';
 import { Prompts } from '../prompts';
 import type { Attachment, HistoryMessage, Message, OpenAIPayload, ParsedMessages } from '../types';
+import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
 // ─── Input: OpenAI → IR ───
@@ -20,6 +21,11 @@ function extractMediaType(url: string): string {
 /**
  * Converts OpenAI Chat Completions messages to ContextChef IR.
  * Separates system messages from conversation history.
+ *
+ * Boundary sanitization: history is run through {@link ensureValidHistory}
+ * to fix orphan tool results, missing tool results, and ensure the first
+ * non-system message is a user message. This is a system boundary — IR
+ * downstream of `setHistory` is trusted to satisfy invariants.
  *
  * @example
  * const { system, history } = fromOpenAI(openaiMessages);
@@ -125,7 +131,9 @@ export function fromOpenAI(messages: SDKMessageParam[]): ParsedMessages {
     }
   }
 
-  return { system, history };
+  // Sanitize at boundary: enforce IR invariants before handing to caller.
+  // Cast is safe — ensureValidHistory only inserts user/tool messages, never system.
+  return { system, history: ensureValidHistory(history) as HistoryMessage[] };
 }
 
 // ─── Output: IR → OpenAI ───

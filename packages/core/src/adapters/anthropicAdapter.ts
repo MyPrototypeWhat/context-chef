@@ -17,6 +17,7 @@ import type {
   ParsedMessages,
   ToolCall,
 } from '../types';
+import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
 // ─── Input: Anthropic → IR ───
@@ -24,6 +25,11 @@ import type { ITargetAdapter } from './targetAdapter';
 /**
  * Converts Anthropic Messages API messages to ContextChef IR.
  * Separates system messages from conversation history.
+ *
+ * Boundary sanitization: history is run through {@link ensureValidHistory}
+ * to fix orphan tool results, missing tool results, and ensure the first
+ * non-system message is a user message. This is a system boundary — IR
+ * downstream of `setHistory` is trusted to satisfy invariants.
  *
  * @param messages - Anthropic chat messages (user/assistant with content blocks)
  * @param system - Optional top-level system text blocks
@@ -170,7 +176,9 @@ export function fromAnthropic(
     }
   }
 
-  return { system: systemMsgs, history };
+  // Sanitize at boundary: enforce IR invariants before handing to caller.
+  // Cast is safe — ensureValidHistory only inserts user/tool messages, never system.
+  return { system: systemMsgs, history: ensureValidHistory(history) as HistoryMessage[] };
 }
 
 // ─── Output: IR → Anthropic ───

@@ -1,4 +1,8 @@
-import type { ToolCall as CoreToolCall, Message } from '@context-chef/core';
+import {
+  type ToolCall as CoreToolCall,
+  ensureValidHistory,
+  type Message,
+} from '@context-chef/core';
 import type { ContentPart, ModelMessage, ToolCall } from '@tanstack/ai';
 
 /**
@@ -19,6 +23,11 @@ export interface TanStackAIMessage extends Message {
  * Original content is stored in `_originalContent` for lossless round-trip.
  * `_originalText` caches extracted text so `toTanStackAI` can detect Janitor modifications.
  * `_originalToolCalls` preserves TanStack AI ToolCalls (including providerMetadata).
+ *
+ * Boundary sanitization: the result is run through {@link ensureValidHistory}
+ * to fix orphan tool results, missing tool results, and ensure the first
+ * non-system message is a user message. This is a system boundary — IR
+ * downstream is trusted to satisfy invariants.
  */
 export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
   const result: TanStackAIMessage[] = [];
@@ -65,7 +74,11 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
     }
   }
 
-  return result;
+  // Sanitize at boundary: enforce IR invariants before handing to caller.
+  // Cast is safe — ensureValidHistory only inserts plain user/tool messages without
+  // _originalContent/_originalToolCalls fields; toTanStackAI falls back to constructing
+  // from IR fields for any message lacking those.
+  return ensureValidHistory(result) as TanStackAIMessage[];
 }
 
 /**

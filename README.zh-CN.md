@@ -276,7 +276,7 @@ history = janitor.compact(history, {
 
 #### `ensureValidHistory(history)`
 
-独立工具函数，修复消息历史以满足 LLM API 约束（tool 配对完整性、消息交替规则）。适用于从数据库加载历史或手动修改后的场景。
+独立工具函数,修复消息历史以满足 LLM API 约束(删除孤儿 tool result、为缺失的 tool result 注入占位、确保第一条非 system 消息是 user)。适用于从数据库加载历史或手动修改后的场景。
 
 ```typescript
 import { ensureValidHistory } from "@context-chef/core";
@@ -284,6 +284,8 @@ import { ensureValidHistory } from "@context-chef/core";
 const safeHistory = ensureValidHistory(rawHistory);
 chef.setHistory(safeHistory);
 ```
+
+> **边界契约**:所有 input adapter(`fromOpenAI` / `fromAnthropic` / `fromGemini`,以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`)都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize:IR 是内部协议,直接构造或 mutate 出来的 history 视为已满足契约。如果不确定,显式用 `ensureValidHistory(...)` 包一下。
 
 #### `chef.clearHistory(): this`
 
@@ -665,7 +667,7 @@ const chef = new ContextChef({
 
 ### Input Adapters（Provider → IR）
 
-将 OpenAI / Anthropic / Gemini 原生消息转换为 ContextChef IR，自动分离 system 和 history：
+将 OpenAI / Anthropic / Gemini 原生消息转换为 ContextChef IR,自动分离 system 和 history。每个 adapter 都会在出口跑一次 `ensureValidHistory` 做边界 sanitize —— 删除孤儿 tool result、为缺失的 tool result 注入 `[No tool result available]` 占位、强制首条非 system 消息为 user。手动 `chef.setHistory(...)` 进来的 IR **不**做 sanitize;trust IR 或者自己显式调用 `ensureValidHistory(messages)`。
 
 ```typescript
 import { fromOpenAI, fromAnthropic, fromGemini } from "context-chef";

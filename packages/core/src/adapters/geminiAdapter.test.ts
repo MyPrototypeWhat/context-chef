@@ -408,16 +408,21 @@ describe('fromGemini', () => {
 
   it('converts functionCall to tool_calls with synthetic IDs', () => {
     const contents: Content[] = [
+      { role: 'user', parts: [{ text: 'weather?' }] },
       {
         role: 'model',
         parts: [{ functionCall: { name: 'get_weather', args: { city: 'London' } } }],
       },
+      {
+        role: 'user',
+        parts: [{ functionResponse: { name: 'get_weather', response: { temp: 15 } } }],
+      },
     ];
     const { history } = fromGemini(contents);
 
-    expect(history[0].role).toBe('assistant');
-    expect(history[0].tool_calls).toHaveLength(1);
-    expect(history[0].tool_calls?.[0]).toMatchObject({
+    expect(history[1].role).toBe('assistant');
+    expect(history[1].tool_calls).toHaveLength(1);
+    expect(history[1].tool_calls?.[0]).toMatchObject({
       id: 'gemini-fc-get_weather-0',
       type: 'function',
       function: { name: 'get_weather', arguments: '{"city":"London"}' },
@@ -426,6 +431,7 @@ describe('fromGemini', () => {
 
   it('converts functionResponse to tool message with correlated tool_call_id', () => {
     const contents: Content[] = [
+      { role: 'user', parts: [{ text: 'weather?' }] },
       {
         role: 'model',
         parts: [{ functionCall: { name: 'get_weather', args: { city: 'London' } } }],
@@ -438,7 +444,7 @@ describe('fromGemini', () => {
     const { history } = fromGemini(contents);
 
     // The functionCall message
-    expect(history[0].tool_calls?.[0].id).toBe('gemini-fc-get_weather-0');
+    expect(history[1].tool_calls?.[0].id).toBe('gemini-fc-get_weather-0');
     // The functionResponse message should have the matching tool_call_id
     const toolMsg = history.find((m) => m.role === 'tool');
     expect(toolMsg).toBeDefined();
@@ -465,6 +471,25 @@ describe('fromGemini', () => {
     const { history } = fromGemini(contents);
 
     expect(history[0].attachments).toBeUndefined();
+  });
+
+  // ─── Boundary sanitization ───
+  it('injects placeholder for missing functionResponse at boundary', () => {
+    const contents: Content[] = [
+      { role: 'user', parts: [{ text: 'do it' }] },
+      {
+        role: 'model',
+        parts: [{ functionCall: { name: 'run', args: {} } }],
+      },
+      // Missing: functionResponse for 'run'
+      { role: 'user', parts: [{ text: 'what happened?' }] },
+    ];
+    const { history } = fromGemini(contents);
+
+    const placeholder = history.find(
+      (m) => m.role === 'tool' && m.tool_call_id === 'gemini-fc-run-0',
+    );
+    expect(placeholder?.content).toBe('[No tool result available]');
   });
 });
 

@@ -334,7 +334,7 @@ history = janitor.compact(history, {
 
 #### `ensureValidHistory(history)`
 
-Standalone utility that sanitizes message history to satisfy LLM API invariants (tool pair completeness, message alternation). Use when loading history from a database or after manual modifications.
+Standalone utility that sanitizes message history to satisfy LLM API invariants (orphan tool result removal, missing tool result placeholder injection, first-non-system-must-be-user). Use when loading history from a database or after manual modifications.
 
 ```typescript
 import { ensureValidHistory } from '@context-chef/core';
@@ -342,6 +342,8 @@ import { ensureValidHistory } from '@context-chef/core';
 const safeHistory = ensureValidHistory(rawHistory);
 chef.setHistory(safeHistory);
 ```
+
+> **Boundary contract.** All input adapters (`fromOpenAI` / `fromAnthropic` / `fromGemini`, plus middleware-internal `fromAISDK` / `fromTanStackAI`) run their output through `ensureValidHistory` automatically — they're the system boundary between external SDK formats and ContextChef IR. `chef.setHistory(IR)` does NOT sanitize: IR is treated as an internal protocol, and history you construct (or mutate) directly is trusted to satisfy the invariants. Wrap with `ensureValidHistory(...)` explicitly when in doubt.
 
 #### `chef.clearHistory(): this`
 
@@ -723,7 +725,7 @@ const chef = new ContextChef({
 
 ### Input Adapters (Provider → IR)
 
-Convert OpenAI / Anthropic / Gemini native messages to ContextChef IR, automatically separating system and history:
+Convert OpenAI / Anthropic / Gemini native messages to ContextChef IR, automatically separating system and history. Each adapter sanitizes the result via `ensureValidHistory` at the boundary — orphan tool results are dropped, missing tool results get an `[No tool result available]` placeholder, and the first non-system message is forced to be a user message. IR you build manually with `chef.setHistory(...)` is NOT sanitized; trust the IR or call `ensureValidHistory(messages)` yourself.
 
 ```typescript
 import { fromOpenAI, fromAnthropic, fromGemini } from "@context-chef/core";

@@ -336,6 +336,267 @@ These should be implemented at the agent framework layer, using ContextChef's ho
 
 ---
 
+---
+
+# Pi-Mono Comparison Roadmap
+
+Source-verified review of [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono) (`packages/ai`, `packages/agent`, `packages/coding-agent`). Items below are concrete improvements ContextChef can adopt; pi-mono is a runtime agent framework, ContextChef is a compile-time context engine — borrow patterns, not the runtime.
+
+## Tier 1 — Quick Wins (do first)
+
+Total ETA: < 1 day. Each item benefits every user.
+
+### T1.1 — Boundary sanitization in `from*` input adapters
+
+**Status**: ✅ Done (2026-05-08)
+**Files**: `packages/core/src/adapters/{openAIAdapter,anthropicAdapter,geminiAdapter}.ts`, `packages/ai-sdk-middleware/src/adapter.ts`, `packages/tanstack-ai/src/adapter.ts`, `packages/core/src/utils/ensureValidHistory.ts` (placeholder text), README + README.zh-CN, plus all corresponding test files
+
+Original plan was "call `ensureValidHistory` inside `compile()` by default" (defensive). Redesigned to **"validate at system boundary, trust internal IR"** — `from*()` is the boundary between external SDK formats and ContextChef IR; sanitize there. `chef.setHistory(IR)` and `compile()` are not boundaries (IR is the internal protocol; trust it).
+
+**What changed:**
+- All five `from*` adapters (`fromOpenAI`, `fromAnthropic`, `fromGemini`, `fromAISDK`, `fromTanStackAI`) now run their output through `ensureValidHistory` at the boundary
+- Placeholder text changed from `[Tool result missing]` to neutral `[No tool result available]` (avoids implying execution failure when the real cause is incomplete loaded state — feedback from the design discussion)
+- README + zh-CN README document the new boundary contract explicitly
+- Existing fromX unit-test fixtures updated to satisfy invariants (added user-prefix or matching tool pairs); 5 new "boundary smoke" tests added — one per adapter — proving sanitization triggers on dirty input
+
+**Verification**: `pnpm -r run typecheck` ✅ · `pnpm lint` ✅ · `pnpm -r run test` ✅ (688 tests across 32 files; +5 new boundary tests)
+
+**Why design changed mid-implementation:** initial "compile() step 0.5" plan covered all paths but added per-call cost and violated "trust internal code, validate at boundary" principle (system prompt's own words). Boundary placement gives same coverage for users who use the adapters (the common path), zero cost for users who construct IR directly (they own correctness), and clean separation between translator and sanitizer responsibilities.
+
+**Reference**: pi `providers/transform-messages.ts:155-217` runs sanitize on every request — we placed it at boundary instead, mirroring pi's intent (catch malformed history before it leaves trusted code) without paying the per-call cost.
+
+---
+
+### T1.2 — Defensive `slice()` in setters
+
+**Status**: ✅ Done (already implemented prior to this review)
+**Files**: `packages/core/src/index.ts`, `packages/core/src/modules/pruner/index.ts`
+
+Audit on 2026-05-07 confirmed all stateful setters already copy on assignment:
+- `setSystemPrompt` / `setHistory` use `[...messages]`
+- `Pruner.registerTools` uses `[...tools]`
+- `Pruner.registerNamespaces` / `registerToolkits` use `groups.map(g => ({ ...g, tools: [...g.tools] }))`
+- `Pruner.setBlockedTools` uses `[...names]`
+- `registerSkills` uses `structuredClone` (deeper than required)
+
+No code change needed. Item kept here for traceability.
+
+**Reference**: pi `agent.ts:74-85` wraps `tools` and `messages` with getter/setter pairs that always copy on assignment.
+
+---
+
+### T1.3 — `as Type` → `satisfies Type` for defaults/constants
+
+**Status**: ❌ Not Applicable (no candidates exist)
+**Files**: grep `as ` across all packages
+
+Audit on 2026-05-07 found no `} as XxxType` pattern used as a default value or named constant. The two existing `as` usages are legitimate:
+- `packages/core/src/adapters/anthropicAdapter.ts:226` — `msg.role as 'user' | 'assistant'` is a narrow cast in a flow-control branch
+- `packages/core/src/modules/assembler/index.ts:30` — `as T` is a generic-passthrough cast required by the recursive helper signature
+- `packages/core/src/adapters/openAIAdapter.ts:74` — `'function' as const` is a const assertion (different semantic from `satisfies`; do not change)
+
+`satisfies` would not improve any of these. Item closed.
+
+**Reference (still informative)**: pi `agent.ts:42` `const DEFAULT_MODEL = { ... } satisfies Model<any>;` — the pattern itself is good practice, just not currently triggered in our codebase.
+
+---
+
+### T1.4 — `Contract:` JSDoc segments on all hooks
+
+**Status**: ✅ Done (2026-05-07)
+**Files**: `packages/core/src/index.ts`, `packages/core/src/modules/janitor/index.ts`, `packages/core/src/modules/memory/index.ts`, `packages/core/src/modules/offloader/index.ts`
+
+Added `Contract:` JSDoc segment to every hook field in core config types. Each segment specifies whether the hook may throw/reject and what happens to the calling path on failure. Three contract categories:
+
+1. **Must not throw — error propagates out of `compile()`** (no fallback path):
+   `ChefConfig.transformContext`, `ChefConfig.onBeforeCompile`, `JanitorConfig.tokenizer`, `JanitorConfig.onCompress`, `JanitorConfig.onBeforeCompress`, `MemoryConfig.selector`, `MemoryConfig.onMemoryUpdate`, `MemoryConfig.onMemoryChanged`, `MemoryConfig.onMemoryExpired`
+2. **May reject — circuit breaker absorbs failures**:
+   `JanitorConfig.compressionModel` (3 consecutive failures → no-op until reset)
+3. **May throw — caught and swallowed by callsite**:
+   `VFSConfig.onVFSEvicted` (errors logged via `console.warn`)
+
+**Verification**: `pnpm -r run typecheck` ✅ · `pnpm lint` ✅ · `pnpm -r run test` ✅ (682 tests across 31 files)
+
+Middleware option types deferred — middleware does not currently expose user-facing hooks beyond what flows through `ChefConfig`.
+
+**Reference**: pi consistently writes `Contract: must not throw or reject. Return [] when no follow-up messages are available.` on every hook.
+
+---
+
+## Tier 2 — Near-Term (high value, moderate effort)
+
+### T2.1 — `AdapterRegistry`
+
+**Status**: Planned
+**ETA**: half-day
+**Files**: `packages/core/src/adapters/adapterFactory.ts`
+
+Replace switch-case `getAdapter('openai' | 'anthropic' | 'gemini')` with `AdapterRegistry.register(name, adapter)` / `unregister(name)`. Ship three internal `register()` calls in a `register-builtins` module. Existing public API (`getAdapter`) keeps working.
+
+**Why**: third parties adding Cohere / Mistral / proprietary protocols today must fork the library. Tests cannot install fake adapters cleanly.
+
+**Reference**: pi `api-registry.ts` — registry takes optional `sourceId` so an entire source's providers can be unregistered as a group (perfect for plugins / test isolation).
+
+---
+
+### T2.2 — `onPayload` / `onResponse` middleware hooks
+
+**Status**: Planned
+**ETA**: half-day
+**Files**: `packages/ai-sdk-middleware/src/middleware.ts`, `packages/tanstack-ai/src/middleware.ts`
+
+```typescript
+withContextChef(model, {
+  onPayload: (payload, model) => modified | void,
+  onResponse: (response, model) => void,
+});
+```
+
+**Why**: today users add their own logger to inspect what gets sent. With these hooks, debugging cache hit rate / final payload becomes one-liner.
+
+**Reference**: pi `StreamOptions.onPayload` / `onResponse` in `ai/types.ts:99-105`.
+
+---
+
+### T2.3 — `preserveThinkingAsText` opt-in for cross-provider replay
+
+**Status**: Planned
+**ETA**: half-day
+**Files**: `packages/core/src/adapters/openAIAdapter.ts`, `geminiAdapter.ts`
+
+Currently `openAIAdapter` and `geminiAdapter` strip Anthropic `thinking` blocks. Add option to convert them to `<thinking>...</thinking>` text blocks instead.
+
+Edge case to handle correctly: **redacted thinking is opaque encrypted content**. For same-model replay it must be preserved with signature; cross-model it must be dropped (cannot be transformed).
+
+**Reference**: pi `providers/transform-messages.ts:97-114`. Same-model match key is the triple `(provider, api, model.id)`.
+
+---
+
+### T2.4 — `ChefEvents` handler signature with `AbortSignal`
+
+**Status**: Planned
+**ETA**: 1h
+**Files**: `packages/core/src/utils/eventEmitter.ts`, `index.ts`
+
+Change `(event) => void | Promise<void>` to `(event, signal?: AbortSignal) => void | Promise<void>`. Handlers awaiting long operations (DB write in `compile:done`) can cooperatively cancel.
+
+**Reference**: pi `agent.ts:540` `for (const listener of this.listeners) await listener(event, signal);`
+
+---
+
+### T2.5 — Granular event expansion
+
+**Status**: Planned
+**ETA**: half-day
+**Files**: `packages/core/src/index.ts`
+
+Add: `compress:start` / `compress:end` (with `tokenInfo` so handler can decide to skip), `offload:created` / `offload:resolved`, `pruner:tool-blocked`, split `memory:changed` into `memory:set` / `memory:delete`.
+
+**Reference**: pi `AssistantMessageEvent` has 11 events (text/thinking/toolcall × {start, delta, end} + start/done/error); pi `AgentEvent` has 9.
+
+---
+
+### T2.6 — `transformToolResult` unified hook
+
+**Status**: Planned
+**ETA**: half-day
+**Files**: `packages/core/src/index.ts`
+
+```typescript
+new ContextChef({
+  transformToolResult: (call, result) => result | Promise<result>,
+});
+```
+
+Common use: auto-offload large outputs, PII redaction, error format normalization. Today users do these in their agent loop with if/else chains.
+
+**Reference**: pi `afterToolCall` field-level merge pattern in `agent-loop.ts:642-649` — `??` per field, no deep merge, omitted fields keep original values. Strict and predictable.
+
+---
+
+## Tier 3 — Medium-Term (larger scope, needs design doc)
+
+### T3.1 — Snapshot DAG
+
+**Status**: Design needed
+
+`snapshot()` accepts `{ parentId?: string }`; new `chef.diff(snapA, snapB)` and `chef.fork(snapId)`; optional `SnapshotStore` manages the graph.
+
+Unlocks explorative agents and branching session UX.
+
+**Reference**: pi-coding-agent's `/tree` and `/fork` commands validate the value (in-place branching, no file duplication).
+
+---
+
+### T3.2 — `loadSystemPrompt({ baseDir, mode, cascade })` utility
+
+**Status**: Design needed
+
+Walk up the directory tree gathering `AGENTS.md` / `CLAUDE.md` / `.context-chef/SYSTEM.md`, concatenate per `mode: 'replace' | 'append'`. Mirrors `loadSkill` / `loadSkillsDir` style.
+
+**Reference**: pi-coding-agent's `.pi/SYSTEM.md` / `~/.pi/agent/SYSTEM.md` / `APPEND_SYSTEM.md` cascading load.
+
+---
+
+### T3.3 — Compile pipeline diagram in README
+
+**Status**: Doc-only
+
+Visualize the fixed execution order of `transformContext` → `onBeforeCompile` → `onBeforeCompress` → `selector` → `transformToolResult` (and any additions). Today our hooks are distributed across modules; global ordering is implicit.
+
+**Reference**: pi's three-layer separation `transformContext → convertToLlm → streamFn` is rigid and orthogonal — we should document ours with the same clarity.
+
+---
+
+### T3.4 — `Message._meta?: Record<string, unknown>` reservation
+
+**Status**: Planned
+**ETA**: 30min (zero-cost future-proof)
+
+Add an optional `_meta` field to `Message`. No semantic change today; preserves headroom for future `notification` / `progress` / UI-only message kinds without a breaking change.
+
+**Reference**: pi `CustomAgentMessages` declaration-merging pattern (`agent/types.ts:271-280`) — we shouldn't ship the full union split, but `_meta` is the cheapest insurance.
+
+---
+
+## Internal Code Patterns (apply in future refactors)
+
+These are pi-mono patterns to internalize, not items to ship:
+
+1. **Discriminated union over `throw + null`**: model two-way outcomes as `{ kind: 'a', ... } | { kind: 'b', ... }`. Failure and success share one data shape. (pi `agent-loop.ts:485-509`)
+2. **Three-stage split: `prepare → execute → finalize`**: sequential and parallel paths share the prepare and finalize stages. **Apply to `Janitor.compress`**: split `prepareCompress` (prompt assembly + circuit breaker check) → `executeCompress` (LLM call) → `finalizeCompress` (`formatCompactSummary` post-process). (pi `agent-loop.ts:529-660`)
+3. **`EventStream<T, R>` dual API**: implement `AsyncIterable<T>` *and* `result(): Promise<R>` from one event source via two callbacks `isComplete` + `extractResult`. Template for any future streaming compress / streaming compile work. (pi `event-stream.ts`, 67 LOC)
+4. **Errors encoded into data, streams never throw**: `StopReason` field + `errorMessage` field; `done` and `error` are normal stream events. Eliminates scattered try/catch on streaming paths. (pi `ai/types.ts:212`)
+5. **Saturating config rule**: `config.X || items.some(i => i.X)` — "any one on, all on." Semantically clearer than priority tables. (pi `agent-loop.ts:358`)
+6. **Provider registry with `sourceId`**: batch unregister by source for plugin systems / test isolation. (pi `api-registry.ts:38`)
+
+---
+
+## Pi-Mono Patterns Explicitly NOT Adopted
+
+| Pattern | Reason |
+|---|---|
+| TypeBox to replace Zod | Vercel AI SDK / Zod ecosystem lock-in; switching would break users |
+| Built-in OAuth (`loginAnthropic` / `loginOpenAICodex` / `loginGitHubCopilot`) | Heavy dep; recommend listing `@mariozechner/pi-ai` as `peerDep` in examples instead of reimplementing |
+| TUI / Web-UI packages | Out of scope for a context engine |
+| Pi packages / `pi install` protocol | We're a library, not a CLI; `npx skills add` covers the core need |
+| JSON mode / RPC mode | CLI-only concerns |
+| MCP / sub-agent / plan mode rejection stance | pi's "minimalism" is a CLI product decision, not ours |
+| **Cost tracking in `compile:done` payload** | Same reason as "token counting in compile metadata" (already in Memory Roadmap → Not Planned). Cost = token × price; we're a pre-call context engine, post-call statistics belong to the caller. Maintaining a price map = price-drift bugs. Users can compute `usage × price` from their SDK response in one line. pi does this only because it ships a CLI footer. |
+
+---
+
+## Strengths to Highlight (reverse-pitch material)
+
+For a future blog post or comparison doc:
+
+1. **IR + bidirectional `from*` / `to*` adapters** — more thorough than pi's per-provider stream functions
+2. **Janitor's turn-based grouping + circuit breaker** — more robust than pi's "let the LLM manage compaction" approach; structural correctness guarantees
+3. **VFS + `context://` URI scheme** — capability pi has nothing equivalent to
+4. **Skill SKILL.md frontmatter + Pruner ⊥ Skill decoupling** (annotation vs enforcement separated) — more structured than pi's skill design
+
+---
+
 ## References
 
 - [Mem0 (arXiv 2504.19413)](https://arxiv.org/abs/2504.19413)
