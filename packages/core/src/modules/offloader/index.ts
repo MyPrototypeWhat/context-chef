@@ -119,7 +119,14 @@ export interface VFSConfig {
   maxFiles?: number;
   /** Max total UTF-8 bytes of stored content. Undefined = no byte cap. 0 = evict all in cleanup(). */
   maxBytes?: number;
-  /** Per-entry eviction notification. Errors thrown by the hook are logged via console.warn and swallowed. */
+  /**
+   * Per-entry eviction notification.
+   *
+   * Contract: may throw — errors are caught, logged via console.warn, and swallowed
+   * so a misbehaving hook cannot abort the cleanup sweep. Use cleanupAsync() if the
+   * hook is async; calling cleanup() (sync) with an async hook logs a warning and
+   * does not await the result.
+   */
   onVFSEvicted?: (entry: VFSEntryMeta, reason: VFSEvictionReason) => void | Promise<void>;
 }
 

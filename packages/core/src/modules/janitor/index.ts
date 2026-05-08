@@ -165,6 +165,9 @@ export interface JanitorConfig {
    * IMPORTANT: This function is called with both the full history AND individual messages
    * (for per-message cost calculation), so it must handle arbitrary Message[] inputs.
    *
+   * Contract: must not throw. Errors propagate out of compile() — there is no
+   * fallback path. Return 0 on failure if you need to swallow the error yourself.
+   *
    * @example
    * tokenizer: (msgs) => msgs.reduce((sum, m) => sum + encode(JSON.stringify(m)).length, 0)
    */
@@ -186,6 +189,11 @@ export interface JanitorConfig {
   /**
    * Async hook to call a low-cost LLM (e.g. gpt-4o-mini) to summarize the truncated messages.
    * If not provided, a simple placeholder message is used.
+   *
+   * Contract: may reject. After {@link MAX_CONSECUTIVE_COMPRESSION_FAILURES}
+   * consecutive failures, compress() short-circuits and becomes a no-op until
+   * the next successful compression or an explicit janitor.reset() / chef.clearHistory().
+   * The failure counter is preserved across snapshot()/restore().
    */
   compressionModel?: (messagesToCompress: Message[]) => Promise<string>;
 
@@ -221,6 +229,9 @@ export interface JanitorConfig {
   /**
    * Hook triggered ONLY when compression actually happens.
    * Useful for UI loaders ("Compressing memory..."), logging, or saving the compressed state.
+   *
+   * Contract: must not throw or reject. Errors propagate out of compile() — there
+   * is no fallback path. Wrap your logic in try/catch if it can fail.
    */
   onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
 
@@ -228,6 +239,9 @@ export interface JanitorConfig {
    * Hook triggered when the token budget is exceeded, BEFORE LLM compression.
    * Return a modified Message[] to replace the history before compression proceeds,
    * or return null/undefined to let the default compression handle it.
+   *
+   * Contract: must not throw or reject. Errors propagate out of compile() — return
+   * null on failure to fall back to default LLM compression rather than throwing.
    */
   onBeforeCompress?: (
     history: Message[],

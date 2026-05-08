@@ -41,20 +41,39 @@ export interface MemoryConfig {
    * Called during `compile()` after expired entries are swept.
    * Default: return all entries (no filtering).
    *
+   * Contract: must not throw. Errors propagate out of compile() — there is no
+   * fallback path. Return the original array on failure if you need to swallow
+   * the error yourself.
+   *
    * @example
    * // Only inject the 10 most recently updated entries
    * selector: (entries) => entries.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 10)
    */
   selector?: (entries: MemoryEntry[]) => MemoryEntry[];
-  /** Veto hook — return false to block the write. Called before createMemory/updateMemory/deleteMemory. */
+  /**
+   * Veto hook — return false to block the write. Called before createMemory/updateMemory/deleteMemory.
+   *
+   * Contract: must not throw or reject. Errors propagate out of the calling
+   * write method. Return false to block the write, true to allow.
+   */
   onMemoryUpdate?: (
     key: string,
     value: string | null,
     oldValue: string | null,
   ) => boolean | Promise<boolean>;
-  /** Pure notification — called after any memory change (set, delete, expire). */
+  /**
+   * Pure notification — called after any memory change (set, delete, expire).
+   *
+   * Contract: must not throw or reject. Notification-only — return value is
+   * ignored. Errors propagate out of the calling write method (or out of compile()
+   * for type: 'expire').
+   */
   onMemoryChanged?: (event: MemoryChangeEvent) => void | Promise<void>;
-  /** Called when an entry expires during compile(). */
+  /**
+   * Called when an entry expires during compile().
+   *
+   * Contract: must not throw or reject. Errors propagate out of compile().
+   */
   onMemoryExpired?: (entry: MemoryEntry) => void | Promise<void>;
 }
 

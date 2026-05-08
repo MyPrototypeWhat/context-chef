@@ -143,6 +143,16 @@ export interface ChefConfig {
   janitor?: JanitorConfig;
   pruner?: PrunerConfig;
   memory?: MemoryConfig;
+  /**
+   * Lifecycle hook applied to the message array right before it's handed to the
+   * Assembler. Use this to apply broad transformations like filtering, reordering,
+   * or injecting messages programmatically. Runs after Janitor compression and
+   * Memory injection.
+   *
+   * Contract: must not throw or reject. Errors propagate out of compile() — there
+   * is no fallback path. Wrap your logic in try/catch and return the original
+   * messages on failure.
+   */
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   /**
    * Lifecycle hook invoked before each compile(), after Janitor compression.
@@ -152,6 +162,9 @@ export interface ChefConfig {
    * Return a string to inject as `<implicit_context>` alongside the dynamic state,
    * or null/undefined to skip injection. The returned content is placed at the same position
    * as dynamic state (last_user or system), preserving KV-Cache stability.
+   *
+   * Contract: must not throw or reject. Errors propagate out of compile() — return
+   * null on failure to skip injection rather than throwing.
    *
    * @example
    * const chef = new ContextChef({
