@@ -1,2 +1,7 @@
 packages:
   - 'packages/*'
+
+# pnpm v11+ requires explicit approval for dependency build scripts.
+# esbuild downloads its platform binary in a postinstall and is trusted.
+allowBuilds:
+  esbuild: true
