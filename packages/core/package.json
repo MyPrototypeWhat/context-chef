@@ -1,6 +1,6 @@
 {
   "name": "@context-chef/core",
-  "version": "3.3.2",
+  "version": "3.4.0",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
