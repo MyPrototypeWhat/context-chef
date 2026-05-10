@@ -216,6 +216,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                       |
 | `preserveRatio`                 | `number`                                    | `0.8`  | [Tokenizer 路径] `contextWindow` 中保留给近期消息的比例。                |
 | `preserveRecentMessages`        | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期轮次数量（turn-based）。         |
+| `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`| 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。无 `tokenizer` 时取值范围收窄为 `'max' \| 'feedFirst'`，TypeScript 在编译期拒绝 `'tokenizerFirst'`。完整说明见 [core 包 README](./packages/core)。 |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —      | 异步钩子，调用低成本 LLM 对旧消息进行摘要。                              |
 | `customCompressionInstructions` | `string`                                    | —      | 追加到默认压缩 prompt 的额外聚焦指令（追加模式，不替换）。               |
 | `onCompress`                    | `(summary, count) => void`                  | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。                         |
@@ -227,7 +228,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
-传入 API 返回的 token 用量。下次 `compile()` 时，如果该值超过 `contextWindow`，则触发压缩。在 tokenizer 路径中，取本地计算值和传入值中的较大值。
+传入 API 返回的 token 用量。下次 `compile()` 时，如果该值超过 `contextWindow`，则触发压缩。在 tokenizer 路径中，默认取本地计算值和传入值中的较大值；可通过 `usagePreference` 切换为 `'feedFirst'`（信任 API 真值）或 `'tokenizerFirst'`（完全忽略传入值）。
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });

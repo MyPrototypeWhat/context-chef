@@ -183,6 +183,7 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `compress.adapter` | `AnyTextAdapter` | Yes (if compress) | Cheap adapter for summarization |
 | `compress.preserveRatio` | `number` | No | Ratio of context to preserve (default: `0.8`) |
 | `compress.toolResultStubThreshold` | `number` | No | Replace tool-result content longer than this many chars with a one-line metadata stub (`[Tool name returned N chars; omitted before summarization]`) before sending the to-be-summarized history to the compression model. Recent (preserved) tool results untouched. Default: undefined (disabled). |
+| `compress.usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | No | Which token source drives the trigger when both `tokenizer` and reported usage are available. Default `'max'` (most conservative — `Math.max(tokenizer, fed)`). Use `'feedFirst'` to trust the API's reported usage and ignore tokenizer over-estimation; use `'tokenizerFirst'` to ignore the fed value entirely. `'tokenizerFirst'` requires `tokenizer` — if missing, it is sanitized to `'max'` at construction time with a console warning. |
 | `truncate` | `TruncateOptions` | No | Enable tool result truncation |
 | `truncate.threshold` | `number` | Yes (if truncate) | Character count to trigger truncation |
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |

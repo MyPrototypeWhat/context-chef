@@ -168,6 +168,7 @@ const wrappedModel = withContextChef(model, options);
 | `compress.model` | `LanguageModelV3` | 是（如启用 compress） | 用于摘要的便宜模型 |
 | `compress.preserveRatio` | `number` | 否 | 保留上下文的比例（默认：`0.8`） |
 | `compress.toolResultStubThreshold` | `number` | 否 | 在把待摘要历史送给 compression model 之前，将超过该字符数的 tool-result 内容替换为一行元信息桩（`[Tool name returned N chars; omitted before summarization]`）。近期保留的 tool-result 不动。默认：undefined（关闭）。 |
+| `compress.usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | 否 | 当 `tokenizer` 与 AI SDK 上报的 usage 同时存在时，决定触发判断使用哪个 token 来源。默认 `'max'`（最保守 — `Math.max(tokenizer, fed)`）。`'feedFirst'` 信任 API 真值，避免 tokenizer 高估导致的提前压缩；`'tokenizerFirst'` 完全忽略上报的 usage。`'tokenizerFirst'` 需要 `tokenizer`，缺失时构造期会被消毒为 `'max'` 并打印控制台警告。 |
 | `truncate` | `TruncateOptions` | 否 | 启用工具结果截断 |
 | `truncate.threshold` | `number` | 是（如启用 truncate） | 触发截断的字符数 |
 | `truncate.headChars` | `number` | 否 | 保留开头的字符数（默认：`0`） |

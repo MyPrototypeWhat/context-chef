@@ -147,31 +147,42 @@ function stripLargeToolResultsForCompression(messages: Message[], threshold: num
   });
 }
 
-export interface JanitorConfig {
+/**
+ * Strategy for choosing the trigger token count when both a local tokenizer
+ * and an externally-reported usage value (via `feedTokenUsage()`) are
+ * available. Only meaningful in the tokenizer path.
+ *
+ * - `'max'` (default): `max(tokenizer, fed)`. Most conservative — any
+ *   over-budget signal triggers compression. Backward-compatible.
+ * - `'feedFirst'`: prefer fed when present, fall back to tokenizer. Use when
+ *   the API's reported usage is authoritative and the local tokenizer
+ *   over-estimates (e.g. shared config across providers, some of which
+ *   report usage and some of which need tokenizer fallback).
+ * - `'tokenizerFirst'`: ignore fed entirely, always use tokenizer. Use when
+ *   fed values would mislead the budget decision (e.g. they include tokens
+ *   that will not be in the next call).
+ */
+export type UsagePreferenceWithTokenizer = 'max' | 'feedFirst' | 'tokenizerFirst';
+
+/**
+ * Strategy for the no-tokenizer path. `'tokenizerFirst'` is excluded by
+ * design — it would have no source to read from. Both `'max'` and
+ * `'feedFirst'` are runtime no-ops here (only fed/heuristic available),
+ * but allowing both lets you ship one config that works across providers
+ * with and without tokenizers.
+ */
+export type UsagePreferenceWithoutTokenizer = 'max' | 'feedFirst';
+
+/**
+ * Fields shared by every JanitorConfig variant. Not exported on its own —
+ * downstream callers should use {@link JanitorConfig}.
+ */
+interface JanitorConfigBase {
   /**
    * The model's context window size (in tokens).
    * Compression is triggered when token usage exceeds this value.
    */
   contextWindow: number;
-
-  /**
-   * Optional tokenizer for precise per-message token counting.
-   * When provided, enables the "tokenizer path": precise splitIndex calculation
-   * that preserves recent messages based on preserveRatio.
-   *
-   * When NOT provided, the "feedTokenUsage path" is used: compression is triggered
-   * by feedTokenUsage() and compresses all messages except the last `preserveRecentMessages`.
-   *
-   * IMPORTANT: This function is called with both the full history AND individual messages
-   * (for per-message cost calculation), so it must handle arbitrary Message[] inputs.
-   *
-   * Contract: must not throw. Errors propagate out of compile() — there is no
-   * fallback path. Return 0 on failure if you need to swallow the error yourself.
-   *
-   * @example
-   * tokenizer: (msgs) => msgs.reduce((sum, m) => sum + encode(JSON.stringify(m)).length, 0)
-   */
-  tokenizer?: (messages: Message[]) => number;
 
   /**
    * [Tokenizer path only] The ratio of contextWindow to preserve for recent messages.
@@ -256,6 +267,48 @@ export interface JanitorConfig {
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
 }
+
+/**
+ * Tokenizer-path config. Enables precise per-message token calculation and
+ * the precise per-turn split based on `preserveRatio`. Both `usagePreference`
+ * values that depend on a tokenizer (`'tokenizerFirst'`) are allowed here.
+ *
+ * The tokenizer is called with both the full history AND individual messages
+ * (for per-turn cost calculation), so it must handle arbitrary Message[] inputs.
+ *
+ * Contract: must not throw. Errors propagate out of compile() — there is no
+ * fallback path. Return 0 on failure if you need to swallow the error yourself.
+ *
+ * @example
+ * tokenizer: (msgs) => msgs.reduce((sum, m) => sum + encode(JSON.stringify(m)).length, 0)
+ */
+export interface JanitorConfigWithTokenizer extends JanitorConfigBase {
+  tokenizer: (messages: Message[]) => number;
+  usagePreference?: UsagePreferenceWithTokenizer;
+}
+
+/**
+ * No-tokenizer config. Compression is driven entirely by `feedTokenUsage()`
+ * (or a coarse heuristic when no fed value is present). The split is
+ * coarse — keep last `preserveRecentMessages` turns, summarize the rest.
+ *
+ * `usagePreference: 'tokenizerFirst'` is intentionally NOT a member of the
+ * value union: with no tokenizer present it would have nothing to read from,
+ * so the type system rejects it at compile time.
+ */
+export interface JanitorConfigWithoutTokenizer extends JanitorConfigBase {
+  tokenizer?: undefined;
+  usagePreference?: UsagePreferenceWithoutTokenizer;
+}
+
+/**
+ * Discriminated on the presence of `tokenizer`. The branch determines which
+ * `usagePreference` values are allowed:
+ *
+ * - With tokenizer: `'max' | 'feedFirst' | 'tokenizerFirst'`
+ * - Without tokenizer: `'max' | 'feedFirst'`
+ */
+export type JanitorConfig = JanitorConfigWithTokenizer | JanitorConfigWithoutTokenizer;
 
 export interface JanitorSnapshot {
   externalTokenUsage: number | null;
@@ -474,9 +527,25 @@ export class Janitor {
 
     // ─── Tokenizer path: precise per-message calculation ───
     if (this.config.tokenizer) {
-      const currentTokens = this.config.tokenizer(history);
-      const effectiveTokens = Math.max(currentTokens, this._externalTokenUsage ?? 0);
+      const tokenizerTokens = this.config.tokenizer(history);
+      const fedTokens = this._externalTokenUsage;
       this._externalTokenUsage = null;
+
+      // Trigger source selection — see UsagePreferenceWithTokenizer JSDoc for
+      // when each branch is the right call. Default 'max' preserves the
+      // historical Math.max behavior for callers that do not opt in.
+      const preference = this.config.usagePreference ?? 'max';
+      let effectiveTokens: number;
+      switch (preference) {
+        case 'feedFirst':
+          effectiveTokens = fedTokens ?? tokenizerTokens;
+          break;
+        case 'tokenizerFirst':
+          effectiveTokens = tokenizerTokens;
+          break;
+        default:
+          effectiveTokens = Math.max(tokenizerTokens, fedTokens ?? 0);
+      }
 
       if (effectiveTokens <= this.config.contextWindow) {
         return null;

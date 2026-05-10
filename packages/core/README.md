@@ -218,6 +218,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
 | `preserveRatio`                 | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
 | `preserveRecentMessages`        | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing. A turn is a single message or an assistant with tool_calls plus its tool results. |
+| `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are available. See "Choosing the trigger source" below. The value union is narrowed: configs without `tokenizer` only accept `'max' \| 'feedFirst'` (TypeScript rejects `'tokenizerFirst'` at compile time). |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). See "Custom compression instructions" below. |
 | `onCompress`                    | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
@@ -282,12 +283,37 @@ The failure counter is part of `JanitorSnapshot` and is preserved by `chef.snaps
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
-Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the higher of the local calculation and the fed value is used.
+Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path the default behavior takes the higher of the local calculation and the fed value; use `usagePreference` (below) to change which source wins.
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
+
+#### Choosing the trigger source — `usagePreference`
+
+Only meaningful in the tokenizer path. Controls which token count is consulted when both the local `tokenizer` AND a fed value (`reportTokenUsage()`) are available.
+
+| Value             | Trigger token count                | When to use                                                                                  |
+| ----------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
+| `'max'` (default) | `Math.max(tokenizer, fed)`         | Most conservative — any over-budget signal triggers compression. Backward-compatible.        |
+| `'feedFirst'`     | `fed ?? tokenizer`                 | The API's reported usage is authoritative. Useful when one config is shared across providers — some report usage, others rely on the tokenizer fallback. The tokenizer's over-estimation no longer forces premature compression on providers that report real usage. |
+| `'tokenizerFirst'`| `tokenizer` (fed is ignored)       | The tokenizer reflects truth and the fed value would mislead the budget decision (e.g. fed includes tokens that will not be in the next call). |
+
+The split index calculation (which messages to keep vs. summarize) is unaffected — it always uses precise per-turn tokenization in the tokenizer path. `usagePreference` only changes the *trigger* decision.
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200000,
+    tokenizer: (msgs) => countTokens(msgs),
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
+    usagePreference: 'feedFirst', // trust API-reported usage when present
+  },
+});
+```
+
+**Type-level guarantee.** `JanitorConfig` is a discriminated union on the presence of `tokenizer`. Configs without a tokenizer accept only `'max' | 'feedFirst'` — `'tokenizerFirst'` is rejected at compile time because it would have nothing to read from. Both `'max'` and `'feedFirst'` are runtime no-ops in the no-tokenizer path (only one source available), but allowing both lets you ship one config across providers with and without tokenizers.
 
 #### `onBeforeCompress` hook
 

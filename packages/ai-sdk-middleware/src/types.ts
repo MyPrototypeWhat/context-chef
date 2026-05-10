@@ -61,6 +61,20 @@ export interface CompressOptions {
    * undefined (disabled). Recommended starting value: `5000`.
    */
   toolResultStubThreshold?: number;
+  /**
+   * Strategy for choosing the trigger token count when both a `tokenizer`
+   * and an externally-reported usage value are available.
+   *
+   * - `'max'` (default): use the higher of the two — most conservative.
+   * - `'feedFirst'`: prefer reported usage when present, fall back to
+   *   tokenizer. Use when API-reported usage is authoritative and the
+   *   tokenizer over-estimates (e.g. shared config across providers, some
+   *   of which report usage and some do not).
+   * - `'tokenizerFirst'`: ignore reported usage entirely. Requires a
+   *   `tokenizer` to be configured; otherwise it is sanitized to `'max'`
+   *   at construction time with a console warning.
+   */
+  usagePreference?: 'max' | 'feedFirst' | 'tokenizerFirst';
 }
 
 /**

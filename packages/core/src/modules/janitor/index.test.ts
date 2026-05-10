@@ -248,6 +248,189 @@ describe('Janitor — feedTokenUsage path (no tokenizer)', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// usagePreference — trigger source selection (tokenizer path)
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — usagePreference', () => {
+  it("default 'max' uses Math.max(tokenizer, fed) — backward compatible", async () => {
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: makeTokenizer(10), // 5 × 10 = 50, under 100
+      preserveRatio: 0.3,
+      compressionModel: mockModel,
+      // usagePreference omitted → 'max'
+    });
+
+    janitor.feedTokenUsage(150); // fed pushes effective over the limit
+    await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("'feedFirst' ignores tokenizer over-estimate when fed is in budget", async () => {
+    // Mixed-source scenario: the tokenizer over-estimates, but the API's
+    // reported usage is the source of truth.
+    // - tokenizer says 200 (5 × 40)
+    // - fed says 60
+    // - contextWindow = 100
+    // 'max' would trigger (200 > 100), 'feedFirst' should NOT (60 ≤ 100).
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: makeTokenizer(40),
+      compressionModel: mockModel,
+      usagePreference: 'feedFirst',
+    });
+
+    janitor.feedTokenUsage(60);
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).not.toHaveBeenCalled();
+    expect(result).toHaveLength(5);
+  });
+
+  it("'feedFirst' falls back to tokenizer when no fed value is present", async () => {
+    // No fed value → must use tokenizer to evaluate budget.
+    // - tokenizer says 200 (5 × 40), contextWindow = 100 → triggers compression.
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: makeTokenizer(40),
+      preserveRatio: 0.3,
+      compressionModel: mockModel,
+      usagePreference: 'feedFirst',
+    });
+
+    // No feedTokenUsage call
+    await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("'feedFirst' DOES trigger when fed itself exceeds budget", async () => {
+    // Reverse direction: tokenizer is calm but fed reports over-budget.
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: makeTokenizer(10), // 5 × 10 = 50, under
+      preserveRatio: 0.3,
+      compressionModel: mockModel,
+      usagePreference: 'feedFirst',
+    });
+
+    janitor.feedTokenUsage(150);
+    await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("'tokenizerFirst' ignores fed entirely", async () => {
+    // - tokenizer says 50 (under), fed says 999 (way over).
+    // - 'max' would trigger, 'tokenizerFirst' should NOT.
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 100,
+      tokenizer: makeTokenizer(10),
+      compressionModel: mockModel,
+      usagePreference: 'tokenizerFirst',
+    });
+
+    janitor.feedTokenUsage(999);
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).not.toHaveBeenCalled();
+    expect(result).toHaveLength(5);
+  });
+
+  it("'tokenizerFirst' triggers based on tokenizer alone when over budget", async () => {
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10), // 5 × 10 = 50 > 30
+      preserveRatio: 0.3,
+      compressionModel: mockModel,
+      usagePreference: 'tokenizerFirst',
+    });
+
+    janitor.feedTokenUsage(0); // fed is fine, but should be ignored
+    await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('split index calculation always uses precise per-turn tokenization regardless of preference', async () => {
+    // Feed a divergent value so the three preferences actually take DIFFERENT
+    // trigger numbers — without this, all three would compute effectiveTokens
+    // from the tokenizer alone and the test would not exercise its claim.
+    //
+    // Setup:
+    //   tokenizer says 50 (5 × 10), fed says 99999, contextWindow 30, preserveRatio 0.3
+    //   - 'max'           → effective = max(50, 99999) = 99999  → triggers
+    //   - 'feedFirst'     → effective = 99999 ?? 50      = 99999  → triggers
+    //   - 'tokenizerFirst'→ effective = 50                       → triggers (50 > 30)
+    //
+    //   In all three cases the per-turn split iteration uses the tokenizer
+    //   (not the fed value), so the resulting split is identical:
+    //   preserveTarget = floor(30 * 0.3) = 9 → 0 turns fit → keep last 1.
+    const buildJanitor = (pref: 'max' | 'feedFirst' | 'tokenizerFirst') =>
+      new Janitor({
+        contextWindow: 30,
+        tokenizer: makeTokenizer(10),
+        preserveRatio: 0.3,
+        compressionModel: vi.fn().mockResolvedValue('<summary>S</summary>'),
+        usagePreference: pref,
+      });
+
+    const expectedLength = 2; // summary + 1 preserved
+
+    for (const pref of ['max', 'feedFirst', 'tokenizerFirst'] as const) {
+      const janitor = buildJanitor(pref);
+      janitor.feedTokenUsage(99999);
+      const result = await janitor.compress(buildHistory(5));
+      expect(result, `preference=${pref}`).toHaveLength(expectedLength);
+      expect(result[result.length - 1].content, `preference=${pref}`).toBe('msg-5');
+    }
+  });
+
+  it("'feedFirst' on no-tokenizer path is a no-op (same as default)", async () => {
+    // No tokenizer → only fed/heuristic available. usagePreference is purely
+    // declarative here; both 'max' and 'feedFirst' produce identical runtime behavior.
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 200000,
+      compressionModel: mockModel,
+      usagePreference: 'feedFirst',
+    });
+
+    janitor.feedTokenUsage(250000); // over budget
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    // summary + 1 preserved (default preserveRecentMessages)
+    expect(result).toHaveLength(2);
+  });
+
+  it('integrates with ContextChef via reportTokenUsage()', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<summary>VIA_CHEF</summary>');
+    const chef = new ContextChef({
+      janitor: {
+        contextWindow: 100,
+        tokenizer: makeTokenizer(40), // over-estimating tokenizer
+        compressionModel: mockModel,
+        usagePreference: 'feedFirst',
+      },
+    });
+
+    chef.setHistory(buildHistory(5));
+    chef.reportTokenUsage(60); // truth from API: under budget
+    await chef.compile();
+
+    expect(mockModel).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
 // onBudgetExceeded hook
 // ═══════════════════════════════════════════════════════
 

@@ -75,6 +75,45 @@ type _A2 = AssertAssignable<OurToolUseBlock, AnthropicToolUseBlockParam>;
 type _A3 = AssertAssignable<OurToolResultBlock, AnthropicToolResultBlockParam>;
 type _A4 = AssertAssignable<OurAnthropicMsg, AnthropicMessageParam>;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. JANITOR CONFIG — Discriminated union: `usagePreference` value set
+//    is narrowed by the presence of `tokenizer`. These checks fail to
+//    compile if the narrowing regresses.
+// ═══════════════════════════════════════════════════════════════════════════
+import type { JanitorConfig, Message } from '../src';
+
+// With tokenizer: all three preferences allowed.
+const _jc1: JanitorConfig = {
+  contextWindow: 100,
+  tokenizer: (msgs: Message[]) => msgs.length,
+  usagePreference: 'max',
+};
+const _jc2: JanitorConfig = {
+  contextWindow: 100,
+  tokenizer: (msgs: Message[]) => msgs.length,
+  usagePreference: 'feedFirst',
+};
+const _jc3: JanitorConfig = {
+  contextWindow: 100,
+  tokenizer: (msgs: Message[]) => msgs.length,
+  usagePreference: 'tokenizerFirst',
+};
+
+// Without tokenizer: 'max' and 'feedFirst' allowed, 'tokenizerFirst' rejected.
+const _jc4: JanitorConfig = {
+  contextWindow: 100,
+  usagePreference: 'max',
+};
+const _jc5: JanitorConfig = {
+  contextWindow: 100,
+  usagePreference: 'feedFirst',
+};
+// @ts-expect-error — 'tokenizerFirst' requires a tokenizer
+const _jc6: JanitorConfig = {
+  contextWindow: 100,
+  usagePreference: 'tokenizerFirst',
+};
+
 // Prevent "unused" warnings
 export type TypeCompatChecks = {
   _g1: _G1;
@@ -88,4 +127,10 @@ export type TypeCompatChecks = {
   _a2: _A2;
   _a3: _A3;
   _a4: _A4;
+  _jc1: typeof _jc1;
+  _jc2: typeof _jc2;
+  _jc3: typeof _jc3;
+  _jc4: typeof _jc4;
+  _jc5: typeof _jc5;
+  _jc6: typeof _jc6;
 };

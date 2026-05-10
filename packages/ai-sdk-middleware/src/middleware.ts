@@ -23,19 +23,44 @@ type CompressRole = 'system' | 'user' | 'assistant';
 export function createMiddleware(options: ContextChefOptions): LanguageModelMiddleware {
   let usageWarned = false;
 
-  const janitor = new Janitor({
+  // The Janitor config is a discriminated union on `tokenizer`. Build the
+  // two branches separately so the literal type matches one of the union
+  // members exactly — a single literal carrying `tokenizer: Fn | undefined`
+  // would not narrow to either branch.
+  const sharedJanitorConfig = {
     contextWindow: options.contextWindow,
-    tokenizer: options.tokenizer ? (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0 : undefined,
-    preserveRatio: options.compress?.preserveRatio ?? 0.8,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.model
       ? createCompressionAdapter(options.compress.model)
       : undefined,
     onCompress: options.onCompress
-      ? (summary, count) => options.onCompress?.(summary.content, count)
+      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
       : undefined,
     onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
-  });
+  };
+
+  let usagePreference = options.compress?.usagePreference;
+  if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
+    console.warn(
+      "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
+        "Falling back to 'max'.",
+    );
+    usagePreference = 'max';
+  }
+
+  const janitor = options.tokenizer
+    ? new Janitor({
+        ...sharedJanitorConfig,
+        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
+        preserveRatio: options.compress?.preserveRatio ?? 0.8,
+        usagePreference,
+      })
+    : new Janitor({
+        ...sharedJanitorConfig,
+        // 'tokenizerFirst' has been sanitized above; the cast narrows the
+        // remaining values to the no-tokenizer branch.
+        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
+      });
 
   return {
     specificationVersion: 'v3',

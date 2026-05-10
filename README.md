@@ -274,6 +274,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
 | `preserveRatio`                 | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
 | `preserveRecentMessages`        | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing.                     |
+| `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. Without `tokenizer`, the value union narrows to `'max' \| 'feedFirst'` — TypeScript rejects `'tokenizerFirst'` at compile time. See the [core package README](./packages/core) for the full breakdown. |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). |
 | `onCompress`                    | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
@@ -285,7 +286,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
-Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the higher of the local calculation and the fed value is used.
+Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the default is to take the higher of the local calculation and the fed value; switch via `usagePreference` if you want `'feedFirst'` (trust the API truth) or `'tokenizerFirst'` (ignore fed entirely).
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });
