@@ -121,7 +121,26 @@ export interface CompactOptions {
   clear: ClearTarget[];
 }
 
-export type TargetProvider = 'openai' | 'anthropic' | 'gemini';
+/** Built-in adapter names registered automatically on package import. */
+export type BuiltinTargetProvider = 'openai' | 'anthropic' | 'gemini';
+
+/**
+ * Adapter target name. Includes the three built-ins plus any string the user
+ * has registered via `adapterRegistry.register(name, adapter)`. The
+ * `(string & {})` trick keeps IDE auto-complete on the literals while still
+ * accepting arbitrary strings at the type level.
+ */
+export type TargetProvider = BuiltinTargetProvider | (string & {});
+
+/**
+ * Target adapter contract: receives compiled IR messages and returns a
+ * provider-shaped payload. Implement this to plug a custom provider into
+ * `chef.compile()` via `adapterRegistry.register()` or by passing the
+ * instance directly as `compile({ target: instance })`.
+ */
+export interface ITargetAdapter {
+  compile(messages: Message[]): TargetPayload;
+}
 
 // ─── Input adapter types ───
 
@@ -137,7 +156,15 @@ export interface ParsedMessages {
 }
 
 export interface CompileOptions {
-  target: TargetProvider;
+  /**
+   * Where to send the compiled payload. Three forms accepted:
+   * - Built-in literal (`'openai' | 'anthropic' | 'gemini'`) — strict payload type
+   * - Registered name (`'cohere'`, etc.) — looked up via `adapterRegistry`
+   * - `ITargetAdapter` instance — used directly, bypassing the registry
+   *
+   * Falls back to `ChefConfig.defaultTarget`, then to `'openai'`, when omitted.
+   */
+  target?: TargetProvider | ITargetAdapter;
 }
 
 // ─── Compile metadata ───

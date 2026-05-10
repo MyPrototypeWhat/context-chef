@@ -16,6 +16,11 @@
     "dist",
     "README.md"
   ],
+  "sideEffects": [
+    "**/registerBuiltins.*",
+    "./dist/index.mjs",
+    "./dist/index.cjs"
+  ],
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",

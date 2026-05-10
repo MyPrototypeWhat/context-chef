@@ -427,15 +427,23 @@ Middleware option types deferred — middleware does not currently expose user-f
 
 ### T2.1 — `AdapterRegistry`
 
-**Status**: Planned
-**ETA**: half-day
-**Files**: `packages/core/src/adapters/adapterFactory.ts`
+**Status**: ✅ Done (2026-05-10)
+**Files**: `packages/core/src/adapters/{adapterRegistry,registerBuiltins,adapterFactory,targetAdapter}.ts`, `packages/core/src/types/index.ts`, `packages/core/src/index.ts`, plus tests (`adapterRegistry.test.ts`, `compileTarget.test.ts`), README + zh-CN README, core README
 
-Replace switch-case `getAdapter('openai' | 'anthropic' | 'gemini')` with `AdapterRegistry.register(name, adapter)` / `unregister(name)`. Ship three internal `register()` calls in a `register-builtins` module. Existing public API (`getAdapter`) keeps working.
+Replaced the closed switch-case in `getAdapter()` with an open `AdapterRegistry` so users can plug in custom `ITargetAdapter` implementations without forking. The `ITargetAdapter` interface was already exported, but the dispatch was hard-coded — this PR opens the last gate.
 
-**Why**: third parties adding Cohere / Mistral / proprietary protocols today must fork the library. Tests cannot install fake adapters cleanly.
+**What changed:**
+- New `adapterRegistry` singleton + `AdapterRegistry` class with `register` / `unregister` / `unregisterBySource` / `get` / `has` / `list`
+- Built-ins (`openai`, `anthropic`, `gemini`) auto-registered under `sourceId: 'builtin'` via side-effect import in `registerBuiltins.ts`
+- `ChefConfig.defaultTarget?: TargetProvider | ITargetAdapter` — instance-wide default
+- `compile({ target })` now accepts three forms: built-in literal (strict payload type), registered name, or `ITargetAdapter` instance (bypasses registry)
+- Resolution order: `options.target → defaultTarget → 'openai'` (final fallback kept for backward compat → `patch` bump, not `major`)
+- `TargetProvider` widened to `BuiltinTargetProvider | (string & {})` — keeps IDE auto-complete on the three literals
+- `ITargetAdapter` definition moved into `types/index.ts` to remove a circular-dep hazard; `targetAdapter.ts` becomes a re-export shim
 
-**Reference**: pi `api-registry.ts` — registry takes optional `sourceId` so an entire source's providers can be unregistered as a group (perfect for plugins / test isolation).
+**Verification**: `pnpm -r run typecheck` ✅ · `pnpm lint` ✅ · `pnpm -r run test` ✅ (707 tests across 33 files; +17 new — 10 registry CRUD + 7 compile() target resolution)
+
+**Reference**: pi `api-registry.ts` — `sourceId` enables batch unregister for plugins / test isolation.
 
 ---
 

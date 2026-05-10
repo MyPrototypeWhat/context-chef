@@ -717,6 +717,52 @@ const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
 
+#### 自定义适配器 — `adapterRegistry` 与 `defaultTarget`
+
+三个内置适配器（`'openai' | 'anthropic' | 'gemini'`）会自动注册。如果想接入第三方协议（Cohere、Mistral、自家私有协议）,实现 `ITargetAdapter` 后注册一次即可：
+
+```typescript
+import { adapterRegistry, ITargetAdapter } from "context-chef";
+
+class CohereAdapter implements ITargetAdapter {
+  compile(messages) {
+    /* 返回 Cohere 形状的 payload */
+  }
+}
+
+adapterRegistry.register("cohere", new CohereAdapter());
+await chef.compile({ target: "cohere" }); // 通过 registry 路由
+```
+
+`compile({ target })` 接受三种形式：
+
+| 形式             | 示例                                   | 适用场景                            |
+| ---------------- | -------------------------------------- | ----------------------------------- |
+| 内置字面量       | `compile({ target: "openai" })`        | 通过类型重载获得精确 payload 类型   |
+| 注册名字符串     | `compile({ target: "cohere" })`        | 复用同一个第三方适配器多次          |
+| `ITargetAdapter` | `compile({ target: new MyAdapter() })` | 一次性使用 / 测试 — 跳过 registry   |
+
+在构造函数中设置 `defaultTarget` 可以避免每次调用都传 target：
+
+```typescript
+const chef = new ContextChef({ defaultTarget: "anthropic" });
+await chef.compile(); // → AnthropicPayload
+```
+
+`compile()` 解析顺序：
+`options.target` → `ChefConfig.defaultTarget` → `'openai'`（最终内置兜底）。
+
+对插件系统和测试隔离，可以传入 `sourceId`，把一组注册按来源批量卸载：
+
+```typescript
+adapterRegistry.register("cohere", new CohereAdapter(), "my-plugin");
+adapterRegistry.register("mistral", new MistralAdapter(), "my-plugin");
+// 后续 — 一行卸载整个插件
+adapterRegistry.unregisterBySource("my-plugin");
+```
+
+> **替换内置名**(如 `register('openai', myFork)`)会保留 strict overload 的 payload 返回类型 — `compile({ target: 'openai' })` 仍标注为 `Promise<OpenAIPayload>`,因此你的替换实现在运行时必须遵守该 shape。TypeScript 无法在替换层面强制这个约束。
+
 ---
 
 ## Skills

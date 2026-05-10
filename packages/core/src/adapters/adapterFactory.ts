@@ -1,35 +1,23 @@
 import type { TargetProvider } from '../types';
-import { AnthropicAdapter } from './anthropicAdapter';
-import { GeminiAdapter } from './geminiAdapter';
-import { OpenAIAdapter } from './openAIAdapter';
+import { adapterRegistry } from './adapterRegistry';
+// Side-effect import: registers openai/anthropic/gemini into adapterRegistry.
+import './registerBuiltins';
 import type { ITargetAdapter } from './targetAdapter';
 
 export type { ITargetAdapter };
+export { AdapterRegistry, adapterRegistry } from './adapterRegistry';
 
-const adapterCache = new Map<TargetProvider, ITargetAdapter>();
-
+/**
+ * Look up an adapter by target name. Thin wrapper over `adapterRegistry.get()`
+ * for backward compatibility — new code should prefer `adapterRegistry` directly,
+ * which exposes register/unregister/list capabilities.
+ *
+ * Built-ins (`'openai' | 'anthropic' | 'gemini'`) are registered on import
+ * via `registerBuiltins`.
+ */
 export function getAdapter(target: TargetProvider): ITargetAdapter {
-  const cached = adapterCache.get(target);
-  if (cached) return cached;
-
-  let adapter: ITargetAdapter;
-  switch (target) {
-    case 'openai':
-      adapter = new OpenAIAdapter();
-      break;
-    case 'anthropic':
-      adapter = new AnthropicAdapter();
-      break;
-    case 'gemini':
-      adapter = new GeminiAdapter();
-      break;
-    default:
-      throw new Error(`Unsupported target provider: ${target}`);
-  }
-
-  adapterCache.set(target, adapter);
-  return adapter;
+  return adapterRegistry.get(target);
 }
 
-/** @deprecated Use getAdapter() instead */
+/** @deprecated Use `getAdapter()` or `adapterRegistry` directly. */
 export const AdapterFactory = { getAdapter };

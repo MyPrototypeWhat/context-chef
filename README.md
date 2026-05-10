@@ -775,6 +775,52 @@ const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
 
+#### Custom adapters — `adapterRegistry` and `defaultTarget`
+
+The three built-ins (`'openai' | 'anthropic' | 'gemini'`) are registered automatically. To plug in a third-party provider (Cohere, Mistral, an in-house protocol), implement `ITargetAdapter` and register it once:
+
+```typescript
+import { adapterRegistry, ITargetAdapter } from "@context-chef/core";
+
+class CohereAdapter implements ITargetAdapter {
+  compile(messages) {
+    /* return Cohere-shaped payload */
+  }
+}
+
+adapterRegistry.register("cohere", new CohereAdapter());
+await chef.compile({ target: "cohere" }); // routed via the registry
+```
+
+`compile({ target })` accepts three forms:
+
+| Form                  | Example                                | Use case                                      |
+| --------------------- | -------------------------------------- | --------------------------------------------- |
+| Built-in literal      | `compile({ target: "openai" })`        | Strict payload type via the type overloads    |
+| Registered name       | `compile({ target: "cohere" })`        | Reuse the same custom adapter many times      |
+| `ITargetAdapter`      | `compile({ target: new MyAdapter() })` | One-off use / tests — bypasses the registry   |
+
+Set `defaultTarget` once in the constructor to avoid repeating it on every call:
+
+```typescript
+const chef = new ContextChef({ defaultTarget: "anthropic" });
+await chef.compile(); // → AnthropicPayload
+```
+
+Resolution order in `compile()`:
+`options.target` → `ChefConfig.defaultTarget` → `'openai'` (final built-in fallback).
+
+For plugin systems and test isolation, pass a `sourceId` so a batch of registrations can be torn down together:
+
+```typescript
+adapterRegistry.register("cohere", new CohereAdapter(), "my-plugin");
+adapterRegistry.register("mistral", new MistralAdapter(), "my-plugin");
+// Later — unload the entire plugin in one call
+adapterRegistry.unregisterBySource("my-plugin");
+```
+
+> **Replacing a built-in name** (e.g. `register('openai', myFork)`) keeps the strict overload's payload return type — `compile({ target: 'openai' })` is still typed `Promise<OpenAIPayload>`, so your replacement must honor that shape at runtime. TypeScript can't enforce this for you.
+
 ---
 
 ## Skills

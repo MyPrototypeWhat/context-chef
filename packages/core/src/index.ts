@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { getAdapter } from './adapters/adapterFactory';
+import { adapterRegistry } from './adapters/adapterRegistry';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
@@ -26,15 +26,23 @@ import type {
   CompileMeta,
   CompileOptions,
   GeminiPayload,
+  ITargetAdapter,
   Message,
   OpenAIPayload,
   TargetPayload,
+  TargetProvider,
   ToolDefinition,
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 import { objectToXml } from './utils/xmlGenerator';
 
-export { AdapterFactory, getAdapter, type ITargetAdapter } from './adapters/adapterFactory';
+export {
+  AdapterFactory,
+  AdapterRegistry,
+  adapterRegistry,
+  getAdapter,
+  type ITargetAdapter,
+} from './adapters/adapterFactory';
 export { fromAnthropic } from './adapters/anthropicAdapter';
 export { fromGemini } from './adapters/geminiAdapter';
 export { fromOpenAI } from './adapters/openAIAdapter';
@@ -175,6 +183,15 @@ export interface ChefConfig {
    * });
    */
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
+  /**
+   * Default adapter target used when `compile()` is called without an explicit
+   * `target` option. Accepts a registered name (built-in or user-registered via
+   * `adapterRegistry.register()`) or an `ITargetAdapter` instance.
+   *
+   * Resolution order in `compile()`:
+   *   `options.target` → `defaultTarget` → `'openai'` (final fallback)
+   */
+  defaultTarget?: TargetProvider | ITargetAdapter;
 }
 
 export type { GuardrailOptions, ToolGroup, CompiledTools, ResolvedToolCall, DynamicStatePlacement };
@@ -221,6 +238,7 @@ export class ContextChef {
   private onBeforeCompile?: (
     context: BeforeCompileContext,
   ) => string | null | Promise<string | null>;
+  private defaultTarget?: TargetProvider | ITargetAdapter;
   private emitter = new TypedEventEmitter<ChefEvents>();
 
   private systemPrompt: Message[] = [];
@@ -241,6 +259,7 @@ export class ContextChef {
     this.pruner = new Pruner(config.pruner);
     this.transformContext = config.transformContext;
     this.onBeforeCompile = config.onBeforeCompile;
+    this.defaultTarget = config.defaultTarget;
 
     // Bridge Janitor's onCompress callback to the unified event system
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
@@ -692,10 +711,17 @@ export class ContextChef {
    * Triggers Janitor compression if history exceeds configured token/message limits.
    * Leverages TargetAdapters to conform strictly to provider requirements.
    * Registered tools are automatically included in the returned payload.
+   *
+   * Target resolution order:
+   *   1. `options.target` — per-call override (string name or `ITargetAdapter` instance)
+   *   2. `ChefConfig.defaultTarget` — instance-wide default set at construction
+   *   3. `'openai'` — final built-in fallback (kept for backward compatibility)
    */
   public async compile(options: { target: 'openai' }): Promise<OpenAIPayload>;
   public async compile(options: { target: 'anthropic' }): Promise<AnthropicPayload>;
   public async compile(options: { target: 'gemini' }): Promise<GeminiPayload>;
+  public async compile(options: { target: ITargetAdapter }): Promise<TargetPayload>;
+  public async compile(options: { target: string }): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload> {
     // 0. Emit compile:start
@@ -775,8 +801,8 @@ export class ContextChef {
       placement: this.dynamicStatePlacement,
     });
 
-    const target = options?.target ?? 'openai';
-    const adapter = getAdapter(target);
+    const target = options?.target ?? this.defaultTarget ?? 'openai';
+    const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
     const adapterPayload = adapter.compile([...rawPayload.messages]);
 
     const prunerTools = this._getPrunerTools();
