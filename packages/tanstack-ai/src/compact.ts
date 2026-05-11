@@ -89,5 +89,9 @@ function getProtectedCount(mode: Exclude<CompactConfig['toolCalls'], 'none' | un
   const match = mode.match(/^before-last-(\d+)-messages$/);
   if (match) return parseInt(match[1], 10);
 
-  throw new Error(`[context-chef] Unrecognized toolCalls compact mode: "${mode}"`);
+  throw new Error(
+    `[context-chef] Unrecognized toolCalls compact mode: "${mode}". ` +
+      `Valid modes: 'none', 'all', 'before-last-message', 'before-last-N-messages' ` +
+      `(replace N with a positive integer, e.g. 'before-last-3-messages').`,
+  );
 }

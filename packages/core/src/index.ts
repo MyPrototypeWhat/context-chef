@@ -553,7 +553,12 @@ export class ContextChef {
    */
   public getMemory(): Memory {
     if (!this.memory) {
-      throw new Error('ContextChef: getMemory() requires a memoryStore in ChefConfig.');
+      throw new Error(
+        'ContextChef.getMemory() called but no memory config was provided. ' +
+          'Pass `memory: { store: ... }` to the ContextChef constructor — ' +
+          'see the Memory section in the README for store options ' +
+          '(InMemoryStore, VFSMemoryStore, or your own MemoryStore implementation).',
+      );
     }
     return this.memory;
   }

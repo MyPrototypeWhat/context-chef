@@ -203,7 +203,10 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
 
     if (line[0] === ' ' || line[0] === '\t') {
       throw new Error(
-        `SKILL frontmatter parse error in ${filePath} (line ${i + 1}): indented values are not supported.`,
+        `SKILL frontmatter parse error in ${filePath} (line ${i + 1}): ` +
+          `indented values are not supported. ` +
+          `Use inline arrays (key: [a, b, c]) or quoted strings (key: "value") instead — ` +
+          `block scalars and nested mappings are intentionally rejected by this minimal parser.`,
       );
     }
 
@@ -258,12 +261,22 @@ function buildSkill(
 ): Skill {
   const name = data.name;
   if (typeof name !== 'string' || !name.trim()) {
-    throw new Error(`SKILL parse error in ${filePath}: missing required field "name".`);
+    throw new Error(
+      `SKILL parse error in ${filePath}: missing required field "name". ` +
+        `Add it to the frontmatter, e.g.:\n---\nname: my-skill\ndescription: ...\n---`,
+    );
   }
 
   const description = data.description;
   if (typeof description !== 'string' || !description.trim()) {
-    throw new Error(`SKILL parse error in ${filePath}: missing required field "description".`);
+    // Sanitize `name` for the example snippet: a literal `---` would close the
+    // frontmatter prematurely and produce a malformed example, and very long
+    // names dwarf the actionable hint.
+    const safeName = name.length > 40 || name.includes('---') ? 'my-skill' : name;
+    throw new Error(
+      `SKILL parse error in ${filePath}: missing required field "description". ` +
+        `Add it to the frontmatter, e.g.:\n---\nname: ${safeName}\ndescription: One-line summary of what this skill does.\n---`,
+    );
   }
 
   const skill: Skill = {

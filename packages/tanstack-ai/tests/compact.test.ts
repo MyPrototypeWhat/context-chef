@@ -10,6 +10,17 @@ function msg(
   return { role, content, ...extra };
 }
 
+describe('compactMessages — invalid mode rejection', () => {
+  it('lists all valid toolCalls modes when given an unknown one', () => {
+    expect(() =>
+      compactMessages([msg('user', 'q')], {
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing the type to exercise the runtime error
+        toolCalls: 'bogus' as any,
+      }),
+    ).toThrow(/Valid modes: 'none', 'all', 'before-last-message', 'before-last-N-messages'/);
+  });
+});
+
 describe('compactMessages', () => {
   describe('toolCalls', () => {
     const conversation: TanStackAIMessage[] = [

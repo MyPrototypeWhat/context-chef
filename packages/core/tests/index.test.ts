@@ -167,6 +167,17 @@ describe('ContextChef API', () => {
   });
 });
 
+describe('ContextChef.getMemory', () => {
+  it('throws an actionable error when no memory config was provided', () => {
+    const chef = new ContextChef();
+    // Locks two load-bearing pieces of the audit message: the correct config
+    // field name (`memory: { store: ... }`, NOT `memoryStore`), and at least
+    // one named built-in store implementation so the user has a starting point.
+    expect(() => chef.getMemory()).toThrow(/memory: \{ store/);
+    expect(() => chef.getMemory()).toThrow(/InMemoryStore/);
+  });
+});
+
 describe('ContextChef.checkToolCall', () => {
   it('should allow any tool when no blocklist is set', () => {
     const chef = new ContextChef();

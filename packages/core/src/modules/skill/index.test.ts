@@ -56,7 +56,39 @@ describe('loadSkill', () => {
     const filePath = join(tmp, 'SKILL.md');
     await writeFile(filePath, '---\ndescription: only desc\n---\nbody');
     try {
+      // Locks both the original problem-statement phrase AND the actionable
+      // example snippet added in the error-message audit.
       await expect(loadSkill(filePath)).rejects.toThrow(/missing required field "name"/);
+      await expect(loadSkill(filePath)).rejects.toThrow(/Add it to the frontmatter/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('embeds the parsed name into the missing-description example snippet', async () => {
+    const tmp = join(FIXTURES, '__tmp_missing_desc__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(filePath, '---\nname: my-cool-skill\n---\nbody');
+    try {
+      await expect(loadSkill(filePath)).rejects.toThrow(/missing required field "description"/);
+      // The example snippet should reuse the user's own name so the suggested
+      // fix slots cleanly into their existing file.
+      await expect(loadSkill(filePath)).rejects.toThrow(/name: my-cool-skill/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to "my-skill" in the missing-description snippet when name would produce a malformed example', async () => {
+    // A name of `---` would close the frontmatter mid-example; a 100-char
+    // name would dwarf the actionable info. Verify the sanitizer kicks in.
+    const tmp = join(FIXTURES, '__tmp_missing_desc_unsafe__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(filePath, '---\nname: ---\n---\nbody');
+    try {
+      await expect(loadSkill(filePath)).rejects.toThrow(/name: my-skill/);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
