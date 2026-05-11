@@ -1,5 +1,15 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.3.2
+
+### Patch Changes
+
+- [`135337d`](https://github.com/MyPrototypeWhat/context-chef/commit/135337d1d78616ec16ecc8067e5514d61f08af8d) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Tighten `tokenizer` option signature from `(messages: unknown[]) => number` to `(messages: Message[]) => number`.
+
+  The middleware always invokes the user-supplied tokenizer with `Message[]` (the core IR type) — the previous `unknown[]` was a leak in the public type, forcing callers to cast or narrow inside their tokenizer. The new signature matches the actual runtime contract and matches `@context-chef/core`'s `Janitor` config.
+
+  Type-only change; no runtime behavior change. Existing tokenizers typed as `(messages: unknown[]) => number` will continue to compile, but callers can now drop the cast and read `Message` fields directly.
+
 ## 1.3.1
 
 ### Patch Changes
