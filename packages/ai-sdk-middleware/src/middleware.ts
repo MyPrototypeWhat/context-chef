@@ -200,7 +200,7 @@ async function resolveSkillMessages(skill: ContextChefOptions['skill']): Promise
   const resolved = typeof skill === 'function' ? await skill() : skill;
   // Treat whitespace-only instructions as empty — they would otherwise pollute
   // the prompt and create a needless cache breakpoint between system and history.
-  if (!resolved || !resolved.instructions || !resolved.instructions.trim()) return [];
+  if (!resolved?.instructions?.trim()) return [];
   return [{ role: 'system', content: resolved.instructions }];
 }
 

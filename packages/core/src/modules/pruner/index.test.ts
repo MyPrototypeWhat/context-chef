@@ -544,3 +544,29 @@ describe('Pruner — Blocklist (Dispatch Gate)', () => {
     });
   });
 });
+
+// ─── Empty-registry error message fallbacks ───
+
+describe('Pruner — empty-registry error fallbacks', () => {
+  it('extractToolkit: shows "(none)" when no toolkits are registered', () => {
+    const pruner = new Pruner();
+    expect(() => pruner.extractToolkit('Anything')).toThrow(/Available: \(none\)/);
+  });
+
+  it('resolveNamespace: shows "(none)" when no namespaces are registered', () => {
+    const pruner = new Pruner();
+    expect(() => pruner.resolveNamespace({ name: 'whatever', arguments: '{}' })).toThrow(
+      /Available: \(none\)/,
+    );
+  });
+
+  it('resolveNamespace (unknown action): shows "(none)" when the namespace has no tools', () => {
+    const pruner = new Pruner();
+    pruner.registerNamespaces([
+      { name: 'empty_ns', description: 'a namespace with no tools', tools: [] },
+    ]);
+    expect(() =>
+      pruner.resolveNamespace({ name: 'empty_ns', arguments: { action: 'foo' } }),
+    ).toThrow(/Available: \(none\)/);
+  });
+});

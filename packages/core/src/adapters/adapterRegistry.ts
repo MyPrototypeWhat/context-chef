@@ -50,8 +50,10 @@ export class AdapterRegistry {
   get(name: string): ITargetAdapter {
     const entry = this.adapters.get(name);
     if (!entry) {
+      const registered = this.list();
+      const registeredText = registered.length > 0 ? `[${registered.join(', ')}]` : '(none)';
       throw new Error(
-        `Unknown adapter target: "${name}". Registered: [${this.list().join(', ')}]. ` +
+        `Unknown adapter target: "${name}". Registered: ${registeredText}. ` +
           `Use adapterRegistry.register("${name}", ...) before chef.compile().`,
       );
     }

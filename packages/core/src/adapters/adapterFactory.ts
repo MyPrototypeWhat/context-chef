@@ -4,8 +4,8 @@ import { adapterRegistry } from './adapterRegistry';
 import './registerBuiltins';
 import type { ITargetAdapter } from './targetAdapter';
 
-export type { ITargetAdapter };
 export { AdapterRegistry, adapterRegistry } from './adapterRegistry';
+export type { ITargetAdapter };
 
 /**
  * Look up an adapter by target name. Thin wrapper over `adapterRegistry.get()`

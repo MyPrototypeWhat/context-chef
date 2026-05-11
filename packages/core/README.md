@@ -222,7 +222,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). See "Custom compression instructions" below. |
 | `onCompress`                    | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
-| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. `onBudgetExceeded` is the deprecated alias. |
+| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. See [`onBeforeCompress` hook](#onbeforecompress-hook) below for the deprecated `onBudgetExceeded` alias. |
 
 #### Compression Output Contract
 

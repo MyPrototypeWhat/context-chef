@@ -241,9 +241,8 @@ export class Pruner {
   public extractToolkit(toolkitName: string): ToolDefinition[] {
     const kit = this.lazyToolkits.find((k) => k.name.toLowerCase() === toolkitName.toLowerCase());
     if (!kit) {
-      throw new Error(
-        `Unknown toolkit: "${toolkitName}". Available: ${this.lazyToolkits.map((k) => k.name).join(', ')}`,
-      );
+      const available = this.lazyToolkits.map((k) => k.name).join(', ') || '(none)';
+      throw new Error(`Unknown toolkit: "${toolkitName}". Available: ${available}`);
     }
     return [...kit.tools];
   }
@@ -264,9 +263,8 @@ export class Pruner {
   }): ResolvedToolCall {
     const ns = this.namespaces.find((n) => n.name === toolCall.name);
     if (!ns) {
-      throw new Error(
-        `"${toolCall.name}" is not a registered namespace. Available: ${this.namespaces.map((n) => n.name).join(', ')}`,
-      );
+      const available = this.namespaces.map((n) => n.name).join(', ') || '(none)';
+      throw new Error(`"${toolCall.name}" is not a registered namespace. Available: ${available}`);
     }
 
     const parsed: { action?: unknown; args?: unknown } =
@@ -277,8 +275,9 @@ export class Pruner {
 
     const matchedTool = ns.tools.find((t) => t.name === action);
     if (!matchedTool) {
+      const available = ns.tools.map((t) => t.name).join(', ') || '(none)';
       throw new Error(
-        `Unknown action "${action}" in namespace "${ns.name}". Available: ${ns.tools.map((t) => t.name).join(', ')}`,
+        `Unknown action "${action}" in namespace "${ns.name}". Available: ${available}`,
       );
     }
 

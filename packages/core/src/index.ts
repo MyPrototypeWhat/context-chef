@@ -194,7 +194,7 @@ export interface ChefConfig {
   defaultTarget?: TargetProvider | ITargetAdapter;
 }
 
-export type { GuardrailOptions, ToolGroup, CompiledTools, ResolvedToolCall, DynamicStatePlacement };
+export type { CompiledTools, DynamicStatePlacement, GuardrailOptions, ResolvedToolCall, ToolGroup };
 
 /**
  * Unified event map for ContextChef lifecycle notifications.

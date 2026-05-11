@@ -488,7 +488,7 @@ export class Janitor {
 
       if (clearToolResult && msg.role === 'tool') {
         // Skip (preserve) if this index is in the keepRecent set
-        if (!toolResultSkipSet || !toolResultSkipSet.has(idx)) {
+        if (!toolResultSkipSet?.has(idx)) {
           result = { ...result, content: '[Old tool result content cleared]' };
         }
       }

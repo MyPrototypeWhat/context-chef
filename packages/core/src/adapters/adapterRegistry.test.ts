@@ -44,6 +44,13 @@ describe('AdapterRegistry — instance', () => {
     expect(() => registry.get('missing')).toThrow(/\[a, b\]/);
   });
 
+  it('get shows "(none)" instead of "[]" when no adapters are registered', () => {
+    // Matches the (none) fallback used by Pruner.extractToolkit / resolveNamespace
+    // and ContextChef.activateSkill, so empty-registry errors read uniformly
+    // across the codebase.
+    expect(() => registry.get('anything')).toThrow(/Registered: \(none\)/);
+  });
+
   it('has reflects current state', () => {
     expect(registry.has('a')).toBe(false);
     registry.register('a', makeStubAdapter('a'));
