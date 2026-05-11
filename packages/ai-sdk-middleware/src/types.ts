@@ -172,7 +172,7 @@ export interface ContextChefOptions {
    */
   skill?: Skill | (() => Skill | null | undefined | Promise<Skill | null | undefined>);
   /** Optional tokenizer for precise per-message token counting. */
-  tokenizer?: (messages: unknown[]) => number;
+  tokenizer?: (messages: Message[]) => number;
   /** Hook called after compression occurs. */
   onCompress?: (summary: string, truncatedCount: number) => void;
   /**
