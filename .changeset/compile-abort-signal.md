@@ -1,5 +1,5 @@
 ---
-'@context-chef/core': minor
+'@context-chef/core': patch
 ---
 
 Add `AbortSignal` support to `compile()` and event handlers (T2.4).
