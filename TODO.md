@@ -482,13 +482,101 @@ Edge case to handle correctly: **redacted thinking is opaque encrypted content**
 
 ### T2.4 — `ChefEvents` handler signature with `AbortSignal`
 
-**Status**: Planned
-**ETA**: 1h
-**Files**: `packages/core/src/utils/eventEmitter.ts`, `index.ts`
+**Status**: ✅ Done (2026-05-14)
+**Files**: `packages/core/src/utils/eventEmitter.ts`, `packages/core/src/types/index.ts`, `packages/core/src/index.ts`, plus tests (`eventEmitter.test.ts` +3, `events.test.ts` +9), README + zh-CN README, core README
 
-Change `(event) => void | Promise<void>` to `(event, signal?: AbortSignal) => void | Promise<void>`. Handlers awaiting long operations (DB write in `compile:done`) can cooperatively cancel.
+`EventHandler<T>` now accepts `(payload: T, signal?: AbortSignal) => void | Promise<void>`. `TypedEventEmitter.emit()` takes an optional third `signal` argument and pass-through-forwards it to every handler — no short-circuit on `signal.aborted`, observability is preserved on cancel paths.
 
-**Reference**: pi `agent.ts:540` `for (const listener of this.listeners) await listener(event, signal);`
+`CompileOptions.signal?: AbortSignal` propagates the signal in two ways:
+
+1. **Stash + bridge**: `ContextChef._currentSignal` holds the in-flight signal so the Janitor `onCompress` / Memory `onMemoryChanged` / Memory `onMemoryExpired` event-bridge closures (constructed once at chef creation) can forward it on every `emit()` during the current compile. Cleared in a `finally` block. Memory events from external `memory().set()` / `delete()` (outside compile) receive `signal: undefined`.
+2. **Phase-boundary checks**: `signal?.throwIfAborted()` runs after `compile:start`, after Janitor compress, after `onBeforeCompile`, and after `transformContext`. `compile:start` fires before the first abort check by design — observers may see a `compile:start` for a compile that throws without firing `compile:done`.
+
+All 6 typed `compile()` overloads now accept `signal?: AbortSignal` alongside `target`. Existing handler signatures keep working — the second argument is optional and ignored by handlers that don't declare it.
+
+**Verification**: `pnpm lint` ✅ · `pnpm -r run typecheck` ✅ · `pnpm -r run test` ✅ (737 tests; +12 new — 3 eventEmitter signal pass-through, 9 compile cancellation)
+
+**Reference**: pi `agent.ts:540` `for (const listener of this.listeners) await listener(event, signal);` — same pass-through semantics; we additionally honor `throwIfAborted()` at compile() phase boundaries based on user choice.
+
+---
+
+### T2.4.1 — `compile()` Concurrency Safety (Snapshot + Serialize)
+
+**Status**: Planned (queued from T2.4 self-review on 2026-05-14)
+**Priority**: High — concurrency hazard exists in current code; users hitting it will see silent data corruption, not errors
+**Estimated scope**: ~80 LOC implementation + ~120 LOC tests + ~30 LOC docs ≈ 230-line diff
+**Files**: `packages/core/src/index.ts`, `packages/core/tests/concurrency.test.ts` (new), README + zh-CN + core README
+
+**Problem.** `compile()` reads and mutates instance state across `await` points. Concurrent calls on the same chef instance corrupt each other:
+
+| State | Mutation source | compile() touch | Hazard |
+|---|---|---|---|
+| `systemPrompt` / `history` / `dynamicState*` | `setX` setters | reads at multiple steps | Stale read mid-compile |
+| `_currentSignal` | compile() entry/finally | event bridges | Signal clobbering across overlapping compiles |
+| `_activeSkill` / `_skillInstructions` | `activateSkill()` | step 5b + payload meta | Skill switches mid-compile, output inconsistent |
+| `memory` KV + `turnCount` | `set` / `delete` / `sweep` / `advanceTurn` | step 4-5 | Turn double-advance, KV race, TTL pollution |
+| `janitor._consecutiveFailures` | `compress()` | step 1 | Circuit breaker counter races |
+
+**Recommended design (B): Snapshot + Serialize.**
+
+```typescript
+private _compileQueue: Promise<unknown> = Promise.resolve();
+
+interface CompileSnapshot {
+  systemPrompt: Message[];
+  history: Message[];
+  dynamicState: Message[];
+  dynamicStatePlacement: DynamicStatePlacement;
+  dynamicStateXml: string;
+  activeSkill: Skill | undefined;
+  skillInstructions: string;
+}
+
+async compile(options?: CompileOptions): Promise<TargetPayload> {
+  options?.signal?.throwIfAborted();         // pre-queue check
+  const snapshot: CompileSnapshot = {
+    systemPrompt: [...this.systemPrompt],
+    history: [...this.history],
+    dynamicState: [...this.dynamicState],
+    dynamicStatePlacement: this.dynamicStatePlacement,
+    dynamicStateXml: this.dynamicStateXml,
+    activeSkill: this._activeSkill,
+    skillInstructions: this._skillInstructions,
+  };
+  const myTurn = this._compileQueue.then(async () => {
+    options?.signal?.throwIfAborted();       // post-queue, pre-execute check
+    return this._compileImpl(options, snapshot);
+  });
+  // Failure isolation — one rejected compile must not poison the queue
+  this._compileQueue = myTurn.then(() => undefined, () => undefined);
+  return myTurn;
+}
+```
+
+**Key semantics:**
+- **Snapshot at call time** (not execution time) for simple value-type inputs (history, system prompt, dynamic state, skill). Mental model: "what you set is what gets compiled, regardless of subsequent mutations."
+- **Memory and Janitor state intentionally NOT snapshot** — these have cross-compile accumulation semantics (turn counter is a logical clock; circuit breaker counts failures across attempts). Snapshotting would be wrong.
+- **Serialization** ensures Memory/Janitor mutations during one compile are visible to the next, in the natural order.
+- **Failure isolation** — rejected compile clears via `.then(noop, noop)`, so the next queued call still runs.
+
+**Alternatives rejected:**
+- **A. Auto-serialize, no snapshot** (~10 LOC) — solves Memory/Janitor races, but queued compiles read `this.X` at execution time, so a `setHistory()` between calls "time-travels" into earlier queued compiles. Reverse-debugging nightmare in production.
+- **C. Detect-and-throw** (~5 LOC) — fail-fast `if (this._inflight) throw`. Honest but anti-pattern; pushes lock management onto users. Library should "just work."
+
+**Tests required:**
+- Two concurrent compiles serialize and both succeed
+- Snapshot semantics: `setHistory(h2)` between two `compile()` calls → first sees h1, second sees h2
+- Failure isolation: rejected compile does not block subsequent compiles
+- Signal abort while waiting in queue throws immediately (no execution)
+- Memory turn counter advances exactly once per compile (not per call)
+- Skill switches between calls: each compile sees the skill that was active at its call time
+
+**Documentation impact:**
+- Add "Concurrency" subsection to README under Cancellation
+- JSDoc on `compile()` explaining serialization + snapshot semantics
+- Note that Memory/Janitor state is shared (not snapshot) by design
+
+**Why not bundle into T2.4:** T2.4 was a clean +12-test addition to existing event semantics. Concurrency safety is an architectural change that touches compile()'s execution model. Better as its own changeset entry so users understand both the hazard fix and the new semantics. Per `feedback_bundle_small_patches`, this is a real bugfix that justifies its own release.
 
 ---
 

@@ -647,6 +647,41 @@ chef.on("memory:changed", ({ type, key, value }) => {
 
 事件与现有 config 回调共存：如果在 `JanitorConfig` 中配置了 `onCompress`，它会先触发，然后再 emit `compress` 事件。
 
+#### 取消 —— `compile({ signal })`
+
+向 `compile()` 传入 `AbortSignal`，可取消进行中的 compile，并把 signal 透传给该次调用期间所有触发的事件 handler。
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000); // 5 秒硬超时
+
+chef.on("compile:done", async ({ payload }, signal) => {
+  // signal === controller.signal，转给慢异步操作
+  await db.write(payload, { signal });
+  await metrics.report(payload, { signal });
+});
+
+try {
+  await chef.compile({ target: "openai", signal: controller.signal });
+} catch (err) {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    // compile 在 Janitor / onBeforeCompile / transformContext 边界被取消
+  }
+  throw err;
+}
+```
+
+两个作用：
+
+1. **透传给 handler** —— `chef.on(event, (payload, signal?) => ...)` 第二个参数即 signal。handler 可把它转给 `fetch`、DB 客户端、Anthropic SDK 等支持协作取消的 API。
+2. **compile() 阶段边界检查** —— Janitor 压缩后、`onBeforeCompile` 后、`transformContext` 后均会检查；命中即通过 `signal.throwIfAborted()` 抛出。
+
+`compile:start` 在第一次 abort 检查之前触发，所以观察者可能收到一个最终抛 AbortError 而没有 `compile:done` 的 compile 调用。从 `memory().set()` / `delete()` 这类**外部**调用触发的 memory 事件，signal 为 `undefined`。
+
+<!-- TODO T2.4.1 — 等并发安全 compile() 落地后再放开，或行为变化时移除
+> **⚠️ `compile()` 当前不是并发安全的。** 同一个 chef 实例上并发两次 `compile()` 会互相破坏状态 —— signal 会被覆盖、memory 轮次会双进、active skill / history 读取会交错。请按实例串行调用（`await chef.compile(); await chef.compile();`），或为并发任务创建独立 chef 实例。Snapshot+serialize 支持已规划（见 `TODO.md` T2.4.1）。
+-->
+
 ---
 
 ### `onBeforeCompile` 钩子

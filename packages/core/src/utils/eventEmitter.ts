@@ -1,4 +1,4 @@
-export type EventHandler<T> = (payload: T) => void | Promise<void>;
+export type EventHandler<T> = (payload: T, signal?: AbortSignal) => void | Promise<void>;
 
 /**
  * Minimal, type-safe event emitter for internal use.
@@ -29,7 +29,20 @@ export class TypedEventEmitter<Events extends { [K in keyof Events]: unknown }> 
     return this;
   }
 
-  async emit<K extends keyof Events>(event: K, payload: Events[K]): Promise<void> {
+  /**
+   * Emit an event to all subscribed handlers, sequentially awaiting each.
+   *
+   * Pass-through semantics: when `signal` is provided, it is forwarded to every
+   * handler as the second argument. The emitter does NOT pre-check
+   * `signal.aborted` and does NOT short-circuit the iteration when a handler
+   * fires after abort — observability is preserved on cancel paths.
+   * Cooperative cancellation is the handler's responsibility.
+   */
+  async emit<K extends keyof Events>(
+    event: K,
+    payload: Events[K],
+    signal?: AbortSignal,
+  ): Promise<void> {
     const set = this.listeners.get(event);
     if (!set) return;
     for (const handler of set) {
@@ -37,7 +50,7 @@ export class TypedEventEmitter<Events extends { [K in keyof Events]: unknown }> 
       // put specific types into the set, but to call them with a real payload
       // we need to widen back to the specific event type. Runtime is safe
       // because on() only ever adds handlers matching their event's type.
-      await (handler as EventHandler<Events[K]>)(payload);
+      await (handler as EventHandler<Events[K]>)(payload, signal);
     }
   }
 }

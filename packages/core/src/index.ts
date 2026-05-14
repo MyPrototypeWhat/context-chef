@@ -241,6 +241,15 @@ export class ContextChef {
   private defaultTarget?: TargetProvider | ITargetAdapter;
   private emitter = new TypedEventEmitter<ChefEvents>();
 
+  /**
+   * Cancellation signal for the in-flight compile() call. Set in compile()
+   * entry, cleared in finally. Exposed only to event-bridge closures (Janitor
+   * onCompress, Memory onMemoryChanged / onMemoryExpired) so events fired
+   * during compile() receive the caller's AbortSignal even though those bridges
+   * are constructed once at chef creation time. Null outside compile().
+   */
+  private _currentSignal?: AbortSignal;
+
   private systemPrompt: Message[] = [];
   private history: Message[] = [];
   private dynamicState: Message[] = [];
@@ -268,7 +277,7 @@ export class ContextChef {
       ...janitorConfig,
       onCompress: async (summary, truncatedCount) => {
         if (userOnCompress) await userOnCompress(summary, truncatedCount);
-        await this.emitter.emit('compress', { summary, truncatedCount });
+        await this.emitter.emit('compress', { summary, truncatedCount }, this._currentSignal);
       },
     });
 
@@ -280,11 +289,11 @@ export class ContextChef {
         ...config.memory,
         onMemoryChanged: async (event) => {
           if (userOnChanged) await userOnChanged(event);
-          await this.emitter.emit('memory:changed', event);
+          await this.emitter.emit('memory:changed', event, this._currentSignal);
         },
         onMemoryExpired: async (entry) => {
           if (userOnExpired) await userOnExpired(entry);
-          await this.emitter.emit('memory:expired', entry);
+          await this.emitter.emit('memory:expired', entry, this._currentSignal);
         },
       });
     } else {
@@ -297,13 +306,20 @@ export class ContextChef {
   /**
    * Subscribe to a lifecycle event.
    *
+   * Handlers receive an optional `AbortSignal` as the second argument when the
+   * event was triggered by a `compile({ signal })` call. Long-running async work
+   * inside a handler should forward this signal to honor cooperative cancellation
+   * (fetch, DB clients, Anthropic SDK all accept `signal`). Memory events fired
+   * outside of compile() (from direct `memory().set()` / `delete()`) get
+   * `signal: undefined`.
+   *
    * @example
    * chef.on('compress', ({ summary, truncatedCount }) => {
    *   console.log(`Compressed ${truncatedCount} messages`);
    * });
    *
-   * chef.on('compile:done', ({ payload }) => {
-   *   metrics.track('compile', { messageCount: payload.messages.length });
+   * chef.on('compile:done', async ({ payload }, signal) => {
+   *   await db.write(payload, { signal });
    * });
    */
   public on<K extends keyof ChefEvents>(event: K, handler: EventHandler<ChefEvents[K]>): this {
@@ -721,106 +737,146 @@ export class ContextChef {
    *   1. `options.target` — per-call override (string name or `ITargetAdapter` instance)
    *   2. `ChefConfig.defaultTarget` — instance-wide default set at construction
    *   3. `'openai'` — final built-in fallback (kept for backward compatibility)
+   *
+   * **Concurrency: not safe.** compile() reads and mutates instance state
+   * (`_currentSignal`, memory turn counter, janitor circuit breaker, skill
+   * fields, history/system/dynamic state references) across `await` points.
+   * Two compile() calls running concurrently on the same chef instance will
+   * corrupt each other. Serialize per chef instance, or create separate
+   * instances for parallel work. Snapshot+serialize is planned (TODO.md T2.4.1).
    */
-  public async compile(options: { target: 'openai' }): Promise<OpenAIPayload>;
-  public async compile(options: { target: 'anthropic' }): Promise<AnthropicPayload>;
-  public async compile(options: { target: 'gemini' }): Promise<GeminiPayload>;
-  public async compile(options: { target: ITargetAdapter }): Promise<TargetPayload>;
-  public async compile(options: { target: string }): Promise<TargetPayload>;
+  public async compile(options: { target: 'openai'; signal?: AbortSignal }): Promise<OpenAIPayload>;
+  public async compile(options: {
+    target: 'anthropic';
+    signal?: AbortSignal;
+  }): Promise<AnthropicPayload>;
+  public async compile(options: { target: 'gemini'; signal?: AbortSignal }): Promise<GeminiPayload>;
+  public async compile(options: {
+    target: ITargetAdapter;
+    signal?: AbortSignal;
+  }): Promise<TargetPayload>;
+  public async compile(options: { target: string; signal?: AbortSignal }): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload> {
-    // 0. Emit compile:start
-    await this.emitter.emit('compile:start', {
-      systemPrompt: this.systemPrompt,
-      history: this.history,
-    });
-
-    // 1. Janitor: Compress history if needed
-    const compressedHistory = await this.janitor.compress(this.history);
-
-    // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
-    let implicitContextXml = '';
-    if (this.onBeforeCompile) {
-      const injected = await this.onBeforeCompile({
-        systemPrompt: this.systemPrompt,
-        history: compressedHistory,
-        dynamicState: this.dynamicState,
-        dynamicStateXml: this.dynamicStateXml,
-      });
-      if (injected) {
-        implicitContextXml = `<implicit_context>\n${injected}\n</implicit_context>`;
-      }
-    }
-
-    // 3. For system placement, append implicit_context directly to the dynamic state message
-    //    (Assembler only handles last_user injection)
-    let dynamicState = this.dynamicState;
-    if (implicitContextXml && this.dynamicStatePlacement === 'system' && dynamicState.length > 0) {
-      dynamicState = dynamicState.map((msg) =>
-        msg.content.includes('CURRENT TASK STATE')
-          ? { ...msg, content: `${msg.content}\n${implicitContextXml}` }
-          : msg,
+    const signal = options?.signal;
+    // Stash signal so event-bridge closures (Janitor.onCompress, Memory.onMemoryChanged,
+    // Memory.onMemoryExpired) can forward it to handlers. Cleared in finally.
+    this._currentSignal = signal;
+    try {
+      // 0. Emit compile:start (unconditional — observers may want to log even
+      //    aborted compiles. throwIfAborted runs immediately after so the
+      //    expensive Janitor phase is skipped on a pre-aborted signal.)
+      await this.emitter.emit(
+        'compile:start',
+        {
+          systemPrompt: this.systemPrompt,
+          history: this.history,
+        },
+        signal,
       );
+      signal?.throwIfAborted();
+
+      // 1. Janitor: Compress history if needed
+      const compressedHistory = await this.janitor.compress(this.history);
+      signal?.throwIfAborted();
+
+      // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
+      let implicitContextXml = '';
+      if (this.onBeforeCompile) {
+        const injected = await this.onBeforeCompile({
+          systemPrompt: this.systemPrompt,
+          history: compressedHistory,
+          dynamicState: this.dynamicState,
+          dynamicStateXml: this.dynamicStateXml,
+        });
+        if (injected) {
+          implicitContextXml = `<implicit_context>\n${injected}\n</implicit_context>`;
+        }
+      }
+      signal?.throwIfAborted();
+
+      // 3. For system placement, append implicit_context directly to the dynamic state message
+      //    (Assembler only handles last_user injection)
+      let dynamicState = this.dynamicState;
+      if (
+        implicitContextXml &&
+        this.dynamicStatePlacement === 'system' &&
+        dynamicState.length > 0
+      ) {
+        dynamicState = dynamicState.map((msg) =>
+          msg.content.includes('CURRENT TASK STATE')
+            ? { ...msg, content: `${msg.content}\n${implicitContextXml}` }
+            : msg,
+        );
+      }
+
+      // 4. Memory: sweep expired entries, then advance turn counter
+      let memoryExpiredKeys: string[] = [];
+      let injectedMemoryKeys: string[] = [];
+      if (this.memory) {
+        memoryExpiredKeys = await this.memory.sweepExpired();
+        this.memory.advanceTurn();
+      }
+      // sweepExpired() awaits per-entry onMemoryExpired hooks, so handler
+      // latency adds up before the next throwIfAborted at step 7. Caveat:
+      // turn counter has already advanced; aborting here means TTL state
+      // diverges from payload state. Documented in CompileOptions.signal.
+      signal?.throwIfAborted();
+
+      // 5. Core Memory injection (between systemPrompt and history)
+      const memoryMessages = await this._getMemoryMessages();
+      if (this.memory) {
+        injectedMemoryKeys = (await this.memory.getSelectedEntries()).map((e) => e.key);
+      }
+
+      // 5b. Skill instructions slot — single dedicated system message between
+      //     userSystemPrompt and memoryMessages. NOT appended to user system
+      //     so the cache breakpoint stays clean and LLM attribution is direct.
+      const skillMessages: Message[] =
+        this._skillInstructions.length > 0
+          ? [{ role: 'system', content: this._skillInstructions }]
+          : [];
+
+      // 6. Sandwich assembly
+      let messages = [
+        ...this.systemPrompt,
+        ...skillMessages,
+        ...memoryMessages,
+        ...compressedHistory,
+        ...dynamicState,
+      ];
+
+      // 7. Transform hook
+      if (this.transformContext) {
+        messages = await this.transformContext(messages);
+      }
+      signal?.throwIfAborted();
+
+      // 8. Assembler: Dynamic state injection (if last_user) + deterministic key ordering
+      const stitchXml = [this.dynamicStateXml, implicitContextXml].filter(Boolean).join('\n');
+      const rawPayload = this.assembler.compile(messages, {
+        dynamicStateXml: stitchXml || undefined,
+        placement: this.dynamicStatePlacement,
+      });
+
+      const target = options?.target ?? this.defaultTarget ?? 'openai';
+      const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
+      const adapterPayload = adapter.compile([...rawPayload.messages]);
+
+      const prunerTools = this._getPrunerTools();
+      const memoryTools = this.memory ? await this.memory.getToolDefinitions() : [];
+      const tools = [...prunerTools, ...memoryTools];
+      const meta: CompileMeta = { injectedMemoryKeys, memoryExpiredKeys };
+      if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;
+      const payload: TargetPayload = { ...adapterPayload, meta };
+      if (tools.length > 0) payload.tools = tools;
+
+      // 9. Emit compile:done
+      await this.emitter.emit('compile:done', { payload }, signal);
+
+      return payload;
+    } finally {
+      this._currentSignal = undefined;
     }
-
-    // 4. Memory: sweep expired entries, then advance turn counter
-    let memoryExpiredKeys: string[] = [];
-    let injectedMemoryKeys: string[] = [];
-    if (this.memory) {
-      memoryExpiredKeys = await this.memory.sweepExpired();
-      this.memory.advanceTurn();
-    }
-
-    // 5. Core Memory injection (between systemPrompt and history)
-    const memoryMessages = await this._getMemoryMessages();
-    if (this.memory) {
-      injectedMemoryKeys = (await this.memory.getSelectedEntries()).map((e) => e.key);
-    }
-
-    // 5b. Skill instructions slot — single dedicated system message between
-    //     userSystemPrompt and memoryMessages. NOT appended to user system
-    //     so the cache breakpoint stays clean and LLM attribution is direct.
-    const skillMessages: Message[] =
-      this._skillInstructions.length > 0
-        ? [{ role: 'system', content: this._skillInstructions }]
-        : [];
-
-    // 6. Sandwich assembly
-    let messages = [
-      ...this.systemPrompt,
-      ...skillMessages,
-      ...memoryMessages,
-      ...compressedHistory,
-      ...dynamicState,
-    ];
-
-    // 7. Transform hook
-    if (this.transformContext) {
-      messages = await this.transformContext(messages);
-    }
-
-    // 8. Assembler: Dynamic state injection (if last_user) + deterministic key ordering
-    const stitchXml = [this.dynamicStateXml, implicitContextXml].filter(Boolean).join('\n');
-    const rawPayload = this.assembler.compile(messages, {
-      dynamicStateXml: stitchXml || undefined,
-      placement: this.dynamicStatePlacement,
-    });
-
-    const target = options?.target ?? this.defaultTarget ?? 'openai';
-    const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
-    const adapterPayload = adapter.compile([...rawPayload.messages]);
-
-    const prunerTools = this._getPrunerTools();
-    const memoryTools = this.memory ? await this.memory.getToolDefinitions() : [];
-    const tools = [...prunerTools, ...memoryTools];
-    const meta: CompileMeta = { injectedMemoryKeys, memoryExpiredKeys };
-    if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;
-    const payload: TargetPayload = { ...adapterPayload, meta };
-    if (tools.length > 0) payload.tools = tools;
-
-    // 9. Emit compile:done
-    await this.emitter.emit('compile:done', { payload });
-
-    return payload;
   }
 }

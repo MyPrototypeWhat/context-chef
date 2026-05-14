@@ -15,7 +15,7 @@ describe('TypedEventEmitter', () => {
     await emitter.emit('hello', { name: 'world' });
 
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(handler).toHaveBeenCalledWith({ name: 'world' });
+    expect(handler).toHaveBeenCalledWith({ name: 'world' }, undefined);
   });
 
   it('supports multiple handlers on the same event', async () => {
@@ -102,5 +102,49 @@ describe('TypedEventEmitter', () => {
     const emitter = new TypedEventEmitter<TestEvents>();
     const result = emitter.off('hello', () => {});
     expect(result).toBe(emitter);
+  });
+
+  // ───── signal pass-through ─────
+
+  it('forwards AbortSignal as the second argument when provided', async () => {
+    const emitter = new TypedEventEmitter<TestEvents>();
+    const handler = vi.fn();
+    const controller = new AbortController();
+
+    emitter.on('hello', handler);
+    await emitter.emit('hello', { name: 'world' }, controller.signal);
+
+    expect(handler).toHaveBeenCalledWith({ name: 'world' }, controller.signal);
+  });
+
+  it('passes signal: undefined when no signal is supplied', async () => {
+    const emitter = new TypedEventEmitter<TestEvents>();
+    const handler = vi.fn();
+
+    emitter.on('hello', handler);
+    await emitter.emit('hello', { name: 'world' });
+
+    expect(handler).toHaveBeenCalledWith({ name: 'world' }, undefined);
+  });
+
+  it('does NOT short-circuit remaining handlers when signal aborts mid-iteration', async () => {
+    // Pure pass-through semantics: emit() never decides whether to skip handlers.
+    const emitter = new TypedEventEmitter<TestEvents>();
+    const controller = new AbortController();
+    const calls: number[] = [];
+
+    emitter.on('count', ({ n }) => {
+      calls.push(n);
+      controller.abort(); // abort after first handler
+    });
+    emitter.on('count', ({ n }, signal) => {
+      calls.push(n * 10);
+      // second handler still receives the (now-aborted) signal — its choice to honor
+      expect(signal?.aborted).toBe(true);
+    });
+
+    await emitter.emit('count', { n: 1 }, controller.signal);
+
+    expect(calls).toEqual([1, 10]);
   });
 });

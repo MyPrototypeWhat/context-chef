@@ -278,3 +278,159 @@ describe('ContextChef events — off', () => {
     expect(result).toBe(chef);
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// compile({ signal }) — cancellation
+// ═══════════════════════════════════════════════════════
+
+describe('ContextChef events — compile({ signal }) cancellation', () => {
+  it('forwards signal to compile:start and compile:done handlers', async () => {
+    const chef = new ContextChef();
+    const startHandler = vi.fn();
+    const doneHandler = vi.fn();
+    const controller = new AbortController();
+
+    chef.on('compile:start', startHandler);
+    chef.on('compile:done', doneHandler);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+
+    await chef.compile({ target: 'openai', signal: controller.signal });
+
+    expect(startHandler.mock.calls[0][1]).toBe(controller.signal);
+    expect(doneHandler.mock.calls[0][1]).toBe(controller.signal);
+  });
+
+  it('handlers receive signal: undefined when no signal supplied', async () => {
+    const chef = new ContextChef();
+    const handler = vi.fn();
+
+    chef.on('compile:done', handler);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+
+    await chef.compile({ target: 'openai' });
+
+    expect(handler.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('throws AbortError when signal is pre-aborted (after compile:start fires)', async () => {
+    const chef = new ContextChef();
+    const startHandler = vi.fn();
+    const doneHandler = vi.fn();
+    const controller = new AbortController();
+    controller.abort();
+
+    chef.on('compile:start', startHandler);
+    chef.on('compile:done', doneHandler);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+
+    await expect(chef.compile({ target: 'openai', signal: controller.signal })).rejects.toThrow(
+      /aborted/i,
+    );
+
+    // compile:start fires before the abort check — observers still see it
+    expect(startHandler).toHaveBeenCalledTimes(1);
+    // compile:done is skipped on abort
+    expect(doneHandler).not.toHaveBeenCalled();
+  });
+
+  it('throws AbortError when signal aborts during onBeforeCompile', async () => {
+    const controller = new AbortController();
+    const doneHandler = vi.fn();
+    const chef = new ContextChef({
+      onBeforeCompile: async () => {
+        controller.abort(); // abort mid-compile
+        return null;
+      },
+    });
+
+    chef.on('compile:done', doneHandler);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+
+    await expect(chef.compile({ target: 'openai', signal: controller.signal })).rejects.toThrow(
+      /aborted/i,
+    );
+    expect(doneHandler).not.toHaveBeenCalled();
+  });
+
+  it('memory:changed during compile receives the signal', async () => {
+    const handler = vi.fn();
+    const controller = new AbortController();
+    const chef = new ContextChef({
+      memory: { store: new InMemoryStore(), defaultTTL: 1 },
+    });
+
+    await chef.getMemory().set('temp', 'will expire');
+    chef.on('memory:expired', handler);
+
+    chef.setSystemPrompt([{ role: 'system', content: 'sys' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+
+    // Two compiles to advance past TTL=1
+    await chef.compile({ target: 'openai', signal: controller.signal });
+    await chef.compile({ target: 'openai', signal: controller.signal });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    // Second arg should be the signal we passed
+    expect(handler.mock.calls[0][1]).toBe(controller.signal);
+  });
+
+  it('memory:changed from external set() (outside compile) gets signal: undefined', async () => {
+    const handler = vi.fn();
+    const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
+
+    chef.on('memory:changed', handler);
+    await chef.getMemory().set('key', 'val');
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('clears _currentSignal after compile() — subsequent external memory event has no signal', async () => {
+    const handler = vi.fn();
+    const controller = new AbortController();
+    const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
+
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+    await chef.compile({ target: 'openai', signal: controller.signal });
+
+    chef.on('memory:changed', handler);
+    await chef.getMemory().set('key', 'val'); // external — should NOT see the prior signal
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('clears _currentSignal even when compile() throws', async () => {
+    const handler = vi.fn();
+    const controller = new AbortController();
+    controller.abort();
+    const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
+
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+    await expect(chef.compile({ target: 'openai', signal: controller.signal })).rejects.toThrow();
+
+    chef.on('memory:changed', handler);
+    await chef.getMemory().set('key', 'val'); // signal should be cleared by finally
+
+    expect(handler.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('compress event receives the signal', async () => {
+    const handler = vi.fn();
+    const controller = new AbortController();
+    const chef = new ContextChef({
+      janitor: {
+        contextWindow: 30,
+        tokenizer: makeTokenizer(10),
+        compressionModel: async () => '<history_summary>S</history_summary>',
+      },
+    });
+
+    chef.on('compress', handler);
+    chef.setHistory(buildHistory(5));
+    await chef.compile({ target: 'openai', signal: controller.signal });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][1]).toBe(controller.signal);
+  });
+});

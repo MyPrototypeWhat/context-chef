@@ -728,6 +728,35 @@ Events are **observation-only** — they don't affect control flow. Intercept ho
 
 Events coexist with existing config callbacks: if you provide `onCompress` in `JanitorConfig`, it fires first, then the `compress` event is emitted.
 
+#### Cancellation — `compile({ signal })`
+
+Pass an `AbortSignal` to `compile()` to cancel an in-flight compile and propagate the signal to all event handlers fired during that call.
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000); // hard 5s budget
+
+chef.on('compile:done', async ({ payload }, signal) => {
+  // signal === controller.signal — forward it to slow async work
+  await db.write(payload, { signal });
+});
+
+try {
+  await chef.compile({ target: 'openai', signal: controller.signal });
+} catch (err) {
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    // compile was cancelled at the Janitor / onBeforeCompile / transformContext boundary
+  }
+  throw err;
+}
+```
+
+Two effects: (1) signal forwarded to every handler as the second argument; (2) `compile()` itself calls `signal.throwIfAborted()` after Janitor compress, after `onBeforeCompile`, and after `transformContext`. `compile:start` fires before the first abort check, so observers may receive a `compile:start` for a compile that ultimately throws without firing `compile:done`. Memory events from external `memory().set()` / `delete()` (outside `compile()`) get `signal: undefined`.
+
+<!-- TODO T2.4.1 — uncomment when concurrency-safe `compile()` ships, or remove this warning if behavior changes
+> **⚠️ `compile()` is not currently concurrency-safe.** Concurrent calls on the same chef instance will corrupt each other's state (signal clobbering, memory turn double-advance, interleaved skill/history reads). Serialize per chef instance or use separate instances for parallel work. Snapshot+serialize support is planned (see `TODO.md` T2.4.1).
+-->
+
 ---
 
 ### `onBeforeCompile` Hook

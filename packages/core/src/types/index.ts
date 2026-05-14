@@ -165,6 +165,37 @@ export interface CompileOptions {
    * Falls back to `ChefConfig.defaultTarget`, then to `'openai'`, when omitted.
    */
   target?: TargetProvider | ITargetAdapter;
+  /**
+   * Cooperative cancellation signal for this compile() call.
+   *
+   * Two effects:
+   * 1. Forwarded to every `chef.on(event, handler)` handler as the second
+   *    argument so observers can short-circuit slow async work (DB writes,
+   *    metric exports, fetch calls).
+   * 2. Checked at internal phase boundaries (after `compile:start`, after
+   *    Janitor compress, after `onBeforeCompile`, after memory sweep, after
+   *    `transformContext`). When `signal.aborted` becomes true at a boundary,
+   *    compile() throws via `signal.throwIfAborted()` (DOMException with
+   *    `name: 'AbortError'`).
+   *
+   * Signal is also threaded into `memory:changed` / `memory:expired` events
+   * fired during this compile(). Memory events emitted from external
+   * `memory().set()` / `memory().delete()` calls outside of compile() receive
+   * `signal: undefined`.
+   *
+   * Caveats:
+   * - **`compile:start` is emitted before any abort check**, so observers may
+   *   still receive a `compile:start` event for a compile() call that
+   *   ultimately throws AbortError without emitting `compile:done`.
+   * - **Memory turn counter advances at step 4 (before step 7 boundary)**, so
+   *   aborting after step 4 leaves `Memory.turnCount` advanced even though no
+   *   payload was produced. Subsequent compiles continue from the advanced
+   *   turn — TTL-based entries may expire one turn earlier than expected.
+   * - **Cancellation is coarse-grained.** Long-running phases (`Janitor.compress`,
+   *   user-supplied `onBeforeCompile` / `transformContext`) run to completion;
+   *   abort is only honored at the next phase boundary.
+   */
+  signal?: AbortSignal;
 }
 
 // ─── Compile metadata ───

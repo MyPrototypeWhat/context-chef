@@ -705,6 +705,41 @@ Events are **observation-only** — they don't affect control flow. Intercept ho
 
 Events coexist with existing config callbacks: if you provide `onCompress` in `JanitorConfig`, it fires first, then the `compress` event is emitted.
 
+#### Cancellation — `compile({ signal })`
+
+Pass an `AbortSignal` to `compile()` to cancel an in-flight compile and propagate the signal to all event handlers fired during that call.
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000); // hard 5s budget
+
+chef.on('compile:done', async ({ payload }, signal) => {
+  // signal === controller.signal — forward it to slow async work
+  await db.write(payload, { signal });
+  await metrics.report(payload, { signal });
+});
+
+try {
+  await chef.compile({ target: 'openai', signal: controller.signal });
+} catch (err) {
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    // compile was cancelled mid-flight (Janitor / onBeforeCompile / transformContext boundary)
+  }
+  throw err;
+}
+```
+
+Two effects:
+
+1. **Forwarded to handlers** — `chef.on(event, (payload, signal?) => ...)` receives the signal as the second argument. Handler can pass it to `fetch`, DB clients, or any cooperative API.
+2. **Checked at compile() boundaries** — after Janitor compress, after `onBeforeCompile`, after `transformContext`. Aborts throw via `signal.throwIfAborted()`.
+
+`compile:start` fires before the first abort check, so observers may receive a `compile:start` for a compile that ultimately throws without firing `compile:done`. Memory events fired from external `memory().set()` / `delete()` calls (outside `compile()`) get `signal: undefined`.
+
+<!-- TODO T2.4.1 — uncomment when concurrency-safe `compile()` ships, or remove this warning if behavior changes
+> **⚠️ `compile()` is not currently concurrency-safe.** Two `compile()` calls running concurrently on the same chef instance will corrupt each other's state — signal will be clobbered, memory turn counter will double-advance, and the active skill / history reads may interleave. Serialize calls per chef instance (e.g. `await chef.compile(); await chef.compile();`) or create separate chef instances for parallel work. Snapshot+serialize support is planned (see `TODO.md` T2.4.1).
+-->
+
 ---
 
 ### `onBeforeCompile` Hook
