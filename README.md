@@ -736,9 +736,23 @@ Two effects:
 
 `compile:start` fires before the first abort check, so observers may receive a `compile:start` for a compile that ultimately throws without firing `compile:done`. Memory events fired from external `memory().set()` / `delete()` calls (outside `compile()`) get `signal: undefined`.
 
-<!-- TODO T2.4.1 — uncomment when concurrency-safe `compile()` ships, or remove this warning if behavior changes
-> **⚠️ `compile()` is not currently concurrency-safe.** Two `compile()` calls running concurrently on the same chef instance will corrupt each other's state — signal will be clobbered, memory turn counter will double-advance, and the active skill / history reads may interleave. Serialize calls per chef instance (e.g. `await chef.compile(); await chef.compile();`) or create separate chef instances for parallel work. Snapshot+serialize support is planned (see `TODO.md` T2.4.1).
--->
+#### Concurrency Model
+
+**Canonical pattern: one `ContextChef` instance per concurrent caller.** A chef holds mutable state across `await` points (in-flight signal, memory turn counter, active skill, history reference). Per-request instantiation gives each call its own state — no shared mutable state means no race.
+
+```typescript
+// Express / Fastify / Hono — one chef per request
+app.post('/agent', async (req, res) => {
+  const chef = new ContextChef({ memory: { store: sharedMemoryStore } });
+  chef.setHistory(req.body.history);
+  const payload = await chef.compile({ target: 'openai' });
+  res.json(payload);
+});
+```
+
+If memory needs to span requests, lift the store out (`VFSMemoryStore`, your own Redis-backed store) and pass it to per-request chefs — store-level concurrency is the store's responsibility, not the chef's.
+
+**Sharing one chef across concurrent `compile()` calls is single-threaded by design.** Two `compile()` calls on the same instance clobber each other's `_currentSignal`, double-advance the memory turn counter, and interleave skill/history reads. Serialize per instance (`await chef.compile()` chained), or use the per-request pattern above. A snapshot+serialize defensive option is in the roadmap (TODO T2.4.1, low priority) but is not needed for canonical usage.
 
 ---
 

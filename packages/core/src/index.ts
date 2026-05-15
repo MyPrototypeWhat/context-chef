@@ -738,12 +738,13 @@ export class ContextChef {
    *   2. `ChefConfig.defaultTarget` — instance-wide default set at construction
    *   3. `'openai'` — final built-in fallback (kept for backward compatibility)
    *
-   * **Concurrency: not safe.** compile() reads and mutates instance state
-   * (`_currentSignal`, memory turn counter, janitor circuit breaker, skill
-   * fields, history/system/dynamic state references) across `await` points.
-   * Two compile() calls running concurrently on the same chef instance will
-   * corrupt each other. Serialize per chef instance, or create separate
-   * instances for parallel work. Snapshot+serialize is planned (TODO.md T2.4.1).
+   * **Concurrency model: per-instance.** A chef is single-threaded by design —
+   * it holds mutable state across `await` points (`_currentSignal`, memory turn
+   * counter, janitor circuit breaker, skill fields, history references), so
+   * two `compile()` calls running concurrently on the same instance corrupt
+   * each other. Canonical pattern is one chef per concurrent caller (e.g. per
+   * HTTP request); see the "Concurrency Model" section in README. To share a
+   * chef across calls, serialize them with chained `await`.
    */
   public async compile(options: { target: 'openai'; signal?: AbortSignal }): Promise<OpenAIPayload>;
   public async compile(options: {

@@ -678,9 +678,23 @@ try {
 
 `compile:start` 在第一次 abort 检查之前触发，所以观察者可能收到一个最终抛 AbortError 而没有 `compile:done` 的 compile 调用。从 `memory().set()` / `delete()` 这类**外部**调用触发的 memory 事件，signal 为 `undefined`。
 
-<!-- TODO T2.4.1 — 等并发安全 compile() 落地后再放开，或行为变化时移除
-> **⚠️ `compile()` 当前不是并发安全的。** 同一个 chef 实例上并发两次 `compile()` 会互相破坏状态 —— signal 会被覆盖、memory 轮次会双进、active skill / history 读取会交错。请按实例串行调用（`await chef.compile(); await chef.compile();`），或为并发任务创建独立 chef 实例。Snapshot+serialize 支持已规划（见 `TODO.md` T2.4.1）。
--->
+#### 并发模型
+
+**推荐模式：每个并发调用方一个 `ContextChef` 实例。** chef 在 `await` 点之间持有可变状态（in-flight signal、memory 轮次、active skill、history 引用），每请求独立实例化即可让每次调用拥有自己的状态——没有共享可变状态就没有 race。
+
+```typescript
+// Express / Fastify / Hono —— 每请求一个 chef
+app.post('/agent', async (req, res) => {
+  const chef = new ContextChef({ memory: { store: sharedMemoryStore } });
+  chef.setHistory(req.body.history);
+  const payload = await chef.compile({ target: 'openai' });
+  res.json(payload);
+});
+```
+
+如果 memory 需要跨请求共享，把 store 单独提取（`VFSMemoryStore` 或你自己包的 Redis-backed store）传给每请求的 chef —— store 层并发由 store 自己负责，不是 chef 的事。
+
+**同一个 chef 实例上并发 `compile()` 是单线程语义。** 同实例两次 compile 会互相覆盖 `_currentSignal`、双进 memory 轮次、交错读取 skill/history。请按实例串行（`await chef.compile()` 链式），或用上面的 per-request 模式。Snapshot+serialize 防御性方案在 roadmap 里（TODO T2.4.1，低优先级），但 canonical 用法不需要它。
 
 ---
 

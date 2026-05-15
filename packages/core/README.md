@@ -753,9 +753,20 @@ try {
 
 Two effects: (1) signal forwarded to every handler as the second argument; (2) `compile()` itself calls `signal.throwIfAborted()` after Janitor compress, after `onBeforeCompile`, and after `transformContext`. `compile:start` fires before the first abort check, so observers may receive a `compile:start` for a compile that ultimately throws without firing `compile:done`. Memory events from external `memory().set()` / `delete()` (outside `compile()`) get `signal: undefined`.
 
-<!-- TODO T2.4.1 — uncomment when concurrency-safe `compile()` ships, or remove this warning if behavior changes
-> **⚠️ `compile()` is not currently concurrency-safe.** Concurrent calls on the same chef instance will corrupt each other's state (signal clobbering, memory turn double-advance, interleaved skill/history reads). Serialize per chef instance or use separate instances for parallel work. Snapshot+serialize support is planned (see `TODO.md` T2.4.1).
--->
+#### Concurrency Model
+
+**Canonical: one `ContextChef` instance per concurrent caller.** Chef state (in-flight signal, memory turn, active skill, history) is held across `await` points; per-request instantiation isolates each call — no shared mutable state, no race.
+
+```typescript
+// One chef per request — no shared mutable state, no race
+const chef = new ContextChef({ memory: { store: sharedMemoryStore } });
+chef.setHistory(history);
+const payload = await chef.compile({ target: 'openai' });
+```
+
+For cross-request memory, extract the store (`VFSMemoryStore` or external Redis-backed) and pass to per-request chefs.
+
+Sharing one chef across concurrent `compile()` calls is **single-threaded by design** — concurrent calls clobber `_currentSignal`, double-advance the memory turn counter, and interleave skill/history reads. Serialize per instance (chained `await`), or use the per-request pattern. Snapshot+serialize defensive option is in the roadmap (TODO T2.4.1, low priority) but not required for canonical usage.
 
 ---
 

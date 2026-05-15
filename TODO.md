@@ -502,12 +502,16 @@ All 6 typed `compile()` overloads now accept `signal?: AbortSignal` alongside `t
 
 ### T2.4.1 — `compile()` Concurrency Safety (Snapshot + Serialize)
 
-**Status**: Planned (queued from T2.4 self-review on 2026-05-14)
-**Priority**: High — concurrency hazard exists in current code; users hitting it will see silent data corruption, not errors
+**Status**: Planned (queued from T2.4 self-review on 2026-05-14, demoted on 2026-05-15)
+**Priority**: **Low** — defensive hardening, not a critical fix. The canonical "one chef per concurrent caller" pattern (documented in README → "Concurrency Model") sidesteps the hazard entirely. T2.4.1's value is only catching user bugs where someone accidentally shares a chef across concurrent `compile()` calls.
 **Estimated scope**: ~80 LOC implementation + ~120 LOC tests + ~30 LOC docs ≈ 230-line diff
 **Files**: `packages/core/src/index.ts`, `packages/core/tests/concurrency.test.ts` (new), README + zh-CN + core README
 
-**Problem.** `compile()` reads and mutates instance state across `await` points. Concurrent calls on the same chef instance corrupt each other:
+**Why demoted (2026-05-15):** User question — "if every concurrent request is its own chef instance, does the problem go away?" — surfaced that per-instance is the canonical pattern (matches Express/Fastify/Hono server style, also what pi-mono / Letta / LangGraph use). Cross-request memory sharing is solved by lifting the Memory store out (e.g. `VFSMemoryStore` or external Redis-backed) and passing it to per-request chefs; store-level concurrency is the store's responsibility, not the chef's. So 99%+ of users never hit this. T2.4.1 is now positioned as defensive hardening for the misuse case (developer accidentally shares one chef and concurrent compiles silently corrupt state). Worth doing eventually for fail-fast diagnostics, but not blocking anything.
+
+**Trigger to revisit:** if a user files an issue about concurrent compile corruption, or if we want a stronger safety story for a 1.0 release.
+
+**Problem (preserved for when this is implemented).** `compile()` reads and mutates instance state across `await` points. Concurrent calls on the same chef instance corrupt each other:
 
 | State | Mutation source | compile() touch | Hazard |
 |---|---|---|---|
