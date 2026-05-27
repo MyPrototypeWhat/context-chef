@@ -231,11 +231,22 @@ Only remember things genuinely worth persisting.
 `.trim(),
 
   /**
+   * Self-anchoring prefix for the `<memory>` data block. Tells the LLM that
+   * the following XML is recalled memory state (not user input or system
+   * instruction), which lets ContextChef.compile() suppress the otherwise-mandatory
+   * "Above is the current system state..." anchor line when memory is the
+   * only thing tail-injected. Referenced by `getMemoryBlock` (below) and by
+   * the anchor-suppression logic in `compile()` — keep the two call sites in
+   * sync, or extract them through this constant.
+   */
+  MEMORY_BLOCK_HEADER: 'You recall the following from previous conversations:',
+
+  /**
    * Dynamic wrapper used by compile() to inject recalled core memory alongside key guidance.
    * Enumerates existing keys (soft guidance) or allowed keys (strict mode) to stabilize LLM key creation.
    */
   getMemoryBlock: (coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]) => {
-    let block = `You recall the following from previous conversations:\n${coreMemoryXml}`;
+    let block = `${Prompts.MEMORY_BLOCK_HEADER}\n${coreMemoryXml}`;
 
     if (allowedKeys && allowedKeys.length > 0) {
       block += `\n\nAllowed memory keys: ${allowedKeys.join(', ')}. You may ONLY update or delete these keys. Any other key will be rejected.`;

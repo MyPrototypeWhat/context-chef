@@ -240,12 +240,86 @@ export class GeminiAdapter implements ITargetAdapter {
       }
     }
 
-    const payload: GeminiPayload = { messages: contents };
+    const payload: GeminiPayload = { messages: GeminiAdapter._mergeConsecutiveSameRole(contents) };
 
     if (systemParts.length > 0) {
       payload.systemInstruction = { parts: systemParts };
     }
 
     return payload;
+  }
+
+  /**
+   * Collapses consecutive same-role `Content` entries into a single entry with
+   * concatenated `parts`. Required because Gemini's `generateContent` API
+   * rejects non-alternating contents with:
+   *
+   *   400 INVALID_ARGUMENT: Please ensure that multiturn requests alternate
+   *   between user and model
+   *
+   * Triggered in practice by:
+   * - **Parallel tool calls**: an assistant turn with N `tool_calls` produces
+   *   N `role: 'user'` `functionResponse` entries (Gemini maps `tool` → `user`).
+   *   Without merging, the contents become `[user, model, user, user, ..., user]`
+   *   and the API rejects. The canonical Gemini shape for parallel function
+   *   responses is ONE user `Content` with multiple `functionResponse` parts —
+   *   exactly what this merge produces.
+   * - **Tail-injected memory** with `MemoryConfig.memoryPlacement === 'before_history_tail'`
+   *   when the caller emits memory as a separate user `Content` ahead of the
+   *   user turn.
+   * - **Stripped thinking** that leaves an otherwise-empty model turn (handled
+   *   by other mechanisms; not addressed here).
+   *
+   * Anthropic auto-merges on the server side ([Messages API docs](https://docs.anthropic.com/en/api/messages))
+   * and OpenAI tolerates consecutive same-role messages. Only Gemini requires
+   * the client to normalize, so this merge lives exclusively in the Gemini
+   * adapter — matching the strategy of `@tanstack/ai-gemini`
+   * (`mergeConsecutiveSameRoleMessages`) and LangChain's `langchain-google-genai`.
+   *
+   * Runs AFTER prefill degradation so the trailing-model pop sees an
+   * unmerged view of the conversation (a pre-merge would conflate the
+   * prefill message with the preceding model turn).
+   *
+   * **Lazy allocation**: when the input is already strictly alternating
+   * (the common case for normal conversations), returns the input array
+   * unchanged — zero allocation. Only allocates a fresh result array on the
+   * first detected merge point, and only clones envelopes from that index
+   * onwards. The earlier portion of the input is shallow-copied lazily.
+   *
+   * Pure function: when allocation occurs, returns a new array with fresh
+   * `Content` envelopes whose `parts` arrays are also fresh (callers may
+   * safely mutate). Inner `SDKPart` objects are reference-shared with the
+   * input — they are treated as immutable leaves by this adapter. When no
+   * allocation occurs (already alternating), the input is returned as-is
+   * and the contract is preserved because this function never mutates input.
+   */
+  private static _mergeConsecutiveSameRole(contents: SDKContent[]): SDKContent[] {
+    if (contents.length <= 1) return contents;
+
+    // Phase 1: scan for the first merge point. If none, the input is already
+    // strictly alternating — return it as-is (zero allocation).
+    let firstMergeIdx = -1;
+    for (let i = 1; i < contents.length; i++) {
+      if (contents[i].role === contents[i - 1].role) {
+        firstMergeIdx = i;
+        break;
+      }
+    }
+    if (firstMergeIdx === -1) return contents;
+
+    // Phase 2: clone the alternating prefix [0, firstMergeIdx-1] verbatim,
+    // then resume the merge from `firstMergeIdx` onwards.
+    const merged: SDKContent[] = contents
+      .slice(0, firstMergeIdx)
+      .map((c) => ({ role: c.role, parts: [...c.parts] }));
+    for (let i = firstMergeIdx; i < contents.length; i++) {
+      const last = merged[merged.length - 1];
+      if (last.role === contents[i].role) {
+        last.parts.push(...contents[i].parts);
+      } else {
+        merged.push({ role: contents[i].role, parts: [...contents[i].parts] });
+      }
+    }
+    return merged;
   }
 }

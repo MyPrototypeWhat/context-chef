@@ -238,6 +238,25 @@ Cleanup is **manual only** — never auto-triggered by `compile()` (mechanism, n
 
 ---
 
+### ✅ Memory Injection Position Configurable
+
+`MemoryConfig.memoryPlacement?: 'after_system' | 'before_history_tail'`. Default `'after_system'` is bit-for-bit compatible with pre-3.5 behavior (single combined system message). `'before_history_tail'` splits the memory message into two parts:
+
+- **Stable usage instruction** stays as a `role: 'system'` message at the top of the sandwich (cacheable).
+- **Volatile `<memory>` data block** is appended to the last user message via the existing assembler tail-injection path (alongside `<dynamic_state>` / `<implicit_context>` when those are also tail-placed).
+
+**Why the split matters (the real cross-provider win):** the Anthropic and Gemini adapters extract every `role: 'system'` message into the top-level `system` / `systemInstruction` parameter. Under `'after_system'`, the volatile memory text rides into that block; every cache breakpoint positioned further down the message stream hashes it, so any memory mutation invalidates the cache. Under `'before_history_tail'`, the data stays in `messages` instead — cache breakpoints on earlier history blocks (or on stable system prefix) no longer see the changing text. OpenAI (inline system messages) benefits the same way because the auto-prefix cache window now extends past the memory section.
+
+Implementation notes:
+- Assembler API: renamed `AssembleOptions.dynamicStateXml` → `tailXml` and dropped the `placement` field. The Assembler is now a pure tail-injection primitive; `compile()` composes the stitch (memory data → dynamic state → implicit context → anchor) based on each module's placement config.
+- The "Above is the current system state..." anchor only fires when dynamic state or implicit context is in the tail; memory-only tail injections rely on the data block's own `"You recall the following..."` self-anchor (no double anchor).
+- `_getMemoryMessages` → `_buildMemorySandwichParts` consolidates the previously-duplicated `getSelectedEntries()` round-trips into a single read.
+- `Memory.placement` getter is public for observability.
+
+**Verification**: `pnpm -r run typecheck` ✅ · `pnpm lint` ✅ · `pnpm -r run test` ✅ (757 tests across 35 files; +20 new — full coexistence matrix with `dynamicStatePlacement`, Anthropic adapter behavior, KV-cache stability assertions, selector interaction, transformContext observation order).
+
+---
+
 ## Planned
 
 ### `compact()` — `toolFilter` Support
@@ -257,30 +276,6 @@ interface ToolResultClearTarget {
 ```
 
 Resolving the tool name requires scanning the preceding assistant message for the matching `tool_calls[].id` → `function.name`.
-
----
-
-### Memory Injection Position Configurable
-
-**Priority: Medium** — When using Anthropic prompt caching, memory changes (new/updated/expired keys) invalidate the cache for all content after the injection point.
-
-Current hardcoded order in `compile()`:
-```
-[...systemPrompt, ...memoryMessages, ...compressedHistory, ...dynamicState]
-```
-
-If memory changes every turn, everything after `memoryMessages` loses cache.
-
-**Design**: Add `memoryPlacement` to `MemoryConfig`:
-```typescript
-memoryPlacement?: 'after_system' | 'before_history_tail';
-// 'after_system' (default): current behavior, memory between system prompt and history
-// 'before_history_tail': memory after history, before dynamic state — system prompt cache preserved
-```
-
----
-
----
 
 ---
 
@@ -444,25 +439,6 @@ Replaced the closed switch-case in `getAdapter()` with an open `AdapterRegistry`
 **Verification**: `pnpm -r run typecheck` ✅ · `pnpm lint` ✅ · `pnpm -r run test` ✅ (707 tests across 33 files; +17 new — 10 registry CRUD + 7 compile() target resolution)
 
 **Reference**: pi `api-registry.ts` — `sourceId` enables batch unregister for plugins / test isolation.
-
----
-
-### T2.2 — `onPayload` / `onResponse` middleware hooks
-
-**Status**: Planned
-**ETA**: half-day
-**Files**: `packages/ai-sdk-middleware/src/middleware.ts`, `packages/tanstack-ai/src/middleware.ts`
-
-```typescript
-withContextChef(model, {
-  onPayload: (payload, model) => modified | void,
-  onResponse: (response, model) => void,
-});
-```
-
-**Why**: today users add their own logger to inspect what gets sent. With these hooks, debugging cache hit rate / final payload becomes one-liner.
-
-**Reference**: pi `StreamOptions.onPayload` / `onResponse` in `ai/types.ts:99-105`.
 
 ---
 
@@ -648,17 +624,6 @@ Visualize the fixed execution order of `transformContext` → `onBeforeCompile` 
 
 ---
 
-### T3.4 — `Message._meta?: Record<string, unknown>` reservation
-
-**Status**: Planned
-**ETA**: 30min (zero-cost future-proof)
-
-Add an optional `_meta` field to `Message`. No semantic change today; preserves headroom for future `notification` / `progress` / UI-only message kinds without a breaking change.
-
-**Reference**: pi `CustomAgentMessages` declaration-merging pattern (`agent/types.ts:271-280`) — we shouldn't ship the full union split, but `_meta` is the cheapest insurance.
-
----
-
 ## Internal Code Patterns (apply in future refactors)
 
 These are pi-mono patterns to internalize, not items to ship:
@@ -683,6 +648,8 @@ These are pi-mono patterns to internalize, not items to ship:
 | JSON mode / RPC mode | CLI-only concerns |
 | MCP / sub-agent / plan mode rejection stance | pi's "minimalism" is a CLI product decision, not ours |
 | **Cost tracking in `compile:done` payload** | Same reason as "token counting in compile metadata" (already in Memory Roadmap → Not Planned). Cost = token × price; we're a pre-call context engine, post-call statistics belong to the caller. Maintaining a price map = price-drift bugs. Users can compute `usage × price` from their SDK response in one line. pi does this only because it ships a CLI footer. |
+| **`onPayload` / `onResponse` middleware hooks** (was T2.2) | Users can already inspect via `chef.compile()` output (pre-send) or wrap the AI SDK middleware to inspect (post-send). The only unique value would be modifying payload after context-chef converts but before SDK dispatches — niche enough that no concrete user pain has surfaced. Adds cross-package surface area (ai-sdk-middleware + tanstack-ai) and tests for a "nice-to-have." Revisit if a user files an issue with a use case that genuinely cannot be done from outside. |
+| **`Message._meta?: Record<string, unknown>` reservation** (was T3.4) | Speculative future-proofing — no concrete demand for `notification` / `progress` / UI message kinds in a compile-time context library. Adds surface area (adapters must decide whether to round-trip it; tests must verify nothing relies on it) and invites misuse ("just stash it in `_meta`"). pi has it because it ships a TUI/Web-UI framework; ContextChef does not. Cost of adding later when a real use case appears is low (additive optional field, no breaking change). |
 
 ---
 

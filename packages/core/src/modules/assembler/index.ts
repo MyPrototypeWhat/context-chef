@@ -2,22 +2,44 @@ import type { Message } from '../../types';
 
 export type DynamicStatePlacement = 'system' | 'last_user';
 
+/**
+ * @internal
+ *
+ * Options passed by {@link ContextChef.compile} to {@link Assembler.compile}.
+ * Not part of the public API — the field shape may change between minor
+ * releases as the compile pipeline evolves. External callers should use the
+ * `ContextChef` facade instead of invoking the Assembler directly.
+ *
+ * The Assembler does not know which parts went into the stitch and does not
+ * append any wrapper, separator, or anchor text — callers control the full
+ * payload. If no last user message exists, a new one is created carrying
+ * just the stitch.
+ */
 export interface AssembleOptions {
-  /** XML content of the dynamic state to inject */
-  dynamicStateXml?: string;
-  /** Where to inject the dynamic state */
-  placement?: DynamicStatePlacement;
+  /** XML stitch to append to the last user message at the tail of the conversation. */
+  tailXml?: string;
 }
 
 /**
  * The Assembler is the physical compiler of the Sandwich Model.
  *
- * It has two responsibilities:
+ * **Public surface (stable):** the static helpers {@link Assembler.orderKeysDeterministically}
+ * and {@link Assembler.stringifyPayload}, which expose ContextChef's deterministic-JSON
+ * convention so external callers can hash payloads consistently with the
+ * compile pipeline (useful for cache-aware logging, custom adapters, etc.).
+ *
+ * **Internal surface (`@internal`, may change without a major bump):**
+ * the {@link Assembler.compile} instance method and its {@link AssembleOptions}
+ * parameter type. These are implementation details of `ContextChef.compile()`'s
+ * sandwich assembly. Treat them as private even though TypeScript marks them
+ * `public`; consume the assembly pipeline through `ContextChef.compile()`.
+ *
+ * Responsibilities:
  * 1. **Deterministic Serialization**: Guarantees identical byte-level output for identical
  *    logical inputs by sorting JSON keys lexicographically. This maximizes KV-Cache hits.
- * 2. **Sandwich Assembly**: Physically arranges Top Layer, Rolling History, and Dynamic State
- *    into the optimal position within the message array, respecting the configured placement
- *    strategy (system message vs last-user-message injection).
+ * 2. **Tail injection**: Appends a caller-built XML stitch to the last user message so
+ *    volatile content (dynamic state, memory data, implicit context) benefits from the
+ *    model's recency bias while keeping the cacheable prefix stable.
  */
 export class Assembler {
   /**
@@ -46,16 +68,17 @@ export class Assembler {
   }
 
   /**
-   * Injects the dynamic state XML into the last user message in the array.
-   * If no user message exists, appends a new one.
+   * Appends `tailXml` to the last user message in the array, separated by a
+   * blank line. If no user message exists, a new one is created carrying just
+   * the stitch.
    *
    * This leverages the LLM's Recency Bias: the model pays the most attention
    * to content closest to its generation point (the end of the message array).
-   * By placing state here instead of in a system message at the top, we prevent
-   * "Lost in the Middle" state drift in long conversations.
+   * By placing volatile state here instead of in a system message at the top,
+   * we prevent "Lost in the Middle" state drift in long conversations.
    */
-  private injectIntoLastUser(messages: Message[], dynamicStateXml: string): Message[] {
-    const stateBlock = `\n\n${dynamicStateXml}\nAbove is the current system state. Use it to guide your next action.`;
+  private injectIntoLastUser(messages: Message[], tailXml: string): Message[] {
+    const block = `\n\n${tailXml}`;
 
     const result = [...messages];
     let lastUserIndex = -1;
@@ -69,12 +92,12 @@ export class Assembler {
     if (lastUserIndex !== -1) {
       result[lastUserIndex] = {
         ...result[lastUserIndex],
-        content: result[lastUserIndex].content + stateBlock,
+        content: result[lastUserIndex].content + block,
       };
     } else {
       result.push({
         role: 'user',
-        content: stateBlock.trim(),
+        content: block.trim(),
       });
     }
 
@@ -82,16 +105,21 @@ export class Assembler {
   }
 
   /**
-   * Compiles the final message array.
+   * @internal
    *
-   * @param messages - The pre-assembled sandwich (systemPrompt + history + dynamicState system messages)
-   * @param options  - Optional stitch options for last_user injection
+   * Compiles the final message array. Invoked by {@link ContextChef.compile}
+   * after the sandwich is assembled — not part of the public API. The
+   * signature (including {@link AssembleOptions}) may change between minor
+   * releases as the compile pipeline evolves.
+   *
+   * @param messages - The pre-assembled sandwich (top layer + history + any system-placed tails)
+   * @param options  - Optional tail-injection stitch built by the caller
    */
   public compile(messages: Message[], options?: AssembleOptions): { messages: Message[] } {
     let assembled = [...messages];
 
-    if (options?.dynamicStateXml && options.placement === 'last_user') {
-      assembled = this.injectIntoLastUser(assembled, options.dynamicStateXml);
+    if (options?.tailXml) {
+      assembled = this.injectIntoLastUser(assembled, options.tailXml);
     }
 
     return {

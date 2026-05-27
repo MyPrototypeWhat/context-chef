@@ -46,7 +46,7 @@ export {
 export { fromAnthropic } from './adapters/anthropicAdapter';
 export { fromGemini } from './adapters/geminiAdapter';
 export { fromOpenAI } from './adapters/openAIAdapter';
-export { type AssembleOptions, Assembler } from './modules/assembler';
+export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
   groupIntoTurns,
@@ -60,6 +60,7 @@ export {
   type MemoryChangeEvent,
   type MemoryConfig,
   type MemoryEntry,
+  type MemoryPlacement,
   type MemorySetOptions,
   type MemorySnapshot,
   type TTLValue,
@@ -607,19 +608,58 @@ export class ContextChef {
     return result.content;
   }
 
-  private async _getMemoryMessages(): Promise<Message[]> {
-    if (!this.memory) return [];
-
-    let content = Prompts.MEMORY_INSTRUCTION;
-
-    const selected = await this.memory.getSelectedEntries();
-    if (selected.length > 0) {
-      const xml = await this.memory.toXml();
-      const keys = selected.map((e) => e.key);
-      content = `${content}\n\n${Prompts.getMemoryBlock(xml, keys, this.memory.allowedKeys)}`;
+  /**
+   * Builds the per-turn memory artifacts that {@link compile} injects into the sandwich.
+   *
+   * Behavior depends on {@link MemoryConfig.memoryPlacement}:
+   * - `'after_system'` (default): the stable instruction and the volatile
+   *   `<memory>` data are folded into a single `role: 'system'` message at the
+   *   top of the sandwich. `tailDataXml` is empty. Bit-for-bit compatible with
+   *   pre-3.5 behavior.
+   * - `'before_history_tail'`: the instruction stays as a `role: 'system'`
+   *   message at the top; the data block is returned via `tailDataXml` for the
+   *   Assembler to append to the last user message. The volatile text never
+   *   enters the top-level system parameter on Anthropic/Gemini, so cache
+   *   breakpoints earlier in the message stream survive memory mutations.
+   *
+   * Consolidates what was previously two `getSelectedEntries()` round-trips
+   * (one for the XML, one for `injectedMemoryKeys`) into a single read.
+   */
+  private async _buildMemorySandwichParts(): Promise<{
+    topMessages: Message[];
+    tailDataXml: string;
+    injectedMemoryKeys: string[];
+  }> {
+    if (!this.memory) {
+      return { topMessages: [], tailDataXml: '', injectedMemoryKeys: [] };
     }
 
-    return [{ role: 'system', content }];
+    const selected = await this.memory.getSelectedEntries();
+    const injectedMemoryKeys = selected.map((e) => e.key);
+
+    let dataBlock = '';
+    if (selected.length > 0) {
+      const xml = await this.memory.toXml();
+      dataBlock = Prompts.getMemoryBlock(xml, injectedMemoryKeys, this.memory.allowedKeys);
+    }
+
+    if (this.memory.placement === 'after_system') {
+      const content = dataBlock
+        ? `${Prompts.MEMORY_INSTRUCTION}\n\n${dataBlock}`
+        : Prompts.MEMORY_INSTRUCTION;
+      return {
+        topMessages: [{ role: 'system', content }],
+        tailDataXml: '',
+        injectedMemoryKeys,
+      };
+    }
+
+    // 'before_history_tail': instruction at top, volatile data at tail
+    return {
+      topMessages: [{ role: 'system', content: Prompts.MEMORY_INSTRUCTION }],
+      tailDataXml: dataBlock,
+      injectedMemoryKeys,
+    };
   }
 
   /**
@@ -824,11 +864,17 @@ export class ContextChef {
       // diverges from payload state. Documented in CompileOptions.signal.
       signal?.throwIfAborted();
 
-      // 5. Core Memory injection (between systemPrompt and history)
-      const memoryMessages = await this._getMemoryMessages();
-      if (this.memory) {
-        injectedMemoryKeys = (await this.memory.getSelectedEntries()).map((e) => e.key);
-      }
+      // 5. Memory: build sandwich parts (top instruction + optional tail data)
+      //    `_buildMemorySandwichParts` consolidates the previously-duplicated
+      //    `getSelectedEntries()` calls into a single read and returns:
+      //      - `topMessages`: system message(s) that always sit at the top
+      //      - `tailDataXml`: volatile <memory> block to inject at user tail
+      //                       (empty unless memoryPlacement === 'before_history_tail')
+      //      - `injectedMemoryKeys`: meta for the compile() return payload
+      const memoryParts = await this._buildMemorySandwichParts();
+      const memoryMessages = memoryParts.topMessages;
+      const memoryTailDataXml = memoryParts.tailDataXml;
+      injectedMemoryKeys = memoryParts.injectedMemoryKeys;
 
       // 5b. Skill instructions slot — single dedicated system message between
       //     userSystemPrompt and memoryMessages. NOT appended to user system
@@ -853,11 +899,37 @@ export class ContextChef {
       }
       signal?.throwIfAborted();
 
-      // 8. Assembler: Dynamic state injection (if last_user) + deterministic key ordering
-      const stitchXml = [this.dynamicStateXml, implicitContextXml].filter(Boolean).join('\n');
+      // 8. Assembler: tail injection (volatile content closest to LLM generation
+      //    point) + deterministic key ordering. The stitch is composed in a fixed
+      //    inner order — memory data, dynamic state, implicit context, anchor —
+      //    so callers reading the final user message can rely on the layout.
+      const tailParts: string[] = [];
+      if (memoryTailDataXml) {
+        tailParts.push(memoryTailDataXml);
+      }
+      if (this.dynamicStatePlacement === 'last_user') {
+        let dynamicTailAdded = false;
+        if (this.dynamicStateXml) {
+          tailParts.push(this.dynamicStateXml);
+          dynamicTailAdded = true;
+        }
+        if (implicitContextXml) {
+          tailParts.push(implicitContextXml);
+          dynamicTailAdded = true;
+        }
+        // The anchor refers specifically to dynamic state / implicit context.
+        // Memory data already self-introduces via `Prompts.MEMORY_BLOCK_HEADER`
+        // ("You recall the following from previous conversations:"), so a second
+        // anchor for memory-only tail injections is redundant and reads as noise
+        // to the model. If `MEMORY_BLOCK_HEADER` is ever changed or removed in
+        // `prompts.ts`, this suppression rule needs to be re-evaluated.
+        if (dynamicTailAdded) {
+          tailParts.push('Above is the current system state. Use it to guide your next action.');
+        }
+      }
+      const tailXml = tailParts.join('\n\n');
       const rawPayload = this.assembler.compile(messages, {
-        dynamicStateXml: stitchXml || undefined,
-        placement: this.dynamicStatePlacement,
+        tailXml: tailXml || undefined,
       });
 
       const target = options?.target ?? this.defaultTarget ?? 'openai';

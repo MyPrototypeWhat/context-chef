@@ -4,6 +4,38 @@ import type { MemoryStore, MemoryStoreEntry } from './memoryStore';
 /** TTL value: bare number = turns, or explicit { ms } / { turns }. */
 export type TTLValue = number | { ms: number } | { turns: number };
 
+/**
+ * Where the memory data block lands in the compiled payload.
+ *
+ * - `'after_system'` (default): the memory usage instruction and the volatile
+ *   `<memory>` data block are emitted together as a single `role: 'system'`
+ *   message immediately after the user's system prompt. Simple and matches
+ *   pre-3.5 behavior. Trade-off: provider adapters that extract every
+ *   `role: 'system'` message into a top-level system parameter (Anthropic,
+ *   Gemini) will fold the volatile memory text into that block. Cache
+ *   breakpoints positioned downstream then hash memory and invalidate when
+ *   entries change.
+ *
+ * - `'before_history_tail'`: the stable instruction stays as the top system
+ *   message (cacheable), while the volatile `<memory>` data block is appended
+ *   to the **most recent `role: 'user'` message** in the assembled sandwich
+ *   (alongside any dynamic state / implicit context). The data text never
+ *   enters the top-level system parameter, so cache breakpoints earlier in
+ *   the message stream survive memory mutations on every provider.
+ *
+ *   Caveat: when `compile()` is invoked mid-agent-loop (history tail is a
+ *   `tool` turn awaiting interpretation), "most recent user" walks back past
+ *   the tool result(s) to the user turn that kicked off the current tool
+ *   sequence — the injection lands mid-conversation rather than at the
+ *   absolute tail. Cache breakpoints placed AFTER that user turn (typical:
+ *   end-of-history assistant) will see the modified user content and miss.
+ *   To preserve cache in tool-ending tails, place breakpoints BEFORE the
+ *   user turn that started the active tool sequence, or restrict
+ *   `'before_history_tail'` to user-ending compiles. This is the same
+ *   placement convention as `setDynamicState({ placement: 'last_user' })`.
+ */
+export type MemoryPlacement = 'after_system' | 'before_history_tail';
+
 export interface MemoryEntry {
   key: string;
   value: string;
@@ -75,11 +107,22 @@ export interface MemoryConfig {
    * Contract: must not throw or reject. Errors propagate out of compile().
    */
   onMemoryExpired?: (entry: MemoryEntry) => void | Promise<void>;
+  /**
+   * Where the volatile `<memory>` data block lands in the compiled payload.
+   * Defaults to `'after_system'` (current behavior). Set to
+   * `'before_history_tail'` to keep memory text out of the top-level system
+   * parameter so provider-level cache breakpoints on history survive memory
+   * mutations.
+   *
+   * See {@link MemoryPlacement} for the full rationale.
+   */
+  memoryPlacement?: MemoryPlacement;
 }
 
 export class Memory {
   private store: MemoryStore;
   readonly allowedKeys?: string[];
+  readonly placement: MemoryPlacement;
   private selector?: MemoryConfig['selector'];
   private onMemoryUpdate?: MemoryConfig['onMemoryUpdate'];
   private onMemoryChanged?: MemoryConfig['onMemoryChanged'];
@@ -90,6 +133,7 @@ export class Memory {
   constructor(config: MemoryConfig) {
     this.store = config.store;
     this.allowedKeys = config.allowedKeys;
+    this.placement = config.memoryPlacement ?? 'after_system';
     this.selector = config.selector;
     this.onMemoryUpdate = config.onMemoryUpdate;
     this.onMemoryChanged = config.onMemoryChanged;

@@ -583,6 +583,28 @@ const value = await chef.getMemory().get("persona");
 // - Existing memories are injected as <memory> XML between systemPrompt and history
 ```
 
+#### Memory placement — `memoryPlacement`
+
+Controls where the volatile `<memory>` data block lands in the compiled payload. Defaults to `'after_system'` (backward compatible). For applications using **Anthropic prompt caching** with cache breakpoints on history, switch to `'before_history_tail'` so memory mutations don't invalidate the history cache.
+
+```typescript
+const chef = new ContextChef({
+  memory: {
+    store: new VFSMemoryStore(dir),
+    memoryPlacement: 'before_history_tail',
+  },
+});
+```
+
+| Placement | Top of sandwich | Last user message | When to use |
+|---|---|---|---|
+| `'after_system'` (default) | INSTRUCTION + `<memory>` data, combined into one `role: 'system'` message | untouched | Simple agents; you don't rely on cache breakpoints past the system parameter |
+| `'before_history_tail'` | INSTRUCTION only (stable, cacheable) | appends the `<memory>` data block to the original user content | You want cache breakpoints on history (or earlier `system` blocks) to survive memory mutations on every turn |
+
+The split keeps the stable usage instruction at the top of the sandwich where it caches cleanly, and ships the volatile data block at the tail of the conversation. Anthropic / Gemini adapters extract every `role: 'system'` message into the top-level `system` parameter — under `'before_history_tail'` the data block stays in `messages` instead, so any cache breakpoint earlier in the message stream no longer hashes the changing memory text.
+
+When dynamic state is also injected at the tail (`dynamicStatePlacement: 'last_user'`), the order inside the last user message is: original content → `<memory>` → `<dynamic_state>` → `<implicit_context>` → anchor line. When dynamic state goes to its own system message (`dynamicStatePlacement: 'system'`), memory still injects at the user tail with no anchor.
+
 ---
 
 ### Skill (Behavior Bundle)

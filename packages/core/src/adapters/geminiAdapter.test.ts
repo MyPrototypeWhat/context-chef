@@ -335,6 +335,279 @@ describe('GeminiAdapter', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// GeminiAdapter — consecutive same-role merging
+// (Required: Gemini's generateContent rejects non-alternating contents
+// with `400 INVALID_ARGUMENT: Please ensure that multiturn requests
+// alternate between user and model`. Anthropic / OpenAI tolerate or
+// auto-merge, so this normalization is Gemini-only.)
+// ═══════════════════════════════════════════════════════
+
+describe('GeminiAdapter — alternation normalization', () => {
+  const adapter = new GeminiAdapter();
+
+  it('merges parallel tool results (assistant.tool_calls → multiple `tool` rows) into a single user content', () => {
+    // Without merging: [user, model w/ 3 functionCalls, user (resp 1), user (resp 2), user (resp 3)]
+    // → 3 consecutive user contents → Gemini API rejects.
+    const messages: Message[] = [
+      { role: 'user', content: 'Weather in 3 cities' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'c1',
+            type: 'function' as const,
+            function: { name: 'get_weather', arguments: '{"city":"London"}' },
+          },
+          {
+            id: 'c2',
+            type: 'function' as const,
+            function: { name: 'get_weather', arguments: '{"city":"Paris"}' },
+          },
+          {
+            id: 'c3',
+            type: 'function' as const,
+            function: { name: 'get_weather', arguments: '{"city":"Tokyo"}' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: '{"temp":15}',
+        name: 'get_weather',
+        tool_call_id: 'c1',
+      },
+      {
+        role: 'tool',
+        content: '{"temp":12}',
+        name: 'get_weather',
+        tool_call_id: 'c2',
+      },
+      {
+        role: 'tool',
+        content: '{"temp":20}',
+        name: 'get_weather',
+        tool_call_id: 'c3',
+      },
+    ];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    // Expect 3 contents — original user, model w/ 3 calls, single merged user with 3 functionResponse parts
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0].role).toBe('user');
+    expect(result.messages[1].role).toBe('model');
+    expect(result.messages[2].role).toBe('user');
+
+    // Roles strictly alternate
+    for (let i = 1; i < result.messages.length; i++) {
+      expect(result.messages[i].role).not.toBe(result.messages[i - 1].role);
+    }
+
+    // The merged user content carries all three functionResponse parts in order
+    const merged = result.messages[2];
+    expect(merged.parts).toHaveLength(3);
+    expect(merged.parts[0].functionResponse?.name).toBe('get_weather');
+    expect(merged.parts[1].functionResponse?.name).toBe('get_weather');
+    expect(merged.parts[2].functionResponse?.name).toBe('get_weather');
+  });
+
+  it('merges adjacent user messages', () => {
+    // Guards the merge invariant for any source of adjacent user messages
+    // — e.g. caller-supplied IR with two user turns in a row, or a
+    // transformContext hook that inserts a synthetic user before the
+    // actual user turn. (Note: ContextChef's built-in `memoryPlacement:
+    // 'before_history_tail'` does NOT produce this shape — it injects
+    // memory text INTO the existing last user message via the assembler.)
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content:
+          'You recall the following from previous conversations:\n<memory><entry key="lang"><value>TypeScript</value></entry></memory>',
+      },
+      { role: 'user', content: 'help me refactor' },
+    ];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe('user');
+    expect(result.messages[0].parts).toHaveLength(2);
+    expect(result.messages[0].parts[0].text).toContain('<memory>');
+    expect(result.messages[0].parts[1].text).toBe('help me refactor');
+  });
+
+  it('merges adjacent model messages', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'first thought' },
+      { role: 'assistant', content: 'second thought' },
+      { role: 'user', content: 'why two?' },
+    ];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0].role).toBe('user');
+    expect(result.messages[1].role).toBe('model');
+    expect(result.messages[1].parts).toHaveLength(2);
+    expect(result.messages[1].parts[0].text).toBe('first thought');
+    expect(result.messages[1].parts[1].text).toBe('second thought');
+    expect(result.messages[2].role).toBe('user');
+  });
+
+  it('does not modify already-alternating contents', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' },
+      { role: 'user', content: 'q3' },
+    ];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.messages).toHaveLength(5);
+    const roles = result.messages.map((m) => m.role);
+    expect(roles).toEqual(['user', 'model', 'user', 'model', 'user']);
+    // No part concatenation
+    for (const m of result.messages) {
+      expect(m.parts).toHaveLength(1);
+    }
+  });
+
+  it('preserves part order across a merged run of three same-role contents', () => {
+    // Place the model turn first (not trailing) so prefill degradation doesn't pop
+    // it — this test is purely about the merge step.
+    const messages: Message[] = [
+      { role: 'user', content: 'starter' },
+      { role: 'assistant', content: 'response' },
+      { role: 'user', content: 'A' },
+      { role: 'user', content: 'B' },
+      { role: 'user', content: 'C' },
+    ];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0].role).toBe('user');
+    expect(result.messages[1].role).toBe('model');
+    expect(result.messages[2].role).toBe('user');
+    expect(result.messages[2].parts.map((p) => p.text)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('runs AFTER prefill degradation — trailing model pops, preceding model survives', () => {
+    // Fixture exercises BOTH halves of the ordering contract:
+    // - The trailing assistant ("<lang=fr>") is a prefill candidate → popped,
+    //   injected as enforcement into the immediately-preceding user.
+    // - The mid-conversation assistant ("first reply") must NOT be touched
+    //   by either prefill (only trailing is a candidate) or merge (it's the
+    //   only model turn left after the pop, so there's nothing to merge into).
+    const messages: Message[] = [
+      { role: 'user', content: 'greet me' },
+      { role: 'assistant', content: 'first reply' },
+      { role: 'user', content: 'translate' },
+      { role: 'assistant', content: '<lang=fr>' }, // trailing prefill candidate
+    ];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    // After prefill: [user "greet me", model "first reply", user "translate + enforcement"]
+    // After merge:   already alternating, no-op
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0].role).toBe('user');
+    expect(result.messages[1].role).toBe('model');
+    expect(result.messages[2].role).toBe('user');
+
+    // Preceding model survived verbatim — not merged, not popped
+    expect(result.messages[1].parts).toHaveLength(1);
+    expect(result.messages[1].parts[0].text).toBe('first reply');
+
+    // Trailing model was popped and its content injected into the last user
+    expect(result.messages[2].parts[0].text).toContain('translate');
+    expect(result.messages[2].parts[0].text).toContain('<lang=fr>');
+  });
+
+  it('does not mutate the input contents (pure transformation)', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'A' },
+      { role: 'user', content: 'B' },
+    ];
+
+    // Snapshot the input before compile
+    const snapshot = JSON.stringify(messages);
+
+    adapter.compile([...messages]);
+
+    expect(JSON.stringify(messages)).toBe(snapshot);
+  });
+
+  it('handles a single-content payload (length 1) with no merge work', () => {
+    const messages: Message[] = [{ role: 'user', content: 'hi' }];
+
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe('user');
+  });
+
+  it('zero-allocation fast path: returns input reference when already alternating', () => {
+    // The private static is accessible at runtime — TypeScript `private` is
+    // erased. Direct reference-equality assertion proves the optimization:
+    // already-alternating contents bypass cloning entirely.
+    const merge = (
+      GeminiAdapter as unknown as {
+        _mergeConsecutiveSameRole: (
+          c: Array<{ role: string; parts: Array<{ text?: string }> }>,
+        ) => Array<{ role: string; parts: Array<{ text?: string }> }>;
+      }
+    )._mergeConsecutiveSameRole;
+
+    const alternating = [
+      { role: 'user', parts: [{ text: 'a' }] },
+      { role: 'model', parts: [{ text: 'b' }] },
+      { role: 'user', parts: [{ text: 'c' }] },
+    ];
+
+    const result = merge(alternating);
+    expect(result).toBe(alternating); // SAME reference — zero-allocation fast path
+
+    // And input is still untouched
+    expect(alternating).toHaveLength(3);
+    expect(alternating[0].parts).toHaveLength(1);
+  });
+
+  it('partial-clone path: alternating prefix is cloned, suffix is merged', () => {
+    const merge = (
+      GeminiAdapter as unknown as {
+        _mergeConsecutiveSameRole: (
+          c: Array<{ role: string; parts: Array<{ text?: string }> }>,
+        ) => Array<{ role: string; parts: Array<{ text?: string }> }>;
+      }
+    )._mergeConsecutiveSameRole;
+
+    // Alternating prefix [user, model] then merge candidates [user, user]
+    const input = [
+      { role: 'user', parts: [{ text: 'q1' }] },
+      { role: 'model', parts: [{ text: 'a1' }] },
+      { role: 'user', parts: [{ text: 'q2' }] },
+      { role: 'user', parts: [{ text: 'q3' }] },
+    ];
+
+    const result = merge(input);
+
+    // Different reference (allocation happened)
+    expect(result).not.toBe(input);
+    // Correct merged shape: [user, model, user(q2+q3)]
+    expect(result).toHaveLength(3);
+    expect(result[2].parts.map((p) => p.text)).toEqual(['q2', 'q3']);
+    // Input untouched
+    expect(input).toHaveLength(4);
+    expect(input[2].parts).toHaveLength(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
 // fromGemini — input adapter
 // ═══════════════════════════════════════════════════════
 
