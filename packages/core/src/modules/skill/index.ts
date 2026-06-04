@@ -29,6 +29,12 @@ export interface Skill {
    * Use this to resolve reference paths in user code (chef does NOT auto-load references).
    */
   baseDir?: string;
+  /**
+   * Unknown frontmatter keys, verbatim (raw key spelling). chef NEVER reads
+   * this — it is host-facing annotation, the same stance as `allowedTools`.
+   * Fields like `argument-hint` / `version` / `model` land here.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /** Result of `loadSkillsDir`: tolerant — successful skills + per-file errors. */
@@ -189,25 +195,29 @@ function parseFrontmatter(source: string, filePath: string): ParsedFrontmatter {
  *   key: value          (string)
  *   key: "value"        (quoted string, single or double)
  *   key: [a, b, c]      (inline string array)
- * Comments (`#`) and blank lines are skipped. Block scalars and nested mappings
- * are not supported — they would silently swallow content, so we throw instead.
+ *   key: >              (folded block scalar — joined to one line)
+ *   key: |              (literal block scalar — newlines preserved)
+ * Comments (`#`) and blank lines are skipped. All scalars stay strings — no
+ * type coercion. Indented lines that are NOT a block-scalar body (nested maps,
+ * block sequences) are skipped leniently rather than throwing, so externally
+ * authored files load instead of failing.
  */
 function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown> {
   const data: Record<string, unknown> = {};
   const lines = yaml.split('\n');
 
-  for (let i = 0; i < lines.length; i++) {
+  let i = 0;
+  while (i < lines.length) {
     const line = lines[i];
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
 
-    if (line[0] === ' ' || line[0] === '\t') {
-      throw new Error(
-        `SKILL frontmatter parse error in ${filePath} (line ${i + 1}): ` +
-          `indented values are not supported. ` +
-          `Use inline arrays (key: [a, b, c]) or quoted strings (key: "value") instead — ` +
-          `block scalars and nested mappings are intentionally rejected by this minimal parser.`,
-      );
+    // Skip blanks, comments, and stray indented lines. Indented content that is
+    // NOT a block-scalar body (nested maps, block sequences) is ignored rather
+    // than throwing — leniency is the goal. Block-scalar bodies are consumed by
+    // the inner loop below, so they never reach this guard.
+    if (!trimmed || trimmed.startsWith('#') || line[0] === ' ' || line[0] === '\t') {
+      i++;
+      continue;
     }
 
     const colonIdx = line.indexOf(':');
@@ -216,16 +226,58 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
         `SKILL frontmatter parse error in ${filePath} (line ${i + 1}): expected "key: value", got "${line}".`,
       );
     }
-
     const key = line.slice(0, colonIdx).trim();
     if (!key) {
       throw new Error(`SKILL frontmatter parse error in ${filePath} (line ${i + 1}): empty key.`);
     }
+    const rest = line.slice(colonIdx + 1).trim();
 
-    data[key] = parseYamlValue(line.slice(colonIdx + 1).trim());
+    // Block scalar: `|` literal or `>` folded. Chomp/indent indicators
+    // (|-, |+, >2, …) are tolerated but ignored — known fields are trimmed.
+    if (/^[|>][+-]?\d*\s*$/.test(rest)) {
+      const style = rest[0] as '|' | '>';
+      const bodyLines: string[] = [];
+      i++;
+      while (i < lines.length) {
+        const next = lines[i];
+        if (next.trim() !== '' && next[0] !== ' ' && next[0] !== '\t') break;
+        bodyLines.push(next);
+        i++;
+      }
+      data[key] = foldBlockScalar(bodyLines, style);
+      continue;
+    }
+
+    data[key] = parseYamlValue(rest);
+    i++;
   }
 
   return data;
+}
+
+/** Dedent a block-scalar body and fold (`>`) or keep (`|`) newlines. Returns a string. */
+function foldBlockScalar(rawLines: string[], style: '|' | '>'): string {
+  const body = [...rawLines];
+  while (body.length > 0 && body[body.length - 1].trim() === '') body.pop();
+  if (body.length === 0) return '';
+
+  const indents = body
+    .filter((l) => l.trim() !== '')
+    .map((l) => l.match(/^[ \t]*/)?.[0].length ?? 0);
+  const minIndent = indents.length > 0 ? Math.min(...indents) : 0;
+  const dedented = body.map((l) => l.slice(minIndent));
+
+  if (style === '|') return dedented.join('\n');
+
+  let out = '';
+  for (const l of dedented) {
+    if (l.trim() === '') {
+      out += '\n';
+    } else {
+      out += out === '' || out.endsWith('\n') ? l.trim() : ` ${l.trim()}`;
+    }
+  }
+  return out;
 }
 
 function parseYamlValue(raw: string): unknown {
@@ -252,6 +304,16 @@ function stripQuotes(value: string): string {
 }
 
 // ─── Skill construction ─────────────────────────────────────────────────────
+
+/** Frontmatter keys chef understands natively (canonical + kebab aliases). */
+const KNOWN_KEYS = new Set([
+  'name',
+  'description',
+  'whenToUse',
+  'when-to-use',
+  'allowedTools',
+  'allowed-tools',
+]);
 
 function buildSkill(
   data: Record<string, unknown>,
@@ -285,24 +347,29 @@ function buildSkill(
     instructions: body.trim(),
   };
 
-  if (data.whenToUse !== undefined) {
-    if (typeof data.whenToUse !== 'string') {
+  const whenToUse = data.whenToUse ?? data['when-to-use'];
+  if (whenToUse !== undefined) {
+    if (typeof whenToUse !== 'string') {
       throw new Error(`SKILL parse error in ${filePath}: "whenToUse" must be a string.`);
     }
-    skill.whenToUse = data.whenToUse.trim();
+    skill.whenToUse = whenToUse.trim();
   }
 
-  if (data.allowedTools !== undefined) {
-    if (
-      !Array.isArray(data.allowedTools) ||
-      !data.allowedTools.every((v) => typeof v === 'string')
-    ) {
+  const allowedTools = data.allowedTools ?? data['allowed-tools'];
+  if (allowedTools !== undefined) {
+    if (!Array.isArray(allowedTools) || !allowedTools.every((v) => typeof v === 'string')) {
       throw new Error(
         `SKILL parse error in ${filePath}: "allowedTools" must be an array of strings.`,
       );
     }
-    skill.allowedTools = data.allowedTools.map((s) => s.trim()).filter(Boolean);
+    skill.allowedTools = allowedTools.map((s) => s.trim()).filter(Boolean);
   }
+
+  const metadata: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!KNOWN_KEYS.has(key)) metadata[key] = value;
+  }
+  if (Object.keys(metadata).length > 0) skill.metadata = metadata;
 
   if (baseDir) skill.baseDir = baseDir;
 

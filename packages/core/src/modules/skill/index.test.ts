@@ -143,6 +143,23 @@ describe('loadSkill', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it('parses an externally-authored SKILL.md with folded description, kebab aliases, and extra fields', async () => {
+    const skill = await loadSkill(join(FIXTURES, 'external-frontmatter', 'SKILL.md'));
+
+    expect(skill.name).toBe('pdf');
+    expect(skill.description).toContain('Folded multi-line description');
+    expect(skill.description).not.toContain('\n');
+    expect(skill.whenToUse).toBe('When the user wants to read or edit a PDF.');
+    expect(skill.allowedTools).toEqual(['Read', 'Bash']);
+    expect(skill.metadata).toEqual({ 'argument-hint': '[file]', version: '2.1.0' });
+    expect(skill.instructions.startsWith('Use pdfplumber')).toBe(true);
+  });
+
+  it('leaves metadata undefined when there are no extra keys', async () => {
+    const skill = await loadSkill(join(FIXTURES, 'valid-minimal', 'SKILL.md'));
+    expect(skill.metadata).toBeUndefined();
+  });
 });
 
 describe('loadSkillsDir', () => {
