@@ -5,7 +5,9 @@ export interface RenderSkillOptions {
   args?: string;
   /** Positional→name map for `$name` placeholders. Host-supplied. */
   argumentNames?: string[];
-  /** Key→value map for `${NAME}` template placeholders (e.g. SKILL_DIR, SESSION_ID). */
+  /** Key→value map for `${NAME}` template placeholders (e.g. SKILL_DIR, SESSION_ID).
+   *  Applied before the $-argument family, so a value here that itself contains
+   *  `$N` / `$ARGUMENTS` will then be processed by that pass. */
   vars?: Record<string, string>;
   /** Prepend `Base directory for this skill: {baseDir}\n\n` (common base-directory convention). */
   includeBaseDir?: boolean;
@@ -74,7 +76,7 @@ export function renderSkill(skill: Skill, opts: RenderSkillOptions = {}): Skill 
     // Full $ARGUMENTS — the raw string.
     text = text.replaceAll('$ARGUMENTS', args);
 
-    if (text === beforeArgs && appendArgsIfNoPlaceholder && args) {
+    if (text === beforeArgs && appendArgsIfNoPlaceholder && args.trim()) {
       text = `${text}\n\nARGUMENTS: ${args}`;
     }
   }

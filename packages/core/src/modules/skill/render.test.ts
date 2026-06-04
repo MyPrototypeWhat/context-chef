@@ -33,11 +33,14 @@ describe('renderSkill', () => {
     expect(out.instructions).toBe('Hi alice, do deploy');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder under test
   it('substitutes provided ${VARS} and leaves unknown ones untouched', () => {
     const out = renderSkill(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder under test
       { ...base, instructions: 'dir=${SKILL_DIR} miss=${NOPE}' },
       { vars: { SKILL_DIR: '/skills/pdf' } },
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder under test
     expect(out.instructions).toBe('dir=/skills/pdf miss=${NOPE}');
   });
 
@@ -67,6 +70,11 @@ describe('renderSkill', () => {
         },
       ).instructions,
     ).toBe('body');
+  });
+
+  it('does not append for whitespace-only args', () => {
+    const out = renderSkill({ ...base, instructions: 'body' }, { args: '   ' });
+    expect(out.instructions).toBe('body');
   });
 
   it('leaves the $-family untouched when args is undefined', () => {
