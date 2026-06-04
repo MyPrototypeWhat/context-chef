@@ -521,6 +521,10 @@ export class ContextChef {
   }
 
   /**
+   * Activate a skill as a standing "mode" instruction (the system-slot delivery).
+   * For progressive disclosure of many skills, append rendered skills as messages
+   * host-side instead — see docs/skill-recipes.md.
+   *
    * Activate a skill. Pass:
    *   - a Skill object   → activated directly (does not need to be registered)
    *   - a string         → resolved by name from `registerSkills`; throws if not found
