@@ -160,6 +160,51 @@ describe('loadSkill', () => {
     const skill = await loadSkill(join(FIXTURES, 'valid-minimal', 'SKILL.md'));
     expect(skill.metadata).toBeUndefined();
   });
+
+  it('parses a block-sequence allowed-tools into an array', async () => {
+    const tmp = join(FIXTURES, '__tmp_block_seq__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: bseq\ndescription: block seq\nallowed-tools:\n  - Read\n  - Bash\n---\nbody',
+    );
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.allowedTools).toEqual(['Read', 'Bash']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves newlines in a literal block scalar', async () => {
+    const tmp = join(FIXTURES, '__tmp_literal__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(filePath, '---\nname: lit\ndescription: |\n  line one\n  line two\n---\nbody');
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.description).toBe('line one\nline two');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('skips an unsupported nested mapping rather than recording an empty value', async () => {
+    const tmp = join(FIXTURES, '__tmp_nested__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: nest\ndescription: nested\nextra:\n  child: x\n---\nbody',
+    );
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.metadata).toBeUndefined();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('loadSkillsDir', () => {

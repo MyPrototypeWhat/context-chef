@@ -195,12 +195,15 @@ function parseFrontmatter(source: string, filePath: string): ParsedFrontmatter {
  *   key: value          (string)
  *   key: "value"        (quoted string, single or double)
  *   key: [a, b, c]      (inline string array)
+ *   key:                (block sequence on the following `- item` lines → string array)
+ *     - a
+ *     - b
  *   key: >              (folded block scalar — joined to one line)
  *   key: |              (literal block scalar — newlines preserved)
  * Comments (`#`) and blank lines are skipped. All scalars stay strings — no
- * type coercion. Indented lines that are NOT a block-scalar body (nested maps,
- * block sequences) are skipped leniently rather than throwing, so externally
- * authored files load instead of failing.
+ * type coercion. Indented blocks that are NOT a block scalar or a block
+ * sequence (e.g. nested mappings) are skipped leniently rather than throwing,
+ * so externally authored files load instead of failing.
  */
 function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown> {
   const data: Record<string, unknown> = {};
@@ -211,10 +214,9 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Skip blanks, comments, and stray indented lines. Indented content that is
-    // NOT a block-scalar body (nested maps, block sequences) is ignored rather
-    // than throwing — leniency is the goal. Block-scalar bodies are consumed by
-    // the inner loop below, so they never reach this guard.
+    // Skip blanks, comments, and stray indented lines. Indented bodies are
+    // consumed by the block-scalar / block-sequence handlers below, so they
+    // never reach this guard.
     if (!trimmed || trimmed.startsWith('#') || line[0] === ' ' || line[0] === '\t') {
       i++;
       continue;
@@ -233,7 +235,7 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
     const rest = line.slice(colonIdx + 1).trim();
 
     // Block scalar: `|` literal or `>` folded. Chomp/indent indicators
-    // (|-, |+, >2, …) are tolerated but ignored — known fields are trimmed.
+    // (|-, |+, >2, …) are tolerated but ignored.
     if (/^[|>][+-]?\d*\s*$/.test(rest)) {
       const style = rest[0] as '|' | '>';
       const bodyLines: string[] = [];
@@ -245,6 +247,32 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
         i++;
       }
       data[key] = foldBlockScalar(bodyLines, style);
+      continue;
+    }
+
+    // Empty inline value: may be followed by an indented block. A block
+    // sequence (`- item`) parses into a string array; any other indented block
+    // (e.g. a nested mapping) is unsupported and skipped WITHOUT recording a
+    // misleading empty value. A genuinely empty value stays "".
+    if (rest === '') {
+      let j = i + 1;
+      while (j < lines.length) {
+        const next = lines[j];
+        if (next.trim() !== '' && next[0] !== ' ' && next[0] !== '\t') break;
+        j++;
+      }
+      const blockBody = lines.slice(i + 1, j).filter((l) => l.trim() !== '');
+      if (blockBody.length > 0 && blockBody.every((l) => /^\s*-\s+/.test(l))) {
+        data[key] = blockBody.map((l) => stripQuotes(l.replace(/^\s*-\s+/, '').trim()));
+        i = j;
+        continue;
+      }
+      if (blockBody.length > 0) {
+        i = j; // unsupported nested block — skip the key, no misleading ""
+        continue;
+      }
+      data[key] = '';
+      i++;
       continue;
     }
 
