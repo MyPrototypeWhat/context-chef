@@ -84,8 +84,12 @@ export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner
 export {
   type FormatSkillListingOptions,
   formatSkillListing,
+  type LoadSkillsDirsOptions,
   loadSkill,
   loadSkillsDir,
+  loadSkillsDirs,
+  type RenderSkillOptions,
+  renderSkill,
   type Skill,
   type SkillLoadResult,
 } from './modules/skill';

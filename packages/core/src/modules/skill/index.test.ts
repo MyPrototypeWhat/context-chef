@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import * as chef from '../../index';
 import { formatSkillListing, loadSkill, loadSkillsDir, loadSkillsDirs, type Skill } from '.';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -426,5 +427,12 @@ describe('loadSkillsDirs', () => {
     expect(skills.map((s) => s.name).sort()).toEqual(['alpha', 'shared']);
     expect(errors).toHaveLength(1);
     expect(errors[0].message).toMatch(/Failed to read skills directory/);
+  });
+});
+
+describe('public exports', () => {
+  it('exposes the new skill API from the package root', () => {
+    expect(typeof chef.renderSkill).toBe('function');
+    expect(typeof chef.loadSkillsDirs).toBe('function');
   });
 });
