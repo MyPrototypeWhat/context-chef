@@ -52,6 +52,8 @@ export interface FormatSkillListingOptions {
   includeWhenToUse?: boolean;
 }
 
+export { type RenderSkillOptions, renderSkill } from './render';
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
