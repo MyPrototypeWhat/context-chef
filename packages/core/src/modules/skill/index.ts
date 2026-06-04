@@ -144,7 +144,8 @@ export async function loadSkillsDir(dirPath: string): Promise<SkillLoadResult> {
  * once. Name collisions resolve by `precedence` ('last-wins' default); an optional
  * `namespace` prefixes each source's skill names as `${ns}:${name}`. Tolerant:
  * per-dir errors are aggregated, never thrown. No auto-discovery — the caller
- * passes the directory list.
+ * passes the directory list. Merged skill order follows each name's first-seen
+ * position (a last-wins overwrite updates the value in place, not the order).
  */
 export async function loadSkillsDirs(
   dirs: string[],

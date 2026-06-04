@@ -420,4 +420,11 @@ describe('loadSkillsDirs', () => {
     const { skills } = await loadSkillsDirs([A, A]);
     expect(skills.filter((s) => s.name === 'alpha')).toHaveLength(1);
   });
+
+  it('aggregates errors from a bad dir while still returning good skills', async () => {
+    const { skills, errors } = await loadSkillsDirs([A, join(ROOT, 'does-not-exist')]);
+    expect(skills.map((s) => s.name).sort()).toEqual(['alpha', 'shared']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/Failed to read skills directory/);
+  });
 });
