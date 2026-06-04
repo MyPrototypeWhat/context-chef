@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 /**
@@ -41,6 +41,13 @@ export interface Skill {
 export interface SkillLoadResult {
   skills: Skill[];
   errors: Array<{ path: string; message: string }>;
+}
+
+export interface LoadSkillsDirsOptions {
+  /** Collision resolution on duplicate skill names. Default 'last-wins'. */
+  precedence?: 'last-wins' | 'first-wins';
+  /** Per-source prefix: returns the namespace for a dir, producing `${ns}:${name}`. */
+  namespace?: (dir: string) => string | undefined;
 }
 
 export interface FormatSkillListingOptions {
@@ -129,6 +136,47 @@ export async function loadSkillsDir(dirPath: string): Promise<SkillLoadResult> {
   }
 
   return result;
+}
+
+/**
+ * Load skills from multiple directories and merge them. Each dir is scanned via
+ * {@link loadSkillsDir}. Directories that resolve to the same realpath are scanned
+ * once. Name collisions resolve by `precedence` ('last-wins' default); an optional
+ * `namespace` prefixes each source's skill names as `${ns}:${name}`. Tolerant:
+ * per-dir errors are aggregated, never thrown. No auto-discovery — the caller
+ * passes the directory list.
+ */
+export async function loadSkillsDirs(
+  dirs: string[],
+  opts: LoadSkillsDirsOptions = {},
+): Promise<SkillLoadResult> {
+  const precedence = opts.precedence ?? 'last-wins';
+  const errors: SkillLoadResult['errors'] = [];
+  const byName = new Map<string, Skill>();
+  const seenDirs = new Set<string>();
+
+  for (const dir of dirs) {
+    let realDir: string;
+    try {
+      realDir = await realpath(dir);
+    } catch {
+      realDir = dir; // let loadSkillsDir surface the read error below
+    }
+    if (seenDirs.has(realDir)) continue;
+    seenDirs.add(realDir);
+
+    const result = await loadSkillsDir(dir);
+    errors.push(...result.errors);
+
+    const ns = opts.namespace?.(dir);
+    for (const skill of result.skills) {
+      const named = ns ? { ...skill, name: `${ns}:${skill.name}` } : skill;
+      if (precedence === 'first-wins' && byName.has(named.name)) continue;
+      byName.set(named.name, named);
+    }
+  }
+
+  return { skills: [...byName.values()], errors };
 }
 
 /**

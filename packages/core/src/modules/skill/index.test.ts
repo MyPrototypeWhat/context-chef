@@ -2,7 +2,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { formatSkillListing, loadSkill, loadSkillsDir, type Skill } from '.';
+import { formatSkillListing, loadSkill, loadSkillsDir, loadSkillsDirs, type Skill } from '.';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(__dirname, '__fixtures__');
@@ -365,5 +365,59 @@ describe('formatSkillListing', () => {
   it('handles an empty skills array gracefully', () => {
     expect(formatSkillListing([])).toBe('');
     expect(formatSkillListing([], { format: 'xml' })).toBe('<skills></skills>');
+  });
+});
+
+describe('loadSkillsDirs', () => {
+  const ROOT = resolve(__dirname, '__fixtures__', '__tmp_dirs__');
+  const A = join(ROOT, 'a');
+  const B = join(ROOT, 'b');
+
+  const writeSkill = async (dir: string, name: string, desc: string) => {
+    await mkdir(join(dir, name), { recursive: true });
+    await writeFile(
+      join(dir, name, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${desc}\n---\nbody`,
+    );
+  };
+
+  beforeAll(async () => {
+    await writeSkill(A, 'alpha', 'from A');
+    await writeSkill(A, 'shared', 'A version');
+    await writeSkill(B, 'beta', 'from B');
+    await writeSkill(B, 'shared', 'B version');
+  });
+  afterAll(async () => {
+    await rm(ROOT, { recursive: true, force: true });
+  });
+
+  it('merges skills from multiple dirs with last-wins precedence by default', async () => {
+    const { skills, errors } = await loadSkillsDirs([A, B]);
+    expect(errors).toEqual([]);
+    const byName = Object.fromEntries(skills.map((s) => [s.name, s.description]));
+    expect(byName.alpha).toBe('from A');
+    expect(byName.beta).toBe('from B');
+    expect(byName.shared).toBe('B version'); // last wins
+  });
+
+  it('honors first-wins precedence', async () => {
+    const { skills } = await loadSkillsDirs([A, B], { precedence: 'first-wins' });
+    const shared = skills.find((s) => s.name === 'shared');
+    expect(shared?.description).toBe('A version');
+  });
+
+  it('namespaces skill names per source when a namespace fn is given', async () => {
+    const { skills } = await loadSkillsDirs([A, B], {
+      namespace: (dir) => (dir === A ? 'a' : 'b'),
+    });
+    const names = skills.map((s) => s.name).sort();
+    expect(names).toContain('a:alpha');
+    expect(names).toContain('b:shared');
+    expect(names).toContain('a:shared'); // namespacing prevents the collision
+  });
+
+  it('dedups the same dir passed twice (realpath)', async () => {
+    const { skills } = await loadSkillsDirs([A, A]);
+    expect(skills.filter((s) => s.name === 'alpha')).toHaveLength(1);
   });
 });
