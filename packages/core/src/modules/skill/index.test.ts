@@ -2,7 +2,8 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { formatSkillListing, loadSkill, loadSkillsDir, type Skill } from '.';
+import * as chef from '../../index';
+import { formatSkillListing, loadSkill, loadSkillsDir, loadSkillsDirs, type Skill } from '.';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(__dirname, '__fixtures__');
@@ -139,6 +140,114 @@ describe('loadSkill', () => {
       const skill = await loadSkill(filePath);
       expect(skill.name).toBe('quoted-name');
       expect(skill.description).toBe('a single-quoted desc');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('parses an externally-authored SKILL.md with folded description, kebab aliases, and extra fields', async () => {
+    const skill = await loadSkill(join(FIXTURES, 'external-frontmatter', 'SKILL.md'));
+
+    expect(skill.name).toBe('pdf');
+    expect(skill.description).toContain('Folded multi-line description');
+    expect(skill.description).not.toContain('\n');
+    expect(skill.whenToUse).toBe('When the user wants to read or edit a PDF.');
+    expect(skill.allowedTools).toEqual(['Read', 'Bash']);
+    expect(skill.metadata).toEqual({ 'argument-hint': '[file]', version: '2.1.0' });
+    expect(skill.instructions.startsWith('Use pdfplumber')).toBe(true);
+  });
+
+  it('leaves metadata undefined when there are no extra keys', async () => {
+    const skill = await loadSkill(join(FIXTURES, 'valid-minimal', 'SKILL.md'));
+    expect(skill.metadata).toBeUndefined();
+  });
+
+  it('parses a block-sequence allowed-tools into an array', async () => {
+    const tmp = join(FIXTURES, '__tmp_block_seq__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: bseq\ndescription: block seq\nallowed-tools:\n  - Read\n  - Bash\n---\nbody',
+    );
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.allowedTools).toEqual(['Read', 'Bash']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves newlines in a literal block scalar', async () => {
+    const tmp = join(FIXTURES, '__tmp_literal__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(filePath, '---\nname: lit\ndescription: |\n  line one\n  line two\n---\nbody');
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.description).toBe('line one\nline two');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('skips an unsupported nested mapping rather than recording an empty value', async () => {
+    const tmp = join(FIXTURES, '__tmp_nested__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: nest\ndescription: nested\nextra:\n  child: x\n---\nbody',
+    );
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.metadata).toBeUndefined();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when a known field has an unsupported nested-mapping shape', async () => {
+    const tmp = join(FIXTURES, '__tmp_known_nested__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: k\ndescription: d\nallowed-tools:\n  Read: yes\n---\nbody',
+    );
+    try {
+      await expect(loadSkill(filePath)).rejects.toThrow(/unsupported multi-line or nested value/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when a known field is a block sequence with a malformed item', async () => {
+    const tmp = join(FIXTURES, '__tmp_known_badseq__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: k\ndescription: d\nallowed-tools:\n  - Read\n  -Bad\n---\nbody',
+    );
+    try {
+      await expect(loadSkill(filePath)).rejects.toThrow(/unsupported multi-line or nested value/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps paragraph breaks in a folded block scalar', async () => {
+    const tmp = join(FIXTURES, '__tmp_folded_para__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: fp\ndescription: >\n  para one a\n  para one b\n\n  para two\n---\nbody',
+    );
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.description).toBe('para one a para one b\npara two');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -303,5 +412,73 @@ describe('formatSkillListing', () => {
   it('handles an empty skills array gracefully', () => {
     expect(formatSkillListing([])).toBe('');
     expect(formatSkillListing([], { format: 'xml' })).toBe('<skills></skills>');
+  });
+});
+
+describe('loadSkillsDirs', () => {
+  const ROOT = resolve(__dirname, '__fixtures__', '__tmp_dirs__');
+  const A = join(ROOT, 'a');
+  const B = join(ROOT, 'b');
+
+  const writeSkill = async (dir: string, name: string, desc: string) => {
+    await mkdir(join(dir, name), { recursive: true });
+    await writeFile(
+      join(dir, name, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${desc}\n---\nbody`,
+    );
+  };
+
+  beforeAll(async () => {
+    await writeSkill(A, 'alpha', 'from A');
+    await writeSkill(A, 'shared', 'A version');
+    await writeSkill(B, 'beta', 'from B');
+    await writeSkill(B, 'shared', 'B version');
+  });
+  afterAll(async () => {
+    await rm(ROOT, { recursive: true, force: true });
+  });
+
+  it('merges skills from multiple dirs with last-wins precedence by default', async () => {
+    const { skills, errors } = await loadSkillsDirs([A, B]);
+    expect(errors).toEqual([]);
+    const byName = Object.fromEntries(skills.map((s) => [s.name, s.description]));
+    expect(byName.alpha).toBe('from A');
+    expect(byName.beta).toBe('from B');
+    expect(byName.shared).toBe('B version'); // last wins
+  });
+
+  it('honors first-wins precedence', async () => {
+    const { skills } = await loadSkillsDirs([A, B], { precedence: 'first-wins' });
+    const shared = skills.find((s) => s.name === 'shared');
+    expect(shared?.description).toBe('A version');
+  });
+
+  it('namespaces skill names per source when a namespace fn is given', async () => {
+    const { skills } = await loadSkillsDirs([A, B], {
+      namespace: (dir) => (dir === A ? 'a' : 'b'),
+    });
+    const names = skills.map((s) => s.name).sort();
+    expect(names).toContain('a:alpha');
+    expect(names).toContain('b:shared');
+    expect(names).toContain('a:shared'); // namespacing prevents the collision
+  });
+
+  it('dedups the same dir passed twice (realpath)', async () => {
+    const { skills } = await loadSkillsDirs([A, A]);
+    expect(skills.filter((s) => s.name === 'alpha')).toHaveLength(1);
+  });
+
+  it('aggregates errors from a bad dir while still returning good skills', async () => {
+    const { skills, errors } = await loadSkillsDirs([A, join(ROOT, 'does-not-exist')]);
+    expect(skills.map((s) => s.name).sort()).toEqual(['alpha', 'shared']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/Failed to read skills directory/);
+  });
+});
+
+describe('public exports', () => {
+  it('exposes the new skill API from the package root', () => {
+    expect(typeof chef.renderSkill).toBe('function');
+    expect(typeof chef.loadSkillsDirs).toBe('function');
   });
 });

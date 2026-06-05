@@ -84,8 +84,12 @@ export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner
 export {
   type FormatSkillListingOptions,
   formatSkillListing,
+  type LoadSkillsDirsOptions,
   loadSkill,
   loadSkillsDir,
+  loadSkillsDirs,
+  type RenderSkillOptions,
+  renderSkill,
   type Skill,
   type SkillLoadResult,
 } from './modules/skill';
@@ -517,7 +521,11 @@ export class ContextChef {
   }
 
   /**
-   * Activate a skill. Pass:
+   * Activate a skill as a standing "mode" instruction (the system-slot delivery).
+   * For progressive disclosure of many skills, append rendered skills as messages
+   * host-side instead — see docs/skill-recipes.md.
+   *
+   * Pass:
    *   - a Skill object   → activated directly (does not need to be registered)
    *   - a string         → resolved by name from `registerSkills`; throws if not found
    *   - null             → clears the active skill and instructions slot

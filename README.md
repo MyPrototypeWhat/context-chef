@@ -638,6 +638,8 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 import {
   loadSkill,
   loadSkillsDir,
+  loadSkillsDirs,
+  renderSkill,
   formatSkillListing,
 } from "@context-chef/core";
 
@@ -648,9 +650,18 @@ const skill = await loadSkill("./skills/db-debug/SKILL.md");
 const { skills, errors } = await loadSkillsDir("./skills");
 chef.registerSkills(skills);
 
+// Or merge several sources at once (e.g. builtin + user + project) — later dirs
+// win on name collisions, dirs are realpath-deduped, and an optional `namespace`
+// callback can prefix names per source:
+const merged = await loadSkillsDirs([builtinDir, userDir, projectDir], {
+  precedence: "last-wins",
+});
+
 // Render a system-prompt-friendly listing (useful for LLM-driven `load_skill` tool)
 const listing = formatSkillListing(skills, { format: "plain" });
 ```
+
+`SKILL.md` parsing is tolerant: block scalars (`>` folded / `|` literal), `- item` lists, and kebab-case keys (`allowed-tools`, `when-to-use`) all load. Any frontmatter key chef doesn't recognize is preserved verbatim on `skill.metadata` for your host to read — chef never interprets it (the same annotation-only stance as `allowedTools`). A *known* field written in a malformed nested shape throws, so a typo'd `allowed-tools` surfaces instead of silently disabling restrictions.
 
 The listing is typically used as the description of a `load_skill` tool, letting the LLM pick a skill itself:
 
@@ -674,7 +685,20 @@ if (call.name === "load_skill") {
 }
 ```
 
-For the design rationale (Skill ⊥ Pruner decoupling, SKILL.md frontmatter shape, mode-wiring recipes, LLM-driven skill loading, reference files) see [`SKILL_SPEC.md`](./SKILL_SPEC.md).
+#### Rendering arguments (`renderSkill`)
+
+`renderSkill` substitutes `$ARGUMENTS` / `$0..$N` / `$name` / `${VAR}` placeholders in a skill's instructions and returns a new `Skill` (pure — no I/O). Where the rendered skill is delivered is your call: the system slot above (a persistent "mode"), or a host-appended message for progressive disclosure of many skills at once.
+
+```typescript
+const triage = await loadSkill("./skills/triage/SKILL.md");
+
+// Fill $ARGUMENTS / $0.. / ${SKILL_DIR} before activating:
+chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
+```
+
+Referenced files (`@./schema.json`, …) are **not** inlined by chef — pass `renderSkill(skill, { includeBaseDir: true })` and let your agent read them on demand via its own file tool.
+
+For the design rationale (Skill ⊥ Pruner decoupling, SKILL.md frontmatter shape, mode-wiring recipes, LLM-driven skill loading, reference files) see [`SKILL_SPEC.md`](./SKILL_SPEC.md). For argument rendering, multi-source loading, and the two delivery models, see [`docs/skill-interop-design.md`](./docs/skill-interop-design.md) and the usage recipes in [`docs/skill-recipes.md`](./docs/skill-recipes.md).
 
 ---
 

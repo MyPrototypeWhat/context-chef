@@ -580,6 +580,8 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 import {
   loadSkill,
   loadSkillsDir,
+  loadSkillsDirs,
+  renderSkill,
   formatSkillListing,
 } from "@context-chef/core";
 
@@ -590,9 +592,17 @@ const skill = await loadSkill("./skills/db-debug/SKILL.md");
 const { skills, errors } = await loadSkillsDir("./skills");
 chef.registerSkills(skills);
 
+// 或一次性合并多个来源（如 builtin + user + project）——同名时后面的目录胜出，
+// 目录按 realpath 去重，可选 `namespace` 回调给每个来源加前缀：
+const merged = await loadSkillsDirs([builtinDir, userDir, projectDir], {
+  precedence: "last-wins",
+});
+
 // 渲染成 system prompt 友好的 listing（用于 LLM 自主调 `load_skill` tool 的场景）
 const listing = formatSkillListing(skills, { format: "plain" });
 ```
+
+`SKILL.md` 解析是容忍的：块标量（`>` 折叠 / `|` 字面）、`- item` 列表、kebab key（`allowed-tools`、`when-to-use`）都能加载；chef 不认识的 key 原样保留在 `skill.metadata` 上交给 host 读取——chef 从不解释，仅作注解（与 `allowedTools` 一致）。已知字段若写成畸形嵌套结构会直接抛错，而不是静默失效（打错的 `allowed-tools` 会暴露，而非悄悄关掉限制）。
 
 listing 通常作为 `load_skill` tool 的 description,让 LLM 自己挑 skill:
 
@@ -616,7 +626,20 @@ if (call.name === "load_skill") {
 }
 ```
 
-设计动机（Skill ⊥ Pruner 解耦、SKILL.md frontmatter 格式、mode 接线配方、LLM 自主加载 skill、reference 文件）见 [`SKILL_SPEC.md`](./SKILL_SPEC.md)。
+#### 渲染参数（`renderSkill`）
+
+`renderSkill` 把 skill instructions 里的 `$ARGUMENTS` / `$0..$N` / `$name` / `${VAR}` 占位符替换掉，返回一个新的 `Skill`（纯函数，无 I/O）。渲染后的 skill 怎么投递由你决定：上面的 system 槽（常驻"模式"），或 host 追加成消息以同时渐进式挂载多个 skill。
+
+```typescript
+const triage = await loadSkill("./skills/triage/SKILL.md");
+
+// 激活前先填 $ARGUMENTS / $0.. / ${SKILL_DIR}:
+chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
+```
+
+引用文件（`@./schema.json` 等）chef **不会**内联——传 `renderSkill(skill, { includeBaseDir: true })`，让你的 agent 用自己的文件工具按需读取。
+
+设计动机（Skill ⊥ Pruner 解耦、SKILL.md frontmatter 格式、mode 接线配方、LLM 自主加载 skill、reference 文件）见 [`SKILL_SPEC.md`](./SKILL_SPEC.md)。参数渲染、多源加载、两种交付模型见 [`docs/skill-interop-design.md`](./docs/skill-interop-design.md) 和使用配方 [`docs/skill-recipes.md`](./docs/skill-recipes.md)。
 
 ---
 
