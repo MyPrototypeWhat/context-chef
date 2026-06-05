@@ -1,7 +1,8 @@
 import type { Skill } from './index';
 
 export interface RenderSkillOptions {
-  /** Raw argument string. Drives the $-family. Parsed quote-aware (whitespace fallback). */
+  /** Raw argument string. Drives the $-family. Parsed quote-aware (whitespace fallback).
+   *  `undefined` skips $-substitution entirely; `''` resolves $-placeholders to empty. */
   args?: string;
   /** Positional→name map for `$name` placeholders. Host-supplied. */
   argumentNames?: string[];

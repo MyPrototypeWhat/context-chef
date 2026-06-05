@@ -525,7 +525,7 @@ export class ContextChef {
    * For progressive disclosure of many skills, append rendered skills as messages
    * host-side instead — see docs/skill-recipes.md.
    *
-   * Activate a skill. Pass:
+   * Pass:
    *   - a Skill object   → activated directly (does not need to be registered)
    *   - a string         → resolved by name from `registerSkills`; throws if not found
    *   - null             → clears the active skill and instructions slot

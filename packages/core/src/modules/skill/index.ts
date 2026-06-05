@@ -265,9 +265,9 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Skip blanks, comments, and stray indented lines. Indented bodies are
-    // consumed by the block-scalar / block-sequence handlers below, so they
-    // never reach this guard.
+    // Skip blanks, comments, and stray indented lines. Stray indented lines
+    // outside a recognized block (e.g. a leading indented line, or content
+    // under a plain `key: value`) are skipped here.
     if (!trimmed || trimmed.startsWith('#') || line[0] === ' ' || line[0] === '\t') {
       i++;
       continue;
@@ -319,7 +319,19 @@ function parseYamlSubset(yaml: string, filePath: string): Record<string, unknown
         continue;
       }
       if (blockBody.length > 0) {
-        i = j; // unsupported nested block — skip the key, no misleading ""
+        // Indented block that is neither a block scalar nor a `- item` sequence
+        // (e.g. a nested mapping). For an UNKNOWN key this is a lenient skip. For
+        // a KNOWN field, silently dropping it would fail open (a malformed
+        // allowed-tools would read as "no restriction"), so surface an error.
+        if (KNOWN_KEYS.has(key)) {
+          throw new Error(
+            `SKILL frontmatter parse error in ${filePath} (line ${i + 1}): ` +
+              `field "${key}" has an unsupported multi-line or nested value. ` +
+              `Use a quoted string, an inline array ([a, b]), a "- item" block ` +
+              `sequence, or a block scalar (| or >).`,
+          );
+        }
+        i = j; // unknown key — skip leniently, no misleading ""
         continue;
       }
       data[key] = '';

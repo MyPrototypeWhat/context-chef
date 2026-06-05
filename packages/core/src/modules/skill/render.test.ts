@@ -88,4 +88,21 @@ describe('renderSkill', () => {
     expect(input.instructions).toBe('$ARGUMENTS');
     expect(out).not.toBe(input);
   });
+
+  it('processes a $-placeholder that appears in a substituted var value', () => {
+    const out = renderSkill(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder under test
+      { ...base, instructions: '${X}' },
+      { vars: { X: '$0' }, args: 'hello' },
+    );
+    expect(out.instructions).toBe('hello');
+  });
+
+  it('does not replace $name inside a longer token', () => {
+    const out = renderSkill(
+      { ...base, instructions: '$who and $whoami' },
+      { args: 'alice', argumentNames: ['who'] },
+    );
+    expect(out.instructions).toBe('alice and $whoami');
+  });
 });

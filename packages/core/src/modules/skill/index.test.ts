@@ -206,6 +206,52 @@ describe('loadSkill', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it('throws when a known field has an unsupported nested-mapping shape', async () => {
+    const tmp = join(FIXTURES, '__tmp_known_nested__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: k\ndescription: d\nallowed-tools:\n  Read: yes\n---\nbody',
+    );
+    try {
+      await expect(loadSkill(filePath)).rejects.toThrow(/unsupported multi-line or nested value/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when a known field is a block sequence with a malformed item', async () => {
+    const tmp = join(FIXTURES, '__tmp_known_badseq__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: k\ndescription: d\nallowed-tools:\n  - Read\n  -Bad\n---\nbody',
+    );
+    try {
+      await expect(loadSkill(filePath)).rejects.toThrow(/unsupported multi-line or nested value/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps paragraph breaks in a folded block scalar', async () => {
+    const tmp = join(FIXTURES, '__tmp_folded_para__');
+    await mkdir(tmp, { recursive: true });
+    const filePath = join(tmp, 'SKILL.md');
+    await writeFile(
+      filePath,
+      '---\nname: fp\ndescription: >\n  para one a\n  para one b\n\n  para two\n---\nbody',
+    );
+    try {
+      const skill = await loadSkill(filePath);
+      expect(skill.description).toBe('para one a para one b\npara two');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('loadSkillsDir', () => {

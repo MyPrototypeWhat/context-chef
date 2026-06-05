@@ -3,6 +3,7 @@
 **Status:** proposal · companion to [`SKILL_SPEC.md`](../SKILL_SPEC.md)
 **Date:** 2026-06-04
 **Scope:** additive evolution of Module B (Skill). The shipped v1 API (`Skill`, `loadSkill`, `loadSkillsDir`, `formatSkillListing`, `ContextChef.activateSkill`) stays. Nothing here removes or breaks it.
+> Note: `file:line` references point at the pre-PR `main` baseline as of this doc's date.
 
 ---
 
