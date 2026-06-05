@@ -1,5 +1,12 @@
 # @context-chef/tanstack-ai
 
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [[`f411b7c`](https://github.com/MyPrototypeWhat/context-chef/commit/f411b7cda930a7999a3b04315860d1addb032647)]:
+  - @context-chef/core@3.6.0
+
 ## 0.4.5
 
 ### Patch Changes

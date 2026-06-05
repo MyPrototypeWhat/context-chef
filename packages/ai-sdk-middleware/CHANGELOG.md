@@ -1,5 +1,12 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.3.6
+
+### Patch Changes
+
+- Updated dependencies [[`f411b7c`](https://github.com/MyPrototypeWhat/context-chef/commit/f411b7cda930a7999a3b04315860d1addb032647)]:
+  - @context-chef/core@3.6.0
+
 ## 1.3.5
 
 ### Patch Changes
