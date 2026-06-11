@@ -1,5 +1,15 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.4.0
+
+### Minor Changes
+
+- [`1efa651`](https://github.com/MyPrototypeWhat/context-chef/commit/1efa6511284d70535dceaad4676e6c5b9dcdaa08) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Compression is now opt-in: `createMiddleware` only constructs a Janitor when a compression option is configured (`compress`, `onCompress`, `onBeforeCompress`, or `onBudgetExceeded`). `contextWindow` becomes optional and is only required — enforced with a throw at construction time — when one of those options is present.
+
+  Truncate / compact / skill / dynamicState-only configurations no longer need a `contextWindow` sentinel or a dummy tokenizer, no longer run budget checks or capture token usage, and no longer trigger the Janitor's per-instance missing-tokenizer `console.warn`.
+
+  Behavior change: previously, passing only `contextWindow` silently enabled discard-style compression (old messages dropped with a placeholder summary) once the budget was exceeded. That implicit, lossy default is gone — opt in explicitly via `compress` or the compression hooks to get budget-driven behavior.
+
 ## 1.3.7
 
 ### Patch Changes
