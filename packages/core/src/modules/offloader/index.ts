@@ -32,7 +32,16 @@ export class FileSystemAdapter implements VFSStorageAdapter {
 
   write(filename: string, content: string): void {
     const filepath = path.join(this.storageDir, filename);
-    fs.writeFileSync(filepath, content, 'utf8');
+    try {
+      fs.writeFileSync(filepath, content, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // The storage dir can vanish mid-process — OS temp cleaners purge
+      // /var/folders & friends on long-running hosts, and the constructor's
+      // mkdir only ran once. Recreate and retry once.
+      fs.mkdirSync(this.storageDir, { recursive: true });
+      fs.writeFileSync(filepath, content, 'utf8');
+    }
   }
 
   read(filename: string): string | null {

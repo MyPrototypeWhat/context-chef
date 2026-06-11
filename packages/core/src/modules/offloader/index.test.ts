@@ -1092,6 +1092,15 @@ describe('Offloader', () => {
         expect(() => adapter.delete('vfs_1_abcdef00.txt')).not.toThrow();
         expect(() => adapter.delete('never_existed.txt')).not.toThrow();
       });
+
+      it('FileSystemAdapter.write() recreates a storage dir removed externally (OS temp cleaner)', () => {
+        const adapter = new FileSystemAdapter(CLEANUP_DIR);
+        adapter.write('vfs_1_abcdef00.txt', 'before');
+        // Simulate the OS temp cleaner purging the whole dir mid-process.
+        fs.rmSync(CLEANUP_DIR, { recursive: true, force: true });
+        expect(() => adapter.write('vfs_2_abcdef00.txt', 'after')).not.toThrow();
+        expect(adapter.read('vfs_2_abcdef00.txt')).toBe('after');
+      });
     });
   });
 });
