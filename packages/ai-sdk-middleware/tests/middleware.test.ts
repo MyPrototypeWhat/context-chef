@@ -316,7 +316,10 @@ describe('compress opt-in (no budgeting configured)', () => {
       model.doGenerate({ prompt: [] });
     const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
 
-    const result = await assertDefined(middleware.wrapGenerate, 'wrapGenerate')({
+    const result = await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
       doGenerate,
       doStream,
       params: { prompt: [] },
@@ -324,7 +327,10 @@ describe('compress opt-in (no budgeting configured)', () => {
     });
     expect(result.usage.inputTokens.total).toBe(42);
 
-    const streamResult = await assertDefined(middleware.wrapStream, 'wrapStream')({
+    const streamResult = await assertDefined(
+      middleware.wrapStream,
+      'wrapStream',
+    )({
       doGenerate,
       doStream,
       params: { prompt: [] },
@@ -340,9 +346,7 @@ describe('compress opt-in (no budgeting configured)', () => {
   });
 
   it('throws when onBeforeCompress is configured without contextWindow', () => {
-    expect(() => createMiddleware({ onBeforeCompress: () => undefined })).toThrow(
-      /contextWindow/,
-    );
+    expect(() => createMiddleware({ onBeforeCompress: () => undefined })).toThrow(/contextWindow/);
   });
 });
 
