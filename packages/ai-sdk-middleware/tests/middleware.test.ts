@@ -183,6 +183,8 @@ describe('createMiddleware', () => {
   it('wrapGenerate feeds token usage to janitor', async () => {
     const middleware = createMiddleware({
       contextWindow: 500,
+      // Budgeting option — without one no Janitor is constructed (compress opt-in).
+      onBeforeCompress: () => undefined,
     });
 
     const model = createMockModel({ inputTokens: 200 });
@@ -207,6 +209,8 @@ describe('createMiddleware', () => {
   it('wrapStream captures usage from finish chunk', async () => {
     const middleware = createMiddleware({
       contextWindow: 500,
+      // Budgeting option — without one no Janitor is constructed (compress opt-in).
+      onBeforeCompress: () => undefined,
     });
 
     const model = createMockModel({ inputTokens: 300 });
@@ -274,6 +278,71 @@ describe('createMiddleware', () => {
     });
 
     expect(result.prompt.length).toBeLessThan(longPrompt.length);
+  });
+});
+
+describe('compress opt-in (no budgeting configured)', () => {
+  it('allows omitting contextWindow and emits no Janitor warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const middleware = createMiddleware({
+        truncate: { threshold: 50, tailChars: 10 },
+      });
+
+      const prompt: LanguageModelV3Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+      ];
+      const result = await assertDefined(
+        middleware.transformParams,
+        'transformParams',
+      )({
+        params: { prompt },
+        type: 'generate',
+        model: createMockModel(),
+      });
+
+      expect(result.prompt).toEqual(prompt);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('wrapGenerate and wrapStream pass through untouched without a Janitor', async () => {
+    const middleware = createMiddleware({});
+    const model = createMockModel({ inputTokens: 42 });
+
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+
+    const result = await assertDefined(middleware.wrapGenerate, 'wrapGenerate')({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
+      model,
+    });
+    expect(result.usage.inputTokens.total).toBe(42);
+
+    const streamResult = await assertDefined(middleware.wrapStream, 'wrapStream')({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
+      model,
+    });
+    expect(streamResult.stream).toBeDefined();
+  });
+
+  it('throws when compress is configured without contextWindow', () => {
+    expect(() => createMiddleware({ compress: { model: createMockModel() } })).toThrow(
+      /contextWindow/,
+    );
+  });
+
+  it('throws when onBeforeCompress is configured without contextWindow', () => {
+    expect(() => createMiddleware({ onBeforeCompress: () => undefined })).toThrow(
+      /contextWindow/,
+    );
   });
 });
 
@@ -930,6 +999,8 @@ describe('skill', () => {
     const middleware = createMiddleware({
       contextWindow: 100,
       skill: planningSkill,
+      // Compression is opt-in now — any compression option enables the Janitor.
+      onCompress: () => {},
     });
 
     const model = createMockModel({ inputTokens: 200 });

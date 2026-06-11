@@ -23,44 +23,24 @@ type CompressRole = 'system' | 'user' | 'assistant';
 export function createMiddleware(options: ContextChefOptions): LanguageModelMiddleware {
   let usageWarned = false;
 
-  // The Janitor config is a discriminated union on `tokenizer`. Build the
-  // two branches separately so the literal type matches one of the union
-  // members exactly — a single literal carrying `tokenizer: Fn | undefined`
-  // would not narrow to either branch.
-  const sharedJanitorConfig = {
-    contextWindow: options.contextWindow,
-    toolResultStubThreshold: options.compress?.toolResultStubThreshold,
-    compressionModel: options.compress?.model
-      ? createCompressionAdapter(options.compress.model)
-      : undefined,
-    onCompress: options.onCompress
-      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
-      : undefined,
-    onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
-  };
+  // Budget-dependent features: compression and its hooks. Any of them
+  // signals compression intent and needs a Janitor — and therefore a
+  // `contextWindow`. Truncate/compact/skill/dynamicState-only
+  // configurations get no Janitor at all: no budget checks, no token-usage
+  // capture, and none of the Janitor's missing-tokenizer warnings.
+  const budgeting = Boolean(
+    options.compress || options.onCompress || options.onBeforeCompress || options.onBudgetExceeded,
+  );
 
-  let usagePreference = options.compress?.usagePreference;
-  if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    console.warn(
-      "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
-        "Falling back to 'max'.",
+  if (budgeting && options.contextWindow == null) {
+    throw new Error(
+      '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
+        '`onCompress`, `onBeforeCompress`, `onBudgetExceeded`) is configured — the budget ' +
+        'check has nothing to compare against without it.',
     );
-    usagePreference = 'max';
   }
 
-  const janitor = options.tokenizer
-    ? new Janitor({
-        ...sharedJanitorConfig,
-        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
-        preserveRatio: options.compress?.preserveRatio ?? 0.8,
-        usagePreference,
-      })
-    : new Janitor({
-        ...sharedJanitorConfig,
-        // 'tokenizerFirst' has been sanitized above; the cast narrows the
-        // remaining values to the no-tokenizer branch.
-        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
-      });
+  const janitor = budgeting ? createJanitor(options, options.contextWindow as number) : null;
 
   return {
     specificationVersion: 'v3',
@@ -85,8 +65,10 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       const systemMessages = allIR.filter((m) => m.role === 'system');
       let conversation = allIR.filter((m) => m.role !== 'system');
 
-      // 4. Compress conversation history if over token budget
-      conversation = await janitor.compress(conversation);
+      // 4. Compress conversation history if over token budget (budgeting only)
+      if (janitor) {
+        conversation = await janitor.compress(conversation);
+      }
 
       // 5. Reassemble sandwich: user system + skill instructions + conversation.
       //    The skill slot mirrors @context-chef/core compile() ordering
@@ -115,6 +97,8 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     wrapGenerate: async ({ doGenerate }) => {
       const result = await doGenerate();
 
+      if (!janitor) return result;
+
       if (result.usage?.inputTokens?.total != null) {
         janitor.feedTokenUsage(result.usage.inputTokens.total);
       } else if (!usageWarned && !options.tokenizer) {
@@ -130,6 +114,8 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     },
 
     wrapStream: async ({ doStream }) => {
+      if (!janitor) return doStream();
+
       const { stream, ...rest } = await doStream();
 
       const transform = new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
@@ -153,6 +139,51 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       return { ...rest, stream: stream.pipeThrough(transform) };
     },
   };
+}
+
+/**
+ * Builds the stateful Janitor for budget-dependent configurations.
+ *
+ * The Janitor config is a discriminated union on `tokenizer`. Build the
+ * two branches separately so the literal type matches one of the union
+ * members exactly — a single literal carrying `tokenizer: Fn | undefined`
+ * would not narrow to either branch.
+ */
+function createJanitor(options: ContextChefOptions, contextWindow: number): Janitor {
+  const sharedJanitorConfig = {
+    contextWindow,
+    toolResultStubThreshold: options.compress?.toolResultStubThreshold,
+    compressionModel: options.compress?.model
+      ? createCompressionAdapter(options.compress.model)
+      : undefined,
+    onCompress: options.onCompress
+      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
+      : undefined,
+    onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
+  };
+
+  let usagePreference = options.compress?.usagePreference;
+  if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
+    console.warn(
+      "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
+        "Falling back to 'max'.",
+    );
+    usagePreference = 'max';
+  }
+
+  return options.tokenizer
+    ? new Janitor({
+        ...sharedJanitorConfig,
+        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
+        preserveRatio: options.compress?.preserveRatio ?? 0.8,
+        usagePreference,
+      })
+    : new Janitor({
+        ...sharedJanitorConfig,
+        // 'tokenizerFirst' has been sanitized above; the cast narrows the
+        // remaining values to the no-tokenizer branch.
+        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
+      });
 }
 
 /**

@@ -135,8 +135,16 @@ export interface DynamicStateConfig {
 }
 
 export interface ContextChefOptions {
-  /** The model's context window size in tokens. */
-  contextWindow: number;
+  /**
+   * The model's context window size in tokens.
+   *
+   * Required when a compression option is configured (`compress`,
+   * `onCompress`, `onBeforeCompress`, `onBudgetExceeded`) —
+   * `createMiddleware` throws otherwise. Optional (and unused) for
+   * truncate / compact / skill / dynamicState-only configurations,
+   * which involve no budget check.
+   */
+  contextWindow?: number;
   /** Enable history compression. Omit for no compression. */
   compress?: CompressOptions;
   /** Enable tool result truncation. Omit for no truncation. */
