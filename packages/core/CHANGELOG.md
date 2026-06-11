@@ -1,5 +1,11 @@
 # context-chef
 
+## 3.6.1
+
+### Patch Changes
+
+- [`f7c81a4`](https://github.com/MyPrototypeWhat/context-chef/commit/f7c81a44bb92ddf9940a4063ae6772904cd6ea73) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - `FileSystemAdapter.write()` now recreates the storage directory and retries once when it has been removed externally (e.g. OS temp cleaners purging `/var/folders` on long-running hosts). Previously the directory was only created in the constructor, so a purged directory made every subsequent offload write throw `ENOENT` — and chef's truncator would silently degrade to discard-the-original truncation for the rest of the process.
+
 ## 3.6.0
 
 ### Minor Changes
