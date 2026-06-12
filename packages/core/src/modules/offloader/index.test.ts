@@ -1129,6 +1129,7 @@ describe('Offloader — content-addressed filenames', () => {
   const BIG = `${'x'.repeat(100)}\n${'y'.repeat(100)}`;
 
   afterEach(() => {
+    vi.useRealTimers();
     if (fs.existsSync(CONTENT_DIR)) {
       fs.rmSync(CONTENT_DIR, { recursive: true, force: true });
     }

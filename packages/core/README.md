@@ -430,7 +430,7 @@ After a process restart, `reconcile()` walks the adapter and adopts orphan files
 
 ```typescript
 const adopted = await chef.getOffloader().reconcileAsync({ measureBytes: true });
-// createdAt parsed from filename (vfs_<ts>_<hash>.txt); bytes measured if requested.
+// createdAt parsed from legacy vfs_<ts>_<hash>.txt names; content-addressed names date from adoption. bytes measured if requested.
 ```
 
 Eviction runs in two phases: **A**) `maxAge` sweep relative to `createdAt`, then **B**) single-pass LRU by `accessedAt` ascending until both count and byte caps are satisfied. Cleanup is **mechanism, not policy** — it is never triggered by `compile()`. Wire it to `compile:done` for per-turn enforcement, or call it on a timer / on session end.
