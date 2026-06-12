@@ -885,6 +885,26 @@ describe('Offloader', () => {
       });
     });
 
+    describe('Logger injection', () => {
+      it('routes onVFSEvicted errors to the injected logger instead of console', () => {
+        const logger = { warn: vi.fn() };
+        const adapter = makeMemoryAdapter();
+        const o = new Offloader({
+          threshold: 10,
+          adapter,
+          storageDir: '',
+          maxFiles: 0,
+          logger,
+          onVFSEvicted: () => {
+            throw new Error('boom');
+          },
+        });
+        o.offload('z'.repeat(200), { tailChars: 20 });
+        o.cleanup();
+        expect(logger.warn).toHaveBeenCalledWith('[Offloader] onVFSEvicted threw:', expect.any(Error));
+      });
+    });
+
     describe('reconcile() and reconcileAsync()', () => {
       it('after restart equivalent: reconcile() adopts all on-disk files, dating content-addressed names from adoption', () => {
         // Phase 1: write 3 files with Offloader A. Filenames are now

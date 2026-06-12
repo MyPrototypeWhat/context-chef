@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Prompts } from '../../prompts';
+import type { ChefLogger } from '../../types';
 
 export interface VFSStorageAdapter {
   write(filename: string, content: string): void | Promise<void>;
@@ -150,12 +151,14 @@ export interface VFSConfig {
   /**
    * Per-entry eviction notification.
    *
-   * Contract: may throw — errors are caught, logged via console.warn, and swallowed
+   * Contract: may throw — errors are caught, logged via the configured logger, and swallowed
    * so a misbehaving hook cannot abort the cleanup sweep. Use cleanupAsync() if the
    * hook is async; calling cleanup() (sync) with an async hook logs a warning and
    * does not await the result.
    */
   onVFSEvicted?: (entry: VFSEntryMeta, reason: VFSEvictionReason) => void | Promise<void>;
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
 }
 
 export interface VFSResult {
@@ -182,6 +185,7 @@ const ORPHAN_FILENAME_RE = /^vfs_(\d+)_[a-f0-9]+\.txt$/;
 export class Offloader {
   private config: VFSConfig;
   private adapter: VFSStorageAdapter;
+  private readonly logger: ChefLogger;
   private _index = new Map<string, VFSEntryMeta>();
   private _cleanupInFlight: Promise<VFSCleanupResult> | null = null;
 
@@ -207,6 +211,7 @@ export class Offloader {
       onVFSEvicted: config.onVFSEvicted,
     };
 
+    this.logger = config.logger ?? console;
     this.adapter = config.adapter ?? new FileSystemAdapter(storageDir);
   }
 
@@ -605,12 +610,12 @@ export class Offloader {
         try {
           const hookResult = this.config.onVFSEvicted(entry, reason);
           if (hookResult instanceof Promise) {
-            console.warn(
+            this.logger.warn(
               '[Offloader] onVFSEvicted returned a Promise during sync cleanup(); call cleanupAsync() to await async hooks.',
             );
           }
         } catch (error) {
-          console.warn('[Offloader] onVFSEvicted threw:', error);
+          this.logger.warn('[Offloader] onVFSEvicted threw:', error);
         }
       }
 
@@ -656,7 +661,7 @@ export class Offloader {
         try {
           await this.config.onVFSEvicted(entry, reason);
         } catch (error) {
-          console.warn('[Offloader] onVFSEvicted threw:', error);
+          this.logger.warn('[Offloader] onVFSEvicted threw:', error);
         }
       }
 
