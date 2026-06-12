@@ -4,6 +4,7 @@ import type {
   LanguageModelV3ToolResultPart,
 } from '@ai-sdk/provider';
 import { Offloader } from '@context-chef/core';
+import type { ChefLogger } from '@context-chef/core';
 import type { TruncateOptions } from './types';
 
 /**
@@ -13,10 +14,13 @@ import type { TruncateOptions } from './types';
 export async function truncateToolResults(
   prompt: LanguageModelV3Prompt,
   options: TruncateOptions,
+  logger: ChefLogger = console,
 ): Promise<LanguageModelV3Prompt> {
   const { threshold, headChars = 0, tailChars = 1000, storage } = options;
 
-  const offloader = storage ? new Offloader({ threshold, adapter: storage, storageDir: '' }) : null;
+  const offloader = storage
+    ? new Offloader({ threshold, adapter: storage, storageDir: '', logger })
+    : null;
   const policy = buildPolicyMap(options.perTool);
 
   const result: LanguageModelV3Prompt = [];
@@ -69,7 +73,7 @@ export async function truncateToolResults(
           } satisfies LanguageModelV3ToolResultPart);
           continue;
         } catch (error) {
-          console.warn(
+          logger.warn(
             `[context-chef] Storage adapter write failed for tool result (${part.toolCallId}). ` +
               `Falling back to simple truncation. Error: ${error instanceof Error ? error.message : String(error)}`,
           );

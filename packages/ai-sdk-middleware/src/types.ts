@@ -1,5 +1,5 @@
 import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
-import type { Message, Skill, VFSStorageAdapter } from '@context-chef/core';
+import type { ChefLogger, Message, Skill, VFSStorageAdapter } from '@context-chef/core';
 
 export interface TruncateOptions {
   /** Character count threshold to trigger truncation. */
@@ -72,7 +72,7 @@ export interface CompressOptions {
    *   of which report usage and some do not).
    * - `'tokenizerFirst'`: ignore reported usage entirely. Requires a
    *   `tokenizer` to be configured; otherwise it is sanitized to `'max'`
-   *   at construction time with a console warning.
+   *   at construction time with a warning (via the configured `logger`).
    */
   usagePreference?: 'max' | 'feedFirst' | 'tokenizerFirst';
 }
@@ -206,4 +206,10 @@ export interface ContextChefOptions {
   transformContext?: (
     prompt: LanguageModelV3Prompt,
   ) => LanguageModelV3Prompt | Promise<LanguageModelV3Prompt>;
+  /**
+   * Sink for degradation warnings (storage write failures, missing usage
+   * data, misconfiguration). Defaults to `console`. Forwarded to the
+   * underlying Janitor and Offloader.
+   */
+  logger?: ChefLogger;
 }

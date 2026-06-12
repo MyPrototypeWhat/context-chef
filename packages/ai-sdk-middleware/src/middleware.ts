@@ -4,7 +4,7 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import { Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import { Janitor, type ChefLogger, type Message, XmlGenerator } from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
@@ -21,6 +21,7 @@ type CompressRole = 'system' | 'user' | 'assistant';
  * token usage across calls for compression decisions.
  */
 export function createMiddleware(options: ContextChefOptions): LanguageModelMiddleware {
+  const logger = options.logger ?? console;
   let usageWarned = false;
 
   // Budget-dependent features: compression and its hooks. Any of them
@@ -40,7 +41,9 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   }
 
-  const janitor = budgeting ? createJanitor(options, options.contextWindow as number) : null;
+  const janitor = budgeting
+    ? createJanitor(options, options.contextWindow as number, logger)
+    : null;
 
   return {
     specificationVersion: 'v3',
@@ -50,7 +53,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 
       // 1. Truncate large tool results
       if (options.truncate) {
-        prompt = await truncateToolResults(prompt, options.truncate);
+        prompt = await truncateToolResults(prompt, options.truncate, logger);
       }
 
       // 2. Compact (mechanical, zero LLM cost) via pruneMessages
@@ -103,7 +106,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         janitor.feedTokenUsage(result.usage.inputTokens.total);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
-        console.warn(
+        logger.warn(
           '[context-chef] Model response did not include usage.inputTokens.total. ' +
             'Token-based compression may not trigger accurately. ' +
             'Consider providing a tokenizer for precise token counting.',
@@ -125,7 +128,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
               janitor.feedTokenUsage(chunk.usage.inputTokens.total);
             } else if (!usageWarned && !options.tokenizer) {
               usageWarned = true;
-              console.warn(
+              logger.warn(
                 '[context-chef] Stream finish did not include usage.inputTokens.total. ' +
                   'Token-based compression may not trigger accurately. ' +
                   'Consider providing a tokenizer for precise token counting.',
@@ -149,7 +152,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
  * members exactly — a single literal carrying `tokenizer: Fn | undefined`
  * would not narrow to either branch.
  */
-function createJanitor(options: ContextChefOptions, contextWindow: number): Janitor {
+function createJanitor(
+  options: ContextChefOptions,
+  contextWindow: number,
+  logger: ChefLogger,
+): Janitor {
   const sharedJanitorConfig = {
     contextWindow,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
@@ -160,11 +167,12 @@ function createJanitor(options: ContextChefOptions, contextWindow: number): Jani
       ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
       : undefined,
     onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
+    logger,
   };
 
   let usagePreference = options.compress?.usagePreference;
   if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    console.warn(
+    logger.warn(
       "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
         "Falling back to 'max'.",
     );
