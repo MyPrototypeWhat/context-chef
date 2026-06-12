@@ -886,8 +886,10 @@ describe('Offloader', () => {
     });
 
     describe('reconcile() and reconcileAsync()', () => {
-      it('after restart equivalent: reconcile() adopts all on-disk files with createdAt parsed from filename', () => {
-        // Phase 1: write 3 files with Offloader A.
+      it('after restart equivalent: reconcile() adopts all on-disk files, dating content-addressed names from adoption', () => {
+        // Phase 1: write 3 files with Offloader A. Filenames are now
+        // content-addressed (no embedded timestamp), so the write times here
+        // are intentionally irrelevant to the reconciled createdAt.
         vi.useFakeTimers();
         vi.setSystemTime(1000);
         const a = new Offloader({ storageDir: CLEANUP_DIR, threshold: 10 });
@@ -900,16 +902,17 @@ describe('Offloader', () => {
         expect(filesOnDisk.length).toBe(3);
 
         // Phase 2: discard A, build B with same dir + fresh empty index, then reconcile.
-        vi.setSystemTime(99_999); // reconcile time differs from createdAts
+        vi.setSystemTime(99_999); // adoption time
         const b = new Offloader({ storageDir: CLEANUP_DIR, threshold: 10 });
         expect(b.getEntries().length).toBe(0);
         const adopted = b.reconcile();
         expect(adopted).toBe(3);
         const snapshot = b.getEntries();
         expect(snapshot.length).toBe(3);
-        // createdAts must equal the embedded timestamps (1000/2000/3000), NOT 99_999.
-        const createdAts = snapshot.map((e) => e.createdAt).sort((x, y) => x - y);
-        expect(createdAts).toEqual([1000, 2000, 3000]);
+        // Content-addressed names carry no timestamp, so reconcile dates them
+        // from adoption (the conservative direction) — all three get 99_999.
+        const createdAts = snapshot.map((e) => e.createdAt);
+        expect(createdAts).toEqual([99_999, 99_999, 99_999]);
       });
 
       it('reconcile({ measureBytes: true }) populates accurate UTF-8 bytes', () => {
@@ -1054,7 +1057,7 @@ describe('Offloader', () => {
         // Filenames stored on the adapter must NOT include the scheme.
         const stored = Array.from(adapter.db.keys());
         expect(stored.length).toBe(1);
-        expect(stored[0]).toMatch(/^vfs_\d+_[a-f0-9]+\.txt$/);
+        expect(stored[0]).toMatch(/^vfs_[a-f0-9]{16}\.txt$/);
         expect(stored[0]).not.toContain('mystore');
 
         const result = o.cleanup();
@@ -1102,5 +1105,106 @@ describe('Offloader', () => {
         expect(adapter.read('vfs_2_abcdef00.txt')).toBe('after');
       });
     });
+  });
+});
+
+function makeMemoryAdapter() {
+  const store = new Map<string, string>();
+  return {
+    store,
+    write: vi.fn((filename: string, content: string) => {
+      store.set(filename, content);
+    }),
+    read: vi.fn((filename: string) => store.get(filename) ?? null),
+    exists: vi.fn((filename: string) => store.has(filename)),
+    list: () => [...store.keys()],
+    delete: (filename: string) => {
+      store.delete(filename);
+    },
+  };
+}
+
+describe('Offloader — content-addressed filenames', () => {
+  const CONTENT_DIR = path.join(process.cwd(), '.test_vfs_content');
+  const BIG = `${'x'.repeat(100)}\n${'y'.repeat(100)}`;
+
+  afterEach(() => {
+    if (fs.existsSync(CONTENT_DIR)) {
+      fs.rmSync(CONTENT_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('filename is vfs_<16-hex>.txt derived from content only', () => {
+    const adapter = makeMemoryAdapter();
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    const r = o.offload(BIG, { tailChars: 20 });
+    expect(r.isOffloaded).toBe(true);
+    const filename = r.uri?.replace('context://vfs/', '');
+    expect(filename).toMatch(/^vfs_[a-f0-9]{16}\.txt$/);
+  });
+
+  it('same content → same filename and identical marker across instances', () => {
+    const adapter = makeMemoryAdapter();
+    const a = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    const b = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    const r1 = a.offload(BIG, { tailChars: 20 });
+    const r2 = b.offload(BIG, { tailChars: 20 });
+    expect(r1.uri).toBe(r2.uri);
+    expect(r1.content).toBe(r2.content); // marker is byte-stable → provider prefix cache holds
+  });
+
+  it('re-offloading identical content on the same instance skips the adapter write', () => {
+    const adapter = makeMemoryAdapter();
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    o.offload(BIG, { tailChars: 20 });
+    o.offload(BIG, { tailChars: 20 });
+    expect(adapter.write).toHaveBeenCalledTimes(1);
+  });
+
+  it('a fresh instance skips the write when adapter.exists reports the file', () => {
+    const adapter = makeMemoryAdapter();
+    new Offloader({ threshold: 10, adapter, storageDir: '' }).offload(BIG, { tailChars: 20 });
+    new Offloader({ threshold: 10, adapter, storageDir: '' }).offload(BIG, { tailChars: 20 });
+    expect(adapter.write).toHaveBeenCalledTimes(1);
+    expect(adapter.exists).toHaveBeenCalled();
+  });
+
+  it('re-offload refreshes accessedAt so identical content stays LRU-warm', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const adapter = makeMemoryAdapter();
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    o.offload(BIG, { tailChars: 20 });
+    vi.setSystemTime(5000);
+    o.offload(BIG, { tailChars: 20 });
+    const entry = o.getEntries()[0];
+    expect(entry?.accessedAt).toBe(5000);
+    vi.useRealTimers();
+  });
+
+  it('different content → different filename', () => {
+    const adapter = makeMemoryAdapter();
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    const r1 = o.offload(BIG, { tailChars: 20 });
+    const r2 = o.offload(`${BIG}!`, { tailChars: 20 });
+    expect(r1.uri).not.toBe(r2.uri);
+  });
+
+  it('legacy timestamped files still resolve and reconcile with parsed createdAt', () => {
+    const adapter = makeMemoryAdapter();
+    adapter.store.set('vfs_1000_abcdef00.txt', 'legacy content');
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    expect(o.resolve('context://vfs/vfs_1000_abcdef00.txt')).toBe('legacy content');
+    const o2 = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    o2.reconcile();
+    expect(o2.getEntries()[0]?.createdAt).toBe(1000);
+  });
+
+  it('FileSystemAdapter writes atomically: no tmp residue, list() sees only complete files', () => {
+    const adapter = new FileSystemAdapter(CONTENT_DIR);
+    adapter.write('vfs_0123456789abcdef.txt', 'data');
+    expect(adapter.read('vfs_0123456789abcdef.txt')).toBe('data');
+    expect(adapter.list()).toEqual(['vfs_0123456789abcdef.txt']);
+    expect(fs.readdirSync(CONTENT_DIR).filter((f) => f.startsWith('.tmp_'))).toHaveLength(0);
   });
 });
