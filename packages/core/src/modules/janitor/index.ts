@@ -1,5 +1,5 @@
 import { Prompts } from '../../prompts';
-import type { Attachment, CompactOptions, Message } from '../../types';
+import type { Attachment, ChefLogger, CompactOptions, Message } from '../../types';
 import { estimateObject } from '../../utils/tokenUtils';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
@@ -208,6 +208,9 @@ interface JanitorConfigBase {
    */
   compressionModel?: (messagesToCompress: Message[]) => Promise<string>;
 
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+
   /**
    * Replace tool-result content longer than this many characters with a
    * one-line metadata stub (`[Tool name returned N chars; omitted before
@@ -331,7 +334,7 @@ export class Janitor {
   constructor(private config: JanitorConfig) {
     // Warn if feedTokenUsage path is likely used without a compressionModel
     if (!config.tokenizer && !config.compressionModel) {
-      console.warn(
+      (config.logger ?? console).warn(
         '[Janitor] Warning: No tokenizer and no compressionModel configured. ' +
           'In the feedTokenUsage path, compression without a compressionModel will discard old messages ' +
           'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.',

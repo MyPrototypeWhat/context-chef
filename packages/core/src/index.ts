@@ -23,6 +23,7 @@ import type { Skill } from './modules/skill';
 import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
+  ChefLogger,
   CompileMeta,
   CompileOptions,
   GeminiPayload,
@@ -94,7 +95,7 @@ export {
   type SkillLoadResult,
 } from './modules/skill';
 export * from './prompts';
-export type { ClearTarget, CompactOptions } from './types';
+export type { ChefLogger, ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
@@ -154,6 +155,11 @@ export interface ChefSnapshot {
 export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
   janitor?: JanitorConfig;
+  /**
+   * Sink for degradation warnings across all modules. Defaults to `console`.
+   * A module-level `logger` in `vfs` / `janitor` config wins over this one.
+   */
+  logger?: ChefLogger;
   pruner?: PrunerConfig;
   memory?: MemoryConfig;
   /**
@@ -268,7 +274,7 @@ export class ContextChef {
 
   constructor(config: ChefConfig = {}) {
     this.assembler = new Assembler();
-    this.offloader = new Offloader(config.vfs);
+    this.offloader = new Offloader({ logger: config.logger, ...config.vfs });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
     this.transformContext = config.transformContext;
@@ -279,6 +285,7 @@ export class ContextChef {
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
     const userOnCompress = janitorConfig.onCompress;
     this.janitor = new Janitor({
+      logger: config.logger,
       ...janitorConfig,
       onCompress: async (summary, truncatedCount) => {
         if (userOnCompress) await userOnCompress(summary, truncatedCount);

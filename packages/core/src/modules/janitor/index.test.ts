@@ -1315,6 +1315,19 @@ describe('Janitor — media-aware compression', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// Injected logger — constructor warning routing
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — injected logger', () => {
+  it('routes the missing-tokenizer warning to the injected logger', () => {
+    const logger = { warn: vi.fn() };
+    new Janitor({ contextWindow: 100, logger });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('No tokenizer and no compressionModel');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
 // toolResultStubThreshold — mechanical tool-result trim
 // ═══════════════════════════════════════════════════════
 
