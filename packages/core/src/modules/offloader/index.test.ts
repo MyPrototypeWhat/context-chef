@@ -903,6 +903,42 @@ describe('Offloader', () => {
         o.cleanup();
         expect(logger.warn).toHaveBeenCalledWith('[Offloader] onVFSEvicted threw:', expect.any(Error));
       });
+
+      it('routes async onVFSEvicted errors to the injected logger (cleanupAsync)', async () => {
+        const logger = { warn: vi.fn() };
+        const adapter = makeMemoryAdapter();
+        const o = new Offloader({
+          threshold: 10,
+          adapter,
+          storageDir: '',
+          maxFiles: 0,
+          logger,
+          onVFSEvicted: async () => {
+            throw new Error('async boom');
+          },
+        });
+        o.offload('z'.repeat(200), { tailChars: 20 });
+        await o.cleanupAsync();
+        expect(logger.warn).toHaveBeenCalledWith('[Offloader] onVFSEvicted threw:', expect.any(Error));
+      });
+
+      it('routes the async-hook-on-sync-cleanup warning to the injected logger', () => {
+        const logger = { warn: vi.fn() };
+        const adapter = makeMemoryAdapter();
+        const o = new Offloader({
+          threshold: 10,
+          adapter,
+          storageDir: '',
+          maxFiles: 0,
+          logger,
+          onVFSEvicted: async () => {},
+        });
+        o.offload('z'.repeat(200), { tailChars: 20 });
+        o.cleanup();
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('onVFSEvicted returned a Promise during sync cleanup()'),
+        );
+      });
     });
 
     describe('reconcile() and reconcileAsync()', () => {
