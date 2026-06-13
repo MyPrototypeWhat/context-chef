@@ -156,9 +156,8 @@ export interface ContextChefOptions {
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
-   * Placeholder-style clearing with @context-chef/core `Janitor.compact`
-   * semantics: cleared tool results / thinking are replaced with
-   * placeholders ('[Old tool result content cleared]') instead of being
+   * Placeholder-style clearing of **tool results**: matched results are
+   * replaced with `'[Old tool result content cleared]'` instead of being
    * deleted — message structure and tool-call pairing stay intact, unlike
    * `compact` (AI SDK pruneMessages), which removes content outright.
    *
@@ -169,6 +168,10 @@ export interface ContextChefOptions {
    * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing
    * boundary advances each turn, which invalidates the provider prefix
    * cache at the first newly-cleared message — inherent to the semantics.
+   *
+   * Scope: only `'tool-result'` targets take effect here. A `'thinking'`
+   * target is a no-op (reasoning parts pass through the adapter unchanged)
+   * and logs a warning — use `compact: { reasoning: ... }` to drop reasoning.
    */
   clear?: ClearTarget[];
   /**

@@ -1186,6 +1186,22 @@ function makeMemoryAdapter() {
   };
 }
 
+function makeAsyncMemoryAdapter() {
+  const store = new Map<string, string>();
+  return {
+    store,
+    write: vi.fn(async (filename: string, content: string) => {
+      store.set(filename, content);
+    }),
+    read: vi.fn(async (filename: string) => store.get(filename) ?? null),
+    exists: vi.fn(async (filename: string) => store.has(filename)),
+    list: async () => [...store.keys()],
+    delete: async (filename: string) => {
+      store.delete(filename);
+    },
+  };
+}
+
 describe('Offloader — content-addressed filenames', () => {
   const CONTENT_DIR = path.join(process.cwd(), '.test_vfs_content');
   const BIG = `${'x'.repeat(100)}\n${'y'.repeat(100)}`;
@@ -1269,5 +1285,52 @@ describe('Offloader — content-addressed filenames', () => {
     expect(adapter.read('vfs_0123456789abcdef.txt')).toBe('data');
     expect(adapter.list()).toEqual(['vfs_0123456789abcdef.txt']);
     expect(fs.readdirSync(CONTENT_DIR).filter((f) => f.startsWith('.tmp_'))).toHaveLength(0);
+  });
+
+  // The middleware truncators run on offloadAsync(), so the async dedup
+  // branches are the production path — mirror the sync coverage here.
+  it('offloadAsync: re-offloading identical content on the same instance skips the write', async () => {
+    const adapter = makeAsyncMemoryAdapter();
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    await o.offloadAsync(BIG, { tailChars: 20 });
+    await o.offloadAsync(BIG, { tailChars: 20 });
+    expect(adapter.write).toHaveBeenCalledTimes(1);
+  });
+
+  it('offloadAsync: a fresh instance skips the write when adapter.exists reports the file', async () => {
+    const adapter = makeAsyncMemoryAdapter();
+    await new Offloader({ threshold: 10, adapter, storageDir: '' }).offloadAsync(BIG, {
+      tailChars: 20,
+    });
+    await new Offloader({ threshold: 10, adapter, storageDir: '' }).offloadAsync(BIG, {
+      tailChars: 20,
+    });
+    expect(adapter.write).toHaveBeenCalledTimes(1);
+    expect(adapter.exists).toHaveBeenCalled();
+  });
+
+  it('offloadAsync: re-offload refreshes accessedAt so identical content stays LRU-warm', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const adapter = makeAsyncMemoryAdapter();
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    await o.offloadAsync(BIG, { tailChars: 20 });
+    vi.setSystemTime(5000);
+    await o.offloadAsync(BIG, { tailChars: 20 });
+    expect(o.getEntries()[0]?.accessedAt).toBe(5000);
+    vi.useRealTimers();
+  });
+
+  it('sync offload with an async exists() falls through to write() and throws (no phantom skip)', () => {
+    // exists() returns a Promise on the sync path; the strict `=== true` guard
+    // must NOT treat the truthy Promise as "exists" and register a phantom
+    // entry — it falls through to write(), which throws the async-adapter error.
+    const adapter = {
+      write: () => Promise.resolve(),
+      read: () => null,
+      exists: () => Promise.resolve(true),
+    };
+    const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
+    expect(() => o.offload(BIG, { tailChars: 20 })).toThrow(/asynchronous|offloadAsync/);
   });
 });

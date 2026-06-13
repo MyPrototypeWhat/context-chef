@@ -57,6 +57,18 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
   );
 
+  // `clear` only round-trips tool-result placeholders through the adapter.
+  // Reasoning lives in the assistant message's content parts, which the
+  // adapter passes through untouched unless the text content changed — so a
+  // `'thinking'` target here is a silent no-op. Reasoning removal belongs to
+  // `compact` (pruneMessages), which strips reasoning parts for real.
+  if (options.clear?.some((t) => t === 'thinking')) {
+    logger.warn(
+      "[context-chef] `clear: ['thinking']` has no effect in the middleware — reasoning " +
+        'parts pass through the adapter unchanged. Use `compact: { reasoning: ... }` to remove reasoning.',
+    );
+  }
+
   return {
     specificationVersion: 'v3',
 
@@ -97,9 +109,9 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       //    and BEFORE the conversation history. Empty instructions are
       //    skipped to avoid emitting an empty system message.
       const skillMessages = await resolveSkillMessages(options.skill);
-      // The clear explainer sits last in the system region — adjacent to the
-      // conversation it describes, mirroring tanstack-ai's ordering (where it
-      // is the final systemPrompt before the messages).
+      // The clear explainer is placed after skill messages, just before the
+      // conversation, so the model sees the explanation immediately ahead of
+      // the placeholders it describes.
       const clearNotice: Message[] = clearsToolResults
         ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
         : [];

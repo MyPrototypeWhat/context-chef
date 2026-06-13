@@ -47,6 +47,18 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
   const clearsToolResults = !!options.clear?.some(
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
   );
+
+  // `clear` only round-trips tool-result placeholders. Reasoning lives in the
+  // assistant message's content parts, which the adapter passes through
+  // untouched — so a `'thinking'` target here is a silent no-op. Use `compact`
+  // for reasoning removal.
+  if (options.clear?.some((t) => t === 'thinking')) {
+    logger.warn(
+      "[context-chef] `clear: ['thinking']` has no effect in the middleware — reasoning " +
+        'parts pass through the adapter unchanged. Use `compact` to remove reasoning.',
+    );
+  }
+
   let usageWarned = false;
 
   // The Janitor config is a discriminated union on `tokenizer`. Build the two

@@ -16,8 +16,9 @@ export interface VFSStorageAdapter {
    * Contract: only return true for FULLY persisted content. With
    * content-addressed names the Offloader treats existence as proof the
    * bytes are complete and skips the write — a partially written entry
-   * reported as existing would be trusted forever. Make writes atomic
-   * (FileSystemAdapter does: tmp file + rename).
+   * reported as existing would be trusted for the rest of the process
+   * lifetime (the in-memory index resets on restart, re-checking exists()).
+   * Make writes atomic (FileSystemAdapter does: tmp file + rename).
    */
   exists?(filename: string): boolean | Promise<boolean>;
   /** Optional. Required for Offloader.cleanup() / reconcile(). Returns all stored filenames. */
@@ -335,8 +336,10 @@ export class Offloader {
 
     if (this.adapter.exists) {
       const exists = this.adapter.exists(filename);
-      // A Promise here means an async adapter on the sync path — fall through
-      // to write(), which throws the established async-adapter error.
+      // Strict `=== true` (not truthiness): a Promise means exists() is async,
+      // so we fall through rather than treat a pending Promise as "exists".
+      // If write() is also async it throws the established async-adapter error;
+      // a mixed sync-write adapter just proceeds with a harmless redundant write.
       if (exists === true) {
         this._registerEntry(filename, uri, content);
         return { isOffloaded: true, content: truncated, uri };

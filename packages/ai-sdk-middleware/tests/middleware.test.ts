@@ -1252,6 +1252,37 @@ describe('clear', () => {
     expect(systemTexts.some((t) => t.includes('automatically cleared'))).toBe(false);
   });
 
+  it("clear: ['thinking'] warns and is a documented no-op (reasoning still passes through)", async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({ clear: ['thinking'], logger });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain("clear: ['thinking']");
+
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'secret chain of thought' },
+          { type: 'text', text: 'My answer.' },
+        ],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    // Documented scope: thinking clearing does NOT round-trip through the
+    // adapter, so the reasoning part is still present. If this ever changes,
+    // update the warning and the `clear` docs together.
+    const assistant = result.prompt.find((m) => m.role === 'assistant');
+    const hasReasoning =
+      Array.isArray(assistant?.content) && assistant.content.some((p) => p.type === 'reasoning');
+    expect(hasReasoning).toBe(true);
+  });
+
   it('does not delete any messages — structure is preserved', async () => {
     const middleware = createMiddleware({ clear: [{ target: 'tool-result', keepRecent: 0 }] });
     const prompt = makeToolPrompt();

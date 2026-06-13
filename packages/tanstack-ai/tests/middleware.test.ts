@@ -551,6 +551,15 @@ describe('clear', () => {
     expect(systemPrompts).toEqual(['You are helpful']);
   });
 
+  it("clear: ['thinking'] warns about the no-op", () => {
+    const logger = { warn: vi.fn() };
+    // tanstack always builds a Janitor, which may also warn about a missing
+    // tokenizer — assert our thinking warning is among the calls, not the only one.
+    contextChefMiddleware({ contextWindow: 100_000, clear: ['thinking'], logger });
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes("clear: ['thinking']"))).toBe(true);
+  });
+
   it('clear does not modify compact path — compact still deletes, clear still placeholders', async () => {
     // Verify the two options are independent: compact deletes, clear placeholders
     const mw = contextChefMiddleware({
