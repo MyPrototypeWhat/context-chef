@@ -44,9 +44,11 @@ The main configuration object passed to `withContextChef()` or `createMiddleware
 | `compact` | `CompactConfig` | No | Mechanical compaction before LLM compression |
 | `dynamicState` | `DynamicStateConfig` | No | Dynamic state injection into prompt |
 | `tokenizer` | `(msgs: unknown[]) => number` | No | Custom tokenizer for precise token counting |
-| `onCompress` | `(summary: string, count: number) => void` | No | Hook called after compression occurs |
+| `onCompress` | `(summary: string, count: number, details: { compressedMessages: LanguageModelV3Prompt }) => void` | No | Hook called after compression occurs. `details.compressedMessages` is the compressed slice in AI SDK format. |
 | `onBudgetExceeded` | `(history, tokenInfo) => Message[] \| null \| Promise<...>` | No | Hook called when token budget is exceeded |
 | `transformContext` | `(prompt) => LanguageModelV3Prompt \| Promise<...>` | No | Transform prompt after compression, before model |
+| `logger` | `ChefLogger` | No | Sink for degradation warnings (storage/compaction); defaults to `console`. `ChefLogger = { warn(message: string, ...args: unknown[]): void }` |
+| `clear` | `ClearTarget[]` | No | Placeholder-style tool-result clearing, runs after compression, auto-injects an explainer. Only `'tool-result'` takes effect; `'thinking'` is a no-op that warns — use `compact` for reasoning. |
 
 ---
 

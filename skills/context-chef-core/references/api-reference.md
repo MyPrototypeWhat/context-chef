@@ -89,7 +89,8 @@ interface JanitorConfig {
 
   // --- Hooks ---
   /** Fires AFTER compression with the summary Message and truncated count. */
-  onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
+  // CompressionDetails = { compressedMessages: Message[] } — the slice the summary replaced
+  onCompress?: (summaryMessage: Message, truncatedCount: number, details: CompressionDetails) => void | Promise<void>;
 
   /**
    * Fires BEFORE compression when budget is exceeded.
@@ -100,6 +101,10 @@ interface JanitorConfig {
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
+
+  // --- Logging ---
+  logger?: ChefLogger;  // Sink for degradation warnings; defaults to console
+                        // ChefLogger = { warn(message: string, ...args: unknown[]): void }
 }
 ```
 
