@@ -97,10 +97,13 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       //    and BEFORE the conversation history. Empty instructions are
       //    skipped to avoid emitting an empty system message.
       const skillMessages = await resolveSkillMessages(options.skill);
+      // The clear explainer sits last in the system region — adjacent to the
+      // conversation it describes, mirroring tanstack-ai's ordering (where it
+      // is the final systemPrompt before the messages).
       const clearNotice: Message[] = clearsToolResults
         ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
         : [];
-      const irMessages = [...systemMessages, ...clearNotice, ...skillMessages, ...conversation];
+      const irMessages = [...systemMessages, ...skillMessages, ...clearNotice, ...conversation];
 
       // 6. Convert back to AI SDK format
       prompt = toAISDK(irMessages);
