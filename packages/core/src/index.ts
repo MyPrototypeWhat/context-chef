@@ -2,7 +2,12 @@ import type { z } from 'zod';
 import { adapterRegistry } from './adapters/adapterRegistry';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
-import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
+import {
+  type CompressionDetails,
+  Janitor,
+  type JanitorConfig,
+  type JanitorSnapshot,
+} from './modules/janitor';
 import {
   Memory,
   type MemoryChangeEvent,
@@ -50,6 +55,7 @@ export { fromOpenAI } from './adapters/openAIAdapter';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
+  type CompressionDetails,
   groupIntoTurns,
   Janitor,
   type JanitorConfig,
@@ -233,6 +239,7 @@ export interface ChefEvents {
   compress: {
     summary: Message;
     truncatedCount: number;
+    details: CompressionDetails;
   };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
@@ -287,9 +294,13 @@ export class ContextChef {
     this.janitor = new Janitor({
       logger: config.logger,
       ...janitorConfig,
-      onCompress: async (summary, truncatedCount) => {
-        if (userOnCompress) await userOnCompress(summary, truncatedCount);
-        await this.emitter.emit('compress', { summary, truncatedCount }, this._currentSignal);
+      onCompress: async (summary, truncatedCount, details) => {
+        if (userOnCompress) await userOnCompress(summary, truncatedCount, details);
+        await this.emitter.emit(
+          'compress',
+          { summary, truncatedCount, details },
+          this._currentSignal,
+        );
       },
     });
 

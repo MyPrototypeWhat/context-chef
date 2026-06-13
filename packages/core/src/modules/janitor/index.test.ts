@@ -553,6 +553,30 @@ describe('Janitor — onCompress hook', () => {
     expect(summaryMsg.role).toBe('user');
     expect(count).toBeGreaterThan(0);
   });
+
+  it('passes the compressed slice as boundary details', async () => {
+    const onCompress = vi.fn();
+    const history = buildHistory(5);
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel: async () => '<history_summary>S</history_summary>',
+      onCompress,
+    });
+    await janitor.compress(history);
+    const [, count, details] = onCompress.mock.calls[0];
+    expect(details.compressedMessages).toEqual(history.slice(0, count));
+    expect(details.compressedMessages).toHaveLength(count);
+  });
+
+  it('passes boundary details in the no-compressionModel fallback too', async () => {
+    const onCompress = vi.fn();
+    const history = buildHistory(5);
+    const janitor = new Janitor({ contextWindow: 30, tokenizer: makeTokenizer(10), onCompress });
+    await janitor.compress(history);
+    const [, count, details] = onCompress.mock.calls[0];
+    expect(details.compressedMessages).toEqual(history.slice(0, count));
+  });
 });
 
 // ═══════════════════════════════════════════════════════

@@ -173,6 +173,21 @@ export type UsagePreferenceWithTokenizer = 'max' | 'feedFirst' | 'tokenizerFirst
  */
 export type UsagePreferenceWithoutTokenizer = 'max' | 'feedFirst';
 
+/** Boundary metadata for onCompress — maps the summary back to exact messages. */
+export interface CompressionDetails {
+  /**
+   * The messages removed from history, now represented by the summary:
+   * the prefix slice [0, truncatedCount) of the input history (after any
+   * onBeforeCompress modification). Match these back to your own store by
+   * identity (e.g. tool_call_id) or content — indices into this internal
+   * array are deliberately not exposed, since consumers don't hold it.
+   * In the no-compressionModel fallback these messages are dropped and the
+   * summary message is NOT inserted into the returned history —
+   * persistence layers should still record the boundary.
+   */
+  compressedMessages: Message[];
+}
+
 /**
  * Fields shared by every JanitorConfig variant. Not exported on its own —
  * downstream callers should use {@link JanitorConfig}.
@@ -244,10 +259,19 @@ interface JanitorConfigBase {
    * Hook triggered ONLY when compression actually happens.
    * Useful for UI loaders ("Compressing memory..."), logging, or saving the compressed state.
    *
+   * @param summaryMessage - The message inserted in place of the compressed history.
+   * @param truncatedCount - Number of messages removed from history.
+   * @param details - Boundary metadata: the exact messages that were replaced,
+   *   useful for persistence layers that need to map the summary back to their store.
+   *
    * Contract: must not throw or reject. Errors propagate out of compile() — there
    * is no fallback path. Wrap your logic in try/catch if it can fail.
    */
-  onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
+  onCompress?: (
+    summaryMessage: Message,
+    truncatedCount: number,
+    details: CompressionDetails,
+  ) => void | Promise<void>;
 
   /**
    * Hook triggered when the token budget is exceeded, BEFORE LLM compression.
@@ -613,6 +637,7 @@ export class Janitor {
         await this.config.onCompress(
           { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
           toCompress.length,
+          { compressedMessages: toCompress },
         );
       }
       this._suppressNextCompression = true;
@@ -676,7 +701,9 @@ export class Janitor {
     };
 
     if (this.config.onCompress) {
-      await this.config.onCompress(summaryMessage, toCompress.length);
+      await this.config.onCompress(summaryMessage, toCompress.length, {
+        compressedMessages: toCompress,
+      });
     }
 
     // E10: Suppress the immediate next compression check.
