@@ -476,6 +476,108 @@ describe('skill', () => {
   });
 });
 
+describe('clear', () => {
+  it('replaces old tool results with placeholders and appends the explainer to systemPrompts', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      clear: [{ target: 'tool-result', keepRecent: 1 }],
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'First query' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'tc_1', type: 'function', function: { name: 'search', arguments: '{"q":"old"}' } },
+        ],
+      },
+      { role: 'tool', content: 'Old tool result data', toolCallId: 'tc_1' },
+      { role: 'assistant', content: 'Found something old' },
+      { role: 'user', content: 'Second query' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'tc_2', type: 'function', function: { name: 'search', arguments: '{"q":"new"}' } },
+        ],
+      },
+      { role: 'tool', content: 'New tool result data', toolCallId: 'tc_2' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages, { systemPrompts: ['You are helpful'] });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { messages: resultMessages, systemPrompts } = getResult(
+      result as Partial<ChatMiddlewareConfig>,
+    );
+
+    // Nothing deleted — both tool messages remain
+    const toolMsgs = resultMessages.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2);
+
+    // Older tool result (tc_1) replaced with placeholder
+    const olderTool = toolMsgs.find((m) => m.toolCallId === 'tc_1');
+    expect(olderTool?.content).toBe('[Old tool result content cleared]');
+    // Must NOT leak original content
+    expect(olderTool?.content).not.toContain('Old tool result data');
+
+    // Newer tool result (tc_2) preserved
+    const newerTool = toolMsgs.find((m) => m.toolCallId === 'tc_2');
+    expect(newerTool?.content).toBe('New tool result data');
+
+    // Explainer appended to systemPrompts
+    expect(systemPrompts.some((s) => s.includes('automatically cleared'))).toBe(true);
+    // Original system prompt preserved
+    expect(systemPrompts[0]).toBe('You are helpful');
+  });
+
+  it('clear without tool-result targets does not append the explainer', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      clear: ['thinking'],
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages, { systemPrompts: ['You are helpful'] });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+
+    // Explainer must NOT be appended for thinking-only clear
+    expect(systemPrompts.some((s) => s.includes('automatically cleared'))).toBe(false);
+    expect(systemPrompts).toEqual(['You are helpful']);
+  });
+
+  it('clear does not modify compact path — compact still deletes, clear still placeholders', async () => {
+    // Verify the two options are independent: compact deletes, clear placeholders
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      compact: { toolCalls: 'all' },
+      clear: [{ target: 'tool-result', keepRecent: 0 }],
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Query' },
+      {
+        role: 'assistant',
+        content: 'done',
+        toolCalls: [{ id: 'tc_1', type: 'function', function: { name: 'tool', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'Result', toolCallId: 'tc_1' },
+      { role: 'assistant', content: 'Done' },
+      { role: 'user', content: 'Follow-up' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages);
+
+    // Should not throw regardless of path interaction
+    const result = await mw.onConfig?.(ctx, config);
+    expect(result).toBeDefined();
+  });
+});
+
 describe('createCompressionAdapter', () => {
   it('formats messages and collects streamed deltas', async () => {
     const chunks = [

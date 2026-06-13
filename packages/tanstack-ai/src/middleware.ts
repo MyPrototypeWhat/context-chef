@@ -1,8 +1,10 @@
 import {
   type ChefLogger,
   type CompressionDetails,
+  compactMessages as clearMessages,
   Janitor,
   type Message,
+  Prompts,
   XmlGenerator,
 } from '@context-chef/core';
 import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
@@ -42,6 +44,9 @@ type CompressRole = 'system' | 'user' | 'assistant';
  */
 export function contextChefMiddleware(options: ContextChefOptions): ChatMiddleware {
   const logger: ChefLogger = options.logger ?? console;
+  const clearsToolResults = !!options.clear?.some(
+    (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
+  );
   let usageWarned = false;
 
   // The Janitor config is a discriminated union on `tokenizer`. Build the two
@@ -110,6 +115,12 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       // 4. Compress conversation history if over token budget
       irMessages = await janitor.compress(irMessages);
 
+      // 4.5 Placeholder-style clearing (core semantics) — after compress so
+      // the summarizer saw full content; placeholders only hit the kept tail.
+      if (options.clear?.length) {
+        irMessages = clearMessages(irMessages, { clear: options.clear });
+      }
+
       // 5. Convert back to TanStack AI format
       messages = toTanStackAI(irMessages);
 
@@ -118,6 +129,12 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       if (options.skill) {
         const instructions = await resolveSkillInstructions(options.skill);
         if (instructions) systemPrompts = [...systemPrompts, instructions];
+      }
+
+      // Append tool-result clearing explainer when tool results are targeted,
+      // so the model doesn't misread placeholders as an error.
+      if (clearsToolResults) {
+        systemPrompts = [...systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION];
       }
 
       // 7. Dynamic state injection
