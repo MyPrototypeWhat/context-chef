@@ -1,6 +1,6 @@
 ---
-'@context-chef/core': minor
-'@context-chef/ai-sdk-middleware': minor
+'@context-chef/core': patch
+'@context-chef/ai-sdk-middleware': patch
 ---
 
 Expose one-shot history summarization as a standalone API.
