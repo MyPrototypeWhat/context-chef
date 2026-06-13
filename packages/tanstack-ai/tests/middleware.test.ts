@@ -541,4 +541,61 @@ describe('createCompressionAdapter', () => {
     // Result should contain the summary
     expect(resultMessages.length).toBeLessThan(messages.length);
   });
+
+  it('onCompress receives the compressed slice in TanStack format', async () => {
+    const chunks = [
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'msg_1', delta: 'summary' },
+      { type: 'RUN_FINISHED', messageId: 'msg_1' },
+    ];
+
+    const mockAdapter = {
+      kind: 'text' as const,
+      name: 'mock',
+      model: 'mock-model',
+      '~types': {} as Record<string, unknown>,
+      chatStream: vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]: async function* () {
+          for (const chunk of chunks) yield chunk;
+        },
+      }),
+      structuredOutput: vi.fn(),
+    };
+
+    const onCompressSpy = vi.fn();
+
+    const mw = contextChefMiddleware({
+      contextWindow: 10,
+      compress: { adapter: mockAdapter as never },
+      tokenizer: (msgs: unknown[]) => msgs.length * 100,
+      onCompress: onCompressSpy,
+    });
+
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Search for cats' },
+      {
+        role: 'assistant',
+        content: 'Let me search',
+        toolCalls: [
+          { id: 'tc_1', type: 'function', function: { name: 'search', arguments: '{"q":"cats"}' } },
+        ],
+      },
+      { role: 'tool', content: 'Found 5 cats', toolCallId: 'tc_1' },
+      { role: 'assistant', content: 'Here are the results' },
+      { role: 'user', content: 'Tell me more' },
+    ];
+
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages);
+
+    await mw.onConfig?.(ctx, config);
+
+    expect(onCompressSpy).toHaveBeenCalled();
+    const [, , details] = onCompressSpy.mock.calls[0];
+    expect(Array.isArray(details.compressedMessages)).toBe(true);
+    expect(details.compressedMessages.length).toBeGreaterThan(0);
+    // TanStack AI ModelMessage shape: role + content
+    const first = details.compressedMessages[0];
+    expect(first).toHaveProperty('role');
+    expect(first).toHaveProperty('content');
+  });
 });

@@ -1,4 +1,10 @@
-import { type ChefLogger, Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import {
+  type ChefLogger,
+  type CompressionDetails,
+  Janitor,
+  type Message,
+  XmlGenerator,
+} from '@context-chef/core';
 import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
 
 import { fromTanStackAI, toTanStackAI } from './adapter';
@@ -49,7 +55,10 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       ? createCompressionAdapter(options.compress.adapter)
       : undefined,
     onCompress: options.onCompress
-      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
+      ? (summary: Message, count: number, details: CompressionDetails) =>
+          options.onCompress?.(summary.content, count, {
+            compressedMessages: toTanStackAI(details.compressedMessages),
+          })
       : undefined,
     onBeforeCompress: options.onBeforeCompress,
     logger,

@@ -171,8 +171,20 @@ export interface ContextChefOptions {
    * underlying Janitor and Offloader.
    */
   logger?: ChefLogger;
-  /** Hook called after compression occurs. */
-  onCompress?: (summary: string, truncatedCount: number) => void;
+  /**
+   * Hook called after compression occurs.
+   *
+   * `details.compressedMessages` is the exact slice (TanStack format) that
+   * the summary replaced — the precise boundary for persisting the summary
+   * as a marker in your own store. These are the post-transform messages
+   * (after truncate/compact): match tool messages back to your records by
+   * `toolCallId`; user/assistant text is not modified by those steps.
+   */
+  onCompress?: (
+    summary: string,
+    truncatedCount: number,
+    details: { compressedMessages: ModelMessage[] },
+  ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.
    * Return modified messages to replace history, or null/undefined to
