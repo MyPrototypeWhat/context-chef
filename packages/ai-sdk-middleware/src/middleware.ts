@@ -379,8 +379,9 @@ function createCompressionAdapter(
 }
 
 /**
- * Options for {@link summarizeMessages}. Alias of core's
- * `SummarizeHistoryOptions` — the knobs that affect summary production.
+ * Options for {@link summarizeMessages}. Currently a structural alias of core's
+ * `SummarizeHistoryOptions` — add middleware-specific fields here if they ever
+ * diverge.
  */
 export type SummarizeMessagesOptions = SummarizeHistoryOptions;
 
@@ -388,17 +389,18 @@ export type SummarizeMessagesOptions = SummarizeHistoryOptions;
  * Summarize an AI-SDK prompt slice into a single summary string, using the
  * SAME pipeline as the in-flight `compress` path: role-flattening via the
  * compression adapter + core `summarizeHistory`. System messages are dropped
- * (they are standing instructions, not conversation). Returns the raw summary
- * text — wrap it with `Prompts.getCompactSummaryWrapper` for the
- * "continued conversation" framing. An empty prompt returns `''` without a
- * model call; throws if the model call fails.
+ * (they are standing instructions, not conversation). Returns the extracted
+ * summary text — wrap it with `getCompactSummaryWrapper` from
+ * `@context-chef/core` for the "continued conversation" framing. An empty
+ * prompt returns `''` without a model call; throws if the model call fails.
  *
  * For hosts that own their conversation store and persist compression
  * themselves (durable compaction) instead of relying on in-flight middleware
  * compression. IMPORTANT: if you drive summarization this way, do NOT also
- * enable in-flight `compress` / `onCompress` on the same conversation path —
- * that would compress twice (a summary of a summary). `truncate`, `clear`, and
- * `dynamicState` remain safe to use alongside.
+ * configure `compress` (with a `model`) on the same middleware instance for the
+ * same conversation path — that would compress twice (model compression at call
+ * time, then again at persist time). A notification-only `onCompress`, plus
+ * `truncate`, `clear`, and `dynamicState`, remain safe to use alongside.
  */
 export async function summarizeMessages(
   prompt: LanguageModelV3Prompt,

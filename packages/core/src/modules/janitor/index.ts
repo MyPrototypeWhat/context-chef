@@ -414,26 +414,27 @@ export interface SummarizeHistoryOptions {
 
 /**
  * Produce a compression summary for a slice of conversation `messages`, using
- * the same prompt, attachment/tool-result stripping, and `<summary>` extraction
- * as the in-flight `compress` path. Returns the raw summary text (post
- * `formatCompactSummary`) — the caller wraps it (e.g. with
+ * the same pipeline as the in-flight `compress` path: tool-result stubbing →
+ * attachment stripping → trailing instruction → `<summary>` extraction. Returns
+ * the extracted summary text (after `formatCompactSummary` strips `<analysis>`
+ * and unwraps `<summary>`) — the caller wraps it (e.g. with
  * `Prompts.getCompactSummaryWrapper`) if it wants the continuation framing.
  *
- * Pure: no circuit breaker, no fallback. THROWS if `compress` throws — callers
- * decide their own degradation. `Janitor.executeCompression` delegates here and
- * keeps its own try/catch + circuit breaker.
+ * Stateless: no circuit breaker, no fallback. THROWS if `compress` throws —
+ * callers decide their own degradation. `Janitor.executeCompression` delegates
+ * here and keeps its own try/catch + circuit breaker.
  *
  * An empty `messages` slice returns `''` without invoking `compress`.
  *
  * @param messages   The slice to summarize (conversation only; exclude the
  *                   standing system prompt).
  * @param compress   Model callback `(messages) => Promise<string>`. It MUST
- *                   handle role-flattening — providers reject raw `tool` roles
- *                   and assistant tool-calls — so pass an adapter that maps
- *                   those to user/assistant text (the ai-sdk-middleware
- *                   `summarizeMessages` / `createCompressionAdapter` is the
- *                   reference implementation). A naive passthrough callback
- *                   will break on tool messages.
+ *                   map `tool` roles and assistant tool-calls to plain
+ *                   user/assistant text — providers reject raw `tool` roles, so
+ *                   a naive passthrough will break on tool messages. If you use
+ *                   ai-sdk-middleware, call `summarizeMessages(prompt, model)`
+ *                   instead of building this manually; its internal
+ *                   `createCompressionAdapter` is the reference flattener.
  */
 export async function summarizeHistory(
   messages: Message[],
