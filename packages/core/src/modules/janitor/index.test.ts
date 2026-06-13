@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
-import { groupIntoTurns, Janitor } from '.';
+import { compactMessages, groupIntoTurns, Janitor } from '.';
 
 // ─── Helpers ───
 
@@ -1536,5 +1536,45 @@ describe('Janitor — toolResultStubThreshold', () => {
       (m) => m.role === 'tool' && m.tool_call_id === 'call_b',
     );
     expect(recentToolInSummarizerInput).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// compactMessages — pure exported function
+// ═══════════════════════════════════════════════════════
+
+describe('compactMessages (pure)', () => {
+  const history: Message[] = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'a1', thinking: { thinking: 'hmm' } },
+    { role: 'tool', content: 'result-1', tool_call_id: 't1' },
+    { role: 'user', content: 'q2' },
+    { role: 'tool', content: 'result-2', tool_call_id: 't2' },
+  ];
+
+  it('replaces tool result content with the placeholder, keeping the message', () => {
+    const out = compactMessages(history, { clear: ['tool-result'] });
+    expect(out).toHaveLength(5);
+    expect(out[2].content).toBe('[Old tool result content cleared]');
+    expect(out[4].content).toBe('[Old tool result content cleared]');
+    expect(out[2].tool_call_id).toBe('t1');
+  });
+
+  it('keepRecent preserves the N most recent tool results', () => {
+    const out = compactMessages(history, { clear: [{ target: 'tool-result', keepRecent: 1 }] });
+    expect(out[2].content).toBe('[Old tool result content cleared]');
+    expect(out[4].content).toBe('result-2');
+  });
+
+  it('clears thinking without touching content', () => {
+    const out = compactMessages(history, { clear: ['thinking'] });
+    expect(out[1].thinking).toBeUndefined();
+    expect(out[1].content).toBe('a1');
+    expect(out[2].content).toBe('result-1');
+  });
+
+  it('does not mutate the input array', () => {
+    compactMessages(history, { clear: ['tool-result'] });
+    expect(history[2].content).toBe('result-1');
   });
 });

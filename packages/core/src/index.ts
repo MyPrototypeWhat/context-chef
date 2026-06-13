@@ -56,6 +56,7 @@ export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
   type CompressionDetails,
+  compactMessages,
   groupIntoTurns,
   Janitor,
   type JanitorConfig,

@@ -343,6 +343,66 @@ export interface JanitorSnapshot {
   consecutiveFailures: number;
 }
 
+/**
+ * Pure implementation behind {@link Janitor.compact}: replaces cleared
+ * content with placeholders instead of deleting messages, preserving
+ * structure and tool-call pairing. Usable without a Janitor instance.
+ */
+export function compactMessages(history: Message[], options: CompactOptions): Message[] {
+  // Parse targets: separate simple strings from object configs
+  let clearToolResult = false;
+  let toolResultKeepRecent: number | undefined;
+  let clearThinking = false;
+
+  for (const target of options.clear) {
+    if (target === 'tool-result') {
+      clearToolResult = true;
+    } else if (target === 'thinking') {
+      clearThinking = true;
+    } else if (typeof target === 'object' && target.target === 'tool-result') {
+      clearToolResult = true;
+      toolResultKeepRecent = target.keepRecent;
+    }
+  }
+
+  // Build the set of tool message indices to skip (keepRecent)
+  let toolResultSkipSet: Set<number> | undefined;
+  if (clearToolResult && toolResultKeepRecent !== undefined) {
+    const keepCount = Math.max(1, toolResultKeepRecent);
+    // Collect indices of all tool messages (in order)
+    const toolIndices: number[] = [];
+    for (let i = 0; i < history.length; i++) {
+      if (history[i].role === 'tool') {
+        toolIndices.push(i);
+      }
+    }
+    // The last keepCount tool messages are preserved
+    const preserveIndices = toolIndices.slice(-keepCount);
+    toolResultSkipSet = new Set(preserveIndices);
+  }
+
+  return history.map((msg, idx) => {
+    let result = msg;
+
+    if (clearToolResult && msg.role === 'tool') {
+      // Skip (preserve) if this index is in the keepRecent set
+      if (!toolResultSkipSet?.has(idx)) {
+        result = { ...result, content: '[Old tool result content cleared]' };
+      }
+    }
+
+    if (clearThinking && msg.role === 'assistant') {
+      if (msg.thinking || msg.redacted_thinking) {
+        // Set to undefined rather than destructure-delete: keeps Message typing
+        // clean (adapters use truthy checks, undefined is dropped by JSON.stringify).
+        result = { ...result, thinking: undefined, redacted_thinking: undefined };
+      }
+    }
+
+    return result;
+  });
+}
+
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
@@ -478,58 +538,7 @@ export class Janitor {
    * history = await janitor.compress(history);
    */
   public compact(history: Message[], options: CompactOptions): Message[] {
-    // Parse targets: separate simple strings from object configs
-    let clearToolResult = false;
-    let toolResultKeepRecent: number | undefined;
-    let clearThinking = false;
-
-    for (const target of options.clear) {
-      if (target === 'tool-result') {
-        clearToolResult = true;
-      } else if (target === 'thinking') {
-        clearThinking = true;
-      } else if (typeof target === 'object' && target.target === 'tool-result') {
-        clearToolResult = true;
-        toolResultKeepRecent = target.keepRecent;
-      }
-    }
-
-    // Build the set of tool message indices to skip (keepRecent)
-    let toolResultSkipSet: Set<number> | undefined;
-    if (clearToolResult && toolResultKeepRecent !== undefined) {
-      const keepCount = Math.max(1, toolResultKeepRecent);
-      // Collect indices of all tool messages (in order)
-      const toolIndices: number[] = [];
-      for (let i = 0; i < history.length; i++) {
-        if (history[i].role === 'tool') {
-          toolIndices.push(i);
-        }
-      }
-      // The last keepCount tool messages are preserved
-      const preserveIndices = toolIndices.slice(-keepCount);
-      toolResultSkipSet = new Set(preserveIndices);
-    }
-
-    return history.map((msg, idx) => {
-      let result = msg;
-
-      if (clearToolResult && msg.role === 'tool') {
-        // Skip (preserve) if this index is in the keepRecent set
-        if (!toolResultSkipSet?.has(idx)) {
-          result = { ...result, content: '[Old tool result content cleared]' };
-        }
-      }
-
-      if (clearThinking && msg.role === 'assistant') {
-        if (msg.thinking || msg.redacted_thinking) {
-          // Set to undefined rather than destructure-delete: keeps Message typing
-          // clean (adapters use truthy checks, undefined is dropped by JSON.stringify).
-          result = { ...result, thinking: undefined, redacted_thinking: undefined };
-        }
-      }
-
-      return result;
-    });
+    return compactMessages(history, options);
   }
 
   /**
