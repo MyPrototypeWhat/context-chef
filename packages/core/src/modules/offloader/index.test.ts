@@ -901,7 +901,10 @@ describe('Offloader', () => {
         });
         o.offload('z'.repeat(200), { tailChars: 20 });
         o.cleanup();
-        expect(logger.warn).toHaveBeenCalledWith('[Offloader] onVFSEvicted threw:', expect.any(Error));
+        expect(logger.warn).toHaveBeenCalledWith(
+          '[Offloader] onVFSEvicted threw:',
+          expect.any(Error),
+        );
       });
 
       it('routes async onVFSEvicted errors to the injected logger (cleanupAsync)', async () => {
@@ -919,7 +922,10 @@ describe('Offloader', () => {
         });
         o.offload('z'.repeat(200), { tailChars: 20 });
         await o.cleanupAsync();
-        expect(logger.warn).toHaveBeenCalledWith('[Offloader] onVFSEvicted threw:', expect.any(Error));
+        expect(logger.warn).toHaveBeenCalledWith(
+          '[Offloader] onVFSEvicted threw:',
+          expect.any(Error),
+        );
       });
 
       it('routes the async-hook-on-sync-cleanup warning to the injected logger', () => {

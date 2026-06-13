@@ -237,6 +237,16 @@ describe('truncateToolResults', () => {
     const result = await truncateToolResults(prompt, { threshold: 10, storage }, logger);
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toContain('Storage adapter write failed');
+
+    // The catch block must still fall back to simple truncation, not surface
+    // the original oversized output or rethrow.
+    if (result[0].role === 'tool') {
+      const part = result[0].content[0];
+      if (part.type === 'tool-result' && part.output.type === 'text') {
+        expect(part.output.value).toContain('truncated');
+        expect(part.output.value.length).toBeLessThan(longOutput.length);
+      }
+    }
   });
 
   it('filters per-part: preserves one tool while truncating another in the same message', async () => {
