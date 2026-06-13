@@ -181,8 +181,21 @@ export interface ContextChefOptions {
   skill?: Skill | (() => Skill | null | undefined | Promise<Skill | null | undefined>);
   /** Optional tokenizer for precise per-message token counting. */
   tokenizer?: (messages: Message[]) => number;
-  /** Hook called after compression occurs. */
-  onCompress?: (summary: string, truncatedCount: number) => void;
+  /**
+   * Hook called after compression occurs.
+   *
+   * `details.compressedMessages` is the exact prompt slice (AI SDK format)
+   * that the summary replaced — the precise boundary for persisting the
+   * summary as a marker in your own store. These are the post-transform
+   * messages (after truncate/compact): match tool messages back to your
+   * records by `toolCallId`; user/assistant text is not modified by those
+   * steps.
+   */
+  onCompress?: (
+    summary: string,
+    truncatedCount: number,
+    details: { compressedMessages: LanguageModelV3Prompt },
+  ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.
    * Return modified messages to replace history, or null/undefined to

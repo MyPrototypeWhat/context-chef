@@ -4,7 +4,13 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import { type ChefLogger, Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import {
+  type ChefLogger,
+  type CompressionDetails,
+  Janitor,
+  type Message,
+  XmlGenerator,
+} from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
@@ -164,7 +170,10 @@ function createJanitor(
       ? createCompressionAdapter(options.compress.model)
       : undefined,
     onCompress: options.onCompress
-      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
+      ? (summary: Message, count: number, details: CompressionDetails) =>
+          options.onCompress?.(summary.content, count, {
+            compressedMessages: toAISDK(details.compressedMessages),
+          })
       : undefined,
     onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
     logger,

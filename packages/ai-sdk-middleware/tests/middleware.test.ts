@@ -279,6 +279,50 @@ describe('createMiddleware', () => {
 
     expect(result.prompt.length).toBeLessThan(longPrompt.length);
   });
+
+  it('onCompress receives the compressed slice in AI SDK format', async () => {
+    const onCompressSpy = vi.fn();
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: onCompressSpy,
+    });
+
+    const model = createMockModel({ inputTokens: 200 });
+
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+
+    // Feed token usage over the budget so compression fires on next transformParams
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
+      model,
+    });
+
+    const longPrompt = makeConversation(10);
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt },
+      type: 'generate',
+      model,
+    });
+
+    expect(onCompressSpy).toHaveBeenCalled();
+    const [, , details] = onCompressSpy.mock.calls[0];
+    expect(Array.isArray(details.compressedMessages)).toBe(true);
+    expect(details.compressedMessages.length).toBeGreaterThan(0);
+    // AI SDK prompt messages have role + content (array of parts)
+    const first = details.compressedMessages[0];
+    expect(first).toHaveProperty('role');
+    expect(first).toHaveProperty('content');
+  });
 });
 
 describe('compress opt-in (no budgeting configured)', () => {
