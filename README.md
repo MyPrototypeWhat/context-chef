@@ -286,6 +286,8 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 **Circuit breaker.** If `compressionModel` throws three times in a row, `compress()` becomes a no-op until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. The failure counter is preserved by `chef.snapshot()` / `chef.restore()`.
 
+**Standalone summarization.** `summarizeHistory(messages, compress, opts?): Promise<string>` is the provider-agnostic primitive behind this path — call it directly to compress a slice in your own store (durable compaction). Empty slice → `''`; stateless and **throws** if `compress` throws; the `compress` callback **must role-flatten** `tool` roles. See the [core package README](./packages/core) for the full contract. ai-sdk users should prefer `summarizeMessages` from [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware), which wires the flattening adapter for you.
+
 #### `chef.reportTokenUsage(tokenCount): this`
 
 Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the default is to take the higher of the local calculation and the fed value; switch via `usagePreference` if you want `'feedFirst'` (trust the API truth) or `'tokenizerFirst'` (ignore fed entirely).

@@ -30,6 +30,16 @@ Converts an AI SDK `LanguageModelV3Prompt` to context-chef `Message[]` IR. Origi
 
 Converts context-chef `Message[]` IR back to AI SDK `LanguageModelV3Prompt`. Uses original content when unmodified; falls back to constructing from IR fields when content was modified by Janitor.
 
+### `summarizeMessages(prompt, model, opts?): Promise<string>`
+
+Summarize an AI-SDK prompt slice into a single summary string, for **durable compaction** (hosts that own their store and persist compression themselves). Runs `fromAISDK` → drops system messages → core `summarizeHistory` with an internal role-flattening adapter, so you don't flatten `tool` roles yourself. Empty prompt → `''` (no model call); throws if the model call fails. `SummarizeMessagesOptions` is a structural alias of core's `SummarizeHistoryOptions` (`customCompressionInstructions`, `toolResultStubThreshold`).
+
+```typescript
+const summary = await summarizeMessages(promptSlice, model, { toolResultStubThreshold: 5000 });
+```
+
+**Gotcha:** don't ALSO configure `compress` (with a `model`) on the same middleware path for that conversation — it double-compresses. Notification-only `onCompress`, plus `truncate` / `clear` / `dynamicState`, are safe alongside.
+
 ---
 
 ## `ContextChefOptions`

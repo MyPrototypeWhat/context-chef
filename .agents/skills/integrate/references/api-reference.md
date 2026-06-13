@@ -19,6 +19,8 @@ import {
   getAdapter,           // Standalone adapter factory
   TokenUtils,           // Token counting utilities
   XmlGenerator,         // XML generation utilities
+  Prompts,              // formatCompactSummary / getCompactSummaryWrapper
+  summarizeHistory,     // Standalone summarization primitive (see History Compaction)
 } from "context-chef";
 ```
 
@@ -169,6 +171,18 @@ const compacted = chef.getJanitor().compact(history, {
   // clear: ['tool-result', 'thinking'], // Both
 });
 ```
+
+**Standalone summarization — `summarizeHistory`:** provider-agnostic primitive behind the LLM compression path. Compress a slice in your own store (durable compaction) instead of via `compile()`.
+
+```typescript
+function summarizeHistory(
+  messages: Message[],
+  compress: (messages: Message[]) => Promise<string>,
+  opts?: { customCompressionInstructions?: string; toolResultStubThreshold?: number },
+): Promise<string>;
+```
+
+Empty slice → `''` (no model call); stateless, **throws** if `compress` throws; `compress` **must role-flatten** `tool` / assistant-tool-call messages (providers reject raw `tool` roles). Wrap the result with `Prompts.getCompactSummaryWrapper` for continuation framing. AI-SDK users: prefer `summarizeMessages` from `@context-chef/ai-sdk-middleware`.
 
 ## Payload Types
 

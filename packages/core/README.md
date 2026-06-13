@@ -277,6 +277,37 @@ Ignore tangential small talk.
 
 This is an **additive** mechanism — the default scaffolding that enforces the output contract is always preserved. If you need a completely different compression behavior, provide your own `compressionModel` instead.
 
+#### Standalone summarization — `summarizeHistory`
+
+`summarizeHistory` is the provider-agnostic primitive behind the Janitor's compression path. Call it directly when you own your conversation store and want to compress a slice yourself (durable compaction) rather than relying on in-flight `compile()` compression. It runs the exact same pipeline — tool-result stubbing → attachment stripping → trailing instruction → `<summary>` extraction — and returns the extracted summary text.
+
+```typescript
+function summarizeHistory(
+  messages: Message[],
+  compress: (messages: Message[]) => Promise<string>,
+  opts?: SummarizeHistoryOptions,
+): Promise<string>;
+
+interface SummarizeHistoryOptions {
+  customCompressionInstructions?: string;
+  toolResultStubThreshold?: number;
+}
+```
+
+Contracts: an empty `messages` slice returns `''` without calling `compress`; it is stateless (no circuit breaker, no fallback) and **throws if `compress` throws** — callers handle their own degradation. The `compress` callback **must role-flatten** tool and assistant-tool-call messages to plain user/assistant text, since providers reject raw `tool` roles.
+
+```typescript
+import { summarizeHistory, Prompts } from "@context-chef/core";
+
+const summary = await summarizeHistory(slice, myCompressFn, {
+  toolResultStubThreshold: 5000,
+});
+// myCompressFn must role-flatten tool messages; throws on model failure; '' for an empty slice.
+const continuation = Prompts.getCompactSummaryWrapper(summary); // optional continuation framing
+```
+
+> **ai-sdk users:** prefer `summarizeMessages` from [`@context-chef/ai-sdk-middleware`](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware) — it wires the role-flattening adapter for you.
+
 #### Compression circuit breaker
 
 If `compressionModel` throws on three consecutive `compress()` calls, Janitor trips a circuit breaker: subsequent `compress()` calls become no-ops (history passes through unchanged) until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. This prevents sessions from hammering a broken compression endpoint on every turn.
