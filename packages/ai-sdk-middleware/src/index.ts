@@ -4,6 +4,7 @@ import { wrapLanguageModel } from 'ai';
 import { createMiddleware } from './middleware';
 import type { ContextChefOptions } from './types';
 
+export type { ClearTarget } from '@context-chef/core';
 export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export { createMiddleware } from './middleware';
 export type {

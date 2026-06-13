@@ -1,5 +1,5 @@
 import { Prompts } from '../../prompts';
-import type { Attachment, CompactOptions, Message } from '../../types';
+import type { Attachment, ChefLogger, CompactOptions, Message } from '../../types';
 import { estimateObject } from '../../utils/tokenUtils';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
@@ -173,6 +173,21 @@ export type UsagePreferenceWithTokenizer = 'max' | 'feedFirst' | 'tokenizerFirst
  */
 export type UsagePreferenceWithoutTokenizer = 'max' | 'feedFirst';
 
+/** Boundary metadata for onCompress — maps the summary back to exact messages. */
+export interface CompressionDetails {
+  /**
+   * The messages removed from history, now represented by the summary:
+   * the prefix slice [0, truncatedCount) of the input history (after any
+   * onBeforeCompress modification). Match these back to your own store by
+   * identity (e.g. tool_call_id) or content — indices into this internal
+   * array are deliberately not exposed, since consumers don't hold it.
+   * In the no-compressionModel fallback these messages are dropped and the
+   * summary message is NOT inserted into the returned history —
+   * persistence layers should still record the boundary.
+   */
+  compressedMessages: Message[];
+}
+
 /**
  * Fields shared by every JanitorConfig variant. Not exported on its own —
  * downstream callers should use {@link JanitorConfig}.
@@ -208,6 +223,9 @@ interface JanitorConfigBase {
    */
   compressionModel?: (messagesToCompress: Message[]) => Promise<string>;
 
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+
   /**
    * Replace tool-result content longer than this many characters with a
    * one-line metadata stub (`[Tool name returned N chars; omitted before
@@ -241,10 +259,19 @@ interface JanitorConfigBase {
    * Hook triggered ONLY when compression actually happens.
    * Useful for UI loaders ("Compressing memory..."), logging, or saving the compressed state.
    *
+   * @param summaryMessage - The message inserted in place of the compressed history.
+   * @param truncatedCount - Number of messages removed from history.
+   * @param details - Boundary metadata: the exact messages that were replaced,
+   *   useful for persistence layers that need to map the summary back to their store.
+   *
    * Contract: must not throw or reject. Errors propagate out of compile() — there
    * is no fallback path. Wrap your logic in try/catch if it can fail.
    */
-  onCompress?: (summaryMessage: Message, truncatedCount: number) => void | Promise<void>;
+  onCompress?: (
+    summaryMessage: Message,
+    truncatedCount: number,
+    details: CompressionDetails,
+  ) => void | Promise<void>;
 
   /**
    * Hook triggered when the token budget is exceeded, BEFORE LLM compression.
@@ -316,6 +343,66 @@ export interface JanitorSnapshot {
   consecutiveFailures: number;
 }
 
+/**
+ * Pure implementation behind {@link Janitor.compact}: replaces cleared
+ * content with placeholders instead of deleting messages, preserving
+ * structure and tool-call pairing. Usable without a Janitor instance.
+ */
+export function compactMessages(history: Message[], options: CompactOptions): Message[] {
+  // Parse targets: separate simple strings from object configs
+  let clearToolResult = false;
+  let toolResultKeepRecent: number | undefined;
+  let clearThinking = false;
+
+  for (const target of options.clear) {
+    if (target === 'tool-result') {
+      clearToolResult = true;
+    } else if (target === 'thinking') {
+      clearThinking = true;
+    } else if (typeof target === 'object' && target.target === 'tool-result') {
+      clearToolResult = true;
+      toolResultKeepRecent = target.keepRecent;
+    }
+  }
+
+  // Build the set of tool message indices to skip (keepRecent)
+  let toolResultSkipSet: Set<number> | undefined;
+  if (clearToolResult && toolResultKeepRecent !== undefined) {
+    const keepCount = Math.max(1, toolResultKeepRecent);
+    // Collect indices of all tool messages (in order)
+    const toolIndices: number[] = [];
+    for (let i = 0; i < history.length; i++) {
+      if (history[i].role === 'tool') {
+        toolIndices.push(i);
+      }
+    }
+    // The last keepCount tool messages are preserved
+    const preserveIndices = toolIndices.slice(-keepCount);
+    toolResultSkipSet = new Set(preserveIndices);
+  }
+
+  return history.map((msg, idx) => {
+    let result = msg;
+
+    if (clearToolResult && msg.role === 'tool') {
+      // Skip (preserve) if this index is in the keepRecent set
+      if (!toolResultSkipSet?.has(idx)) {
+        result = { ...result, content: '[Old tool result content cleared]' };
+      }
+    }
+
+    if (clearThinking && msg.role === 'assistant') {
+      if (msg.thinking || msg.redacted_thinking) {
+        // Set to undefined rather than destructure-delete: keeps Message typing
+        // clean (adapters use truthy checks, undefined is dropped by JSON.stringify).
+        result = { ...result, thinking: undefined, redacted_thinking: undefined };
+      }
+    }
+
+    return result;
+  });
+}
+
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
@@ -331,7 +418,7 @@ export class Janitor {
   constructor(private config: JanitorConfig) {
     // Warn if feedTokenUsage path is likely used without a compressionModel
     if (!config.tokenizer && !config.compressionModel) {
-      console.warn(
+      (config.logger ?? console).warn(
         '[Janitor] Warning: No tokenizer and no compressionModel configured. ' +
           'In the feedTokenUsage path, compression without a compressionModel will discard old messages ' +
           'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.',
@@ -451,58 +538,7 @@ export class Janitor {
    * history = await janitor.compress(history);
    */
   public compact(history: Message[], options: CompactOptions): Message[] {
-    // Parse targets: separate simple strings from object configs
-    let clearToolResult = false;
-    let toolResultKeepRecent: number | undefined;
-    let clearThinking = false;
-
-    for (const target of options.clear) {
-      if (target === 'tool-result') {
-        clearToolResult = true;
-      } else if (target === 'thinking') {
-        clearThinking = true;
-      } else if (typeof target === 'object' && target.target === 'tool-result') {
-        clearToolResult = true;
-        toolResultKeepRecent = target.keepRecent;
-      }
-    }
-
-    // Build the set of tool message indices to skip (keepRecent)
-    let toolResultSkipSet: Set<number> | undefined;
-    if (clearToolResult && toolResultKeepRecent !== undefined) {
-      const keepCount = Math.max(1, toolResultKeepRecent);
-      // Collect indices of all tool messages (in order)
-      const toolIndices: number[] = [];
-      for (let i = 0; i < history.length; i++) {
-        if (history[i].role === 'tool') {
-          toolIndices.push(i);
-        }
-      }
-      // The last keepCount tool messages are preserved
-      const preserveIndices = toolIndices.slice(-keepCount);
-      toolResultSkipSet = new Set(preserveIndices);
-    }
-
-    return history.map((msg, idx) => {
-      let result = msg;
-
-      if (clearToolResult && msg.role === 'tool') {
-        // Skip (preserve) if this index is in the keepRecent set
-        if (!toolResultSkipSet?.has(idx)) {
-          result = { ...result, content: '[Old tool result content cleared]' };
-        }
-      }
-
-      if (clearThinking && msg.role === 'assistant') {
-        if (msg.thinking || msg.redacted_thinking) {
-          // Set to undefined rather than destructure-delete: keeps Message typing
-          // clean (adapters use truthy checks, undefined is dropped by JSON.stringify).
-          result = { ...result, thinking: undefined, redacted_thinking: undefined };
-        }
-      }
-
-      return result;
-    });
+    return compactMessages(history, options);
   }
 
   /**
@@ -610,6 +646,7 @@ export class Janitor {
         await this.config.onCompress(
           { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
           toCompress.length,
+          { compressedMessages: toCompress },
         );
       }
       this._suppressNextCompression = true;
@@ -673,7 +710,9 @@ export class Janitor {
     };
 
     if (this.config.onCompress) {
-      await this.config.onCompress(summaryMessage, toCompress.length);
+      await this.config.onCompress(summaryMessage, toCompress.length, {
+        compressedMessages: toCompress,
+      });
     }
 
     // E10: Suppress the immediate next compression check.

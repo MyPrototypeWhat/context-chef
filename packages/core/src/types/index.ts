@@ -10,6 +10,15 @@ import type {
 import type { Content as GeminiContent, TextPart as GeminiTextPart } from '@google/generative-ai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions';
 
+/**
+ * Minimal logging hook for degradation warnings (storage write failures,
+ * misconfiguration, swallowed callback errors). Defaults to `console`.
+ * Pass your host's logger service to land warnings in application logs.
+ */
+export interface ChefLogger {
+  warn(message: string, ...args: unknown[]): void;
+}
+
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ToolCall {

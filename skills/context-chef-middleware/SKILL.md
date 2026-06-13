@@ -165,8 +165,9 @@ onBudgetExceeded: (history, { currentTokens, limit }) => {
 
 **Compression callback (`onCompress`):**
 ```typescript
-onCompress: (summary, truncatedCount) => {
+onCompress: (summary, truncatedCount, details) => {
   console.log(`Compressed ${truncatedCount} messages into summary`);
+  // details.compressedMessages — the replaced slice in AI SDK format
 }
 ```
 

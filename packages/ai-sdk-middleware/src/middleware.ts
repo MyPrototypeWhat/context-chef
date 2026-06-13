@@ -4,7 +4,15 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import { Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import {
+  type ChefLogger,
+  type CompressionDetails,
+  compactMessages,
+  Janitor,
+  type Message,
+  Prompts,
+  XmlGenerator,
+} from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
@@ -21,6 +29,7 @@ type CompressRole = 'system' | 'user' | 'assistant';
  * token usage across calls for compression decisions.
  */
 export function createMiddleware(options: ContextChefOptions): LanguageModelMiddleware {
+  const logger = options.logger ?? console;
   let usageWarned = false;
 
   // Budget-dependent features: compression and its hooks. Any of them
@@ -40,7 +49,25 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   }
 
-  const janitor = budgeting ? createJanitor(options, options.contextWindow as number) : null;
+  const janitor = budgeting
+    ? createJanitor(options, options.contextWindow as number, logger)
+    : null;
+
+  const clearsToolResults = !!options.clear?.some(
+    (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
+  );
+
+  // `clear` only round-trips tool-result placeholders through the adapter.
+  // Reasoning lives in the assistant message's content parts, which the
+  // adapter passes through untouched unless the text content changed — so a
+  // `'thinking'` target here is a silent no-op. Reasoning removal belongs to
+  // `compact` (pruneMessages), which strips reasoning parts for real.
+  if (options.clear?.some((t) => t === 'thinking')) {
+    logger.warn(
+      "[context-chef] `clear: ['thinking']` has no effect in the middleware — reasoning " +
+        'parts pass through the adapter unchanged. Use `compact: { reasoning: ... }` to remove reasoning.',
+    );
+  }
 
   return {
     specificationVersion: 'v3',
@@ -50,7 +77,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 
       // 1. Truncate large tool results
       if (options.truncate) {
-        prompt = await truncateToolResults(prompt, options.truncate);
+        prompt = await truncateToolResults(prompt, options.truncate, logger);
       }
 
       // 2. Compact (mechanical, zero LLM cost) via pruneMessages
@@ -70,13 +97,25 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         conversation = await janitor.compress(conversation);
       }
 
+      // 4.5 Placeholder-style clearing (core semantics) — after compress so
+      // the summarizer saw full content; placeholders only hit the kept tail.
+      if (options.clear?.length) {
+        conversation = compactMessages(conversation, { clear: options.clear });
+      }
+
       // 5. Reassemble sandwich: user system + skill instructions + conversation.
       //    The skill slot mirrors @context-chef/core compile() ordering
       //    (SKILL_SPEC §6.3): a dedicated system message AFTER user system
       //    and BEFORE the conversation history. Empty instructions are
       //    skipped to avoid emitting an empty system message.
       const skillMessages = await resolveSkillMessages(options.skill);
-      const irMessages = [...systemMessages, ...skillMessages, ...conversation];
+      // The clear explainer is placed after skill messages, just before the
+      // conversation, so the model sees the explanation immediately ahead of
+      // the placeholders it describes.
+      const clearNotice: Message[] = clearsToolResults
+        ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
+        : [];
+      const irMessages = [...systemMessages, ...skillMessages, ...clearNotice, ...conversation];
 
       // 6. Convert back to AI SDK format
       prompt = toAISDK(irMessages);
@@ -103,7 +142,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         janitor.feedTokenUsage(result.usage.inputTokens.total);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
-        console.warn(
+        logger.warn(
           '[context-chef] Model response did not include usage.inputTokens.total. ' +
             'Token-based compression may not trigger accurately. ' +
             'Consider providing a tokenizer for precise token counting.',
@@ -125,7 +164,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
               janitor.feedTokenUsage(chunk.usage.inputTokens.total);
             } else if (!usageWarned && !options.tokenizer) {
               usageWarned = true;
-              console.warn(
+              logger.warn(
                 '[context-chef] Stream finish did not include usage.inputTokens.total. ' +
                   'Token-based compression may not trigger accurately. ' +
                   'Consider providing a tokenizer for precise token counting.',
@@ -149,7 +188,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
  * members exactly — a single literal carrying `tokenizer: Fn | undefined`
  * would not narrow to either branch.
  */
-function createJanitor(options: ContextChefOptions, contextWindow: number): Janitor {
+function createJanitor(
+  options: ContextChefOptions,
+  contextWindow: number,
+  logger: ChefLogger,
+): Janitor {
   const sharedJanitorConfig = {
     contextWindow,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
@@ -157,14 +200,18 @@ function createJanitor(options: ContextChefOptions, contextWindow: number): Jani
       ? createCompressionAdapter(options.compress.model)
       : undefined,
     onCompress: options.onCompress
-      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
+      ? (summary: Message, count: number, details: CompressionDetails) =>
+          options.onCompress?.(summary.content, count, {
+            compressedMessages: toAISDK(details.compressedMessages),
+          })
       : undefined,
     onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
+    logger,
   };
 
   let usagePreference = options.compress?.usagePreference;
   if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    console.warn(
+    logger.warn(
       "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
         "Falling back to 'max'.",
     );

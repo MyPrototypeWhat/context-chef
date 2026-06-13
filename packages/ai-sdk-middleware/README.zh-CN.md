@@ -177,7 +177,9 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | 否 | 按工具覆写。字符串 = 保留（同时跳过存储）；对象 = 为该工具覆写参数。重复名称时后者胜出。 |
 | `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
-| `onCompress` | `(summary, count) => void` | 否 | 压缩完成后的回调 |
+| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV3Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
+| `logger` | `ChefLogger` | 否 | 降级警告的输出目标（存储写入失败、缺少 usage 数据、配置异常等），默认 `console`。转发给底层 Janitor 和 Offloader。 |
+| `clear` | `ClearTarget[]` | 否 | 占位符式的 **tool-result** 清除。被清除的工具结果变为 `'[Old tool result content cleared]'`——消息结构保持完整，与删除内容的 `compact` 不同。在压缩之后执行。当工具结果被清除时，自动注入一条系统消息以避免模型将占位符读作错误。仅 `'tool-result'` 目标生效；`'thinking'` 目标为空操作（会记录一条警告）——请用 `compact: { reasoning: ... }` 删除 reasoning。`ClearTarget` 从 `@context-chef/core` 导出。 |
 
 **返回值：** `LanguageModelV3` — 包装后的模型，可在任何使用原模型的地方直接替换。
 

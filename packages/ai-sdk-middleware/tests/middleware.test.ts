@@ -279,6 +279,50 @@ describe('createMiddleware', () => {
 
     expect(result.prompt.length).toBeLessThan(longPrompt.length);
   });
+
+  it('onCompress receives the compressed slice in AI SDK format', async () => {
+    const onCompressSpy = vi.fn();
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: onCompressSpy,
+    });
+
+    const model = createMockModel({ inputTokens: 200 });
+
+    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+
+    // Feed token usage over the budget so compression fires on next transformParams
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [] },
+      model,
+    });
+
+    const longPrompt = makeConversation(10);
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt },
+      type: 'generate',
+      model,
+    });
+
+    expect(onCompressSpy).toHaveBeenCalled();
+    const [, , details] = onCompressSpy.mock.calls[0];
+    expect(Array.isArray(details.compressedMessages)).toBe(true);
+    expect(details.compressedMessages.length).toBeGreaterThan(0);
+    // AI SDK prompt messages have role + content (array of parts)
+    const first = details.compressedMessages[0];
+    expect(first).toHaveProperty('role');
+    expect(first).toHaveProperty('content');
+  });
 });
 
 describe('compress opt-in (no budgeting configured)', () => {
@@ -999,6 +1043,62 @@ describe('skill', () => {
     }
   });
 
+  it('coexists with clear — skill system message and clear notice both present', async () => {
+    const middleware = createMiddleware({
+      skill: planningSkill,
+      clear: [{ target: 'tool-result', keepRecent: 1 }],
+    });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: [{ type: 'text', text: 'Run both commands.' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'call_1', toolName: 'run_cmd', input: { cmd: 'ls' } },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_1',
+            toolName: 'run_cmd',
+            output: { type: 'text', value: 'file1.txt' },
+          },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'call_2', toolName: 'run_cmd', input: { cmd: 'pwd' } },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_2',
+            toolName: 'run_cmd',
+            output: { type: 'text', value: '/home/user' },
+          },
+        ],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Done?' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    // user system msg + skill msg + clear notice = 3 system messages
+    const systemMsgs = result.prompt.filter((m) => m.role === 'system');
+    expect(systemMsgs.length).toBeGreaterThanOrEqual(3);
+  });
+
   it('coexists with compress — skill survives over-budget compression', async () => {
     const middleware = createMiddleware({
       contextWindow: 100,
@@ -1030,5 +1130,198 @@ describe('skill', () => {
     expect(skillSysMsgs.length).toBe(1);
     // Conversation should still have been compressed.
     expect(result.prompt.length).toBeLessThan(longPrompt.length);
+  });
+});
+
+/** Build a prompt with two tool-call/result exchanges plus a trailing user message.
+ * Starts with a user message so ensureValidHistory doesn't insert a placeholder. */
+function makeToolPrompt(): LanguageModelV3Prompt {
+  return [
+    { role: 'system', content: 'You are helpful.' },
+    { role: 'user', content: [{ type: 'text', text: 'Run both commands.' }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', toolCallId: 'call_1', toolName: 'run_cmd', input: { cmd: 'ls' } },
+      ],
+    },
+    {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_1',
+          toolName: 'run_cmd',
+          output: { type: 'text', value: 'file1.txt file2.txt' },
+        },
+      ],
+    },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', toolCallId: 'call_2', toolName: 'run_cmd', input: { cmd: 'pwd' } },
+      ],
+    },
+    {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_2',
+          toolName: 'run_cmd',
+          output: { type: 'text', value: '/home/user' },
+        },
+      ],
+    },
+    { role: 'user', content: [{ type: 'text', text: 'Thanks' }] },
+  ];
+}
+
+describe('clear', () => {
+  it('replaces old tool results with placeholders and injects the explainer', async () => {
+    const middleware = createMiddleware({ clear: [{ target: 'tool-result', keepRecent: 1 }] });
+    const prompt = makeToolPrompt();
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const toolMsgs = result.prompt.filter((m) => m.role === 'tool');
+    // Structure preserved — nothing deleted, both tool messages stay
+    expect(toolMsgs).toHaveLength(2);
+
+    // Older tool result (first in prompt order) is cleared to the placeholder
+    const olderToolMsg = toolMsgs[0];
+    expect(olderToolMsg.role).toBe('tool');
+    if (olderToolMsg.role === 'tool') {
+      const part = olderToolMsg.content[0];
+      expect(part.type).toBe('tool-result');
+      if (part.type === 'tool-result') {
+        expect(part.output.type).toBe('text');
+        if (part.output.type === 'text') {
+          expect(part.output.value).toBe('[Old tool result content cleared]');
+        }
+      }
+    }
+
+    // Newer tool result (keepRecent:1) is preserved intact
+    const newerToolMsg = toolMsgs[1];
+    expect(newerToolMsg.role).toBe('tool');
+    if (newerToolMsg.role === 'tool') {
+      const part = newerToolMsg.content[0];
+      expect(part.type).toBe('tool-result');
+      if (part.type === 'tool-result') {
+        expect(part.output.type).toBe('text');
+        if (part.output.type === 'text') {
+          expect(part.output.value).toBe('/home/user');
+        }
+      }
+    }
+
+    // Explainer is injected as a system message
+    const systemTexts = result.prompt
+      .filter((m) => m.role === 'system')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+    expect(systemTexts.some((t) => t.includes('automatically cleared'))).toBe(true);
+  });
+
+  it('clear without tool-result targets does not inject the explainer', async () => {
+    const middleware = createMiddleware({ clear: ['thinking'] });
+
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'system', content: 'You are helpful.' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'thinking hard...' },
+          { type: 'text', text: 'My answer.' },
+        ],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const systemTexts = result.prompt
+      .filter((m) => m.role === 'system')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+    expect(systemTexts.some((t) => t.includes('automatically cleared'))).toBe(false);
+  });
+
+  it("clear: ['thinking'] warns and is a documented no-op (reasoning still passes through)", async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({ clear: ['thinking'], logger });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain("clear: ['thinking']");
+
+    const prompt: LanguageModelV3Prompt = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'secret chain of thought' },
+          { type: 'text', text: 'My answer.' },
+        ],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    ];
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    // Documented scope: thinking clearing does NOT round-trip through the
+    // adapter, so the reasoning part is still present. If this ever changes,
+    // update the warning and the `clear` docs together.
+    const assistant = result.prompt.find((m) => m.role === 'assistant');
+    const hasReasoning =
+      Array.isArray(assistant?.content) && assistant.content.some((p) => p.type === 'reasoning');
+    expect(hasReasoning).toBe(true);
+  });
+
+  it('does not delete any messages — structure is preserved', async () => {
+    const middleware = createMiddleware({ clear: [{ target: 'tool-result', keepRecent: 0 }] });
+    const prompt = makeToolPrompt();
+    const originalLength = prompt.length;
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    // clear adds one system message (the explainer), so total = original + 1
+    // (original system stays + clear notice added)
+    const nonSystemCount = result.prompt.filter((m) => m.role !== 'system').length;
+    const originalNonSystem = prompt.filter((m) => m.role !== 'system').length;
+    expect(nonSystemCount).toBe(originalNonSystem);
+    // Prompt is longer (not shorter) because we injected a system notice
+    expect(result.prompt.length).toBeGreaterThanOrEqual(originalLength);
+  });
+
+  it('does not affect the compact (pruneMessages) path', async () => {
+    // compact with toolCalls:'all' DELETES tool messages entirely — different from clear
+    const middleware = createMiddleware({
+      compact: { toolCalls: 'all' },
+    });
+    const prompt = makeToolPrompt();
+
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({ params: { prompt }, type: 'generate', model: createMockModel() });
+
+    const toolMsgs = result.prompt.filter((m) => m.role === 'tool');
+    // compact deletes — clear does not. No clear option here, so tool msgs pruned.
+    expect(toolMsgs).toHaveLength(0);
+
+    // No 'automatically cleared' explainer injected (clear was not configured)
+    const systemTexts = result.prompt
+      .filter((m) => m.role === 'system')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+    expect(systemTexts.some((t) => t.includes('automatically cleared'))).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+export type { ClearTarget } from '@context-chef/core';
 export { fromTanStackAI, type TanStackAIMessage, toTanStackAI } from './adapter';
 export { contextChefMiddleware } from './middleware';
 export type {

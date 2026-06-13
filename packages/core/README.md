@@ -183,7 +183,8 @@ const chef = new ContextChef({
       msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
     preserveRatio: 0.8, // keep 80% of contextWindow for recent messages (default)
     compressionModel: async (msgs) => callGpt4oMini(msgs),
-    onCompress: async (summary, count) => {
+    onCompress: async (summary, count, details) => {
+      // details.compressedMessages: the messages this summary replaced
       await db.saveCompression(sessionId, summary, count);
     },
   },
@@ -221,7 +222,8 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are available. See "Choosing the trigger source" below. The value union is narrowed: configs without `tokenizer` only accept `'max' \| 'feedFirst'` (TypeScript rejects `'tokenizerFirst'` at compile time). |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). See "Custom compression instructions" below. |
-| `onCompress`                    | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
+| `onCompress`                    | `(summary, count, details) => void \| Promise<void>` | —  | Fires after compression. `details.compressedMessages` is the exact prefix slice of history that the summary replaced (the first `truncatedCount` messages). |
+| `logger`                        | `ChefLogger`                                | —          | Sink for degradation warnings (storage write failures, missing tokenizer, etc.); defaults to `console`. |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. See [`onBeforeCompress` hook](#onbeforecompress-hook) below for the deprecated `onBudgetExceeded` alias. |
 
 #### Compression Output Contract
@@ -430,7 +432,7 @@ After a process restart, `reconcile()` walks the adapter and adopts orphan files
 
 ```typescript
 const adopted = await chef.getOffloader().reconcileAsync({ measureBytes: true });
-// createdAt parsed from filename (vfs_<ts>_<hash>.txt); bytes measured if requested.
+// createdAt parsed from legacy vfs_<ts>_<hash>.txt names; content-addressed names date from adoption. bytes measured if requested.
 ```
 
 Eviction runs in two phases: **A**) `maxAge` sweep relative to `createdAt`, then **B**) single-pass LRU by `accessedAt` ascending until both count and byte caps are satisfied. Cleanup is **mechanism, not policy** — it is never triggered by `compile()`. Wire it to `compile:done` for per-turn enforcement, or call it on a timer / on session end.

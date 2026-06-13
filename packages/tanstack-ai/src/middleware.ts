@@ -1,4 +1,12 @@
-import { Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import {
+  type ChefLogger,
+  type CompressionDetails,
+  compactMessages as clearMessages,
+  Janitor,
+  type Message,
+  Prompts,
+  XmlGenerator,
+} from '@context-chef/core';
 import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
 
 import { fromTanStackAI, toTanStackAI } from './adapter';
@@ -35,6 +43,22 @@ type CompressRole = 'system' | 'user' | 'assistant';
  * ```
  */
 export function contextChefMiddleware(options: ContextChefOptions): ChatMiddleware {
+  const logger: ChefLogger = options.logger ?? console;
+  const clearsToolResults = !!options.clear?.some(
+    (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
+  );
+
+  // `clear` only round-trips tool-result placeholders. Reasoning lives in the
+  // assistant message's content parts, which the adapter passes through
+  // untouched — so a `'thinking'` target here is a silent no-op. Use `compact`
+  // for reasoning removal.
+  if (options.clear?.some((t) => t === 'thinking')) {
+    logger.warn(
+      "[context-chef] `clear: ['thinking']` has no effect in the middleware — reasoning " +
+        'parts pass through the adapter unchanged. Use `compact` to remove reasoning.',
+    );
+  }
+
   let usageWarned = false;
 
   // The Janitor config is a discriminated union on `tokenizer`. Build the two
@@ -48,14 +72,18 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       ? createCompressionAdapter(options.compress.adapter)
       : undefined,
     onCompress: options.onCompress
-      ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
+      ? (summary: Message, count: number, details: CompressionDetails) =>
+          options.onCompress?.(summary.content, count, {
+            compressedMessages: toTanStackAI(details.compressedMessages),
+          })
       : undefined,
     onBeforeCompress: options.onBeforeCompress,
+    logger,
   };
 
   let usagePreference = options.compress?.usagePreference;
   if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    console.warn(
+    logger.warn(
       "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
         "Falling back to 'max'.",
     );
@@ -85,7 +113,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
 
       // 1. Truncate large tool results
       if (options.truncate) {
-        messages = await truncateToolResults(messages, options.truncate);
+        messages = await truncateToolResults(messages, options.truncate, logger);
       }
 
       // 2. Convert to IR
@@ -99,6 +127,12 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       // 4. Compress conversation history if over token budget
       irMessages = await janitor.compress(irMessages);
 
+      // 4.5 Placeholder-style clearing (core semantics) — after compress so
+      // the summarizer saw full content; placeholders only hit the kept tail.
+      if (options.clear?.length) {
+        irMessages = clearMessages(irMessages, { clear: options.clear });
+      }
+
       // 5. Convert back to TanStack AI format
       messages = toTanStackAI(irMessages);
 
@@ -107,6 +141,12 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       if (options.skill) {
         const instructions = await resolveSkillInstructions(options.skill);
         if (instructions) systemPrompts = [...systemPrompts, instructions];
+      }
+
+      // Append tool-result clearing explainer when tool results are targeted,
+      // so the model doesn't misread placeholders as an error.
+      if (clearsToolResults) {
+        systemPrompts = [...systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION];
       }
 
       // 7. Dynamic state injection
@@ -131,7 +171,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
         janitor.feedTokenUsage(usage.promptTokens);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
-        console.warn(
+        logger.warn(
           '[context-chef] Model response did not include usage.promptTokens. ' +
             'Token-based compression may not trigger accurately. ' +
             'Consider providing a tokenizer for precise token counting.',

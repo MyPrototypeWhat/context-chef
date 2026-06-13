@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
-import { groupIntoTurns, Janitor } from '.';
+import { compactMessages, groupIntoTurns, Janitor } from '.';
 
 // ─── Helpers ───
 
@@ -552,6 +552,30 @@ describe('Janitor — onCompress hook', () => {
     const [summaryMsg, count] = onCompress.mock.calls[0];
     expect(summaryMsg.role).toBe('user');
     expect(count).toBeGreaterThan(0);
+  });
+
+  it('passes the compressed slice as boundary details', async () => {
+    const onCompress = vi.fn();
+    const history = buildHistory(5);
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel: async () => '<history_summary>S</history_summary>',
+      onCompress,
+    });
+    await janitor.compress(history);
+    const [, count, details] = onCompress.mock.calls[0];
+    expect(details.compressedMessages).toEqual(history.slice(0, count));
+    expect(details.compressedMessages).toHaveLength(count);
+  });
+
+  it('passes boundary details in the no-compressionModel fallback too', async () => {
+    const onCompress = vi.fn();
+    const history = buildHistory(5);
+    const janitor = new Janitor({ contextWindow: 30, tokenizer: makeTokenizer(10), onCompress });
+    await janitor.compress(history);
+    const [, count, details] = onCompress.mock.calls[0];
+    expect(details.compressedMessages).toEqual(history.slice(0, count));
   });
 });
 
@@ -1315,6 +1339,19 @@ describe('Janitor — media-aware compression', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// Injected logger — constructor warning routing
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — injected logger', () => {
+  it('routes the missing-tokenizer warning to the injected logger', () => {
+    const logger = { warn: vi.fn() };
+    new Janitor({ contextWindow: 100, logger });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('No tokenizer and no compressionModel');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
 // toolResultStubThreshold — mechanical tool-result trim
 // ═══════════════════════════════════════════════════════
 
@@ -1499,5 +1536,45 @@ describe('Janitor — toolResultStubThreshold', () => {
       (m) => m.role === 'tool' && m.tool_call_id === 'call_b',
     );
     expect(recentToolInSummarizerInput).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// compactMessages — pure exported function
+// ═══════════════════════════════════════════════════════
+
+describe('compactMessages (pure)', () => {
+  const history: Message[] = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'a1', thinking: { thinking: 'hmm' } },
+    { role: 'tool', content: 'result-1', tool_call_id: 't1' },
+    { role: 'user', content: 'q2' },
+    { role: 'tool', content: 'result-2', tool_call_id: 't2' },
+  ];
+
+  it('replaces tool result content with the placeholder, keeping the message', () => {
+    const out = compactMessages(history, { clear: ['tool-result'] });
+    expect(out).toHaveLength(5);
+    expect(out[2].content).toBe('[Old tool result content cleared]');
+    expect(out[4].content).toBe('[Old tool result content cleared]');
+    expect(out[2].tool_call_id).toBe('t1');
+  });
+
+  it('keepRecent preserves the N most recent tool results', () => {
+    const out = compactMessages(history, { clear: [{ target: 'tool-result', keepRecent: 1 }] });
+    expect(out[2].content).toBe('[Old tool result content cleared]');
+    expect(out[4].content).toBe('result-2');
+  });
+
+  it('clears thinking without touching content', () => {
+    const out = compactMessages(history, { clear: ['thinking'] });
+    expect(out[1].thinking).toBeUndefined();
+    expect(out[1].content).toBe('a1');
+    expect(out[2].content).toBe('result-1');
+  });
+
+  it('does not mutate the input array', () => {
+    compactMessages(history, { clear: ['tool-result'] });
+    expect(history[2].content).toBe('result-1');
   });
 });

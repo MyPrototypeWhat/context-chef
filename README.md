@@ -239,7 +239,8 @@ const chef = new ContextChef({
       msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
     preserveRatio: 0.8, // keep 80% of contextWindow for recent messages (default)
     compressionModel: async (msgs) => callGpt4oMini(msgs),
-    onCompress: async (summary, count) => {
+    onCompress: async (summary, count, details) => {
+      // details.compressedMessages — the exact slice of history the summary replaced
       await db.saveCompression(sessionId, summary, count);
     },
   },
@@ -277,8 +278,9 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. Without `tokenizer`, the value union narrows to `'max' \| 'feedFirst'` — TypeScript rejects `'tokenizerFirst'` at compile time. See the [core package README](./packages/core) for the full breakdown. |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). |
-| `onCompress`                    | `(summary, count) => void`                  | —          | Fires after compression with the summary message and truncated count.                        |
+| `onCompress`                    | `(summary, count, details) => void`         | —          | Fires after compression with the summary message and truncated count. `details.compressedMessages` is the exact slice of history the summary replaced. |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before LLM compression. Return modified history to intervene, or null to proceed normally. |
+| `logger`                        | `ChefLogger`                                | —          | Sink for degradation warnings (storage/compaction); defaults to `console`. |
 
 **Compression output contract.** Janitor's default prompt instructs the compression model to produce an `<analysis>` scratchpad (stripped from the final output) followed by a structured `<summary>` block with 5 domain-agnostic sections (Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve). Raw output is piped through `Prompts.formatCompactSummary` before injection. See the [core package README](./packages/core) for the full contract and `customCompressionInstructions` usage.
 
@@ -409,7 +411,7 @@ After a process restart, `reconcile()` walks the adapter and adopts orphan files
 
 ```typescript
 const adopted = await chef.getOffloader().reconcileAsync({ measureBytes: true });
-// createdAt parsed from filename (vfs_<ts>_<hash>.txt); bytes measured if requested.
+// createdAt parsed from legacy vfs_<ts>_<hash>.txt names; content-addressed names date from adoption. bytes measured if requested.
 ```
 
 Cleanup is **mechanism, not policy** — it is never triggered by `compile()`. Wire it to `compile:done` for per-turn enforcement, or call it on a timer / on session end. Custom `VFSStorageAdapter` implementations must add optional `list()` / `delete()` methods to enable cleanup; if either is missing, `cleanup()` throws `VFSCleanupNotSupportedError` (the built-in `FileSystemAdapter` implements both).

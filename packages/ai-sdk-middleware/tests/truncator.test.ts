@@ -1,6 +1,6 @@
 import type { LanguageModelV3Prompt } from '@ai-sdk/provider';
 import type { VFSStorageAdapter } from '@context-chef/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { truncateToolResults } from '../src/truncator';
 
 describe('truncateToolResults', () => {
@@ -222,6 +222,31 @@ describe('truncateToolResults', () => {
 
     // String 'run_cmd' wins → preserved as-is
     expect(result).toEqual(prompt);
+  });
+
+  it('routes storage-failure warnings to the injected logger', async () => {
+    const logger = { warn: vi.fn() };
+    const storage: VFSStorageAdapter = {
+      write: () => {
+        throw new Error('disk full');
+      },
+      read: () => null,
+    };
+    const longOutput = 'x'.repeat(5000);
+    const prompt = makeToolPrompt(longOutput);
+    const result = await truncateToolResults(prompt, { threshold: 10, storage }, logger);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('Storage adapter write failed');
+
+    // The catch block must still fall back to simple truncation, not surface
+    // the original oversized output or rethrow.
+    if (result[0].role === 'tool') {
+      const part = result[0].content[0];
+      if (part.type === 'tool-result' && part.output.type === 'text') {
+        expect(part.output.value).toContain('truncated');
+        expect(part.output.value.length).toBeLessThan(longOutput.length);
+      }
+    }
   });
 
   it('filters per-part: preserves one tool while truncating another in the same message', async () => {

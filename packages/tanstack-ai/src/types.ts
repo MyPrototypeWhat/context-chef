@@ -1,4 +1,10 @@
-import type { Message, Skill, VFSStorageAdapter } from '@context-chef/core';
+import type {
+  ChefLogger,
+  ClearTarget,
+  Message,
+  Skill,
+  VFSStorageAdapter,
+} from '@context-chef/core';
 import type { AnyTextAdapter, ModelMessage } from '@tanstack/ai';
 
 export interface TruncateOptions {
@@ -78,7 +84,7 @@ export interface CompressOptions {
    *   of which report usage and some do not).
    * - `'tokenizerFirst'`: ignore reported usage entirely. Requires a
    *   `tokenizer` to be configured; otherwise it is sanitized to `'max'`
-   *   at construction time with a console warning.
+   *   at construction time with a warning via the configured logger.
    */
   usagePreference?: 'max' | 'feedFirst' | 'tokenizerFirst';
 }
@@ -130,6 +136,26 @@ export interface ContextChefOptions {
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
+   * Placeholder-style clearing of **tool results**: matched results are
+   * replaced with `'[Old tool result content cleared]'` instead of being
+   * deleted — message structure and tool-call pairing stay intact, unlike
+   * `compact` (deletion-style), which removes content outright.
+   *
+   * Runs AFTER compression, so the summarizer still sees full tool output.
+   * When tool results are targeted, an instruction explaining the
+   * placeholder is auto-appended to `systemPrompts` so the model doesn't
+   * read it as an error.
+   *
+   * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing
+   * boundary advances each turn, which invalidates the provider prefix
+   * cache at the first newly-cleared message — inherent to the semantics.
+   *
+   * Scope: only `'tool-result'` targets take effect here. A `'thinking'`
+   * target is a no-op (reasoning parts pass through the adapter unchanged)
+   * and logs a warning — use `compact` to drop reasoning.
+   */
+  clear?: ClearTarget[];
+  /**
    * Mechanical compaction — zero LLM cost.
    * Prunes tool call/result pairs and empty messages before compression.
    */
@@ -165,8 +191,26 @@ export interface ContextChefOptions {
   skill?: Skill | (() => Skill | null | undefined | Promise<Skill | null | undefined>);
   /** Optional tokenizer for precise per-message token counting. */
   tokenizer?: (messages: Message[]) => number;
-  /** Hook called after compression occurs. */
-  onCompress?: (summary: string, truncatedCount: number) => void;
+  /**
+   * Sink for degradation warnings (storage write failures, missing usage
+   * data, misconfiguration). Defaults to `console`. Forwarded to the
+   * underlying Janitor and Offloader.
+   */
+  logger?: ChefLogger;
+  /**
+   * Hook called after compression occurs.
+   *
+   * `details.compressedMessages` is the exact slice (TanStack format) that
+   * the summary replaced — the precise boundary for persisting the summary
+   * as a marker in your own store. These are the post-transform messages
+   * (after truncate/compact): match tool messages back to your records by
+   * `toolCallId`; user/assistant text is not modified by those steps.
+   */
+  onCompress?: (
+    summary: string,
+    truncatedCount: number,
+    details: { compressedMessages: ModelMessage[] },
+  ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.
    * Return modified messages to replace history, or null/undefined to

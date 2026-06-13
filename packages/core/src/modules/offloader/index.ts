@@ -2,10 +2,25 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Prompts } from '../../prompts';
+import type { ChefLogger } from '../../types';
 
 export interface VFSStorageAdapter {
   write(filename: string, content: string): void | Promise<void>;
   read(filename: string): string | null | Promise<string | null>;
+  /**
+   * Optional. Lets the Offloader skip redundant writes when a
+   * content-addressed file already exists. Adapters that can't answer
+   * cheaply may leave this unset — the Offloader then overwrites, which
+   * is harmless (same filename ⇒ same content).
+   *
+   * Contract: only return true for FULLY persisted content. With
+   * content-addressed names the Offloader treats existence as proof the
+   * bytes are complete and skips the write — a partially written entry
+   * reported as existing would be trusted for the rest of the process
+   * lifetime (the in-memory index resets on restart, re-checking exists()).
+   * Make writes atomic (FileSystemAdapter does: tmp file + rename).
+   */
+  exists?(filename: string): boolean | Promise<boolean>;
   /** Optional. Required for Offloader.cleanup() / reconcile(). Returns all stored filenames. */
   list?(): string[] | Promise<string[]>;
   /** Optional. Required for Offloader.cleanup(). Must be idempotent (no-op on missing files). */
@@ -32,16 +47,22 @@ export class FileSystemAdapter implements VFSStorageAdapter {
 
   write(filename: string, content: string): void {
     const filepath = path.join(this.storageDir, filename);
+    const tmppath = path.join(this.storageDir, `.tmp_${process.pid}_${filename}`);
     try {
-      fs.writeFileSync(filepath, content, 'utf8');
+      fs.writeFileSync(tmppath, content, 'utf8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       // The storage dir can vanish mid-process — OS temp cleaners purge
       // /var/folders & friends on long-running hosts, and the constructor's
       // mkdir only ran once. Recreate and retry once.
       fs.mkdirSync(this.storageDir, { recursive: true });
-      fs.writeFileSync(filepath, content, 'utf8');
+      fs.writeFileSync(tmppath, content, 'utf8');
     }
+    fs.renameSync(tmppath, filepath); // atomic on the same filesystem
+  }
+
+  exists(filename: string): boolean {
+    return fs.existsSync(path.join(this.storageDir, filename));
   }
 
   read(filename: string): string | null {
@@ -131,12 +152,14 @@ export interface VFSConfig {
   /**
    * Per-entry eviction notification.
    *
-   * Contract: may throw — errors are caught, logged via console.warn, and swallowed
+   * Contract: may throw — errors are caught, logged via the configured logger, and swallowed
    * so a misbehaving hook cannot abort the cleanup sweep. Use cleanupAsync() if the
    * hook is async; calling cleanup() (sync) with an async hook logs a warning and
    * does not await the result.
    */
   onVFSEvicted?: (entry: VFSEntryMeta, reason: VFSEvictionReason) => void | Promise<void>;
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
 }
 
 export interface VFSResult {
@@ -154,11 +177,16 @@ export interface OffloadOptions {
   tailChars?: number;
 }
 
+// Matches only the legacy timestamped name vfs_<ts>_<hash>.txt, so reconciled
+// legacy orphans keep their original createdAt. Content-addressed names
+// (vfs_<hash16>.txt) carry no timestamp and intentionally miss this pattern —
+// they fall back to Date.now() at adoption in _buildOrphanMeta.
 const ORPHAN_FILENAME_RE = /^vfs_(\d+)_[a-f0-9]+\.txt$/;
 
 export class Offloader {
   private config: VFSConfig;
   private adapter: VFSStorageAdapter;
+  private readonly logger: ChefLogger;
   private _index = new Map<string, VFSEntryMeta>();
   private _cleanupInFlight: Promise<VFSCleanupResult> | null = null;
 
@@ -184,6 +212,7 @@ export class Offloader {
       onVFSEvicted: config.onVFSEvicted,
     };
 
+    this.logger = config.logger ?? console;
     this.adapter = config.adapter ?? new FileSystemAdapter(storageDir);
   }
 
@@ -209,8 +238,12 @@ export class Offloader {
   }
 
   private _generateFilename(content: string): { filename: string; uri: string } {
-    const hash = crypto.createHash('md5').update(content).digest('hex').substring(0, 8);
-    const filename = `vfs_${Date.now()}_${hash}.txt`;
+    // Content-addressed: identical content always maps to the same file, so
+    // re-offloading in an agent loop is idempotent and the truncation marker
+    // (URI + physical path) is byte-stable — provider prefix caches survive.
+    // 16 hex chars (64 bits) because the hash alone is now the identity.
+    const hash = crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
+    const filename = `vfs_${hash}.txt`;
     const uri = `${this.config.uriScheme}${filename}`;
     return { filename, uri };
   }
@@ -294,6 +327,25 @@ export class Offloader {
     const physicalPath = this._resolvePhysicalPathSync(filename);
     const truncated = this._buildTruncatedMarker(content, uri, headChars, tailChars, physicalPath);
 
+    const indexed = this._index.get(filename);
+    if (indexed) {
+      // Same content already offloaded by this instance — refresh LRU recency.
+      indexed.accessedAt = Date.now();
+      return { isOffloaded: true, content: truncated, uri };
+    }
+
+    if (this.adapter.exists) {
+      const exists = this.adapter.exists(filename);
+      // Strict `=== true` (not truthiness): a Promise means exists() is async,
+      // so we fall through rather than treat a pending Promise as "exists".
+      // If write() is also async it throws the established async-adapter error;
+      // a mixed sync-write adapter just proceeds with a harmless redundant write.
+      if (exists === true) {
+        this._registerEntry(filename, uri, content);
+        return { isOffloaded: true, content: truncated, uri };
+      }
+    }
+
     const writeResult = this.adapter.write(filename, content);
     if (writeResult instanceof Promise) {
       throw new Error(
@@ -331,6 +383,17 @@ export class Offloader {
     const { filename, uri } = this._generateFilename(content);
     const physicalPath = await this._resolvePhysicalPathAsync(filename);
     const truncated = this._buildTruncatedMarker(content, uri, headChars, tailChars, physicalPath);
+
+    const indexed = this._index.get(filename);
+    if (indexed) {
+      indexed.accessedAt = Date.now();
+      return { isOffloaded: true, content: truncated, uri };
+    }
+
+    if (this.adapter.exists && (await this.adapter.exists(filename))) {
+      this._registerEntry(filename, uri, content);
+      return { isOffloaded: true, content: truncated, uri };
+    }
 
     await this.adapter.write(filename, content);
 
@@ -404,6 +467,14 @@ export class Offloader {
     this._index.set(filename, meta);
   }
 
+  /**
+   * Builds index metadata for an adopted orphan. Legacy vfs_<ts>_<hash>.txt
+   * names parse createdAt from the embedded timestamp. Content-addressed
+   * vfs_<hash16>.txt names (and any malformed name) carry no timestamp and
+   * fall back to Date.now() at adoption — so maxAge for adopted orphans
+   * counts from adoption, the conservative direction (we never under-age and
+   * evict early; at worst a just-adopted orphan lingers one maxAge window).
+   */
   private _buildOrphanMeta(filename: string, uri?: string): VFSEntryMeta {
     const resolvedUri = uri ?? `${this.config.uriScheme}${filename}`;
     const match = filename.match(ORPHAN_FILENAME_RE);
@@ -542,12 +613,12 @@ export class Offloader {
         try {
           const hookResult = this.config.onVFSEvicted(entry, reason);
           if (hookResult instanceof Promise) {
-            console.warn(
+            this.logger.warn(
               '[Offloader] onVFSEvicted returned a Promise during sync cleanup(); call cleanupAsync() to await async hooks.',
             );
           }
         } catch (error) {
-          console.warn('[Offloader] onVFSEvicted threw:', error);
+          this.logger.warn('[Offloader] onVFSEvicted threw:', error);
         }
       }
 
@@ -593,7 +664,7 @@ export class Offloader {
         try {
           await this.config.onVFSEvicted(entry, reason);
         } catch (error) {
-          console.warn('[Offloader] onVFSEvicted threw:', error);
+          this.logger.warn('[Offloader] onVFSEvicted threw:', error);
         }
       }
 
@@ -606,7 +677,8 @@ export class Offloader {
   /**
    * Walks adapter.list() and adopts orphan files (files on the adapter not in the index).
    * Required after process restart for cleanup() to see pre-restart files.
-   * Parses createdAt from filename pattern vfs_<ts>_<hash>.txt; falls back to Date.now() on parse failure.
+   * Legacy vfs_<ts>_<hash>.txt names yield createdAt from the embedded timestamp;
+   * content-addressed vfs_<hash16>.txt (and malformed) names fall back to Date.now().
    * Returns count of orphans adopted. With measureBytes, reads each orphan to populate accurate bytes.
    */
   public reconcile(options?: { measureBytes?: boolean }): number {

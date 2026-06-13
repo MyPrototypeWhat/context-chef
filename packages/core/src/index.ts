@@ -2,7 +2,12 @@ import type { z } from 'zod';
 import { adapterRegistry } from './adapters/adapterRegistry';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
-import { Janitor, type JanitorConfig, type JanitorSnapshot } from './modules/janitor';
+import {
+  type CompressionDetails,
+  Janitor,
+  type JanitorConfig,
+  type JanitorSnapshot,
+} from './modules/janitor';
 import {
   Memory,
   type MemoryChangeEvent,
@@ -23,6 +28,7 @@ import type { Skill } from './modules/skill';
 import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
+  ChefLogger,
   CompileMeta,
   CompileOptions,
   GeminiPayload,
@@ -49,6 +55,8 @@ export { fromOpenAI } from './adapters/openAIAdapter';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
+  type CompressionDetails,
+  compactMessages,
   groupIntoTurns,
   Janitor,
   type JanitorConfig,
@@ -94,7 +102,7 @@ export {
   type SkillLoadResult,
 } from './modules/skill';
 export * from './prompts';
-export type { ClearTarget, CompactOptions } from './types';
+export type { ChefLogger, ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
@@ -154,6 +162,11 @@ export interface ChefSnapshot {
 export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
   janitor?: JanitorConfig;
+  /**
+   * Sink for degradation warnings across all modules. Defaults to `console`.
+   * A module-level `logger` in `vfs` / `janitor` config wins over this one.
+   */
+  logger?: ChefLogger;
   pruner?: PrunerConfig;
   memory?: MemoryConfig;
   /**
@@ -227,6 +240,7 @@ export interface ChefEvents {
   compress: {
     summary: Message;
     truncatedCount: number;
+    details: CompressionDetails;
   };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
@@ -268,7 +282,7 @@ export class ContextChef {
 
   constructor(config: ChefConfig = {}) {
     this.assembler = new Assembler();
-    this.offloader = new Offloader(config.vfs);
+    this.offloader = new Offloader({ logger: config.logger, ...config.vfs });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
     this.transformContext = config.transformContext;
@@ -279,10 +293,15 @@ export class ContextChef {
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
     const userOnCompress = janitorConfig.onCompress;
     this.janitor = new Janitor({
+      logger: config.logger,
       ...janitorConfig,
-      onCompress: async (summary, truncatedCount) => {
-        if (userOnCompress) await userOnCompress(summary, truncatedCount);
-        await this.emitter.emit('compress', { summary, truncatedCount }, this._currentSignal);
+      onCompress: async (summary, truncatedCount, details) => {
+        if (userOnCompress) await userOnCompress(summary, truncatedCount, details);
+        await this.emitter.emit(
+          'compress',
+          { summary, truncatedCount, details },
+          this._currentSignal,
+        );
       },
     });
 

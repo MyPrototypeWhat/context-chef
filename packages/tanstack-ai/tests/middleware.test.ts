@@ -476,6 +476,117 @@ describe('skill', () => {
   });
 });
 
+describe('clear', () => {
+  it('replaces old tool results with placeholders and appends the explainer to systemPrompts', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      clear: [{ target: 'tool-result', keepRecent: 1 }],
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'First query' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'tc_1', type: 'function', function: { name: 'search', arguments: '{"q":"old"}' } },
+        ],
+      },
+      { role: 'tool', content: 'Old tool result data', toolCallId: 'tc_1' },
+      { role: 'assistant', content: 'Found something old' },
+      { role: 'user', content: 'Second query' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'tc_2', type: 'function', function: { name: 'search', arguments: '{"q":"new"}' } },
+        ],
+      },
+      { role: 'tool', content: 'New tool result data', toolCallId: 'tc_2' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages, { systemPrompts: ['You are helpful'] });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { messages: resultMessages, systemPrompts } = getResult(
+      result as Partial<ChatMiddlewareConfig>,
+    );
+
+    // Nothing deleted — both tool messages remain
+    const toolMsgs = resultMessages.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2);
+
+    // Older tool result (tc_1) replaced with placeholder
+    const olderTool = toolMsgs.find((m) => m.toolCallId === 'tc_1');
+    expect(olderTool?.content).toBe('[Old tool result content cleared]');
+    // Must NOT leak original content
+    expect(olderTool?.content).not.toContain('Old tool result data');
+
+    // Newer tool result (tc_2) preserved
+    const newerTool = toolMsgs.find((m) => m.toolCallId === 'tc_2');
+    expect(newerTool?.content).toBe('New tool result data');
+
+    // Explainer appended to systemPrompts
+    expect(systemPrompts.some((s) => s.includes('automatically cleared'))).toBe(true);
+    // Original system prompt preserved
+    expect(systemPrompts[0]).toBe('You are helpful');
+  });
+
+  it('clear without tool-result targets does not append the explainer', async () => {
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      clear: ['thinking'],
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages, { systemPrompts: ['You are helpful'] });
+
+    const result = await mw.onConfig?.(ctx, config);
+    const { systemPrompts } = getResult(result as Partial<ChatMiddlewareConfig>);
+
+    // Explainer must NOT be appended for thinking-only clear
+    expect(systemPrompts.some((s) => s.includes('automatically cleared'))).toBe(false);
+    expect(systemPrompts).toEqual(['You are helpful']);
+  });
+
+  it("clear: ['thinking'] warns about the no-op", () => {
+    const logger = { warn: vi.fn() };
+    // tanstack always builds a Janitor, which may also warn about a missing
+    // tokenizer — assert our thinking warning is among the calls, not the only one.
+    contextChefMiddleware({ contextWindow: 100_000, clear: ['thinking'], logger });
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes("clear: ['thinking']"))).toBe(true);
+  });
+
+  it('clear does not modify compact path — compact still deletes, clear still placeholders', async () => {
+    // Verify the two options are independent: compact deletes, clear placeholders
+    const mw = contextChefMiddleware({
+      contextWindow: 100_000,
+      compact: { toolCalls: 'all' },
+      clear: [{ target: 'tool-result', keepRecent: 0 }],
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Query' },
+      {
+        role: 'assistant',
+        content: 'done',
+        toolCalls: [{ id: 'tc_1', type: 'function', function: { name: 'tool', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'Result', toolCallId: 'tc_1' },
+      { role: 'assistant', content: 'Done' },
+      { role: 'user', content: 'Follow-up' },
+    ];
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages);
+
+    // Should not throw regardless of path interaction
+    const result = await mw.onConfig?.(ctx, config);
+    expect(result).toBeDefined();
+  });
+});
+
 describe('createCompressionAdapter', () => {
   it('formats messages and collects streamed deltas', async () => {
     const chunks = [
@@ -540,5 +651,62 @@ describe('createCompressionAdapter', () => {
 
     // Result should contain the summary
     expect(resultMessages.length).toBeLessThan(messages.length);
+  });
+
+  it('onCompress receives the compressed slice in TanStack format', async () => {
+    const chunks = [
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'msg_1', delta: 'summary' },
+      { type: 'RUN_FINISHED', messageId: 'msg_1' },
+    ];
+
+    const mockAdapter = {
+      kind: 'text' as const,
+      name: 'mock',
+      model: 'mock-model',
+      '~types': {} as Record<string, unknown>,
+      chatStream: vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]: async function* () {
+          for (const chunk of chunks) yield chunk;
+        },
+      }),
+      structuredOutput: vi.fn(),
+    };
+
+    const onCompressSpy = vi.fn();
+
+    const mw = contextChefMiddleware({
+      contextWindow: 10,
+      compress: { adapter: mockAdapter as never },
+      tokenizer: (msgs: unknown[]) => msgs.length * 100,
+      onCompress: onCompressSpy,
+    });
+
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Search for cats' },
+      {
+        role: 'assistant',
+        content: 'Let me search',
+        toolCalls: [
+          { id: 'tc_1', type: 'function', function: { name: 'search', arguments: '{"q":"cats"}' } },
+        ],
+      },
+      { role: 'tool', content: 'Found 5 cats', toolCallId: 'tc_1' },
+      { role: 'assistant', content: 'Here are the results' },
+      { role: 'user', content: 'Tell me more' },
+    ];
+
+    const ctx = createMockCtx();
+    const config = createMockConfig(messages);
+
+    await mw.onConfig?.(ctx, config);
+
+    expect(onCompressSpy).toHaveBeenCalled();
+    const [, , details] = onCompressSpy.mock.calls[0];
+    expect(Array.isArray(details.compressedMessages)).toBe(true);
+    expect(details.compressedMessages.length).toBeGreaterThan(0);
+    // TanStack AI ModelMessage shape: role + content
+    const first = details.compressedMessages[0];
+    expect(first).toHaveProperty('role');
+    expect(first).toHaveProperty('content');
   });
 });

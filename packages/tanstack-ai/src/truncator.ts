@@ -1,4 +1,4 @@
-import { Offloader } from '@context-chef/core';
+import { type ChefLogger, Offloader } from '@context-chef/core';
 import type { ModelMessage } from '@tanstack/ai';
 import type { TruncateOptions } from './types';
 
@@ -9,10 +9,11 @@ import type { TruncateOptions } from './types';
 export async function truncateToolResults(
   messages: ModelMessage[],
   options: TruncateOptions,
+  logger: ChefLogger = console,
 ): Promise<ModelMessage[]> {
   const { threshold, headChars = 0, tailChars = 1000, storage } = options;
 
-  const offloader = storage ? new Offloader({ threshold, adapter: storage }) : null;
+  const offloader = storage ? new Offloader({ threshold, adapter: storage, logger }) : null;
   const policy = buildPolicyMap(options.perTool);
   // TanStack's UIMessage → ModelMessage path constructs tool messages with only
   // `role / content / toolCallId` (no `name`). Resolve the tool name by
@@ -64,7 +65,7 @@ export async function truncateToolResults(
         result.push({ ...msg, content: vfsResult.content });
         continue;
       } catch (error) {
-        console.warn(
+        logger.warn(
           `[context-chef] Storage adapter write failed for tool result (${msg.toolCallId}). ` +
             `Falling back to simple truncation. Error: ${error instanceof Error ? error.message : String(error)}`,
         );

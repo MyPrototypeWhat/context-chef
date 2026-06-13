@@ -366,7 +366,7 @@ const chef = new ContextChef({
     contextWindow: 200000,
     preserveRecentMessages: 1,
     compressionModel: async (msgs) => summarizeWithCheapModel(msgs),
-    onCompress: (summary, count) => {
+    onCompress: (summary, count, details) => {
       console.log(`Compressed ${count} messages into summary`);
     },
   },

@@ -193,7 +193,9 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `compact` | `CompactConfig` | No | Mechanical pruning of tool calls and empty messages |
 | `dynamicState` | `DynamicStateConfig` | No | Runtime state injection as XML |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
-| `onCompress` | `(summary, count) => void` | No | Hook called after compression |
+| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the TanStack-format (`ModelMessage[]`) slice the summary replaced — use it to persist the summary boundary in your store. |
+| `logger` | `ChefLogger` | No | Sink for degradation warnings (storage write failures, missing usage data, misconfiguration); defaults to `console`. Forwarded to the underlying Janitor and Offloader. |
+| `clear` | `ClearTarget[]` | No | Placeholder-style **tool-result** clearing. Cleared tool results become `'[Old tool result content cleared]'` — message structure stays intact, unlike `compact` which deletes. Runs AFTER compression. When tool results are targeted, an explainer instruction is auto-appended to `systemPrompts`. Only `'tool-result'` targets take effect; a `'thinking'` target is a no-op (logs a warning) — use `compact` to drop reasoning. `ClearTarget` is exported from `@context-chef/core`. |
 | `onBeforeCompress` | `(history, tokenInfo) => msgs \| null` | No | Hook before compression with override capability |
 | `transformContext` | `(msgs, prompts) => { msgs, prompts }` | No | Post-compression prompt transformation |
 

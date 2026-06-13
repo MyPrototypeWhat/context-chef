@@ -85,6 +85,27 @@ describe('truncateToolResults', () => {
     warnSpy.mockRestore();
   });
 
+  it('routes storage-failure warnings to the injected logger', async () => {
+    const logger = { warn: vi.fn() };
+    const storage = {
+      write: () => {
+        throw new Error('disk full');
+      },
+      read: () => null,
+    };
+    const longContent = 'x'.repeat(500);
+    const messages: ModelMessage[] = [{ role: 'tool', content: longContent, toolCallId: 'tc_1' }];
+    const result = await truncateToolResults(
+      messages,
+      { threshold: 50, headChars: 10, tailChars: 10, storage },
+      logger,
+    );
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('Storage adapter write failed');
+    // Result should still contain truncated content (fallback succeeded)
+    expect(result[0].content).toContain('--- truncated');
+  });
+
   it('preserves a tool listed by name (string entry) and bypasses storage', async () => {
     const mockStorage = {
       write: vi.fn(),
