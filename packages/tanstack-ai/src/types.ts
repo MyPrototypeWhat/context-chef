@@ -1,4 +1,4 @@
-import type { Message, Skill, VFSStorageAdapter } from '@context-chef/core';
+import type { ChefLogger, Message, Skill, VFSStorageAdapter } from '@context-chef/core';
 import type { AnyTextAdapter, ModelMessage } from '@tanstack/ai';
 
 export interface TruncateOptions {
@@ -78,7 +78,7 @@ export interface CompressOptions {
    *   of which report usage and some do not).
    * - `'tokenizerFirst'`: ignore reported usage entirely. Requires a
    *   `tokenizer` to be configured; otherwise it is sanitized to `'max'`
-   *   at construction time with a console warning.
+   *   at construction time with a warning via the configured logger.
    */
   usagePreference?: 'max' | 'feedFirst' | 'tokenizerFirst';
 }
@@ -165,6 +165,12 @@ export interface ContextChefOptions {
   skill?: Skill | (() => Skill | null | undefined | Promise<Skill | null | undefined>);
   /** Optional tokenizer for precise per-message token counting. */
   tokenizer?: (messages: Message[]) => number;
+  /**
+   * Sink for degradation warnings (storage write failures, missing usage
+   * data, misconfiguration). Defaults to `console`. Forwarded to the
+   * underlying Janitor and Offloader.
+   */
+  logger?: ChefLogger;
   /** Hook called after compression occurs. */
   onCompress?: (summary: string, truncatedCount: number) => void;
   /**

@@ -1,4 +1,4 @@
-import { Janitor, type Message, XmlGenerator } from '@context-chef/core';
+import { type ChefLogger, Janitor, type Message, XmlGenerator } from '@context-chef/core';
 import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
 
 import { fromTanStackAI, toTanStackAI } from './adapter';
@@ -35,6 +35,7 @@ type CompressRole = 'system' | 'user' | 'assistant';
  * ```
  */
 export function contextChefMiddleware(options: ContextChefOptions): ChatMiddleware {
+  const logger: ChefLogger = options.logger ?? console;
   let usageWarned = false;
 
   // The Janitor config is a discriminated union on `tokenizer`. Build the two
@@ -51,11 +52,12 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       ? (summary: Message, count: number) => options.onCompress?.(summary.content, count)
       : undefined,
     onBeforeCompress: options.onBeforeCompress,
+    logger,
   };
 
   let usagePreference = options.compress?.usagePreference;
   if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    console.warn(
+    logger.warn(
       "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
         "Falling back to 'max'.",
     );
@@ -85,7 +87,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
 
       // 1. Truncate large tool results
       if (options.truncate) {
-        messages = await truncateToolResults(messages, options.truncate);
+        messages = await truncateToolResults(messages, options.truncate, logger);
       }
 
       // 2. Convert to IR
@@ -131,7 +133,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
         janitor.feedTokenUsage(usage.promptTokens);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
-        console.warn(
+        logger.warn(
           '[context-chef] Model response did not include usage.promptTokens. ' +
             'Token-based compression may not trigger accurately. ' +
             'Consider providing a tokenizer for precise token counting.',
