@@ -95,7 +95,11 @@ describe('truncateToolResults', () => {
     };
     const longContent = 'x'.repeat(500);
     const messages: ModelMessage[] = [{ role: 'tool', content: longContent, toolCallId: 'tc_1' }];
-    const result = await truncateToolResults(messages, { threshold: 50, headChars: 10, tailChars: 10, storage }, logger);
+    const result = await truncateToolResults(
+      messages,
+      { threshold: 50, headChars: 10, tailChars: 10, storage },
+      logger,
+    );
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toContain('Storage adapter write failed');
     // Result should still contain truncated content (fallback succeeded)

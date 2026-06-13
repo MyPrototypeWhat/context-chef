@@ -3,8 +3,7 @@ import type {
   LanguageModelV3ToolResultOutput,
   LanguageModelV3ToolResultPart,
 } from '@ai-sdk/provider';
-import { Offloader } from '@context-chef/core';
-import type { ChefLogger } from '@context-chef/core';
+import { type ChefLogger, Offloader } from '@context-chef/core';
 import type { TruncateOptions } from './types';
 
 /**

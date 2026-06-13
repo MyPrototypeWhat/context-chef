@@ -4,7 +4,7 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import { Janitor, type ChefLogger, type Message, XmlGenerator } from '@context-chef/core';
+import { type ChefLogger, Janitor, type Message, XmlGenerator } from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
