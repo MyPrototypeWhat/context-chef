@@ -1,7 +1,7 @@
 ---
-'@context-chef/core': patch
-'@context-chef/ai-sdk-middleware': patch
-'@context-chef/tanstack-ai': patch
+'@context-chef/core': minor
+'@context-chef/ai-sdk-middleware': minor
+'@context-chef/tanstack-ai': minor
 ---
 
 Content-addressed VFS, logger hook, compression boundaries, and placeholder-style clearing.
