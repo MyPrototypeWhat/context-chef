@@ -1,5 +1,11 @@
 import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
-import type { ChefLogger, Message, Skill, VFSStorageAdapter } from '@context-chef/core';
+import type {
+  ChefLogger,
+  ClearTarget,
+  Message,
+  Skill,
+  VFSStorageAdapter,
+} from '@context-chef/core';
 
 export interface TruncateOptions {
   /** Character count threshold to trigger truncation. */
@@ -149,6 +155,22 @@ export interface ContextChefOptions {
   compress?: CompressOptions;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
+  /**
+   * Placeholder-style clearing with @context-chef/core `Janitor.compact`
+   * semantics: cleared tool results / thinking are replaced with
+   * placeholders ('[Old tool result content cleared]') instead of being
+   * deleted — message structure and tool-call pairing stay intact, unlike
+   * `compact` (AI SDK pruneMessages), which removes content outright.
+   *
+   * Runs AFTER compression, so the summarizer still sees full tool output.
+   * When tool results are targeted, a system message explaining the
+   * placeholder is auto-injected so the model doesn't read it as an error.
+   *
+   * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing
+   * boundary advances each turn, which invalidates the provider prefix
+   * cache at the first newly-cleared message — inherent to the semantics.
+   */
+  clear?: ClearTarget[];
   /**
    * Mechanical compaction via AI SDK's `pruneMessages`.
    * Prunes reasoning, tool calls, and empty messages at zero LLM cost.

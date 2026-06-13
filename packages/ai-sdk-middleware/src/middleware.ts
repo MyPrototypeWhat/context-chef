@@ -7,8 +7,10 @@ import type {
 import {
   type ChefLogger,
   type CompressionDetails,
+  compactMessages,
   Janitor,
   type Message,
+  Prompts,
   XmlGenerator,
 } from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
@@ -51,6 +53,10 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     ? createJanitor(options, options.contextWindow as number, logger)
     : null;
 
+  const clearsToolResults = !!options.clear?.some(
+    (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
+  );
+
   return {
     specificationVersion: 'v3',
 
@@ -79,13 +85,22 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         conversation = await janitor.compress(conversation);
       }
 
+      // 4.5 Placeholder-style clearing (core semantics) — after compress so
+      // the summarizer saw full content; placeholders only hit the kept tail.
+      if (options.clear?.length) {
+        conversation = compactMessages(conversation, { clear: options.clear });
+      }
+
       // 5. Reassemble sandwich: user system + skill instructions + conversation.
       //    The skill slot mirrors @context-chef/core compile() ordering
       //    (SKILL_SPEC §6.3): a dedicated system message AFTER user system
       //    and BEFORE the conversation history. Empty instructions are
       //    skipped to avoid emitting an empty system message.
       const skillMessages = await resolveSkillMessages(options.skill);
-      const irMessages = [...systemMessages, ...skillMessages, ...conversation];
+      const clearNotice: Message[] = clearsToolResults
+        ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
+        : [];
+      const irMessages = [...systemMessages, ...clearNotice, ...skillMessages, ...conversation];
 
       // 6. Convert back to AI SDK format
       prompt = toAISDK(irMessages);
