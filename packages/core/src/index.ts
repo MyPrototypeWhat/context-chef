@@ -61,6 +61,8 @@ export {
   Janitor,
   type JanitorConfig,
   type JanitorSnapshot,
+  type SummarizeHistoryOptions,
+  summarizeHistory,
   type Turn,
 } from './modules/janitor';
 export {

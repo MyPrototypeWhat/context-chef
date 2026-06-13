@@ -403,6 +403,65 @@ export function compactMessages(history: Message[], options: CompactOptions): Me
   });
 }
 
+export interface SummarizeHistoryOptions {
+  /** Extra instructions appended to (not replacing) the default compaction
+   *  prompt — the default <analysis>/<summary> scaffolding is always kept. */
+  customCompressionInstructions?: string;
+  /** Replace tool-result content longer than this many chars with a one-line
+   *  metadata stub before summarizing (saves summarizer tokens). */
+  toolResultStubThreshold?: number;
+}
+
+/**
+ * Produce a compression summary for a slice of conversation `messages`, using
+ * the same prompt, attachment/tool-result stripping, and `<summary>` extraction
+ * as the in-flight `compress` path. Returns the raw summary text (post
+ * `formatCompactSummary`) — the caller wraps it (e.g. with
+ * `Prompts.getCompactSummaryWrapper`) if it wants the continuation framing.
+ *
+ * Pure: no circuit breaker, no fallback. THROWS if `compress` throws — callers
+ * decide their own degradation. `Janitor.executeCompression` delegates here and
+ * keeps its own try/catch + circuit breaker.
+ *
+ * An empty `messages` slice returns `''` without invoking `compress`.
+ *
+ * @param messages   The slice to summarize (conversation only; exclude the
+ *                   standing system prompt).
+ * @param compress   Model callback `(messages) => Promise<string>`. It MUST
+ *                   handle role-flattening — providers reject raw `tool` roles
+ *                   and assistant tool-calls — so pass an adapter that maps
+ *                   those to user/assistant text (the ai-sdk-middleware
+ *                   `summarizeMessages` / `createCompressionAdapter` is the
+ *                   reference implementation). A naive passthrough callback
+ *                   will break on tool messages.
+ */
+export async function summarizeHistory(
+  messages: Message[],
+  compress: (messages: Message[]) => Promise<string>,
+  opts: SummarizeHistoryOptions = {},
+): Promise<string> {
+  if (messages.length === 0) return '';
+
+  let instruction = Prompts.CONTEXT_COMPACTION_INSTRUCTION;
+  const extra = opts.customCompressionInstructions?.trim();
+  if (extra) {
+    instruction += `\n\nAdditional Instructions:\n${extra}`;
+  }
+
+  const stubbed =
+    opts.toolResultStubThreshold !== undefined
+      ? stripLargeToolResultsForCompression(messages, opts.toolResultStubThreshold)
+      : messages;
+
+  const compressionMessages: Message[] = [
+    ...stripAttachmentsForCompression(stubbed),
+    { role: 'user', content: instruction },
+  ];
+
+  const raw = await compress(compressionMessages);
+  return Prompts.formatCompactSummary(raw);
+}
+
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
@@ -657,42 +716,14 @@ export class Janitor {
       return history;
     }
 
-    // Build the compression instruction: default prompt + optional additional instructions.
-    // The default scaffolding (which enforces the <analysis>/<summary> contract) is always
-    // preserved — customCompressionInstructions is additive, not a replacement.
-    let instruction = Prompts.CONTEXT_COMPACTION_INSTRUCTION;
-
-    const extra = this.config.customCompressionInstructions?.trim();
-    if (extra) {
-      instruction += `\n\nAdditional Instructions:\n${extra}`;
-    }
+    const compressionModel = this.config.compressionModel;
 
     let summaryText: string;
     try {
-      // Strip binary attachments from toCompress before the compression call:
-      // each attachment becomes an inline `[image]` or `[document: name.pdf]`-style marker
-      // (filenames are surfaced when present),
-      // so the summarizer sees that media existed without us shipping base64 through
-      // the compression payload (which is expensive and risks prompt-too-long on the
-      // compression call itself). toKeep is untouched — its attachments still reach
-      // the main model via the adapter pipeline. Mirrors Claude Code's strategy.
-      //
-      // Likewise, when toolResultStubThreshold is set, replace large tool-result
-      // content with a one-line metadata stub. Same motivation: don't pay
-      // summarizer tokens for raw tool output the summary won't reproduce
-      // anyway. toKeep stays intact regardless.
-      const stubThreshold = this.config.toolResultStubThreshold;
-      const stubbed =
-        stubThreshold !== undefined
-          ? stripLargeToolResultsForCompression(toCompress, stubThreshold)
-          : toCompress;
-      const compressionMessages: Message[] = [
-        ...stripAttachmentsForCompression(stubbed),
-        { role: 'user', content: instruction },
-      ];
-      const raw = await this.config.compressionModel(compressionMessages);
-      // Strip <analysis> scratchpad and extract <summary> content.
-      summaryText = Prompts.formatCompactSummary(raw);
+      summaryText = await summarizeHistory(toCompress, compressionModel, {
+        customCompressionInstructions: this.config.customCompressionInstructions,
+        toolResultStubThreshold: this.config.toolResultStubThreshold,
+      });
       // Reset circuit breaker on success.
       this._consecutiveFailures = 0;
     } catch (error) {
