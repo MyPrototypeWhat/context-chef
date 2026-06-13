@@ -20,6 +20,8 @@ import {
   getAdapter,           // Standalone adapter factory
   TokenUtils,           // Token counting utilities
   XmlGenerator,         // XML generation utilities
+  Prompts,              // Compaction prompt + formatCompactSummary / getCompactSummaryWrapper
+  summarizeHistory,     // Standalone summarization primitive (see History Compaction)
 } from "@context-chef/core";
 
 // Types
@@ -323,6 +325,18 @@ const chef = new ContextChef({
   },
 });
 ```
+
+**Standalone summarization — `summarizeHistory`:** provider-agnostic primitive behind the LLM compression path. Compress a slice in your own store (durable compaction) instead of via `compile()`.
+
+```typescript
+function summarizeHistory(
+  messages: Message[],
+  compress: (messages: Message[]) => Promise<string>,
+  opts?: { customCompressionInstructions?: string; toolResultStubThreshold?: number },
+): Promise<string>;
+```
+
+Empty slice → `''` (no model call); stateless (no circuit breaker), **throws** if `compress` throws; `compress` **must role-flatten** `tool` / assistant-tool-call messages (providers reject raw `tool` roles). Wrap the result with `Prompts.getCompactSummaryWrapper` for continuation framing. ai-sdk users: prefer `summarizeMessages` from `@context-chef/ai-sdk-middleware` (it wires the flattening adapter).
 
 ## Memory Tool Schemas
 

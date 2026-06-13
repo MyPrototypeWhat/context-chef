@@ -207,6 +207,25 @@ const irMessages = fromAISDK(aiSdkPrompt);
 const aiSdkPrompt = toAISDK(irMessages);
 ```
 
+### `summarizeMessages(prompt, model, options?)`
+
+将一段 AI SDK prompt 切片摘要为单个字符串，使用与在途压缩相同的流水线。它会先 `fromAISDK`、丢弃 system 消息，再以内置的角色扁平化适配器调用 core 的 `summarizeHistory` —— 因此你无需自行扁平化 `tool` 角色。返回提取出的摘要文本；空 prompt 不调用模型直接返回 `''`，模型调用失败时抛出异常。
+
+适用于**持久化压缩**：由宿主自己拥有对话存储并自行持久化压缩结果，而非依赖中间件的透明压缩。
+
+```typescript
+import { summarizeMessages } from '@context-chef/ai-sdk-middleware';
+
+const summary = await summarizeMessages(promptSlice, model, {
+  toolResultStubThreshold: 5000,
+});
+// 自行持久化 { summary, boundary }；之后回放 [summary] + [recent]。
+```
+
+`SummarizeMessagesOptions` 是 core `SummarizeHistoryOptions` 的结构别名（`customCompressionInstructions`、`toolResultStubThreshold`）。如需「续接对话」的框架文本，用 `@context-chef/core` 的 `getCompactSummaryWrapper` 包裹返回值。
+
+> **协调注意：** 若以此方式驱动摘要，请**不要**在同一中间件路径上对同一对话再配置 `compress`（带 `model`）—— 那会重复压缩（调用时一次、持久化时再一次）。仅做通知的 `onCompress`，以及 `truncate`、`clear`、`dynamicState` 可安全并用。
+
 ## 工作原理
 
 ```

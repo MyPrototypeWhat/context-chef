@@ -228,6 +228,8 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 **熔断器。** 如果 `compressionModel` 连续 3 次失败，`compress()` 将直接返回原始历史（不再调用压缩模型），直到下一次成功或显式调用 `janitor.reset()` / `chef.clearHistory()`。失败计数由 `chef.snapshot()` / `chef.restore()` 保存。
 
+**独立摘要。** `summarizeHistory(messages, compress, opts?): Promise<string>` 是该路径背后与具体 provider 无关的原语 —— 可直接调用它在你自己的存储中压缩一段切片（持久化压缩）。空切片返回 `''`；无状态，且 `compress` 抛出时**直接抛出**；`compress` 回调**必须扁平化** `tool` 角色。完整契约见 [core 包 README](./packages/core)。ai-sdk 用户应优先使用 [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware) 的 `summarizeMessages`，它已为你接好扁平化适配器。
+
 #### `chef.reportTokenUsage(tokenCount): this`
 
 传入 API 返回的 token 用量。下次 `compile()` 时，如果该值超过 `contextWindow`，则触发压缩。在 tokenizer 路径中，默认取本地计算值和传入值中的较大值；可通过 `usagePreference` 切换为 `'feedFirst'`（信任 API 真值）或 `'tokenizerFirst'`（完全忽略传入值）。

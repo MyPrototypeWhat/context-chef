@@ -205,6 +205,25 @@ const irMessages = fromAISDK(aiSdkPrompt);
 const aiSdkPrompt = toAISDK(irMessages);
 ```
 
+### `summarizeMessages(prompt, model, options?)`
+
+Summarize an AI-SDK prompt slice into a single summary string, using the same pipeline as in-flight compression. It runs `fromAISDK`, drops system messages, and calls core `summarizeHistory` with an internal role-flattening adapter — so you don't have to flatten `tool` roles yourself. Returns the extracted summary text; an empty prompt returns `''` without a model call, and it throws if the model call fails.
+
+Use it for **durable compaction**: hosts that own their conversation store and persist compression themselves, instead of relying on transparent middleware compression.
+
+```typescript
+import { summarizeMessages } from '@context-chef/ai-sdk-middleware';
+
+const summary = await summarizeMessages(promptSlice, model, {
+  toolResultStubThreshold: 5000,
+});
+// Persist { summary, boundary } yourself; replay [summary] + [recent] later.
+```
+
+`SummarizeMessagesOptions` is a structural alias of core's `SummarizeHistoryOptions` (`customCompressionInstructions`, `toolResultStubThreshold`). Wrap the result with `getCompactSummaryWrapper` from `@context-chef/core` for the "continued conversation" framing.
+
+> **Coordination:** if you drive summarization this way, do **not** also configure `compress` (with a `model`) on the same middleware path for the same conversation — that double-compresses (once at call time, again at persist time). A notification-only `onCompress`, plus `truncate`, `clear`, and `dynamicState`, are safe alongside it.
+
 ## How It Works
 
 ```
