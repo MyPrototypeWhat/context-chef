@@ -11,6 +11,8 @@ import {
   Janitor,
   type Message,
   Prompts,
+  type SummarizeHistoryOptions,
+  summarizeHistory,
   XmlGenerator,
 } from '@context-chef/core';
 import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
@@ -374,4 +376,35 @@ function createCompressionAdapter(
 
     return text || '[Compression produced no output]';
   };
+}
+
+/**
+ * Options for {@link summarizeMessages}. Alias of core's
+ * `SummarizeHistoryOptions` — the knobs that affect summary production.
+ */
+export type SummarizeMessagesOptions = SummarizeHistoryOptions;
+
+/**
+ * Summarize an AI-SDK prompt slice into a single summary string, using the
+ * SAME pipeline as the in-flight `compress` path: role-flattening via the
+ * compression adapter + core `summarizeHistory`. System messages are dropped
+ * (they are standing instructions, not conversation). Returns the raw summary
+ * text — wrap it with `Prompts.getCompactSummaryWrapper` for the
+ * "continued conversation" framing. An empty prompt returns `''` without a
+ * model call; throws if the model call fails.
+ *
+ * For hosts that own their conversation store and persist compression
+ * themselves (durable compaction) instead of relying on in-flight middleware
+ * compression. IMPORTANT: if you drive summarization this way, do NOT also
+ * enable in-flight `compress` / `onCompress` on the same conversation path —
+ * that would compress twice (a summary of a summary). `truncate`, `clear`, and
+ * `dynamicState` remain safe to use alongside.
+ */
+export async function summarizeMessages(
+  prompt: LanguageModelV3Prompt,
+  model: LanguageModelV3,
+  opts: SummarizeMessagesOptions = {},
+): Promise<string> {
+  const ir = fromAISDK(prompt).filter((m) => m.role !== 'system');
+  return summarizeHistory(ir, createCompressionAdapter(model), opts);
 }
