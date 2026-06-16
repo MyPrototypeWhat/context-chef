@@ -24,6 +24,16 @@ import type { ContextChefOptions, DynamicStateConfig } from './types';
 type CompressRole = 'system' | 'user' | 'assistant';
 
 /**
+ * After this many compressions fire without an `onCompress` persistence hook,
+ * warn once. The middleware compresses in-flight only — it never mutates the
+ * caller's message store — so without write-back the history re-expands every
+ * call and the outgoing payload grows unbounded. A couple of fires is a
+ * transient spike (fine); repeated fires signal a sustained over-budget
+ * conversation that needs durable persistence.
+ */
+const COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD = 3;
+
+/**
  * Creates a LanguageModelMiddleware that transparently applies
  * context-chef compression and truncation to AI SDK model calls.
  *
@@ -51,8 +61,34 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   }
 
+  // Surface the in-flight-without-persistence footgun: if compression keeps
+  // firing but no `onCompress` is configured, the summary is discarded each
+  // call and history re-expands, so the payload grows unbounded (and
+  // compression effectively skips every other call via E10 suppression).
+  let compressionsFired = 0;
+  let persistenceWarned = false;
+  const onCompressionFired = () => {
+    compressionsFired++;
+    if (
+      persistenceWarned ||
+      options.onCompress ||
+      compressionsFired < COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD
+    ) {
+      return;
+    }
+    persistenceWarned = true;
+    logger.warn(
+      `[context-chef] compress has fired ${compressionsFired}× but no \`onCompress\` is ` +
+        'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
+        'not persisted, so your message history re-expands on the next call and the payload grows ' +
+        'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
+        'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
+        '`summarizeMessages` for durable compaction.',
+    );
+  };
+
   const janitor = budgeting
-    ? createJanitor(options, options.contextWindow as number, logger)
+    ? createJanitor(options, options.contextWindow as number, logger, onCompressionFired)
     : null;
 
   const clearsToolResults = !!options.clear?.some(
@@ -194,19 +230,23 @@ function createJanitor(
   options: ContextChefOptions,
   contextWindow: number,
   logger: ChefLogger,
+  onCompressionFired: () => void,
 ): Janitor {
+  const userOnCompress = options.onCompress;
   const sharedJanitorConfig = {
     contextWindow,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.model
       ? createCompressionAdapter(options.compress.model)
       : undefined,
-    onCompress: options.onCompress
-      ? (summary: Message, count: number, details: CompressionDetails) =>
-          options.onCompress?.(summary.content, count, {
-            compressedMessages: toAISDK(details.compressedMessages),
-          })
-      : undefined,
+    // Always installed so every compression is counted for the
+    // persistence warning; the user's hook is forwarded when configured.
+    onCompress: (summary: Message, count: number, details: CompressionDetails) => {
+      onCompressionFired();
+      userOnCompress?.(summary.content, count, {
+        compressedMessages: toAISDK(details.compressedMessages),
+      });
+    },
     onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
     logger,
   };

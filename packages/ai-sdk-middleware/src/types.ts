@@ -51,6 +51,20 @@ export interface TruncateOptions {
   >;
 }
 
+/**
+ * History compression via LLM summarization.
+ *
+ * **Persistence:** the middleware compresses *in-flight* — it rewrites each
+ * outgoing request but does NOT mutate your message store. For a one-off
+ * over-budget spike that is enough. But for a *sustained* over-budget
+ * conversation (a long chat, or a long multi-step loop), the un-persisted
+ * summary is discarded each call and the history re-expands, so the payload
+ * grows unbounded and compression effectively fires only every other call
+ * (E10 suppression). For sustained use, persist the summary via
+ * {@link ContextChefOptions.onCompress} — replace the compressed slice in
+ * your own store — or use `summarizeMessages` for durable compaction. The
+ * middleware warns once if compression keeps firing without `onCompress`.
+ */
 export interface CompressOptions {
   /** A cheap model used for summarization (e.g. openai('gpt-4o-mini')). */
   model: LanguageModelV3;

@@ -1325,3 +1325,77 @@ describe('clear', () => {
     expect(systemTexts.some((t) => t.includes('automatically cleared'))).toBe(false);
   });
 });
+
+describe('compress persistence warning', () => {
+  // One in-flight round-trip: feed over-budget usage, then run the pre-call
+  // transform (which is what fires compression). Reuses the same over-budget
+  // prompt each cycle to mimic a caller whose history never shrinks (no
+  // write-back) — the scenario the warning is meant to surface.
+  async function runCycle(
+    middleware: ReturnType<typeof createMiddleware>,
+    model: LanguageModelV3,
+    prompt: LanguageModelV3Prompt,
+  ): Promise<void> {
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate: () => model.doGenerate({ prompt: [] }),
+      doStream: () => model.doStream({ prompt: [] }),
+      params: { prompt: [] },
+      model,
+    });
+    await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model,
+    });
+  }
+
+  it('warns exactly once when compression keeps firing without onCompress', async () => {
+    const logger = { warn: vi.fn() };
+    const model = createMockModel({ inputTokens: 200 });
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      compress: { model: createMockModel() },
+      logger,
+    });
+
+    const overBudget = makeConversation(10);
+    // E10 suppression skips every other call, so several cycles are needed to
+    // reach the threshold; the once-flag keeps it to a single warning.
+    for (let i = 0; i < 12; i++) {
+      await runCycle(middleware, model, overBudget);
+    }
+
+    const persistenceWarns = logger.warn.mock.calls.filter(
+      ([msg]) => typeof msg === 'string' && msg.includes('compress has fired'),
+    );
+    expect(persistenceWarns).toHaveLength(1);
+    expect(persistenceWarns[0][0]).toContain('onCompress');
+  });
+
+  it('does not warn when onCompress is configured', async () => {
+    const logger = { warn: vi.fn() };
+    const model = createMockModel({ inputTokens: 200 });
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      compress: { model: createMockModel() },
+      onCompress: vi.fn(),
+      logger,
+    });
+
+    const overBudget = makeConversation(10);
+    for (let i = 0; i < 12; i++) {
+      await runCycle(middleware, model, overBudget);
+    }
+
+    const persistenceWarns = logger.warn.mock.calls.filter(
+      ([msg]) => typeof msg === 'string' && msg.includes('compress has fired'),
+    );
+    expect(persistenceWarns).toHaveLength(0);
+  });
+});

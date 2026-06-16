@@ -65,6 +65,8 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
+> **In-flight vs durable.** Middleware `compress` is *in-flight*: it rewrites each outgoing request but does **not** mutate your message store. So for a *sustained* over-budget conversation (a long chat, or a long multi-step loop) the summary is discarded each call and the history re-expands — compression then effectively fires only every other call and the payload keeps growing. For a one-off spike that's fine; for sustained use, **persist** the summary via `onCompress`, or compact your own store with [`compactHistory`](#compacthistoryprompt-model-options) (recommended). The middleware logs a one-time warning if `compress` keeps firing without `onCompress`.
+
 ### Tool Result Truncation
 
 Large tool outputs (terminal logs, API responses) are automatically truncated while preserving the head and tail:
@@ -223,6 +225,47 @@ const summary = await summarizeMessages(promptSlice, model, {
 `SummarizeMessagesOptions` is a structural alias of core's `SummarizeHistoryOptions` (`customCompressionInstructions`, `toolResultStubThreshold`). Wrap the result with `getCompactSummaryWrapper` from `@context-chef/core` for the "continued conversation" framing.
 
 > **Coordination:** if you drive summarization this way, do **not** also configure `compress` (with a `model`) on the same middleware path for the same conversation — that double-compresses (once at call time, again at persist time). A notification-only `onCompress`, plus `truncate`, `clear`, and `dynamicState`, are safe alongside it.
+
+### `compactHistory(prompt, model, options)`
+
+**Durable compaction in one call** — the recommended way to keep a long conversation lean when you own the message store (a long agent loop, or a chat past the budget). It splits the history on turn boundaries, summarizes the old slice, and returns a new prompt ready to persist — `[...system, <summary>, ...recent turns]`:
+
+```typescript
+import { compactHistory } from '@context-chef/ai-sdk-middleware';
+
+// Between model calls, when you own `messages`:
+messages = await compactHistory(messages, summarizerModel, {
+  keepRecentTurns: 4,           // keep the last 4 atomic turns verbatim
+  toolResultStubThreshold: 5000,
+});
+// Persist the result — history actually shrinks and stays shrunk.
+```
+
+- The cut lands only on **turn boundaries** (an assistant + its tool results stay together), so it never orphans a tool result or splits a multi-block assistant message.
+- System messages are preserved verbatim and never summarized.
+- Returns the prompt **unchanged** when there is nothing old enough to compact (fewer turns than `keepRecentTurns`) or the summarizer yields no text — safe to call unconditionally. Throws only if the model call throws.
+- Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
+
+> Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
+
+### `planCompaction(prompt, options)`
+
+The synchronous split behind `compactHistory`, for when you want the boundary without summarizing (persist your own marker, or use a different summarizer). Returns `{ system, toSummarize, toKeep }` (all `LanguageModelV3Prompt`), cut on turn boundaries:
+
+```typescript
+import { planCompaction, summarizeMessages } from '@context-chef/ai-sdk-middleware';
+import { Prompts } from '@context-chef/core';
+
+const { system, toSummarize, toKeep } = planCompaction(messages, { keepRecentTurns: 4 });
+if (toSummarize.length > 0) {
+  const summary = await summarizeMessages(toSummarize, model);
+  messages = [
+    ...system,
+    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
+    ...toKeep,
+  ];
+}
+```
 
 ## How It Works
 

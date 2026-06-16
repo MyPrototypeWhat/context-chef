@@ -67,6 +67,8 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
+> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 压缩实际上只会隔次触发,payload 还会持续增长。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactHistory`](#compacthistoryprompt-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
+
 ### 工具结果截断
 
 大体积工具输出（终端日志、API 响应）会被自动截断，同时保留头部和尾部：
@@ -225,6 +227,47 @@ const summary = await summarizeMessages(promptSlice, model, {
 `SummarizeMessagesOptions` 是 core `SummarizeHistoryOptions` 的结构别名（`customCompressionInstructions`、`toolResultStubThreshold`）。如需「续接对话」的框架文本，用 `@context-chef/core` 的 `getCompactSummaryWrapper` 包裹返回值。
 
 > **协调注意：** 若以此方式驱动摘要，请**不要**在同一中间件路径上对同一对话再配置 `compress`（带 `model`）—— 那会重复压缩（调用时一次、持久化时再一次）。仅做通知的 `onCompress`，以及 `truncate`、`clear`、`dynamicState` 可安全并用。
+
+### `compactHistory(prompt, model, options)`
+
+**一站式 durable 压缩** —— 当你拥有消息存储时（长 agent loop，或超预算的聊天），让长对话保持精简的推荐方式。它在 turn 边界切分历史、对旧切片摘要,返回一份可直接持久化的新 prompt —— `[...system, <摘要>, ...最近若干轮]`：
+
+```typescript
+import { compactHistory } from '@context-chef/ai-sdk-middleware';
+
+// 在模型调用之间,当你持有 `messages` 时:
+messages = await compactHistory(messages, summarizerModel, {
+  keepRecentTurns: 4,           // 逐字保留最近 4 个原子轮次
+  toolResultStubThreshold: 5000,
+});
+// 持久化结果 —— 历史真正变小并保持精简。
+```
+
+- 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
+- system 消息逐字保留、永不被摘要。
+- 当没有足够旧的内容可压(轮数少于 `keepRecentTurns`)、或摘要器无输出时,**原样返回** prompt —— 可无条件调用。仅当模型调用抛错时才抛错。
+- 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
+
+> 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
+
+### `planCompaction(prompt, options)`
+
+`compactHistory` 背后的同步切分函数,适用于只要边界、不想立刻摘要的场景(持久化你自己的标记,或用别的摘要器)。返回 `{ system, toSummarize, toKeep }`(均为 `LanguageModelV3Prompt`),按 turn 边界切分:
+
+```typescript
+import { planCompaction, summarizeMessages } from '@context-chef/ai-sdk-middleware';
+import { Prompts } from '@context-chef/core';
+
+const { system, toSummarize, toKeep } = planCompaction(messages, { keepRecentTurns: 4 });
+if (toSummarize.length > 0) {
+  const summary = await summarizeMessages(toSummarize, model);
+  messages = [
+    ...system,
+    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
+    ...toKeep,
+  ];
+}
+```
 
 ## 工作原理
 
