@@ -66,6 +66,12 @@ export {
   type Turn,
 } from './modules/janitor';
 export {
+  type CompactionPlan,
+  compactHistory,
+  type PlanCompactionOptions,
+  planCompaction,
+} from './modules/janitor/durableCompaction';
+export {
   Memory,
   type MemoryChangeEvent,
   type MemoryConfig,

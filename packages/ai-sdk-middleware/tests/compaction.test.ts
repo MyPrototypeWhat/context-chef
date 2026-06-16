@@ -9,6 +9,12 @@ import type {
 import { describe, expect, it } from 'vitest';
 import { compactHistory, planCompaction } from '../src/compaction';
 
+// These are the AI-SDK boundary functions — thin wrappers over core's
+// provider-agnostic `planCompaction` / `compactHistory`. The turn-split algorithm
+// itself is exhaustively tested in core (durableCompaction.test.ts); the tests
+// here cover what the boundary adds: fromAISDK/toAISDK round-tripping, the
+// no-op reference short-circuit, and the summary's AI SDK message shape.
+
 /** Minimal V3 model whose summarization call returns a fixed string. */
 function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
   return {
@@ -54,7 +60,7 @@ function plainTurns(n: number, withSystem = true): LanguageModelV3Prompt {
 }
 
 describe('planCompaction', () => {
-  it('keeps system aside and splits the rest on a turn boundary', () => {
+  it('delegates the split to core and round-trips each slice through the adapter', () => {
     // 3 user/assistant pairs = 6 turns (each message is its own turn).
     const plan = planCompaction(plainTurns(3), { keepRecentTurns: 2 });
 
@@ -67,16 +73,12 @@ describe('planCompaction', () => {
     expect(lastUser.role).toBe('user');
   });
 
-  it('keeps everything when keepRecentTurns exceeds the turn count', () => {
-    const plan = planCompaction(plainTurns(2), { keepRecentTurns: 99 });
-    expect(plan.toSummarize).toHaveLength(0);
-    expect(plan.toKeep).toHaveLength(4);
-  });
+  it('round-trips a prompt with no system message', () => {
+    const plan = planCompaction(plainTurns(3, false), { keepRecentTurns: 2 });
 
-  it('summarizes everything when keepRecentTurns is 0', () => {
-    const plan = planCompaction(plainTurns(2), { keepRecentTurns: 0 });
+    expect(plan.system).toEqual([]);
     expect(plan.toSummarize).toHaveLength(4);
-    expect(plan.toKeep).toHaveLength(0);
+    expect(plan.toKeep).toHaveLength(2);
   });
 
   it('never splits an assistant tool-call from its tool result', () => {

@@ -308,6 +308,40 @@ const continuation = Prompts.getCompactSummaryWrapper(summary); // optional cont
 
 > **ai-sdk users:** prefer `summarizeMessages` from [`@context-chef/ai-sdk-middleware`](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware) — it wires the role-flattening adapter for you.
 
+#### Durable compaction — `planCompaction` / `compactHistory`
+
+Two higher-level helpers turn `summarizeHistory` into a one-call durable compaction for a conversation you own. Both are provider-agnostic and operate on the IR `Message[]`.
+
+```typescript
+function planCompaction(
+  history: Message[],
+  options: { keepRecentTurns: number },
+): { system: Message[]; toSummarize: Message[]; toKeep: Message[] };
+
+function compactHistory(
+  history: Message[],
+  compress: (messages: Message[]) => Promise<string>,
+  options: { keepRecentTurns: number } & SummarizeHistoryOptions,
+): Promise<Message[]>;
+```
+
+`planCompaction` is the synchronous split: it groups the conversation into atomic turns (an assistant + its tool results stay together) and cuts on a turn boundary, so it never orphans a tool result or splits a multi-block assistant message. System messages are pulled aside into `system` and never summarized.
+
+`compactHistory` runs the whole cycle — `planCompaction` → `summarizeHistory(toSummarize, compress)` → reassemble into `[...system, <summary>, ...toKeep]`, with the summary wrapped via `Prompts.getCompactSummaryWrapper`. Run it between model calls and replace your stored messages with the result.
+
+```typescript
+import { compactHistory } from "@context-chef/core";
+
+// myCompressFn must role-flatten tool messages (same contract as summarizeHistory).
+history = await compactHistory(history, myCompressFn, { keepRecentTurns: 4 });
+```
+
+Contracts: `history` is a flat `Message[]` with any **system messages inline** (`role: 'system'`). The input adapters (`fromAnthropic` / `fromOpenAI` / `fromGemini`) return `{ system, history }` with system already split out — reassemble `[...system, ...history]` before passing it in. `compactHistory` returns the **input `history` reference unchanged** on a no-op (nothing old enough, or a blank summary), so it is safe to call unconditionally and you can skip persistence via `result === history`.
+
+`keepRecentTurns: 0` is **full compaction** (Claude Code style): the whole conversation collapses into `[...system, <summary>]` with no verbatim tail. This is the simplest result to persist — there is no kept tail to reconcile against your store's unit boundaries. The trade-off is that no verbatim recent context survives, so steer the summary toward a structured handoff via `customCompressionInstructions`. Use a small `keepRecentTurns` instead when the in-flight turn should stay verbatim.
+
+> **ai-sdk users:** prefer `compactHistory` / `planCompaction` from [`@context-chef/ai-sdk-middleware`](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware) — they take an `AI SDK` prompt and a model directly, wiring the adapter and role-flattening for you.
+
 #### Compression circuit breaker
 
 If `compressionModel` throws on three consecutive `compress()` calls, Janitor trips a circuit breaker: subsequent `compress()` calls become no-ops (history passes through unchanged) until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. This prevents sessions from hammering a broken compression endpoint on every turn.

@@ -1,25 +1,14 @@
-import type {
-  LanguageModelV3,
-  LanguageModelV3Message,
-  LanguageModelV3Prompt,
-} from '@ai-sdk/provider';
-import { groupIntoTurns, Prompts } from '@context-chef/core';
+import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
+import {
+  compactHistory as coreCompactHistory,
+  planCompaction as corePlanCompaction,
+  type PlanCompactionOptions,
+} from '@context-chef/core';
 
 import { fromAISDK, toAISDK } from './adapter';
-import { type SummarizeMessagesOptions, summarizeMessages } from './middleware';
+import { createCompressionAdapter, type SummarizeMessagesOptions } from './middleware';
 
-export interface PlanCompactionOptions {
-  /**
-   * Number of recent atomic turns to keep verbatim. Everything older goes to
-   * `toSummarize`. A "turn" is a single user/assistant message, or an assistant
-   * with tool_calls plus all its subsequent tool results — so the split never
-   * lands inside a turn and never orphans a tool result.
-   *
-   * `0` summarizes the entire conversation; a value ≥ the turn count keeps
-   * everything (nothing to summarize).
-   */
-  keepRecentTurns: number;
-}
+export type { PlanCompactionOptions } from '@context-chef/core';
 
 export interface CompactionPlan {
   /** System messages, preserved verbatim — standing instructions are never summarized. */
@@ -43,32 +32,20 @@ export interface CompactionPlan {
  * `[...system, <summary>, ...toKeep]` back to your store so the history actually
  * shrinks. See {@link compactHistory} for the one-shot version.
  *
- * Boundaries are computed exactly like the Janitor: messages are grouped into
- * atomic turns (assistant + its tool results stay together), so the cut never
- * splits a turn, never orphans a tool result, and never lands inside a
- * multi-block assistant message.
+ * The AI-SDK-typed wrapper around core's provider-agnostic `planCompaction`:
+ * converts the prompt to IR via {@link fromAISDK}, splits on turn boundaries
+ * (assistant + its tool results stay together), and converts each slice back via
+ * {@link toAISDK}.
  */
 export function planCompaction(
   prompt: LanguageModelV3Prompt,
   options: PlanCompactionOptions,
 ): CompactionPlan {
-  const keep = Math.max(0, Math.floor(options.keepRecentTurns));
-
-  // fromAISDK also runs ensureValidHistory, so the conversation is well-formed
-  // (no orphan tool results) before we group it into turns.
-  const allIR = fromAISDK(prompt);
-  const system = allIR.filter((m) => m.role === 'system');
-  const conversation = allIR.filter((m) => m.role !== 'system');
-
-  const turns = groupIntoTurns(conversation);
-  const splitTurn = Math.max(0, turns.length - keep);
-  // splitTurn === turns.length only when keep is 0 → summarize everything.
-  const splitIndex = splitTurn < turns.length ? turns[splitTurn].startIndex : conversation.length;
-
+  const plan = corePlanCompaction(fromAISDK(prompt), options);
   return {
-    system: toAISDK(system),
-    toSummarize: toAISDK(conversation.slice(0, splitIndex)),
-    toKeep: toAISDK(conversation.slice(splitIndex)),
+    system: toAISDK(plan.system),
+    toSummarize: toAISDK(plan.toSummarize),
+    toKeep: toAISDK(plan.toKeep),
   };
 }
 
@@ -81,12 +58,17 @@ export function planCompaction(
  * model calls and replace your stored messages with the result; the summary is
  * a real `user` message wrapped with the "continued conversation" framing.
  *
- * Returns the prompt **unchanged** when there is nothing old enough to compact
- * (fewer turns than `keepRecentTurns`) or when the summarizer yields no text —
- * so it is safe to call unconditionally. Throws only if the model call throws.
+ * Returns the prompt **unchanged** (same reference) when there is nothing old
+ * enough to compact (no more turns than `keepRecentTurns`) or when the summarizer
+ * yields no text — so it is safe to call unconditionally, and callers can skip
+ * persistence on a no-op via `result === prompt`. Throws only if the model call
+ * throws.
  *
- * Do NOT also configure middleware `compress` (with a `model`) on the same path
- * — that compresses twice. Use this OR in-flight `compress`, not both.
+ * The AI-SDK-typed wrapper around core's `compactHistory`: it binds `model` into
+ * a compression callback via {@link createCompressionAdapter} (core never calls a
+ * model directly). Do NOT also configure middleware `compress` (with a `model`)
+ * on the same path — that compresses twice. Use this OR in-flight `compress`,
+ * not both.
  *
  * @example
  * ```ts
@@ -102,21 +84,9 @@ export async function compactHistory(
   model: LanguageModelV3,
   options: PlanCompactionOptions & SummarizeMessagesOptions,
 ): Promise<LanguageModelV3Prompt> {
-  const { keepRecentTurns, ...summarizeOptions } = options;
-  const plan = planCompaction(prompt, { keepRecentTurns });
-
-  // Nothing old enough to compact — return the original prompt untouched.
-  if (plan.toSummarize.length === 0) return prompt;
-
-  const summary = await summarizeMessages(plan.toSummarize, model, summarizeOptions);
-  // Summarizer produced nothing usable — leave history intact rather than
-  // dropping the old turns behind an empty marker.
-  if (!summary.trim()) return prompt;
-
-  const summaryMessage: LanguageModelV3Message = {
-    role: 'user',
-    content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }],
-  };
-
-  return [...plan.system, summaryMessage, ...plan.toKeep];
+  const ir = fromAISDK(prompt);
+  const result = await coreCompactHistory(ir, createCompressionAdapter(model), options);
+  // core returns the input IR reference on a no-op — preserve the original
+  // prompt reference so callers can skip persistence via `result === prompt`.
+  return result === ir ? prompt : toAISDK(result);
 }
