@@ -338,6 +338,8 @@ history = await compactHistory(history, myCompressFn, { keepRecentTurns: 4 });
 
 Contracts: `history` is a flat `Message[]` with any **system messages inline** (`role: 'system'`). The input adapters (`fromAnthropic` / `fromOpenAI` / `fromGemini`) return `{ system, history }` with system already split out — reassemble `[...system, ...history]` before passing it in. `compactHistory` returns the **input `history` reference unchanged** on a no-op (nothing old enough, or a blank summary), so it is safe to call unconditionally and you can skip persistence via `result === history`.
 
+`keepRecentTurns: 0` is **full compaction** (Claude Code style): the whole conversation collapses into `[...system, <summary>]` with no verbatim tail. This is the simplest result to persist — there is no kept tail to reconcile against your store's unit boundaries. The trade-off is that no verbatim recent context survives, so steer the summary toward a structured handoff via `customCompressionInstructions`. Use a small `keepRecentTurns` instead when the in-flight turn should stay verbatim.
+
 > **ai-sdk users:** prefer `compactHistory` / `planCompaction` from [`@context-chef/ai-sdk-middleware`](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware) — they take an `AI SDK` prompt and a model directly, wiring the adapter and role-flattening for you.
 
 #### Compression circuit breaker

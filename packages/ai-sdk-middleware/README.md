@@ -250,6 +250,28 @@ messages = await compactHistory(messages, summarizerModel, {
 
 > **Under the hood:** `compactHistory` and `planCompaction` are thin AI-SDK wrappers over the provider-agnostic engine in [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) — they convert the prompt to core's IR and back. If you drive a provider directly (without the AI SDK), call core's `planCompaction` / `compactHistory` instead.
 
+#### Full compaction (Claude Code style)
+
+Pass `keepRecentTurns: 0` to summarize the **entire** conversation into a single summary — the result is just `[...system, <summary>]`, with no verbatim tail. This is the simplest mode to persist: because there is no kept tail, there is nothing to reconcile against your store's own unit boundaries (a multi-step agent turn, a UI message spanning several steps, etc.) — the write-back is just "replace the store with the two-message result." Each cycle collapses back to `[system, summary]`.
+
+The trade-off is that **no verbatim recent context survives** — the model continues purely from a lossy summary. So the summary's quality is everything; steer it toward a structured handoff with `customCompressionInstructions`:
+
+```typescript
+messages = await compactHistory(messages, summarizerModel, {
+  keepRecentTurns: 0, // full compaction — collapse everything into the summary
+  customCompressionInstructions: [
+    'Write the summary as a handoff for resuming the task:',
+    '- What was accomplished and the current state',
+    '- Decisions made and why they were made',
+    '- Files / resources touched',
+    '- The exact next step to take',
+  ].join('\n'),
+});
+// `messages` is now [system, summary] — trivial to persist, no boundary bookkeeping.
+```
+
+Prefer a small `keepRecentTurns` (e.g. `2`–`4`) when you want the in-flight turn kept verbatim (safer for an autonomous loop mid-task); prefer `0` when you want maximal shrink and a clean, boundary-free store.
+
 ### `planCompaction(prompt, options)`
 
 The synchronous split behind `compactHistory`, for when you want the boundary without summarizing (persist your own marker, or use a different summarizer). Returns `{ system, toSummarize, toKeep }` (all `LanguageModelV3Prompt`), cut on turn boundaries:
