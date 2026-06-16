@@ -245,10 +245,12 @@ messages = await compactHistory(messages, summarizerModel, {
 
 - 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
 - system 消息逐字保留、永不被摘要。
-- 当没有足够旧的内容可压(轮数少于 `keepRecentTurns`)、或摘要器无输出时,**原样返回** prompt —— 可无条件调用。仅当模型调用抛错时才抛错。
+- 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回** prompt —— 可无条件调用。仅当模型调用抛错时才抛错。
 - 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
 
 > 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
+
+> **内部实现:** `compactHistory` 和 `planCompaction` 是 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) 中 provider 无关引擎的 AI-SDK 薄壳 —— 它们把 prompt 转成 core 的 IR 再转回来。若你直接对接某个 provider(不经 AI SDK),请改用 core 的 `planCompaction` / `compactHistory`。
 
 ### `planCompaction(prompt, options)`
 

@@ -243,10 +243,12 @@ messages = await compactHistory(messages, summarizerModel, {
 
 - The cut lands only on **turn boundaries** (an assistant + its tool results stay together), so it never orphans a tool result or splits a multi-block assistant message.
 - System messages are preserved verbatim and never summarized.
-- Returns the prompt **unchanged** when there is nothing old enough to compact (fewer turns than `keepRecentTurns`) or the summarizer yields no text — safe to call unconditionally. Throws only if the model call throws.
+- Returns the prompt **unchanged** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — safe to call unconditionally. Throws only if the model call throws.
 - Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
 
 > Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
+
+> **Under the hood:** `compactHistory` and `planCompaction` are thin AI-SDK wrappers over the provider-agnostic engine in [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) — they convert the prompt to core's IR and back. If you drive a provider directly (without the AI SDK), call core's `planCompaction` / `compactHistory` instead.
 
 ### `planCompaction(prompt, options)`
 

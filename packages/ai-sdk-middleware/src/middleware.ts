@@ -382,7 +382,7 @@ function toCompressRole(role: string): CompressRole {
  * Tool messages are converted to user messages describing the tool interaction,
  * since generateText only accepts system/user/assistant roles.
  */
-function createCompressionAdapter(
+export function createCompressionAdapter(
   model: LanguageModelV3,
 ): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
