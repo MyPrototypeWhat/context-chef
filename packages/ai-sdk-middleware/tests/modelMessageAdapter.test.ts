@@ -215,13 +215,11 @@ describe('toModelMessages', () => {
     toolIr.content = '[cleared]'; // simulate Janitor edit
     const result = toModelMessages(ir);
     const toolMsg = result.find((m) => m.role === 'tool');
-    if (toolMsg?.role === 'tool') {
-      const part = toolMsg.content[0];
-      if (part.type === 'tool-result') {
-        expect(part.output).toEqual({ type: 'text', value: '[cleared]' });
-        expect(part.toolName).toBe('run');
-      }
-    }
+    if (toolMsg?.role !== 'tool') throw new Error('expected a tool message');
+    const part = toolMsg.content[0];
+    if (part.type !== 'tool-result') throw new Error('expected a tool-result part');
+    expect(part.output).toEqual({ type: 'text', value: '[cleared]' });
+    expect(part.toolName).toBe('run');
   });
 
   it('keeps empty-string content as a string (not a text-part array)', () => {
@@ -248,9 +246,8 @@ describe('toModelMessages', () => {
     toolIr.content = '[cleared]'; // simulate a Janitor edit → modified rebuild path
     const result = toModelMessages(ir);
     const toolMsg = result.find((m) => m.role === 'tool');
-    if (toolMsg?.role === 'tool') {
-      expect(toolMsg.content).toHaveLength(1);
-      expect(toolMsg.content[0].type).toBe('tool-result');
-    }
+    if (toolMsg?.role !== 'tool') throw new Error('expected a tool message');
+    expect(toolMsg.content).toHaveLength(1);
+    expect(toolMsg.content[0].type).toBe('tool-result');
   });
 });

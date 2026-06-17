@@ -172,6 +172,10 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
         } else if (anchor?._mmToolContent) {
           anchor._mmToolContent.push(part);
         } else {
+          // Approval part seen before any tool-result: buffer it to prepend to
+          // the next result. If no result ever follows (a tool message with zero
+          // results), these are dropped — an unreachable shape for real input,
+          // since ensureValidHistory sanitizes resultless tool messages away.
           pending.push(part);
         }
       }
