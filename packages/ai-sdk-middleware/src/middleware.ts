@@ -24,6 +24,7 @@ import {
 } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
+import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
 
@@ -454,5 +455,20 @@ export async function summarizeMessages(
   opts: SummarizeMessagesOptions = {},
 ): Promise<string> {
   const ir = fromAISDK(prompt).filter((m) => m.role !== 'system');
+  return summarizeHistory(ir, createCompressionAdapter(model), opts);
+}
+
+/**
+ * ModelMessage-altitude sibling of {@link summarizeMessages}: summarize a
+ * `ModelMessage[]` slice into a single summary string via the same pipeline
+ * (role-flattening + core `summarizeHistory`). System messages are dropped.
+ * Empty input returns `''` without a model call; throws if the model call fails.
+ */
+export async function summarizeModelMessages(
+  messages: ModelMessage[],
+  model: LanguageModel,
+  opts: SummarizeMessagesOptions = {},
+): Promise<string> {
+  const ir = fromModelMessages(messages).filter((m) => m.role !== 'system');
   return summarizeHistory(ir, createCompressionAdapter(model), opts);
 }
