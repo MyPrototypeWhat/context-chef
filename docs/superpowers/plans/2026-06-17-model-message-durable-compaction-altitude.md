@@ -129,6 +129,7 @@ describe('fromModelMessages', () => {
 
   it('extracts assistant tool calls and reasoning', () => {
     const messages: ModelMessage[] = [
+      { role: 'user', content: 'use a tool' },
       {
         role: 'assistant',
         content: [
@@ -137,17 +138,29 @@ describe('fromModelMessages', () => {
           { type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: { a: 1 } },
         ],
       },
+      {
+        role: 'tool',
+        content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } }],
+      },
     ];
-    const ir = fromModelMessages(messages);
-    expect(ir[0].content).toBe('answer');
-    expect(ir[0].thinking).toEqual({ thinking: 'thinking' });
-    expect(ir[0].tool_calls).toEqual([
+    const assistant = fromModelMessages(messages).find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('answer');
+    expect(assistant?.thinking).toEqual({ thinking: 'thinking' });
+    expect(assistant?.tool_calls).toEqual([
       { id: 'c1', type: 'function', function: { name: 'foo', arguments: '{"a":1}' } },
     ]);
   });
 
   it('splits a tool message into one IR message per tool-result', () => {
     const messages: ModelMessage[] = [
+      { role: 'user', content: 'do both' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'bar', input: {} },
+        ],
+      },
       {
         role: 'tool',
         content: [
@@ -164,6 +177,9 @@ describe('fromModelMessages', () => {
 });
 
 describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
+  // Fixtures are valid histories (lead with user; every tool-result has a
+  // preceding assistant tool-call) so ensureValidHistory is a no-op and the
+  // round-trip is verbatim — same discipline as tests/adapter.test.ts.
   const cases: Record<string, ModelMessage[]> = {
     'string content stays a string': [
       { role: 'system', content: 'sys' },
@@ -183,6 +199,7 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       { role: 'user', content: [{ type: 'image', image: 'imgdata', mediaType: 'image/png' }] },
     ],
     'reasoning byte-exact': [
+      { role: 'user', content: 'reason' },
       {
         role: 'assistant',
         content: [
@@ -192,6 +209,7 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       },
     ],
     'tool call + result': [
+      { role: 'user', content: 'search' },
       {
         role: 'assistant',
         content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: { q: 'x' } }],
@@ -204,6 +222,7 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       },
     ],
     'assistant tool-approval-request rides through verbatim': [
+      { role: 'user', content: 'approve?' },
       {
         role: 'assistant',
         content: [
@@ -213,6 +232,11 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       },
     ],
     'tool-approval-response preserved in order after its result': [
+      { role: 'user', content: 'run' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }],
+      },
       {
         role: 'tool',
         content: [
@@ -246,6 +270,8 @@ describe('toModelMessages', () => {
 
   it('reconstructs from IR fields when content was modified (e.g. cleared tool result)', () => {
     const ir = fromModelMessages([
+      { role: 'user', content: 'run' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'run', input: {} }] },
       {
         role: 'tool',
         content: [
@@ -253,10 +279,13 @@ describe('toModelMessages', () => {
         ],
       },
     ]);
-    ir[0].content = '[cleared]'; // simulate Janitor edit
+    const toolIr = ir.find((m) => m.role === 'tool');
+    if (!toolIr) throw new Error('expected tool IR message');
+    toolIr.content = '[cleared]'; // simulate Janitor edit
     const result = toModelMessages(ir);
-    if (result[0].role === 'tool') {
-      const part = result[0].content[0];
+    const toolMsg = result.find((m) => m.role === 'tool');
+    if (toolMsg?.role === 'tool') {
+      const part = toolMsg.content[0];
       if (part.type === 'tool-result') {
         expect(part.output).toEqual({ type: 'text', value: '[cleared]' });
         expect(part.toolName).toBe('run');
