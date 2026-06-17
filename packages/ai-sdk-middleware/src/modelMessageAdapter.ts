@@ -9,6 +9,11 @@ import type { ModelMessage } from 'ai';
 
 import { stringifyToolOutput } from './adapter';
 
+// NOTE: This adapter intentionally parallels src/adapter.ts (the V3 adapter). The
+// user/assistant/file extraction logic is duplicated by design; keep the two in
+// sync. The deltas here are deliberate: string-shorthand content, ImagePart, and
+// approval parts — none of which exist at the V3 (LanguageModelV3Prompt) altitude.
+
 // Content/part types derived from ModelMessage — no part-type imports needed
 // (provider-utils does not export them all stably). Same trick as adapter.ts.
 type UserContent = Extract<ModelMessage, { role: 'user' }>['content'];
@@ -128,7 +133,7 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
               ...(part.filename ? { filename: part.filename } : {}),
             });
           }
-          // text-result / tool-approval-request parts ride through _mmAssistantContent verbatim.
+          // tool-approval-request parts ride through _mmAssistantContent verbatim (no IR projection).
         }
       }
 
@@ -152,6 +157,7 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
       const pending: ToolContent = [];
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
+          // ModelMessage's ToolResultOutput is a structural superset of V3's (extra content[] members); stringifyToolOutput only reads .type/.value, so the cast is safe and matches the V3 adapter's projection.
           const text = stringifyToolOutput(part.output as LanguageModelV3ToolResultOutput);
           anchor = {
             role: 'tool',
@@ -186,6 +192,10 @@ function asMM(msg: Message): ModelMessageIR {
  * so string content stays a string and reasoning/approval parts round-trip
  * byte-exact. Janitor-modified messages and synthetic messages (e.g. a
  * compression summary, which has no pass-through) are rebuilt from IR fields.
+ * For a modified tool message this rebuild emits only a single `tool-result`
+ * from the IR text — any co-located `tool-approval-response` parts are
+ * intentionally dropped, since a modified/cleared result is being collapsed
+ * anyway.
  */
 export function toModelMessages(messages: Message[]): ModelMessage[] {
   const out: ModelMessage[] = [];

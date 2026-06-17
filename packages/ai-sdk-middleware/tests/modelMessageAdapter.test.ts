@@ -1,3 +1,4 @@
+import type { Message } from '@context-chef/core';
 import type { ModelMessage } from 'ai';
 import { describe, expect, it } from 'vitest';
 import { fromModelMessages, toModelMessages } from '../src/modelMessageAdapter';
@@ -146,6 +147,35 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
         ],
       },
     ],
+    'tool-approval-response BEFORE its result (leading approval, pending buffer)': [
+      { role: 'user', content: 'run' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }] },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-approval-response', approvalId: 'a1', approved: true },
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } },
+        ],
+      },
+    ],
+    'tool parts interleaved (result, approval, result) preserved in order': [
+      { role: 'user', content: 'two tools' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'bar', input: {} },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'r1' } },
+          { type: 'tool-approval-response', approvalId: 'a1', approved: true },
+          { type: 'tool-result', toolCallId: 'c2', toolName: 'bar', output: { type: 'text', value: 'r2' } },
+        ],
+      },
+    ],
     'providerOptions on a message': [
       {
         role: 'user',
@@ -191,6 +221,36 @@ describe('toModelMessages', () => {
         expect(part.output).toEqual({ type: 'text', value: '[cleared]' });
         expect(part.toolName).toBe('run');
       }
+    }
+  });
+
+  it('keeps empty-string content as a string (not a text-part array)', () => {
+    const result = toModelMessages([
+      { role: 'user', content: '', _mmUserContent: '', _mmOriginalText: '' } as Message,
+    ]);
+    expect(result).toEqual([{ role: 'user', content: '' }]);
+  });
+
+  it('drops co-located approval parts when the tool result is modified (lossy by design)', () => {
+    const ir = fromModelMessages([
+      { role: 'user', content: 'run' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }] },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } },
+          { type: 'tool-approval-response', approvalId: 'a1', approved: true },
+        ],
+      },
+    ]);
+    const toolIr = ir.find((m) => m.role === 'tool');
+    if (!toolIr) throw new Error('expected tool IR message');
+    toolIr.content = '[cleared]'; // simulate a Janitor edit → modified rebuild path
+    const result = toModelMessages(ir);
+    const toolMsg = result.find((m) => m.role === 'tool');
+    if (toolMsg?.role === 'tool') {
+      expect(toolMsg.content).toHaveLength(1);
+      expect(toolMsg.content[0].type).toBe('tool-result');
     }
   });
 });
