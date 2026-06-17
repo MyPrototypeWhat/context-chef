@@ -256,7 +256,7 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
   return prompt;
 }
 
-function stringifyToolOutput(output: LanguageModelV3ToolResultOutput): string {
+export function stringifyToolOutput(output: LanguageModelV3ToolResultOutput): string {
   switch (output.type) {
     case 'text':
     case 'error-text':
