@@ -1,5 +1,19 @@
 # @context-chef/ai-sdk-middleware
 
+## 1.6.0
+
+### Minor Changes
+
+- [#40](https://github.com/MyPrototypeWhat/context-chef/pull/40) [`55d5c27`](https://github.com/MyPrototypeWhat/context-chef/commit/55d5c2727bbf9117bbb846be8ab7d7d9a4ef47e1) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Add ModelMessage-altitude durable compaction.
+
+  `compactModelMessages`, `planCompactionModelMessages`, and `summarizeModelMessages` operate on `ModelMessage[]` — the message type `generateText`/`prepareStep` actually use — so you can run durable compaction directly against your own message store, or inside a `ToolLoopAgent` `prepareStep`. They reuse the provider-agnostic core engine, and `compactModelMessages` preserves the no-op reference-identity contract (returns the input array unchanged when there is nothing old enough to compact, so callers can skip persistence).
+
+  `createCompressionAdapter` now accepts `ai`'s `LanguageModel` (a model id string, or a V3/V2 model) — matching what `prepareStep`/`generateText` hand you — instead of only `LanguageModelV3`.
+
+  Deprecates the `LanguageModelV3Prompt`-typed `compactHistory` / `planCompaction` (still exported and fully working) in favor of the ModelMessage variants; they are slated for removal in the next major. `summarizeMessages` is unchanged.
+
+  Also fixes three round-trip issues in both AI-SDK adapters (V3 and ModelMessage): provider-executed (inline) tool-results no longer trigger a spurious `[No tool result available]` placeholder; tool-message-level `providerOptions` (e.g. Anthropic cache control) is now preserved; and a tool-call with `undefined` input serializes to `"{}"` instead of a non-string value.
+
 ## 1.5.2
 
 ### Patch Changes
