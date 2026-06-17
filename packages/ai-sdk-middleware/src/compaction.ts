@@ -116,6 +116,13 @@ export interface CompactionPlanModelMessages {
  * {@link fromModelMessages}, splits on turn boundaries via core's
  * `planCompaction`, and converts each slice back via {@link toModelMessages}.
  * Summarize `toSummarize`, then persist `[...system, <summary>, ...toKeep]`.
+ *
+ * `keepRecentTurns` counts **message-level turns, not `ToolLoopAgent` steps**: a
+ * turn is one user/assistant message, or an assistant with its tool-calls plus
+ * all their tool results (kept together so a result is never orphaned). System
+ * messages are always preserved and never counted. A single tool-using step is
+ * often 2–3 turns, so size it for your worst-case step — tool-dense loops need a
+ * larger value than a plain chat.
  */
 export function planCompactionModelMessages(
   messages: ModelMessage[],
@@ -144,6 +151,20 @@ export function planCompactionModelMessages(
  * enough to compact or the summarizer yields no text, so callers can skip
  * persistence on a no-op via `result === messages`. Throws only if the model call
  * throws.
+ *
+ * `keepRecentTurns` counts **message-level turns, not `ToolLoopAgent` steps** — a
+ * turn is one user/assistant message, or an assistant with its tool-calls plus
+ * all their tool results (so a result is never orphaned); system messages are
+ * always preserved and never counted. A single tool-using step is often 2–3
+ * turns, so size it for your worst-case step (tool-dense loops need more than a
+ * plain chat).
+ *
+ * The summary is inserted as a `user` message (Claude Code style), so when the
+ * kept tail also begins with a user turn the result can hold two consecutive
+ * `user` messages. That is a valid `ModelMessage[]` — the AI SDK provider layer
+ * normalizes it (Anthropic merges same-role, OpenAI accepts it) — but if you feed
+ * the output to a non-AI-SDK consumer that requires strict alternation, account
+ * for it.
  */
 export async function compactModelMessages(
   messages: ModelMessage[],

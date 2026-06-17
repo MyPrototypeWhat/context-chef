@@ -262,6 +262,8 @@ if (next !== messages) await save(next); // no-op 时跳过持久化
 
 > 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
 
+> **`keepRecentTurns` 数的是消息级 turn,不是 `ToolLoopAgent` 的 step。** 一个 turn 是一条 user/assistant 消息,或一条带 tool-calls 的 assistant 加它全部 tool 结果(绑成一体)。一次用工具的 step 往往是 2–3 个 turn,所以请按你**最坏单 step 的消息数**来设 `keepRecentTurns` —— 工具密集的 agent loop 要比纯聊天设得更大。摘要是按 `user` 消息插入的,所以当保留尾部也以 user turn 开头时,结果可能出现连续两条 `user` 消息 —— 这是合法的 `ModelMessage[]`,AI SDK 的 provider 层会归一化(Anthropic 合并同角色、OpenAI 直接接受)。
+
 > **内部实现:** `compactModelMessages`、`planCompactionModelMessages` 和 `summarizeModelMessages` 是 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) 中 provider 无关引擎的 AI-SDK 薄壳 —— 它们把 `ModelMessage[]` 转成 core 的 IR 再转回来。若你直接对接某个 provider(不经 AI SDK),请改用 core 的 `planCompaction` / `compactHistory`。
 
 #### 全压(Claude Code 式)

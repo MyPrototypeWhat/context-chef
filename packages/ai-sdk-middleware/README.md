@@ -260,6 +260,8 @@ if (next !== messages) await save(next); // skip persistence on a no-op
 
 > Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
 
+> **`keepRecentTurns` is message-level turns, not `ToolLoopAgent` steps.** A turn is one user/assistant message, or an assistant with its tool-calls plus all their tool results (kept together). A single tool-using step is often 2–3 turns, so size `keepRecentTurns` for your worst-case step — a tool-dense agent loop needs a larger value than a plain chat. The summary is inserted as a `user` message, so when the kept tail also begins with a user turn the result can hold two consecutive `user` messages — a valid `ModelMessage[]` that the AI SDK provider layer normalizes (Anthropic merges same-role, OpenAI accepts it).
+
 > **Under the hood:** `compactModelMessages`, `planCompactionModelMessages`, and `summarizeModelMessages` are thin AI-SDK wrappers over the provider-agnostic engine in [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) — they convert `ModelMessage[]` to core's IR and back. If you drive a provider directly (without the AI SDK), call core's `planCompaction` / `compactHistory` instead.
 
 #### Full compaction (Claude Code style)
