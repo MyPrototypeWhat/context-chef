@@ -305,6 +305,40 @@ describe('fromAISDK', () => {
     expect(placeholder?.name).toBe('run');
   });
 
+  // ─── FIX #3: tool-call with input:undefined yields a string '{}' ───
+  it('serializes a tool-call with undefined input to "{}" (a string)', () => {
+    const prompt: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'run',
+            // biome-ignore lint/suspicious/noExplicitAny: deliberately exercising the undefined-input edge
+            input: undefined as any,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_1',
+            toolName: 'run',
+            output: { type: 'text', value: 'done' },
+          },
+        ],
+      },
+    ];
+    const result = fromAISDK(prompt);
+    const args = result[1].tool_calls?.[0].function.arguments;
+    expect(args).toBe('{}');
+    expect(typeof args).toBe('string');
+  });
+
   it('round-trips sanitized placeholder with original toolName (not "unknown")', () => {
     // Regression guard for the boundary-sanitize bug where injected placeholders
     // round-tripped as `toolName: 'unknown'` because toAISDK only read _toolName.
@@ -525,6 +559,114 @@ describe('round-trip', () => {
       {
         role: 'user',
         content: [{ type: 'text', text: 'Hello' }],
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      },
+    ];
+
+    const ir = fromAISDK(original);
+    const roundTripped = toAISDK(ir);
+    expect(roundTripped).toEqual(original);
+  });
+
+  // ─── FIX #1: inline (provider-executed) tool-result must not trigger a placeholder ───
+  it('does not inject a placeholder for an inline (provider-executed) tool-result', () => {
+    const original: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'search the web' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Searching.' },
+          {
+            type: 'tool-call',
+            toolCallId: 'c1',
+            toolName: 'web_search',
+            input: { q: 'context-chef' },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'web_search',
+            output: { type: 'text', value: 'inline result' },
+          },
+        ],
+      },
+    ];
+
+    const ir = fromAISDK(original);
+    // The self-answered call must not appear as an open call in IR.
+    const assistant = ir.find((m) => m.role === 'assistant');
+    expect(assistant?.tool_calls).toBeUndefined();
+    // No placeholder tool message injected by ensureValidHistory.
+    expect(ir.some((m) => m.role === 'tool')).toBe(false);
+
+    const roundTripped = toAISDK(ir);
+    expect(roundTripped).toEqual(original);
+  });
+
+  it('pairs a normal tool-call and skips an inline one in the same assistant message', () => {
+    const original: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'do two things' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Working.' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'get_weather', input: { city: 'NY' } },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'web_search', input: { q: 'x' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c2',
+            toolName: 'web_search',
+            output: { type: 'text', value: 'inline answer' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'get_weather',
+            output: { type: 'text', value: 'Sunny' },
+          },
+        ],
+      },
+    ];
+
+    const ir = fromAISDK(original);
+    // Only the genuinely-open call (c1) is projected to IR tool_calls.
+    const assistant = ir.find((m) => m.role === 'assistant');
+    expect(assistant?.tool_calls).toEqual([
+      { id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"NY"}' } },
+    ]);
+    // The separate tool message pairs c1; no placeholder for c2.
+    const toolMessages = ir.filter((m) => m.role === 'tool');
+    expect(toolMessages).toHaveLength(1);
+    expect(toolMessages[0].tool_call_id).toBe('c1');
+    expect(ir.some((m) => m.content === '[No tool result available]')).toBe(false);
+
+    const roundTripped = toAISDK(ir);
+    expect(roundTripped).toEqual(original);
+  });
+
+  // ─── FIX #2: tool-message-level providerOptions survives round-trip ───
+  it('preserves tool-message-level providerOptions through round-trip', () => {
+    const original: LanguageModelV3Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'run it' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'run', input: {} }],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'run',
+            output: { type: 'text', value: 'ok' },
+          },
+        ],
         providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
       },
     ];

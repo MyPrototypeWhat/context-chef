@@ -112,16 +112,28 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
       if (typeof msg.content === 'string') {
         textParts.push(msg.content);
       } else {
+        // Provider-executed tools (web search, code exec) carry their tool-result
+        // INLINE in the same assistant message. Such calls are self-answered and
+        // must not appear as open IR tool_calls — otherwise ensureValidHistory
+        // injects a spurious placeholder, duplicating the inline result on
+        // round-trip. The inline result round-trips verbatim via _mmAssistantContent.
+        const inlineAnsweredIds = new Set<string>();
+        for (const part of msg.content) {
+          if (part.type === 'tool-result') inlineAnsweredIds.add(part.toolCallId);
+        }
+
         for (const part of msg.content) {
           if (part.type === 'text') {
             textParts.push(part.text);
           } else if (part.type === 'tool-call') {
+            if (inlineAnsweredIds.has(part.toolCallId)) continue;
             toolCalls.push({
               id: part.toolCallId,
               type: 'function',
               function: {
                 name: part.toolName,
-                arguments: typeof part.input === 'string' ? part.input : JSON.stringify(part.input),
+                arguments:
+                  typeof part.input === 'string' ? part.input : JSON.stringify(part.input ?? {}),
               },
             });
           } else if (part.type === 'reasoning') {
@@ -155,6 +167,11 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
     if (msg.role === 'tool') {
       let anchor: ModelMessageIR | undefined;
       const pending: ToolContent = [];
+      // One source tool message maps to N IR tool messages (one per result),
+      // but message-level providerOptions (e.g. an Anthropic cache breakpoint)
+      // belongs to the whole turn — attach it to the FIRST IR message only, so
+      // toModelMessages re-emits exactly one providerOptions when coalescing.
+      let firstOfMessage = true;
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
           // ModelMessage's ToolResultOutput is a structural superset of V3's (extra content[] members); stringifyToolOutput only reads .type/.value, so the cast is safe and matches the V3 adapter's projection.
@@ -166,16 +183,22 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
             _mmToolContent: [...pending, part],
             _mmOriginalText: text,
             _mmToolName: part.toolName,
+            ...(firstOfMessage && msg.providerOptions
+              ? { _mmProviderOptions: msg.providerOptions }
+              : {}),
           };
+          firstOfMessage = false;
           pending.length = 0;
           ir.push(anchor);
         } else if (anchor?._mmToolContent) {
           anchor._mmToolContent.push(part);
         } else {
           // Approval part seen before any tool-result: buffer it to prepend to
-          // the next result. If no result ever follows (a tool message with zero
-          // results), these are dropped — an unreachable shape for real input,
-          // since ensureValidHistory sanitizes resultless tool messages away.
+          // the next result. If no result ever follows in this message (a tool
+          // message with zero results), fromModelMessages emits NO IR message at
+          // all — so there is nothing for ensureValidHistory to sanitize, and the
+          // buffered parts are simply dropped. We accept that edge shape (a
+          // leading approval with no following result in the same message).
           pending.push(part);
         }
       }
@@ -247,9 +270,16 @@ export function toModelMessages(messages: Message[]): ModelMessage[] {
 
     if (msg.role === 'tool') {
       const content: ToolContent = [];
+      // Re-attach the message-level providerOptions captured on the first IR
+      // message of the original tool turn (see fromModelMessages). Take the
+      // first non-undefined across the coalesced group.
+      let providerOptions: ProviderOptions;
       while (i < messages.length && messages[i].role === 'tool') {
         const t = asMM(messages[i]);
         const tModified = t._mmOriginalText !== undefined && t._mmOriginalText !== t.content;
+        if (providerOptions === undefined && t._mmProviderOptions) {
+          providerOptions = t._mmProviderOptions;
+        }
         if (!tModified && t._mmToolContent) {
           content.push(...t._mmToolContent);
         } else {
@@ -262,7 +292,7 @@ export function toModelMessages(messages: Message[]): ModelMessage[] {
         }
         i++;
       }
-      out.push({ role: 'tool', content });
+      out.push({ role: 'tool', content, ...(providerOptions ? { providerOptions } : {}) });
       continue;
     }
 

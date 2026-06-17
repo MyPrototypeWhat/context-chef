@@ -53,6 +53,88 @@ describe('fromModelMessages', () => {
     ]);
   });
 
+  // ─── FIX #3: tool-call with undefined input serializes to '{}' ───
+  it('serializes a tool-call with undefined input to "{}" (a string)', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: [
+          // biome-ignore lint/suspicious/noExplicitAny: deliberately exercising the undefined-input edge
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'run', input: undefined as any },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'run', output: { type: 'text', value: 'done' } },
+        ],
+      },
+    ];
+    const assistant = fromModelMessages(messages).find((m) => m.role === 'assistant');
+    const args = assistant?.tool_calls?.[0].function.arguments;
+    expect(args).toBe('{}');
+    expect(typeof args).toBe('string');
+  });
+
+  // ─── FIX #1: inline (provider-executed) tool-result must not trigger a placeholder ───
+  it('does not project an inline tool-result as an open IR tool_call', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'search' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Searching.' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'web_search', input: { q: 'cc' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'web_search',
+            output: { type: 'text', value: 'inline result' },
+          },
+        ],
+      },
+    ];
+    const ir = fromModelMessages(messages);
+    const assistant = ir.find((m) => m.role === 'assistant');
+    expect(assistant?.tool_calls).toBeUndefined();
+    expect(ir.some((m) => m.role === 'tool')).toBe(false);
+  });
+
+  it('pairs a normal tool-call and skips an inline one in the same assistant message', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'two things' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'get_weather', input: { city: 'NY' } },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'web_search', input: { q: 'x' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c2',
+            toolName: 'web_search',
+            output: { type: 'text', value: 'inline answer' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'get_weather', output: { type: 'text', value: 'Sunny' } },
+        ],
+      },
+    ];
+    const ir = fromModelMessages(messages);
+    const assistant = ir.find((m) => m.role === 'assistant');
+    expect(assistant?.tool_calls).toEqual([
+      { id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"NY"}' } },
+    ]);
+    const toolMessages = ir.filter((m) => m.role === 'tool');
+    expect(toolMessages).toHaveLength(1);
+    expect(toolMessages[0].tool_call_id).toBe('c1');
+    expect(ir.some((m) => m.content === '[No tool result available]')).toBe(false);
+  });
+
   it('splits a tool message into one IR message per tool-result', () => {
     const messages: ModelMessage[] = [
       { role: 'user', content: 'do both' },
@@ -180,6 +262,58 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       {
         role: 'user',
         content: [{ type: 'text', text: 'hi' }],
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      },
+    ],
+    'inline (provider-executed) tool-result rides through without a placeholder': [
+      { role: 'user', content: 'search the web' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Searching.' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'web_search', input: { q: 'cc' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'web_search',
+            output: { type: 'text', value: 'inline result' },
+          },
+        ],
+      },
+    ],
+    'inline tool-result alongside a separately-answered call': [
+      { role: 'user', content: 'two things' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'get_weather', input: { city: 'NY' } },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'web_search', input: { q: 'x' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c2',
+            toolName: 'web_search',
+            output: { type: 'text', value: 'inline answer' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'get_weather', output: { type: 'text', value: 'Sunny' } },
+        ],
+      },
+    ],
+    'tool-message-level providerOptions preserved': [
+      { role: 'user', content: 'run it' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'run', input: {} }],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'run', output: { type: 'text', value: 'ok' } },
+        ],
         providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
       },
     ],
