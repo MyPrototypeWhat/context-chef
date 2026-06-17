@@ -90,7 +90,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         'not persisted, so your message history re-expands on the next call and the payload grows ' +
         'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
         'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
-        '`summarizeMessages` for durable compaction.',
+        '`compactModelMessages` for durable compaction.',
     );
   };
 

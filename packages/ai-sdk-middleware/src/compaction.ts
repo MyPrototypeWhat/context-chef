@@ -25,6 +25,10 @@ export interface CompactionPlan {
 }
 
 /**
+ * @deprecated Use {@link planCompactionModelMessages}. This V3-prompt variant is
+ * the provider-protocol altitude — a type you never persist. Removed in the next
+ * major.
+ *
  * Splits an AI SDK prompt into `{ system, toSummarize, toKeep }` on **turn
  * boundaries**, for durable (caller-owned) compaction.
  *
@@ -52,6 +56,10 @@ export function planCompaction(
 }
 
 /**
+ * @deprecated Use {@link compactModelMessages}. `LanguageModelV3Prompt` is the
+ * provider-protocol altitude (ephemeral, never persisted); durable compaction
+ * belongs at the ModelMessage altitude. Removed in the next major.
+ *
  * One-shot durable compaction: plan a turn-safe split, summarize the old slice,
  * and return a new prompt ready to persist — `[...system, <summary>, ...toKeep]`.
  *

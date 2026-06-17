@@ -8,11 +8,19 @@ export type { ClearTarget } from '@context-chef/core';
 export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export {
   type CompactionPlan,
+  type CompactionPlanModelMessages,
   compactHistory,
+  compactModelMessages,
   type PlanCompactionOptions,
   planCompaction,
+  planCompactionModelMessages,
 } from './compaction';
-export { createMiddleware, type SummarizeMessagesOptions, summarizeMessages } from './middleware';
+export {
+  createMiddleware,
+  type SummarizeMessagesOptions,
+  summarizeMessages,
+  summarizeModelMessages,
+} from './middleware';
 export type {
   CompactConfig,
   CompressOptions,
