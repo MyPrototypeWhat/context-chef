@@ -62,7 +62,7 @@ export interface TruncateOptions {
  * grows unbounded and compression effectively fires only every other call
  * (E10 suppression). For sustained use, persist the summary via
  * {@link ContextChefOptions.onCompress} — replace the compressed slice in
- * your own store — or use `summarizeMessages` for durable compaction. The
+ * your own store — or use `compactModelMessages` for durable compaction. The
  * middleware warns once if compression keeps firing without `onCompress`.
  */
 export interface CompressOptions {
