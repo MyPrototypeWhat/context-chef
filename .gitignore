@@ -30,3 +30,6 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 .pnpm-store/
+
+# Superpowers working docs
+docs/superpowers/
