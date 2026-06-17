@@ -67,7 +67,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 压缩实际上只会隔次触发,payload 还会持续增长。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactHistory`](#compacthistoryprompt-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
+> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 压缩实际上只会隔次触发,payload 还会持续增长。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactModelMessages`](#compactmodelmessagesmessages-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
 
 ### 工具结果截断
 
@@ -228,9 +228,97 @@ const summary = await summarizeMessages(promptSlice, model, {
 
 > **协调注意：** 若以此方式驱动摘要，请**不要**在同一中间件路径上对同一对话再配置 `compress`（带 `model`）—— 那会重复压缩（调用时一次、持久化时再一次）。仅做通知的 `onCompress`，以及 `truncate`、`clear`、`dynamicState` 可安全并用。
 
+### `compactModelMessages(messages, model, options)`
+
+**一站式 durable 压缩** —— 当你拥有消息存储时（长 agent loop，或超预算的聊天），让长对话保持精简的推荐方式。它工作在 **ModelMessage 层级** —— 即 `generateText` 和 `prepareStep` 实际交给你的 `ModelMessage[]` 类型。它在 turn 边界切分历史、对旧切片摘要,返回一份可直接持久化的新 `ModelMessage[]` —— `[...system, <摘要>, ...最近若干轮]`。可在你自己的 loop 里运行（拥有存储并把结果写回），或放进 `ToolLoopAgent`:
+
+```typescript
+import { compactModelMessages } from '@context-chef/ai-sdk-middleware';
+
+const agent = new ToolLoopAgent({
+  model,
+  tools,
+  prepareStep: async ({ messages, model }) => ({
+    messages: await compactModelMessages(messages, model, { keepRecentTurns: 4 }),
+  }),
+});
+```
+
+或在模型调用之间,当你持有 `messages` 时:
+
+```typescript
+const next = await compactModelMessages(messages, summarizerModel, {
+  keepRecentTurns: 4,           // 逐字保留最近 4 个原子轮次
+  toolResultStubThreshold: 5000,
+});
+if (next !== messages) await save(next); // no-op 时跳过持久化
+```
+
+- `model` 是 `ai` 的 `LanguageModel`(`string id | V3 | V2`)—— 正是 `prepareStep` / `generateText` 交给你的类型。
+- 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
+- system 消息逐字保留、永不被摘要。
+- 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回同一个 `messages` 引用** —— 因此可通过 `next !== messages` 在 no-op 时跳过持久化。可无条件调用;仅当模型调用抛错时才抛错。
+- 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
+
+> 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
+
+> **`keepRecentTurns` 数的是消息级 turn,不是 `ToolLoopAgent` 的 step。** 一个 turn 是一条 user/assistant 消息,或一条带 tool-calls 的 assistant 加它全部 tool 结果(绑成一体)。一次用工具的 step 往往是 2–3 个 turn,所以请按你**最坏单 step 的消息数**来设 `keepRecentTurns` —— 工具密集的 agent loop 要比纯聊天设得更大。摘要是按 `user` 消息插入的,所以当保留尾部也以 user turn 开头时,结果可能出现连续两条 `user` 消息 —— 这是合法的 `ModelMessage[]`,AI SDK 的 provider 层会归一化(Anthropic 合并同角色、OpenAI 直接接受)。
+
+> **内部实现:** `compactModelMessages`、`planCompactionModelMessages` 和 `summarizeModelMessages` 是 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) 中 provider 无关引擎的 AI-SDK 薄壳 —— 它们把 `ModelMessage[]` 转成 core 的 IR 再转回来。若你直接对接某个 provider(不经 AI SDK),请改用 core 的 `planCompaction` / `compactHistory`。
+
+#### 全压(Claude Code 式)
+
+传 `keepRecentTurns: 0`,把**整段对话**压成一条摘要 —— 结果只有 `[...system, <摘要>]`,没有逐字尾巴。这是最易持久化的模式:因为没有保留的尾巴,就不存在跟你存储自身单元边界(一个多 step 的 agent turn、一条跨多个 step 的 UI 消息等)对齐的问题 —— 回写就是「用这两条结果替换存储」。每一轮都塌回 `[system, summary]`。
+
+代价是**没有任何逐字近况留存** —— 模型完全从一份有损摘要继续。所以摘要质量就是一切;用 `customCompressionInstructions` 把它导向结构化交接:
+
+```typescript
+const next = await compactModelMessages(messages, summarizerModel, {
+  keepRecentTurns: 0, // 全压 —— 把一切塌进摘要
+  customCompressionInstructions: [
+    '把摘要写成可续作任务的交接文档:',
+    '- 已完成的工作与当前状态',
+    '- 做了哪些决策、为什么',
+    '- 涉及的文件 / 资源',
+    '- 下一步要做的确切动作',
+  ].join('\n'),
+});
+// 此时 `next` 就是 [system, summary] —— 持久化极简,无需任何边界记账。
+```
+
+想保住「进行中那一轮」的逐字上下文时(无人值守的 loop 做事中更安全),用小的 `keepRecentTurns`(如 `2`–`4`);想最大化收缩、要一个干净无边界的存储时,用 `0`。
+
+### `planCompactionModelMessages(messages, options)`
+
+`compactModelMessages` 背后的同步切分函数,适用于只要边界、不想立刻摘要的场景(持久化你自己的标记,或用别的摘要器)。返回 `{ system, toSummarize, toKeep }`(均为 `ModelMessage[]`),按 turn 边界切分:
+
+```typescript
+import { planCompactionModelMessages, summarizeModelMessages } from '@context-chef/ai-sdk-middleware';
+import { Prompts } from '@context-chef/core';
+
+const { system, toSummarize, toKeep } = planCompactionModelMessages(messages, { keepRecentTurns: 4 });
+if (toSummarize.length > 0) {
+  const summary = await summarizeModelMessages(toSummarize, model);
+  messages = [
+    ...system,
+    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
+    ...toKeep,
+  ];
+}
+```
+
+### `summarizeModelMessages(messages, model, options?)`
+
+[`summarizeMessages`](#summarizemessagesprompt-model-options) 的 ModelMessage 层级兄弟函数:用同一流水线(角色扁平化 + core `summarizeHistory`)把一段 `ModelMessage[]` 切片摘要为单个字符串。system 消息会被丢弃。空切片不调用模型直接返回 `''`,模型调用失败时抛出异常。当你想自行驱动摘要、而非用一站式的 `compactModelMessages` 时,配合 `planCompactionModelMessages` 使用。
+
 ### `compactHistory(prompt, model, options)`
 
-**一站式 durable 压缩** —— 当你拥有消息存储时（长 agent loop，或超预算的聊天），让长对话保持精简的推荐方式。它在 turn 边界切分历史、对旧切片摘要,返回一份可直接持久化的新 prompt —— `[...system, <摘要>, ...最近若干轮]`：
+> **已废弃。** `compactHistory` / `planCompaction` 收发的是
+> `LanguageModelV3Prompt` —— provider 协议层级,没人会持久化这个类型。请改用
+> [`compactModelMessages`](#compactmodelmessagesmessages-model-options)
+> / `planCompactionModelMessages`。仍然导出且可用;下个大版本移除。
+
+`compactModelMessages` 的 V3-prompt 变体。它在 turn 边界切分历史、对旧切片摘要,返回一份可直接持久化的新 prompt —— `[...system, <摘要>, ...最近若干轮]`：
 
 ```typescript
 import { compactHistory } from '@context-chef/ai-sdk-middleware';
@@ -248,33 +336,10 @@ messages = await compactHistory(messages, summarizerModel, {
 - 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回** prompt —— 可无条件调用。仅当模型调用抛错时才抛错。
 - 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
 
-> 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
-
-> **内部实现:** `compactHistory` 和 `planCompaction` 是 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) 中 provider 无关引擎的 AI-SDK 薄壳 —— 它们把 prompt 转成 core 的 IR 再转回来。若你直接对接某个 provider(不经 AI SDK),请改用 core 的 `planCompaction` / `compactHistory`。
-
-#### 全压(Claude Code 式)
-
-传 `keepRecentTurns: 0`,把**整段对话**压成一条摘要 —— 结果只有 `[...system, <摘要>]`,没有逐字尾巴。这是最易持久化的模式:因为没有保留的尾巴,就不存在跟你存储自身单元边界(一个多 step 的 agent turn、一条跨多个 step 的 UI 消息等)对齐的问题 —— 回写就是「用这两条结果替换存储」。每一轮都塌回 `[system, summary]`。
-
-代价是**没有任何逐字近况留存** —— 模型完全从一份有损摘要继续。所以摘要质量就是一切;用 `customCompressionInstructions` 把它导向结构化交接:
-
-```typescript
-messages = await compactHistory(messages, summarizerModel, {
-  keepRecentTurns: 0, // 全压 —— 把一切塌进摘要
-  customCompressionInstructions: [
-    '把摘要写成可续作任务的交接文档:',
-    '- 已完成的工作与当前状态',
-    '- 做了哪些决策、为什么',
-    '- 涉及的文件 / 资源',
-    '- 下一步要做的确切动作',
-  ].join('\n'),
-});
-// 此时 `messages` 就是 [system, summary] —— 持久化极简,无需任何边界记账。
-```
-
-想保住「进行中那一轮」的逐字上下文时(无人值守的 loop 做事中更安全),用小的 `keepRecentTurns`(如 `2`–`4`);想最大化收缩、要一个干净无边界的存储时,用 `0`。
-
 ### `planCompaction(prompt, options)`
+
+> **已废弃。** 请改用 [`planCompactionModelMessages`](#plancompactionmodelmessagesmessages-options)。
+> 这个 V3-prompt 变体是 provider 协议层级 —— 一个你永远不会持久化的类型。仍然导出且可用;下个大版本移除。
 
 `compactHistory` 背后的同步切分函数,适用于只要边界、不想立刻摘要的场景(持久化你自己的标记,或用别的摘要器)。返回 `{ system, toSummarize, toKeep }`(均为 `LanguageModelV3Prompt`),按 turn 边界切分:
 

@@ -65,7 +65,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-> **In-flight vs durable.** Middleware `compress` is *in-flight*: it rewrites each outgoing request but does **not** mutate your message store. So for a *sustained* over-budget conversation (a long chat, or a long multi-step loop) the summary is discarded each call and the history re-expands — compression then effectively fires only every other call and the payload keeps growing. For a one-off spike that's fine; for sustained use, **persist** the summary via `onCompress`, or compact your own store with [`compactHistory`](#compacthistoryprompt-model-options) (recommended). The middleware logs a one-time warning if `compress` keeps firing without `onCompress`.
+> **In-flight vs durable.** Middleware `compress` is *in-flight*: it rewrites each outgoing request but does **not** mutate your message store. So for a *sustained* over-budget conversation (a long chat, or a long multi-step loop) the summary is discarded each call and the history re-expands — compression then effectively fires only every other call and the payload keeps growing. For a one-off spike that's fine; for sustained use, **persist** the summary via `onCompress`, or compact your own store with [`compactModelMessages`](#compactmodelmessagesmessages-model-options) (recommended). The middleware logs a one-time warning if `compress` keeps firing without `onCompress`.
 
 ### Tool Result Truncation
 
@@ -226,9 +226,97 @@ const summary = await summarizeMessages(promptSlice, model, {
 
 > **Coordination:** if you drive summarization this way, do **not** also configure `compress` (with a `model`) on the same middleware path for the same conversation — that double-compresses (once at call time, again at persist time). A notification-only `onCompress`, plus `truncate`, `clear`, and `dynamicState`, are safe alongside it.
 
+### `compactModelMessages(messages, model, options)`
+
+**Durable compaction in one call** — the recommended way to keep a long conversation lean when you own the message store (a long agent loop, or a chat past the budget). It works at the **ModelMessage altitude** — the `ModelMessage[]` type `generateText` and `prepareStep` actually hand you. It splits the history on turn boundaries, summarizes the old slice, and returns a new `ModelMessage[]` ready to persist — `[...system, <summary>, ...recent turns]`. Run it in your own loop (own the store and write the result back), or inside a `ToolLoopAgent`:
+
+```typescript
+import { compactModelMessages } from '@context-chef/ai-sdk-middleware';
+
+const agent = new ToolLoopAgent({
+  model,
+  tools,
+  prepareStep: async ({ messages, model }) => ({
+    messages: await compactModelMessages(messages, model, { keepRecentTurns: 4 }),
+  }),
+});
+```
+
+Or between model calls, when you own `messages`:
+
+```typescript
+const next = await compactModelMessages(messages, summarizerModel, {
+  keepRecentTurns: 4,           // keep the last 4 atomic turns verbatim
+  toolResultStubThreshold: 5000,
+});
+if (next !== messages) await save(next); // skip persistence on a no-op
+```
+
+- `model` is `ai`'s `LanguageModel` (`string id | V3 | V2`) — exactly what `prepareStep` / `generateText` give you.
+- The cut lands only on **turn boundaries** (an assistant + its tool results stay together), so it never orphans a tool result or splits a multi-block assistant message.
+- System messages are preserved verbatim and never summarized.
+- Returns the **same `messages` reference** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — so you can skip persistence on a no-op via `next !== messages`. Safe to call unconditionally; throws only if the model call throws.
+- Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
+
+> Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
+
+> **`keepRecentTurns` is message-level turns, not `ToolLoopAgent` steps.** A turn is one user/assistant message, or an assistant with its tool-calls plus all their tool results (kept together). A single tool-using step is often 2–3 turns, so size `keepRecentTurns` for your worst-case step — a tool-dense agent loop needs a larger value than a plain chat. The summary is inserted as a `user` message, so when the kept tail also begins with a user turn the result can hold two consecutive `user` messages — a valid `ModelMessage[]` that the AI SDK provider layer normalizes (Anthropic merges same-role, OpenAI accepts it).
+
+> **Under the hood:** `compactModelMessages`, `planCompactionModelMessages`, and `summarizeModelMessages` are thin AI-SDK wrappers over the provider-agnostic engine in [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) — they convert `ModelMessage[]` to core's IR and back. If you drive a provider directly (without the AI SDK), call core's `planCompaction` / `compactHistory` instead.
+
+#### Full compaction (Claude Code style)
+
+Pass `keepRecentTurns: 0` to summarize the **entire** conversation into a single summary — the result is just `[...system, <summary>]`, with no verbatim tail. This is the simplest mode to persist: because there is no kept tail, there is nothing to reconcile against your store's own unit boundaries (a multi-step agent turn, a UI message spanning several steps, etc.) — the write-back is just "replace the store with the two-message result." Each cycle collapses back to `[system, summary]`.
+
+The trade-off is that **no verbatim recent context survives** — the model continues purely from a lossy summary. So the summary's quality is everything; steer it toward a structured handoff with `customCompressionInstructions`:
+
+```typescript
+const next = await compactModelMessages(messages, summarizerModel, {
+  keepRecentTurns: 0, // full compaction — collapse everything into the summary
+  customCompressionInstructions: [
+    'Write the summary as a handoff for resuming the task:',
+    '- What was accomplished and the current state',
+    '- Decisions made and why they were made',
+    '- Files / resources touched',
+    '- The exact next step to take',
+  ].join('\n'),
+});
+// `next` is now [system, summary] — trivial to persist, no boundary bookkeeping.
+```
+
+Prefer a small `keepRecentTurns` (e.g. `2`–`4`) when you want the in-flight turn kept verbatim (safer for an autonomous loop mid-task); prefer `0` when you want maximal shrink and a clean, boundary-free store.
+
+### `planCompactionModelMessages(messages, options)`
+
+The synchronous split behind `compactModelMessages`, for when you want the boundary without summarizing (persist your own marker, or use a different summarizer). Returns `{ system, toSummarize, toKeep }` (all `ModelMessage[]`), cut on turn boundaries:
+
+```typescript
+import { planCompactionModelMessages, summarizeModelMessages } from '@context-chef/ai-sdk-middleware';
+import { Prompts } from '@context-chef/core';
+
+const { system, toSummarize, toKeep } = planCompactionModelMessages(messages, { keepRecentTurns: 4 });
+if (toSummarize.length > 0) {
+  const summary = await summarizeModelMessages(toSummarize, model);
+  messages = [
+    ...system,
+    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
+    ...toKeep,
+  ];
+}
+```
+
+### `summarizeModelMessages(messages, model, options?)`
+
+ModelMessage-altitude sibling of [`summarizeMessages`](#summarizemessagesprompt-model-options): summarize a `ModelMessage[]` slice into a single summary string via the same pipeline (role-flattening + core `summarizeHistory`). System messages are dropped. An empty slice returns `''` without a model call; it throws if the model call fails. Use it with `planCompactionModelMessages` when you want to drive summarization yourself instead of the one-shot `compactModelMessages`.
+
 ### `compactHistory(prompt, model, options)`
 
-**Durable compaction in one call** — the recommended way to keep a long conversation lean when you own the message store (a long agent loop, or a chat past the budget). It splits the history on turn boundaries, summarizes the old slice, and returns a new prompt ready to persist — `[...system, <summary>, ...recent turns]`:
+> **Deprecated.** `compactHistory` / `planCompaction` take and return
+> `LanguageModelV3Prompt` — the provider-protocol altitude, which nobody
+> persists. Use [`compactModelMessages`](#compactmodelmessagesmessages-model-options)
+> / `planCompactionModelMessages` instead. Still exported and working; removed in the next major.
+
+The V3-prompt variant of `compactModelMessages`. It splits the history on turn boundaries, summarizes the old slice, and returns a new prompt ready to persist — `[...system, <summary>, ...recent turns]`:
 
 ```typescript
 import { compactHistory } from '@context-chef/ai-sdk-middleware';
@@ -246,33 +334,11 @@ messages = await compactHistory(messages, summarizerModel, {
 - Returns the prompt **unchanged** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — safe to call unconditionally. Throws only if the model call throws.
 - Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
 
-> Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
-
-> **Under the hood:** `compactHistory` and `planCompaction` are thin AI-SDK wrappers over the provider-agnostic engine in [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) — they convert the prompt to core's IR and back. If you drive a provider directly (without the AI SDK), call core's `planCompaction` / `compactHistory` instead.
-
-#### Full compaction (Claude Code style)
-
-Pass `keepRecentTurns: 0` to summarize the **entire** conversation into a single summary — the result is just `[...system, <summary>]`, with no verbatim tail. This is the simplest mode to persist: because there is no kept tail, there is nothing to reconcile against your store's own unit boundaries (a multi-step agent turn, a UI message spanning several steps, etc.) — the write-back is just "replace the store with the two-message result." Each cycle collapses back to `[system, summary]`.
-
-The trade-off is that **no verbatim recent context survives** — the model continues purely from a lossy summary. So the summary's quality is everything; steer it toward a structured handoff with `customCompressionInstructions`:
-
-```typescript
-messages = await compactHistory(messages, summarizerModel, {
-  keepRecentTurns: 0, // full compaction — collapse everything into the summary
-  customCompressionInstructions: [
-    'Write the summary as a handoff for resuming the task:',
-    '- What was accomplished and the current state',
-    '- Decisions made and why they were made',
-    '- Files / resources touched',
-    '- The exact next step to take',
-  ].join('\n'),
-});
-// `messages` is now [system, summary] — trivial to persist, no boundary bookkeeping.
-```
-
-Prefer a small `keepRecentTurns` (e.g. `2`–`4`) when you want the in-flight turn kept verbatim (safer for an autonomous loop mid-task); prefer `0` when you want maximal shrink and a clean, boundary-free store.
-
 ### `planCompaction(prompt, options)`
+
+> **Deprecated.** Use [`planCompactionModelMessages`](#plancompactionmodelmessagesmessages-options).
+> This V3-prompt variant is the provider-protocol altitude — a type you never
+> persist. Still exported and working; removed in the next major.
 
 The synchronous split behind `compactHistory`, for when you want the boundary without summarizing (persist your own marker, or use a different summarizer). Returns `{ system, toSummarize, toKeep }` (all `LanguageModelV3Prompt`), cut on turn boundaries:
 

@@ -97,15 +97,27 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
       const attachments: Attachment[] = [];
       let thinking: { thinking: string } | undefined;
 
+      // Provider-executed tools (web search, code exec) carry their tool-result
+      // INLINE in the same assistant message. Such calls are self-answered and
+      // must not appear as open IR tool_calls — otherwise ensureValidHistory
+      // injects a spurious placeholder, duplicating the inline result on
+      // round-trip. The inline result round-trips verbatim via _assistantContent.
+      const inlineAnsweredIds = new Set<string>();
+      for (const part of msg.content) {
+        if (part.type === 'tool-result') inlineAnsweredIds.add(part.toolCallId);
+      }
+
       for (const part of msg.content) {
         if (part.type === 'text') text.push(part.text);
         else if (part.type === 'tool-call') {
+          if (inlineAnsweredIds.has(part.toolCallId)) continue;
           toolCalls.push({
             id: part.toolCallId,
             type: 'function',
             function: {
               name: part.toolName,
-              arguments: typeof part.input === 'string' ? part.input : JSON.stringify(part.input),
+              arguments:
+                typeof part.input === 'string' ? part.input : JSON.stringify(part.input ?? {}),
             },
           });
         } else if (part.type === 'reasoning') {
@@ -137,6 +149,11 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
     }
 
     if (msg.role === 'tool') {
+      // One source tool message maps to N IR tool messages (one per result),
+      // but message-level providerOptions (e.g. an Anthropic cache breakpoint)
+      // belongs to the whole turn — attach it to the FIRST IR message only, so
+      // toAISDK re-emits exactly one providerOptions when coalescing the group.
+      let firstOfMessage = true;
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
           const text = stringifyToolOutput(part.output);
@@ -147,7 +164,11 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
             _toolContent: [part],
             _originalText: text,
             _toolName: part.toolName,
+            ...(firstOfMessage && msg.providerOptions
+              ? { _providerOptions: msg.providerOptions }
+              : {}),
           });
+          firstOfMessage = false;
         }
       }
     }
@@ -220,10 +241,18 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
 
     if (msg.role === 'tool') {
       const toolResults: LanguageModelV3ToolResultPart[] = [];
+      // Re-attach the message-level providerOptions captured on the first IR
+      // message of the original tool turn (see fromAISDK). Take the first
+      // non-undefined across the coalesced group.
+      let providerOptions: SharedV3ProviderOptions | undefined;
       while (i < messages.length && messages[i].role === 'tool') {
         const toolMsg = asAISDK(messages[i]);
         const toolModified =
           toolMsg._originalText !== undefined && toolMsg._originalText !== toolMsg.content;
+
+        if (providerOptions === undefined && toolMsg._providerOptions) {
+          providerOptions = toolMsg._providerOptions;
+        }
 
         if (!toolModified && toolMsg._toolContent) {
           for (const part of toolMsg._toolContent) {
@@ -246,7 +275,11 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
         }
         i++;
       }
-      prompt.push({ role: 'tool', content: toolResults });
+      prompt.push({
+        role: 'tool',
+        content: toolResults,
+        ...(providerOptions ? { providerOptions } : {}),
+      });
       continue;
     }
 
@@ -256,7 +289,7 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
   return prompt;
 }
 
-function stringifyToolOutput(output: LanguageModelV3ToolResultOutput): string {
+export function stringifyToolOutput(output: LanguageModelV3ToolResultOutput): string {
   switch (output.type) {
     case 'text':
     case 'error-text':

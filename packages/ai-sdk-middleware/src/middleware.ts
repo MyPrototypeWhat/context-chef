@@ -15,9 +15,16 @@ import {
   summarizeHistory,
   XmlGenerator,
 } from '@context-chef/core';
-import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
+import {
+  generateText,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+  type ModelMessage,
+  pruneMessages,
+} from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
+import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
 
@@ -83,7 +90,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         'not persisted, so your message history re-expands on the next call and the payload grows ' +
         'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
         'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
-        '`summarizeMessages` for durable compaction.',
+        '`compactModelMessages` for durable compaction.',
     );
   };
 
@@ -383,7 +390,7 @@ function toCompressRole(role: string): CompressRole {
  * since generateText only accepts system/user/assistant roles.
  */
 export function createCompressionAdapter(
-  model: LanguageModelV3,
+  model: LanguageModel,
 ): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
     const formatted = messages.map((m): { role: CompressRole; content: string } => {
@@ -448,5 +455,20 @@ export async function summarizeMessages(
   opts: SummarizeMessagesOptions = {},
 ): Promise<string> {
   const ir = fromAISDK(prompt).filter((m) => m.role !== 'system');
+  return summarizeHistory(ir, createCompressionAdapter(model), opts);
+}
+
+/**
+ * ModelMessage-altitude sibling of {@link summarizeMessages}: summarize a
+ * `ModelMessage[]` slice into a single summary string via the same pipeline
+ * (role-flattening + core `summarizeHistory`). System messages are dropped.
+ * Empty input returns `''` without a model call; throws if the model call fails.
+ */
+export async function summarizeModelMessages(
+  messages: ModelMessage[],
+  model: LanguageModel,
+  opts: SummarizeMessagesOptions = {},
+): Promise<string> {
+  const ir = fromModelMessages(messages).filter((m) => m.role !== 'system');
   return summarizeHistory(ir, createCompressionAdapter(model), opts);
 }
