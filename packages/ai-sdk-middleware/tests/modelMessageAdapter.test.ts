@@ -42,7 +42,14 @@ describe('fromModelMessages', () => {
       },
       {
         role: 'tool',
-        content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } }],
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'ok' },
+          },
+        ],
       },
     ];
     const assistant = fromModelMessages(messages).find((m) => m.role === 'assistant');
@@ -67,7 +74,12 @@ describe('fromModelMessages', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'run', output: { type: 'text', value: 'done' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'run',
+            output: { type: 'text', value: 'done' },
+          },
         ],
       },
     ];
@@ -120,7 +132,12 @@ describe('fromModelMessages', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'get_weather', output: { type: 'text', value: 'Sunny' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'get_weather',
+            output: { type: 'text', value: 'Sunny' },
+          },
         ],
       },
     ];
@@ -148,8 +165,18 @@ describe('fromModelMessages', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'r1' } },
-          { type: 'tool-result', toolCallId: 'c2', toolName: 'bar', output: { type: 'json', value: { n: 2 } } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'r1' },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'c2',
+            toolName: 'bar',
+            output: { type: 'json', value: { n: 2 } },
+          },
         ],
       },
     ];
@@ -201,7 +228,12 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'ok' },
+          },
         ],
       },
     ],
@@ -224,19 +256,32 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'ok' },
+          },
           { type: 'tool-approval-response', approvalId: 'a1', approved: true },
         ],
       },
     ],
     'tool-approval-response BEFORE its result (leading approval, pending buffer)': [
       { role: 'user', content: 'run' },
-      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }],
+      },
       {
         role: 'tool',
         content: [
           { type: 'tool-approval-response', approvalId: 'a1', approved: true },
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'ok' },
+          },
         ],
       },
     ],
@@ -252,9 +297,19 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'r1' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'r1' },
+          },
           { type: 'tool-approval-response', approvalId: 'a1', approved: true },
-          { type: 'tool-result', toolCallId: 'c2', toolName: 'bar', output: { type: 'text', value: 'r2' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c2',
+            toolName: 'bar',
+            output: { type: 'text', value: 'r2' },
+          },
         ],
       },
     ],
@@ -299,7 +354,12 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'get_weather', output: { type: 'text', value: 'Sunny' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'get_weather',
+            output: { type: 'text', value: 'Sunny' },
+          },
         ],
       },
     ],
@@ -312,7 +372,12 @@ describe('round-trip (ModelMessage → IR → ModelMessage)', () => {
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'run', output: { type: 'text', value: 'ok' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'run',
+            output: { type: 'text', value: 'ok' },
+          },
         ],
         providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
       },
@@ -336,11 +401,19 @@ describe('toModelMessages', () => {
   it('reconstructs from IR fields when content was modified (e.g. cleared tool result)', () => {
     const ir = fromModelMessages([
       { role: 'user', content: 'run' },
-      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'run', input: {} }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'run', input: {} }],
+      },
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'run', output: { type: 'text', value: 'long' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'run',
+            output: { type: 'text', value: 'long' },
+          },
         ],
       },
     ]);
@@ -366,11 +439,19 @@ describe('toModelMessages', () => {
   it('drops co-located approval parts when the tool result is modified (lossy by design)', () => {
     const ir = fromModelMessages([
       { role: 'user', content: 'run' },
-      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: {} }],
+      },
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } },
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'ok' },
+          },
           { type: 'tool-approval-response', approvalId: 'a1', approved: true },
         ],
       },

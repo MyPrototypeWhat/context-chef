@@ -29,7 +29,12 @@ function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
         finishReason,
         warnings: [],
         usage: {
-          inputTokens: { total: 50, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
           outputTokens: { total: 10, text: undefined, reasoning: undefined },
         },
         response: { id: 'id', timestamp: new Date(), modelId: 'test-model' },

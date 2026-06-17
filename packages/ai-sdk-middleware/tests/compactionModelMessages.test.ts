@@ -25,7 +25,12 @@ function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
         finishReason,
         warnings: [],
         usage: {
-          inputTokens: { total: 50, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
           outputTokens: { total: 10, text: undefined, reasoning: undefined },
         },
         response: { id: 'id', timestamp: new Date(), modelId: 'test-model' },
@@ -59,8 +64,21 @@ describe('planCompactionModelMessages', () => {
   it('never splits an assistant tool-call from its tool result', () => {
     const messages: ModelMessage[] = [
       { role: 'user', content: 'q1' },
-      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: { a: 1 } }] },
-      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'foo', output: { type: 'text', value: 'ok' } }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'foo', input: { a: 1 } }],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'ok' },
+          },
+        ],
+      },
       { role: 'user', content: 'q2' },
       { role: 'assistant', content: 'a2' },
     ];
@@ -79,7 +97,9 @@ describe('compactModelMessages', () => {
     expect(result[0]).toEqual(messages[0]); // system preserved
     const summary = result[1];
     const text =
-      summary.role === 'user' && typeof summary.content !== 'string' && summary.content[0].type === 'text'
+      summary.role === 'user' &&
+      typeof summary.content !== 'string' &&
+      summary.content[0].type === 'text'
         ? summary.content[0].text
         : '';
     expect(text).toContain('Hello');
