@@ -4,9 +4,11 @@ import {
   planCompaction as corePlanCompaction,
   type PlanCompactionOptions,
 } from '@context-chef/core';
+import type { LanguageModel, ModelMessage } from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
 import { createCompressionAdapter, type SummarizeMessagesOptions } from './middleware';
+import { fromModelMessages, toModelMessages } from './modelMessageAdapter';
 
 export type { PlanCompactionOptions } from '@context-chef/core';
 
@@ -89,4 +91,60 @@ export async function compactHistory(
   // core returns the input IR reference on a no-op — preserve the original
   // prompt reference so callers can skip persistence via `result === prompt`.
   return result === ir ? prompt : toAISDK(result);
+}
+
+export interface CompactionPlanModelMessages {
+  /** System messages, preserved verbatim — standing instructions are never summarized. */
+  system: ModelMessage[];
+  /** The old conversation slice to summarize (system excluded). Empty when nothing is old enough. */
+  toSummarize: ModelMessage[];
+  /** The recent conversation turns to keep verbatim. */
+  toKeep: ModelMessage[];
+}
+
+/**
+ * Turn-safe split for durable compaction at the **ModelMessage** altitude — the
+ * type `prepareStep`/`generateText` hand you. Converts to IR via
+ * {@link fromModelMessages}, splits on turn boundaries via core's
+ * `planCompaction`, and converts each slice back via {@link toModelMessages}.
+ * Summarize `toSummarize`, then persist `[...system, <summary>, ...toKeep]`.
+ */
+export function planCompactionModelMessages(
+  messages: ModelMessage[],
+  options: PlanCompactionOptions,
+): CompactionPlanModelMessages {
+  const plan = corePlanCompaction(fromModelMessages(messages), options);
+  return {
+    system: toModelMessages(plan.system),
+    toSummarize: toModelMessages(plan.toSummarize),
+    toKeep: toModelMessages(plan.toKeep),
+  };
+}
+
+/**
+ * One-shot durable compaction at the **ModelMessage** altitude: plan a turn-safe
+ * split, summarize the old slice, and return a new `ModelMessage[]` ready to
+ * persist — `[...system, <summary>, ...toKeep]`. Use it in your own own-the-store
+ * loop, or inside a `ToolLoopAgent` `prepareStep` (`return { messages: await
+ * compactModelMessages(messages, model, opts) }`).
+ *
+ * `model` is `ai`'s `LanguageModel` (string id | V3 | V2) — exactly what
+ * `prepareStep`/`generateText` give you. Reuses core's `compactHistory` +
+ * `createCompressionAdapter` (tool-role flattening); no model is called directly.
+ *
+ * Returns the **input `messages` reference unchanged** when there is nothing old
+ * enough to compact or the summarizer yields no text, so callers can skip
+ * persistence on a no-op via `result === messages`. Throws only if the model call
+ * throws.
+ */
+export async function compactModelMessages(
+  messages: ModelMessage[],
+  model: LanguageModel,
+  options: PlanCompactionOptions & SummarizeMessagesOptions,
+): Promise<ModelMessage[]> {
+  const ir = fromModelMessages(messages);
+  const result = await coreCompactHistory(ir, createCompressionAdapter(model), options);
+  // core returns the input IR reference on a no-op — preserve the original
+  // `messages` reference so callers can skip persistence via `result === messages`.
+  return result === ir ? messages : toModelMessages(result);
 }
