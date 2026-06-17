@@ -15,7 +15,13 @@ import {
   summarizeHistory,
   XmlGenerator,
 } from '@context-chef/core';
-import { generateText, type LanguageModelMiddleware, type ModelMessage, pruneMessages } from 'ai';
+import {
+  generateText,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+  type ModelMessage,
+  pruneMessages,
+} from 'ai';
 
 import { fromAISDK, toAISDK } from './adapter';
 import { truncateToolResults } from './truncator';
@@ -383,7 +389,7 @@ function toCompressRole(role: string): CompressRole {
  * since generateText only accepts system/user/assistant roles.
  */
 export function createCompressionAdapter(
-  model: LanguageModelV3,
+  model: LanguageModel,
 ): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
     const formatted = messages.map((m): { role: CompressRole; content: string } => {
