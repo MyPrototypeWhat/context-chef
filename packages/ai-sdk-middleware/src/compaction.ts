@@ -1,4 +1,4 @@
-import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
+import type { LanguageModelV4, LanguageModelV4Prompt } from '@ai-sdk/provider';
 import {
   compactHistory as coreCompactHistory,
   planCompaction as corePlanCompaction,
@@ -14,18 +14,18 @@ export type { PlanCompactionOptions } from '@context-chef/core';
 
 export interface CompactionPlan {
   /** System messages, preserved verbatim — standing instructions are never summarized. */
-  system: LanguageModelV3Prompt;
+  system: LanguageModelV4Prompt;
   /**
    * The old conversation slice to summarize (system excluded). Feed this to
    * `summarizeMessages`. Empty when there is nothing old enough to compact.
    */
-  toSummarize: LanguageModelV3Prompt;
+  toSummarize: LanguageModelV4Prompt;
   /** The recent conversation turns to keep verbatim. */
-  toKeep: LanguageModelV3Prompt;
+  toKeep: LanguageModelV4Prompt;
 }
 
 /**
- * @deprecated Use {@link planCompactionModelMessages}. This V3-prompt variant is
+ * @deprecated Use {@link planCompactionModelMessages}. This V4-prompt variant is
  * the provider-protocol altitude — a type you never persist. Removed in the next
  * major.
  *
@@ -44,7 +44,7 @@ export interface CompactionPlan {
  * {@link toAISDK}.
  */
 export function planCompaction(
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
   options: PlanCompactionOptions,
 ): CompactionPlan {
   const plan = corePlanCompaction(fromAISDK(prompt), options);
@@ -56,7 +56,7 @@ export function planCompaction(
 }
 
 /**
- * @deprecated Use {@link compactModelMessages}. `LanguageModelV3Prompt` is the
+ * @deprecated Use {@link compactModelMessages}. `LanguageModelV4Prompt` is the
  * provider-protocol altitude (ephemeral, never persisted); durable compaction
  * belongs at the ModelMessage altitude. Removed in the next major.
  *
@@ -90,10 +90,10 @@ export function planCompaction(
  * ```
  */
 export async function compactHistory(
-  prompt: LanguageModelV3Prompt,
-  model: LanguageModelV3,
+  prompt: LanguageModelV4Prompt,
+  model: LanguageModelV4,
   options: PlanCompactionOptions & SummarizeMessagesOptions,
-): Promise<LanguageModelV3Prompt> {
+): Promise<LanguageModelV4Prompt> {
   const ir = fromAISDK(prompt);
   const result = await coreCompactHistory(ir, createCompressionAdapter(model), options);
   // core returns the input IR reference on a no-op — preserve the original
@@ -143,7 +143,7 @@ export function planCompactionModelMessages(
  * loop, or inside a `ToolLoopAgent` `prepareStep` (`return { messages: await
  * compactModelMessages(messages, model, opts) }`).
  *
- * `model` is `ai`'s `LanguageModel` (string id | V3 | V2) — exactly what
+ * `model` is `ai`'s `LanguageModel` (string id | V4) — exactly what
  * `prepareStep`/`generateText` give you. Reuses core's `compactHistory` +
  * `createCompressionAdapter` (tool-role flattening); no model is called directly.
  *

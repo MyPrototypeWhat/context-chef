@@ -940,7 +940,7 @@ Install only what you need:
 # Core library (OpenAI / Anthropic / Gemini direct SDK usage)
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
 
-# AI SDK middleware (Vercel AI SDK v6+)
+# AI SDK middleware (Vercel AI SDK v7+)
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
 
 # TanStack AI middleware (TanStack AI v0.10+)

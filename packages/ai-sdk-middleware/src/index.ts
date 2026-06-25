@@ -1,4 +1,4 @@
-import type { LanguageModelV3 } from '@ai-sdk/provider';
+import type { LanguageModelV4 } from '@ai-sdk/provider';
 import { wrapLanguageModel } from 'ai';
 
 import { createMiddleware } from './middleware';
@@ -50,9 +50,9 @@ export type {
  * ```
  */
 export function withContextChef(
-  model: LanguageModelV3,
+  model: LanguageModelV4,
   options: ContextChefOptions,
-): LanguageModelV3 {
+): LanguageModelV4 {
   const middleware = createMiddleware(options);
   return wrapLanguageModel({ model, middleware });
 }

@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@context-chef/ai-sdk-middleware.svg)](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
 [![License](https://img.shields.io/npm/l/@context-chef/ai-sdk-middleware.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![AI SDK](https://img.shields.io/badge/AI%20SDK-v6-black.svg)](https://ai-sdk.dev)
+[![AI SDK](https://img.shields.io/badge/AI%20SDK-v7-black.svg)](https://ai-sdk.dev)
 
 [Vercel AI SDK](https://ai-sdk.dev) middleware powered by [context-chef](https://github.com/MyPrototypeWhat/context-chef). Transparent history compression, tool result truncation, and token budget management — zero code changes required.
 
@@ -15,6 +15,9 @@
 ```bash
 npm install @context-chef/ai-sdk-middleware ai
 ```
+
+> **AI SDK version.** `2.x` targets **AI SDK v7** (`ai@>=7`). Still on AI SDK v6?
+> Use `@context-chef/ai-sdk-middleware@1` — the `1.x` line supports `ai@6`.
 
 ## Quick Start
 

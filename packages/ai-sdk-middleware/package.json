@@ -47,13 +47,13 @@
     "@context-chef/core": "workspace:*"
   },
   "peerDependencies": {
-    "@ai-sdk/provider": ">=3",
-    "ai": ">=6"
+    "@ai-sdk/provider": ">=4",
+    "ai": ">=7"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "^3.0.8",
+    "@ai-sdk/provider": "^4.0.0",
     "@types/node": "^25.3.0",
-    "ai": "^6.0.140",
+    "ai": "^7.0.0",
     "tsdown": "^0.20.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

@@ -1,4 +1,4 @@
-import type { LanguageModelV3ToolResultOutput } from '@ai-sdk/provider';
+import type { LanguageModelV4ToolResultOutput } from '@ai-sdk/provider';
 import {
   type Attachment,
   ensureValidHistory,
@@ -9,10 +9,11 @@ import type { ModelMessage } from 'ai';
 
 import { stringifyToolOutput } from './adapter';
 
-// NOTE: This adapter intentionally parallels src/adapter.ts (the V3 adapter). The
-// user/assistant/file extraction logic is duplicated by design; keep the two in
-// sync. The deltas here are deliberate: string-shorthand content, ImagePart, and
-// approval parts — none of which exist at the V3 (LanguageModelV3Prompt) altitude.
+// NOTE: This adapter intentionally parallels src/adapter.ts (the provider-prompt
+// adapter). The user/assistant/file extraction logic is duplicated by design; keep
+// the two in sync. The deltas here are deliberate: string-shorthand content,
+// ImagePart, and approval parts — none of which exist at the provider-prompt
+// (LanguageModelV4Prompt) altitude.
 
 // Content/part types derived from ModelMessage — no part-type imports needed
 // (provider-utils does not export them all stably). Same trick as adapter.ts.
@@ -23,7 +24,7 @@ type ProviderOptions = Extract<ModelMessage, { role: 'system' }>['providerOption
 
 /**
  * IR message carrying the original ModelMessage content for lossless round-trip.
- * Parallel to AISDKMessage (the V3 adapter's carrier) but typed to the
+ * Parallel to AISDKMessage (the provider-prompt adapter's carrier) but typed to the
  * application-layer ModelMessage shapes, and on distinct `_mm*` fields so the two
  * adapters can never read each other's pass-through by accident.
  */
@@ -174,8 +175,8 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
       let firstOfMessage = true;
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
-          // ModelMessage's ToolResultOutput is a structural superset of V3's (extra content[] members); stringifyToolOutput only reads .type/.value, so the cast is safe and matches the V3 adapter's projection.
-          const text = stringifyToolOutput(part.output as LanguageModelV3ToolResultOutput);
+          // ModelMessage's ToolResultOutput is a structural superset of the provider output's (extra content[] members); stringifyToolOutput only reads .type/.value, so the cast is safe and matches the provider-prompt adapter's projection.
+          const text = stringifyToolOutput(part.output as LanguageModelV4ToolResultOutput);
           anchor = {
             role: 'tool',
             content: text,

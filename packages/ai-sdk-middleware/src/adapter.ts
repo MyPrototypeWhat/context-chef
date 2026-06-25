@@ -1,9 +1,10 @@
 import type {
-  LanguageModelV3Message,
-  LanguageModelV3Prompt,
-  LanguageModelV3ToolResultOutput,
-  LanguageModelV3ToolResultPart,
-  SharedV3ProviderOptions,
+  LanguageModelV4Message,
+  LanguageModelV4Prompt,
+  LanguageModelV4ToolResultOutput,
+  LanguageModelV4ToolResultPart,
+  SharedV4FileData,
+  SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
 import {
   type Attachment,
@@ -12,10 +13,24 @@ import {
   type ToolCall,
 } from '@context-chef/core';
 
+/**
+ * Extracts the Attachment presence/metadata signal from a V4 file part's `data`.
+ *
+ * V4 restructured `FilePart.data` from a bare value into a tagged union
+ * (`SharedV4FileData`). Only inline string data (`{ type: 'data', data: string }`)
+ * yields a recorded signal — bytes, URLs, and provider references become `''`,
+ * exactly as the pre-v4 adapter only recorded already-string `data`. The real
+ * payload always round-trips losslessly through `_userContent`/`_assistantContent`;
+ * this value is only a presence signal Janitor reads via `attachments?.length`.
+ */
+function fileDataSignal(data: SharedV4FileData): string {
+  return data.type === 'data' && typeof data.data === 'string' ? data.data : '';
+}
+
 /** Content types for each AI SDK message role */
-type UserContent = Extract<LanguageModelV3Message, { role: 'user' }>['content'];
-type AssistantContent = Extract<LanguageModelV3Message, { role: 'assistant' }>['content'];
-type ToolContent = Extract<LanguageModelV3Message, { role: 'tool' }>['content'];
+type UserContent = Extract<LanguageModelV4Message, { role: 'user' }>['content'];
+type AssistantContent = Extract<LanguageModelV4Message, { role: 'assistant' }>['content'];
+type ToolContent = Extract<LanguageModelV4Message, { role: 'tool' }>['content'];
 
 /**
  * Extended IR message with typed pass-through fields for lossless AI SDK round-trip.
@@ -26,12 +41,12 @@ export interface AISDKMessage extends Message {
   _assistantContent?: AssistantContent;
   _toolContent?: ToolContent;
   _originalText?: string;
-  _providerOptions?: SharedV3ProviderOptions;
+  _providerOptions?: SharedV4ProviderOptions;
   _toolName?: string;
 }
 
 /**
- * Converts an AI SDK V3 prompt to context-chef IR messages.
+ * Converts an AI SDK V4 prompt to context-chef IR messages.
  *
  * Original AI SDK content is stored in per-role fields for lossless round-trip.
  * `_originalText` caches the extracted text so `toAISDK` can detect Janitor modifications.
@@ -42,7 +57,7 @@ export interface AISDKMessage extends Message {
  * non-system message is a user message. This is a system boundary — IR
  * downstream is trusted to satisfy invariants.
  */
-export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
+export function fromAISDK(prompt: LanguageModelV4Prompt): AISDKMessage[] {
   const messages: AISDKMessage[] = [];
 
   for (const msg of prompt) {
@@ -73,7 +88,7 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
           // so we never invent a fake encoding for non-string inputs.
           attachments.push({
             mediaType: part.mediaType,
-            data: typeof part.data === 'string' ? part.data : '',
+            data: fileDataSignal(part.data),
             ...(part.filename ? { filename: part.filename } : {}),
           });
         }
@@ -127,7 +142,7 @@ export function fromAISDK(prompt: LanguageModelV3Prompt): AISDKMessage[] {
           // _assistantContent carries the actual payload through round-trip.
           attachments.push({
             mediaType: part.mediaType,
-            data: typeof part.data === 'string' ? part.data : '',
+            data: fileDataSignal(part.data),
             ...(part.filename ? { filename: part.filename } : {}),
           });
         }
@@ -189,14 +204,14 @@ function asAISDK(msg: Message): AISDKMessage {
 }
 
 /**
- * Converts context-chef IR messages back to AI SDK V3 prompt format.
+ * Converts context-chef IR messages back to AI SDK V4 prompt format.
  *
  * Uses per-role original content when unmodified (detected via `_originalText`).
  * Falls back to constructing from IR fields when content was modified by Janitor
  * (e.g. compact() cleared tool results) or for new messages (e.g. compression summaries).
  */
-export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
-  const prompt: LanguageModelV3Prompt = [];
+export function toAISDK(messages: Message[]): LanguageModelV4Prompt {
+  const prompt: LanguageModelV4Prompt = [];
 
   let i = 0;
   while (i < messages.length) {
@@ -240,11 +255,11 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
     }
 
     if (msg.role === 'tool') {
-      const toolResults: LanguageModelV3ToolResultPart[] = [];
+      const toolResults: LanguageModelV4ToolResultPart[] = [];
       // Re-attach the message-level providerOptions captured on the first IR
       // message of the original tool turn (see fromAISDK). Take the first
       // non-undefined across the coalesced group.
-      let providerOptions: SharedV3ProviderOptions | undefined;
+      let providerOptions: SharedV4ProviderOptions | undefined;
       while (i < messages.length && messages[i].role === 'tool') {
         const toolMsg = asAISDK(messages[i]);
         const toolModified =
@@ -289,7 +304,7 @@ export function toAISDK(messages: Message[]): LanguageModelV3Prompt {
   return prompt;
 }
 
-export function stringifyToolOutput(output: LanguageModelV3ToolResultOutput): string {
+export function stringifyToolOutput(output: LanguageModelV4ToolResultOutput): string {
   switch (output.type) {
     case 'text':
     case 'error-text':

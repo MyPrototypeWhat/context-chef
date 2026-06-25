@@ -1,10 +1,10 @@
-import type { LanguageModelV3Prompt } from '@ai-sdk/provider';
+import type { LanguageModelV4Prompt } from '@ai-sdk/provider';
 import type { VFSStorageAdapter } from '@context-chef/core';
 import { describe, expect, it, vi } from 'vitest';
 import { truncateToolResults } from '../src/truncator';
 
 describe('truncateToolResults', () => {
-  const makeToolPrompt = (output: string): LanguageModelV3Prompt => [
+  const makeToolPrompt = (output: string): LanguageModelV4Prompt => [
     {
       role: 'tool',
       content: [
@@ -54,7 +54,7 @@ describe('truncateToolResults', () => {
   });
 
   it('does not affect non-tool messages', async () => {
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'x'.repeat(200) },
       { role: 'user', content: [{ type: 'text', text: 'x'.repeat(200) }] },
     ];
@@ -64,7 +64,7 @@ describe('truncateToolResults', () => {
 
   it('handles json tool output', async () => {
     const bigJson = JSON.stringify({ data: 'x'.repeat(500) });
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       {
         role: 'tool',
         content: [
@@ -252,7 +252,7 @@ describe('truncateToolResults', () => {
   it('filters per-part: preserves one tool while truncating another in the same message', async () => {
     const keepOutput = 'k'.repeat(500);
     const truncOutput = 't'.repeat(500);
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       {
         role: 'tool',
         content: [

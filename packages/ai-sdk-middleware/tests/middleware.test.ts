@@ -1,31 +1,31 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3Content,
-  LanguageModelV3FinishReason,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3Prompt,
-  LanguageModelV3StreamPart,
-  LanguageModelV3StreamResult,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Content,
+  LanguageModelV4FinishReason,
+  LanguageModelV4GenerateResult,
+  LanguageModelV4Prompt,
+  LanguageModelV4StreamPart,
+  LanguageModelV4StreamResult,
 } from '@ai-sdk/provider';
 import type { Skill } from '@context-chef/core';
 import { describe, expect, it, vi } from 'vitest';
 import { withContextChef } from '../src/index';
 import { createMiddleware } from '../src/middleware';
 
-function createMockModel(options?: { inputTokens?: number; outputText?: string }): LanguageModelV3 {
+function createMockModel(options?: { inputTokens?: number; outputText?: string }): LanguageModelV4 {
   const inputTokens = options?.inputTokens ?? 100;
   const outputText = options?.outputText ?? 'Hello';
 
-  const model: LanguageModelV3 = {
-    specificationVersion: 'v3',
+  const model: LanguageModelV4 = {
+    specificationVersion: 'v4',
     provider: 'test',
     modelId: 'test-model',
     supportedUrls: {},
 
-    async doGenerate(_opts: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
-      const content: LanguageModelV3Content[] = [{ type: 'text', text: outputText }];
-      const finishReason: LanguageModelV3FinishReason = { unified: 'stop', raw: undefined };
+    async doGenerate(_opts: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
+      const content: LanguageModelV4Content[] = [{ type: 'text', text: outputText }];
+      const finishReason: LanguageModelV4FinishReason = { unified: 'stop', raw: undefined };
       return {
         content,
         finishReason,
@@ -47,8 +47,8 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
       };
     },
 
-    async doStream(_opts: LanguageModelV3CallOptions) {
-      const parts: LanguageModelV3StreamPart[] = [
+    async doStream(_opts: LanguageModelV4CallOptions) {
+      const parts: LanguageModelV4StreamPart[] = [
         { type: 'text-start', id: '1' },
         { type: 'text-delta', id: '1', delta: outputText },
         { type: 'text-end', id: '1' },
@@ -67,7 +67,7 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
         },
       ];
 
-      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+      const stream = new ReadableStream<LanguageModelV4StreamPart>({
         start(controller) {
           for (const part of parts) {
             controller.enqueue(part);
@@ -82,8 +82,8 @@ function createMockModel(options?: { inputTokens?: number; outputText?: string }
   return model;
 }
 
-function makeConversation(messageCount: number): LanguageModelV3Prompt {
-  const prompt: LanguageModelV3Prompt = [{ role: 'system', content: 'You are helpful.' }];
+function makeConversation(messageCount: number): LanguageModelV4Prompt {
+  const prompt: LanguageModelV4Prompt = [{ role: 'system', content: 'You are helpful.' }];
   for (let i = 0; i < messageCount; i++) {
     prompt.push({
       role: 'user',
@@ -109,11 +109,11 @@ describe('createMiddleware', () => {
       contextWindow: 1_000_000,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
     ];
 
-    const params: LanguageModelV3CallOptions = { prompt };
+    const params: LanguageModelV4CallOptions = { prompt };
     const result = await assertDefined(
       middleware.transformParams,
       'transformParams',
@@ -133,7 +133,7 @@ describe('createMiddleware', () => {
     });
 
     const longOutput = 'x'.repeat(200);
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Run command' }] },
       {
         role: 'assistant',
@@ -159,7 +159,7 @@ describe('createMiddleware', () => {
       },
     ];
 
-    const params: LanguageModelV3CallOptions = { prompt };
+    const params: LanguageModelV4CallOptions = { prompt };
     const result = await assertDefined(
       middleware.transformParams,
       'transformParams',
@@ -189,9 +189,9 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 200 });
 
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
 
     const result = await assertDefined(
       middleware.wrapGenerate,
@@ -215,9 +215,9 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 300 });
 
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
 
     const streamResult = await assertDefined(
       middleware.wrapStream,
@@ -230,7 +230,7 @@ describe('createMiddleware', () => {
     });
 
     const reader = streamResult.stream.getReader();
-    const chunks: LanguageModelV3StreamPart[] = [];
+    const chunks: LanguageModelV4StreamPart[] = [];
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -253,9 +253,9 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 200 });
 
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
 
     await assertDefined(
       middleware.wrapGenerate,
@@ -289,9 +289,9 @@ describe('createMiddleware', () => {
 
     const model = createMockModel({ inputTokens: 200 });
 
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
 
     // Feed token usage over the budget so compression fires on next transformParams
     await assertDefined(
@@ -333,7 +333,7 @@ describe('compress opt-in (no budgeting configured)', () => {
         truncate: { threshold: 50, tailChars: 10 },
       });
 
-      const prompt: LanguageModelV3Prompt = [
+      const prompt: LanguageModelV4Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
       ];
       const result = await assertDefined(
@@ -356,9 +356,9 @@ describe('compress opt-in (no budgeting configured)', () => {
     const middleware = createMiddleware({});
     const model = createMockModel({ inputTokens: 42 });
 
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
 
     const result = await assertDefined(
       middleware.wrapGenerate,
@@ -395,11 +395,11 @@ describe('compress opt-in (no budgeting configured)', () => {
 });
 
 describe('withContextChef wrapper', () => {
-  it('returns a LanguageModelV3', () => {
+  it('returns a LanguageModelV4', () => {
     const model = createMockModel();
     const wrapped = withContextChef(model, { contextWindow: 128_000 });
 
-    expect(wrapped.specificationVersion).toBe('v3');
+    expect(wrapped.specificationVersion).toBe('v4');
     expect(wrapped.provider).toBeDefined();
     expect(wrapped.modelId).toBeDefined();
     expect(typeof wrapped.doGenerate).toBe('function');
@@ -417,7 +417,7 @@ describe('withContextChef wrapper', () => {
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
     });
 
-    const textContent = result.content.find((c: LanguageModelV3Content) => c.type === 'text');
+    const textContent = result.content.find((c: LanguageModelV4Content) => c.type === 'text');
     expect(textContent).toBeDefined();
     if (textContent?.type === 'text') {
       expect(textContent.text).toBe('Hello from wrapped model');
@@ -432,7 +432,7 @@ describe('compact', () => {
       compact: { toolCalls: 'all' },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Run command' }] },
       {
         role: 'assistant',
@@ -488,7 +488,7 @@ describe('compact', () => {
       compact: { reasoning: 'all' },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       {
         role: 'assistant',
         content: [
@@ -527,9 +527,9 @@ describe('onBudgetExceeded', () => {
     const model = createMockModel({ inputTokens: 200 });
 
     // Feed high token usage to trigger budget exceeded
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
     await assertDefined(
       middleware.wrapGenerate,
       'wrapGenerate',
@@ -564,7 +564,7 @@ describe('dynamicState', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'What next?' }] },
     ];
 
@@ -599,7 +599,7 @@ describe('dynamicState', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
 
@@ -628,7 +628,7 @@ describe('dynamicState', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
     ];
 
@@ -664,7 +664,7 @@ describe('dynamicState', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
 
@@ -698,7 +698,7 @@ describe('dynamicState', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
 
@@ -727,7 +727,7 @@ describe('transformContext', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
     ];
 
@@ -754,7 +754,7 @@ describe('transformContext', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
     ];
 
@@ -775,7 +775,7 @@ describe('transformContext', () => {
   });
 
   it('runs after dynamicState injection', async () => {
-    const transformContext = vi.fn((prompt: LanguageModelV3Prompt) => prompt);
+    const transformContext = vi.fn((prompt: LanguageModelV4Prompt) => prompt);
     const middleware = createMiddleware({
       contextWindow: 1_000_000,
       dynamicState: {
@@ -785,7 +785,7 @@ describe('transformContext', () => {
       transformContext,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
 
@@ -801,9 +801,9 @@ describe('transformContext', () => {
     expect(transformContext).toHaveBeenCalledTimes(1);
     const received = transformContext.mock.calls[0][0];
     // transformContext should see the dynamic state system message
-    const systemMsgs = received.filter((m: LanguageModelV3Prompt[number]) => m.role === 'system');
+    const systemMsgs = received.filter((m: LanguageModelV4Prompt[number]) => m.role === 'system');
     const hasState = systemMsgs.some(
-      (m: LanguageModelV3Prompt[number]) =>
+      (m: LanguageModelV4Prompt[number]) =>
         m.role === 'system' && m.content.includes('<injected>true</injected>'),
     );
     expect(hasState).toBe(true);
@@ -823,7 +823,7 @@ describe('skill', () => {
       skill: planningSkill,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'Hello!' }] },
@@ -865,7 +865,7 @@ describe('skill', () => {
       skill: skillFn,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
 
@@ -888,7 +888,7 @@ describe('skill', () => {
       skill: () => null,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
@@ -909,7 +909,7 @@ describe('skill', () => {
       skill: () => active,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
@@ -934,7 +934,7 @@ describe('skill', () => {
       skill: async () => planningSkill,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
 
@@ -955,7 +955,7 @@ describe('skill', () => {
       contextWindow: 1_000_000,
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
@@ -974,7 +974,7 @@ describe('skill', () => {
       skill: { name: 'noop', description: 'noop', instructions: '' },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
@@ -994,7 +994,7 @@ describe('skill', () => {
       skill: { name: 'blank', description: 'blank', instructions: '   \n\t  ' },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
@@ -1017,7 +1017,7 @@ describe('skill', () => {
       },
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
     ];
@@ -1049,7 +1049,7 @@ describe('skill', () => {
       clear: [{ target: 'tool-result', keepRecent: 1 }],
     });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: [{ type: 'text', text: 'Run both commands.' }] },
       {
@@ -1108,9 +1108,9 @@ describe('skill', () => {
     });
 
     const model = createMockModel({ inputTokens: 200 });
-    const doGenerate = (): PromiseLike<LanguageModelV3GenerateResult> =>
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
       model.doGenerate({ prompt: [] });
-    const doStream = (): PromiseLike<LanguageModelV3StreamResult> => model.doStream({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
 
     // Push token usage so the next transform triggers compression.
     await assertDefined(
@@ -1135,7 +1135,7 @@ describe('skill', () => {
 
 /** Build a prompt with two tool-call/result exchanges plus a trailing user message.
  * Starts with a user message so ensureValidHistory doesn't insert a placeholder. */
-function makeToolPrompt(): LanguageModelV3Prompt {
+function makeToolPrompt(): LanguageModelV4Prompt {
   return [
     { role: 'system', content: 'You are helpful.' },
     { role: 'user', content: [{ type: 'text', text: 'Run both commands.' }] },
@@ -1229,7 +1229,7 @@ describe('clear', () => {
   it('clear without tool-result targets does not inject the explainer', async () => {
     const middleware = createMiddleware({ clear: ['thinking'] });
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'You are helpful.' },
       {
         role: 'assistant',
@@ -1258,7 +1258,7 @@ describe('clear', () => {
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toContain("clear: ['thinking']");
 
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       {
         role: 'assistant',
         content: [
@@ -1333,8 +1333,8 @@ describe('compress persistence warning', () => {
   // write-back) — the scenario the warning is meant to surface.
   async function runCycle(
     middleware: ReturnType<typeof createMiddleware>,
-    model: LanguageModelV3,
-    prompt: LanguageModelV3Prompt,
+    model: LanguageModelV4,
+    prompt: LanguageModelV4Prompt,
   ): Promise<void> {
     await assertDefined(
       middleware.wrapGenerate,

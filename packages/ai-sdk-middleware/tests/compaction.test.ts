@@ -1,10 +1,10 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3Content,
-  LanguageModelV3FinishReason,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3Prompt,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Content,
+  LanguageModelV4FinishReason,
+  LanguageModelV4GenerateResult,
+  LanguageModelV4Prompt,
 } from '@ai-sdk/provider';
 import { describe, expect, it } from 'vitest';
 import { compactHistory, planCompaction } from '../src/compaction';
@@ -16,15 +16,15 @@ import { compactHistory, planCompaction } from '../src/compaction';
 // no-op reference short-circuit, and the summary's AI SDK message shape.
 
 /** Minimal V3 model whose summarization call returns a fixed string. */
-function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
+function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV4 {
   return {
-    specificationVersion: 'v3',
+    specificationVersion: 'v4',
     provider: 'test',
     modelId: 'test-model',
     supportedUrls: {},
-    async doGenerate(_opts: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
-      const content: LanguageModelV3Content[] = [{ type: 'text', text: summaryText }];
-      const finishReason: LanguageModelV3FinishReason = { unified: 'stop', raw: undefined };
+    async doGenerate(_opts: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
+      const content: LanguageModelV4Content[] = [{ type: 'text', text: summaryText }];
+      const finishReason: LanguageModelV4FinishReason = { unified: 'stop', raw: undefined };
       return {
         content,
         finishReason,
@@ -48,8 +48,8 @@ function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
 }
 
 /** N plain user/assistant turns, optionally with a leading system message. */
-function plainTurns(n: number, withSystem = true): LanguageModelV3Prompt {
-  const prompt: LanguageModelV3Prompt = withSystem
+function plainTurns(n: number, withSystem = true): LanguageModelV4Prompt {
+  const prompt: LanguageModelV4Prompt = withSystem
     ? [{ role: 'system', content: 'You are helpful.' }]
     : [];
   for (let i = 0; i < n; i++) {
@@ -83,7 +83,7 @@ describe('planCompaction', () => {
 
   it('never splits an assistant tool-call from its tool result', () => {
     // turns: [user q1] [assistant+tool_call, tool_result] [user q2] [assistant a2]
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'q1' }] },
       {
         role: 'assistant',
@@ -119,7 +119,7 @@ describe('planCompaction', () => {
       { type: 'reasoning' as const, text: 'because reasons' },
       { type: 'tool-call' as const, toolCallId: 'c1', toolName: 'foo', input: { a: 1 } },
     ];
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'user', content: [{ type: 'text', text: 'q' }] },
       { role: 'assistant', content: assistantContent },
       {
@@ -178,7 +178,7 @@ describe('compactHistory', () => {
 
   it('produces a valid prompt when the kept tail starts with a tool turn', async () => {
     // turns: [user q1] [assistant+tool_call, tool_result] [user q2] [assistant a2]
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'sys' },
       { role: 'user', content: [{ type: 'text', text: 'q1' }] },
       {
