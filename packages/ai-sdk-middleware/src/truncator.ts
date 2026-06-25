@@ -1,7 +1,7 @@
 import type {
-  LanguageModelV3Prompt,
-  LanguageModelV3ToolResultOutput,
-  LanguageModelV3ToolResultPart,
+  LanguageModelV4Prompt,
+  LanguageModelV4ToolResultOutput,
+  LanguageModelV4ToolResultPart,
 } from '@ai-sdk/provider';
 import { type ChefLogger, Offloader } from '@context-chef/core';
 import type { TruncateOptions } from './types';
@@ -11,10 +11,10 @@ import type { TruncateOptions } from './types';
  * When a storage adapter is provided, original content is persisted and a URI is included in the output.
  */
 export async function truncateToolResults(
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
   options: TruncateOptions,
   logger: ChefLogger = console,
-): Promise<LanguageModelV3Prompt> {
+): Promise<LanguageModelV4Prompt> {
   const { threshold, headChars = 0, tailChars = 1000, storage } = options;
 
   const offloader = storage
@@ -22,7 +22,7 @@ export async function truncateToolResults(
     : null;
   const policy = buildPolicyMap(options.perTool);
 
-  const result: LanguageModelV3Prompt = [];
+  const result: LanguageModelV4Prompt = [];
 
   for (const msg of prompt) {
     if (msg.role !== 'tool') {
@@ -68,8 +68,8 @@ export async function truncateToolResults(
             output: {
               type: 'text',
               value: vfsResult.content,
-            } satisfies LanguageModelV3ToolResultOutput,
-          } satisfies LanguageModelV3ToolResultPart);
+            } satisfies LanguageModelV4ToolResultOutput,
+          } satisfies LanguageModelV4ToolResultPart);
           continue;
         } catch (error) {
           logger.warn(
@@ -96,8 +96,8 @@ export async function truncateToolResults(
 
       newContent.push({
         ...part,
-        output: { type: 'text', value: truncated } satisfies LanguageModelV3ToolResultOutput,
-      } satisfies LanguageModelV3ToolResultPart);
+        output: { type: 'text', value: truncated } satisfies LanguageModelV4ToolResultOutput,
+      } satisfies LanguageModelV4ToolResultPart);
     }
 
     result.push({ ...msg, content: newContent });
@@ -137,7 +137,7 @@ function buildPolicyMap(perTool: TruncateOptions['perTool']): Map<string, ToolPo
   return map;
 }
 
-function extractText(output: LanguageModelV3ToolResultOutput): string {
+function extractText(output: LanguageModelV4ToolResultOutput): string {
   switch (output.type) {
     case 'text':
     case 'error-text':

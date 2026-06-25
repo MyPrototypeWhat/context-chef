@@ -1,4 +1,4 @@
-import type { LanguageModelV3ToolResultOutput } from '@ai-sdk/provider';
+import type { LanguageModelV4ToolResultOutput } from '@ai-sdk/provider';
 import {
   type Attachment,
   ensureValidHistory,
@@ -9,10 +9,11 @@ import type { ModelMessage } from 'ai';
 
 import { stringifyToolOutput } from './adapter';
 
-// NOTE: This adapter intentionally parallels src/adapter.ts (the V3 adapter). The
-// user/assistant/file extraction logic is duplicated by design; keep the two in
-// sync. The deltas here are deliberate: string-shorthand content, ImagePart, and
-// approval parts — none of which exist at the V3 (LanguageModelV3Prompt) altitude.
+// NOTE: This adapter intentionally parallels src/adapter.ts (the provider-prompt
+// adapter). The user/assistant/file extraction logic is duplicated by design; keep
+// the two in sync. The deltas here are deliberate: string-shorthand content,
+// ImagePart, and approval parts — none of which exist at the provider-prompt
+// (LanguageModelV4Prompt) altitude.
 
 // Content/part types derived from ModelMessage — no part-type imports needed
 // (provider-utils does not export them all stably). Same trick as adapter.ts.
@@ -20,10 +21,34 @@ type UserContent = Extract<ModelMessage, { role: 'user' }>['content'];
 type AssistantContent = Extract<ModelMessage, { role: 'assistant' }>['content'];
 type ToolContent = Extract<ModelMessage, { role: 'tool' }>['content'];
 type ProviderOptions = Extract<ModelMessage, { role: 'system' }>['providerOptions'];
+type MMFilePart = Extract<Exclude<UserContent, string>[number], { type: 'file' }>;
+
+/**
+ * Extracts the Attachment presence/metadata signal from an app-altitude file
+ * part's `data`. The app `ModelMessage` accepts both the bare shorthand
+ * (`string | Uint8Array | URL`) and V4's tagged shapes (`{ type: 'data', data }`,
+ * `{ type: 'url', url }`, …). Only inline string data yields a signal — bytes,
+ * URLs, and references become `''`, mirroring the provider-prompt adapter's
+ * `fileDataSignal`. The real payload round-trips losslessly via `_mm*Content`;
+ * this value is only read by Janitor via `attachments?.length`.
+ */
+function fileDataSignal(data: MMFilePart['data']): string {
+  if (typeof data === 'string') return data;
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    'type' in data &&
+    data.type === 'data' &&
+    typeof data.data === 'string'
+  ) {
+    return data.data;
+  }
+  return '';
+}
 
 /**
  * IR message carrying the original ModelMessage content for lossless round-trip.
- * Parallel to AISDKMessage (the V3 adapter's carrier) but typed to the
+ * Parallel to AISDKMessage (the provider-prompt adapter's carrier) but typed to the
  * application-layer ModelMessage shapes, and on distinct `_mm*` fields so the two
  * adapters can never read each other's pass-through by accident.
  */
@@ -79,7 +104,7 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
           if (part.type === 'file') {
             attachments.push({
               mediaType: part.mediaType,
-              data: typeof part.data === 'string' ? part.data : '',
+              data: fileDataSignal(part.data),
               ...(part.filename ? { filename: part.filename } : {}),
             });
           } else if (part.type === 'image') {
@@ -141,7 +166,7 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
           } else if (part.type === 'file') {
             attachments.push({
               mediaType: part.mediaType,
-              data: typeof part.data === 'string' ? part.data : '',
+              data: fileDataSignal(part.data),
               ...(part.filename ? { filename: part.filename } : {}),
             });
           }
@@ -174,8 +199,8 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
       let firstOfMessage = true;
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
-          // ModelMessage's ToolResultOutput is a structural superset of V3's (extra content[] members); stringifyToolOutput only reads .type/.value, so the cast is safe and matches the V3 adapter's projection.
-          const text = stringifyToolOutput(part.output as LanguageModelV3ToolResultOutput);
+          // ModelMessage's ToolResultOutput is a structural superset of the provider output's (extra content[] members); stringifyToolOutput only reads .type/.value, so the cast is safe and matches the provider-prompt adapter's projection.
+          const text = stringifyToolOutput(part.output as LanguageModelV4ToolResultOutput);
           anchor = {
             role: 'tool',
             content: text,

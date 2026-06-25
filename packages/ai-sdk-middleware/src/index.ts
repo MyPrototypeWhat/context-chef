@@ -1,4 +1,4 @@
-import type { LanguageModelV3 } from '@ai-sdk/provider';
+import type { LanguageModelV4 } from '@ai-sdk/provider';
 import { wrapLanguageModel } from 'ai';
 
 import { createMiddleware } from './middleware';
@@ -7,12 +7,9 @@ import type { ContextChefOptions } from './types';
 export type { ClearTarget } from '@context-chef/core';
 export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export {
-  type CompactionPlan,
   type CompactionPlanModelMessages,
-  compactHistory,
   compactModelMessages,
   type PlanCompactionOptions,
-  planCompaction,
   planCompactionModelMessages,
 } from './compaction';
 export {
@@ -50,9 +47,9 @@ export type {
  * ```
  */
 export function withContextChef(
-  model: LanguageModelV3,
+  model: LanguageModelV4,
   options: ContextChefOptions,
-): LanguageModelV3 {
+): LanguageModelV4 {
   const middleware = createMiddleware(options);
   return wrapLanguageModel({ model, middleware });
 }

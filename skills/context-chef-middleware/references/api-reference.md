@@ -2,9 +2,9 @@
 
 ## Exports
 
-### `withContextChef(model, options): LanguageModelV3`
+### `withContextChef(model, options): LanguageModelV4`
 
-Wraps an AI SDK language model with context-chef middleware. Returns a standard `LanguageModelV3` that can be used anywhere the original model was used.
+Wraps an AI SDK language model with context-chef middleware. Returns a standard `LanguageModelV4` that can be used anywhere the original model was used.
 
 ```typescript
 import { withContextChef } from '@context-chef/ai-sdk-middleware';
@@ -24,11 +24,11 @@ const model = wrapLanguageModel({ model: openai('gpt-4o'), middleware });
 
 ### `fromAISDK(prompt): AISDKMessage[]`
 
-Converts an AI SDK `LanguageModelV3Prompt` to context-chef `Message[]` IR. Original AI SDK content is stored in per-role fields for lossless round-trip.
+Converts an AI SDK `LanguageModelV4Prompt` to context-chef `Message[]` IR. Original AI SDK content is stored in per-role fields for lossless round-trip.
 
-### `toAISDK(messages): LanguageModelV3Prompt`
+### `toAISDK(messages): LanguageModelV4Prompt`
 
-Converts context-chef `Message[]` IR back to AI SDK `LanguageModelV3Prompt`. Uses original content when unmodified; falls back to constructing from IR fields when content was modified by Janitor.
+Converts context-chef `Message[]` IR back to AI SDK `LanguageModelV4Prompt`. Uses original content when unmodified; falls back to constructing from IR fields when content was modified by Janitor.
 
 ### `summarizeMessages(prompt, model, opts?): Promise<string>`
 
@@ -54,9 +54,9 @@ The main configuration object passed to `withContextChef()` or `createMiddleware
 | `compact` | `CompactConfig` | No | Mechanical compaction before LLM compression |
 | `dynamicState` | `DynamicStateConfig` | No | Dynamic state injection into prompt |
 | `tokenizer` | `(msgs: unknown[]) => number` | No | Custom tokenizer for precise token counting |
-| `onCompress` | `(summary: string, count: number, details: { compressedMessages: LanguageModelV3Prompt }) => void` | No | Hook called after compression occurs. `details.compressedMessages` is the compressed slice in AI SDK format. |
-| `onBudgetExceeded` | `(history, tokenInfo) => Message[] \| null \| Promise<...>` | No | Hook called when token budget is exceeded |
-| `transformContext` | `(prompt) => LanguageModelV3Prompt \| Promise<...>` | No | Transform prompt after compression, before model |
+| `onCompress` | `(summary: string, count: number, details: { compressedMessages: LanguageModelV4Prompt }) => void` | No | Hook called after compression occurs. `details.compressedMessages` is the compressed slice in AI SDK format. |
+| `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null \| Promise<...>` | No | Hook called when token budget is exceeded |
+| `transformContext` | `(prompt) => LanguageModelV4Prompt \| Promise<...>` | No | Transform prompt after compression, before model |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings (storage/compaction); defaults to `console`. `ChefLogger = { warn(message: string, ...args: unknown[]): void }` |
 | `clear` | `ClearTarget[]` | No | Placeholder-style tool-result clearing, runs after compression, auto-injects an explainer. Only `'tool-result'` takes effect; `'thinking'` is a no-op that warns — use `compact` for reasoning. |
 
@@ -66,7 +66,7 @@ The main configuration object passed to `withContextChef()` or `createMiddleware
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `model` | `LanguageModelV3` | Yes | A cheap model for summarization (e.g. `openai('gpt-4o-mini')`) |
+| `model` | `LanguageModelV4` | Yes | A cheap model for summarization (e.g. `openai('gpt-4o-mini')`) |
 | `preserveRatio` | `number` | No | Ratio of context window to preserve for recent messages. Default: `0.8` |
 | `toolResultStubThreshold` | `number` | No | Replace tool-result content longer than this many chars with a one-line metadata stub (`[Tool name returned N chars; omitted before summarization]`) before the to-be-summarized history is sent to the compression model. Recent (preserved) tool results are untouched. Default: undefined (disabled). |
 

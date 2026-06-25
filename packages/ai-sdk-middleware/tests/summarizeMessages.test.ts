@@ -1,11 +1,11 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3Content,
-  LanguageModelV3FinishReason,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3Prompt,
-  LanguageModelV3StreamPart,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Content,
+  LanguageModelV4FinishReason,
+  LanguageModelV4GenerateResult,
+  LanguageModelV4Prompt,
+  LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import type { ModelMessage } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
@@ -15,15 +15,15 @@ import { summarizeModelMessages } from '../src/middleware';
 
 /** Minimal V3 model whose summarization call returns a fixed string. A V3 model
  *  is a valid `LanguageModel`, so it exercises the widened model param too. */
-function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
+function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV4 {
   return {
-    specificationVersion: 'v3',
+    specificationVersion: 'v4',
     provider: 'test',
     modelId: 'test-model',
     supportedUrls: {},
-    async doGenerate(_opts: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
-      const content: LanguageModelV3Content[] = [{ type: 'text', text: summaryText }];
-      const finishReason: LanguageModelV3FinishReason = { unified: 'stop', raw: undefined };
+    async doGenerate(_opts: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
+      const content: LanguageModelV4Content[] = [{ type: 'text', text: summaryText }];
+      const finishReason: LanguageModelV4FinishReason = { unified: 'stop', raw: undefined };
       return {
         content,
         finishReason,
@@ -46,17 +46,17 @@ function createSummarizerModel(summaryText = 'SUMMARY'): LanguageModelV3 {
   };
 }
 
-function mockModel(text: string): LanguageModelV3 {
-  const model: LanguageModelV3 = {
-    specificationVersion: 'v3',
+function mockModel(text: string): LanguageModelV4 {
+  const model: LanguageModelV4 = {
+    specificationVersion: 'v4',
     provider: 'test',
     modelId: 'test-model',
     supportedUrls: {},
 
     doGenerate: vi.fn(
-      async (_opts: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> => {
-        const content: LanguageModelV3Content[] = [{ type: 'text', text }];
-        const finishReason: LanguageModelV3FinishReason = { unified: 'stop', raw: undefined };
+      async (_opts: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> => {
+        const content: LanguageModelV4Content[] = [{ type: 'text', text }];
+        const finishReason: LanguageModelV4FinishReason = { unified: 'stop', raw: undefined };
         return {
           content,
           finishReason,
@@ -79,8 +79,8 @@ function mockModel(text: string): LanguageModelV3 {
       },
     ),
 
-    async doStream(_opts: LanguageModelV3CallOptions) {
-      const parts: LanguageModelV3StreamPart[] = [
+    async doStream(_opts: LanguageModelV4CallOptions) {
+      const parts: LanguageModelV4StreamPart[] = [
         { type: 'text-start', id: '1' },
         { type: 'text-delta', id: '1', delta: text },
         { type: 'text-end', id: '1' },
@@ -99,7 +99,7 @@ function mockModel(text: string): LanguageModelV3 {
         },
       ];
 
-      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+      const stream = new ReadableStream<LanguageModelV4StreamPart>({
         start(controller) {
           for (const part of parts) {
             controller.enqueue(part);
@@ -148,7 +148,7 @@ describe('summarizeMessages', () => {
     //   - tool message becomes a user message with "[Tool result(call_1): RAW_TOOL_OUTPUT]"
     //   - assistant tool-call becomes "[Called tool: search({"q":"x"})]" text
     //   - no raw role:'tool' message should reach the model
-    const toolPrompt: LanguageModelV3Prompt = [
+    const toolPrompt: LanguageModelV4Prompt = [
       { role: 'system', content: 'SYSTEM_MARKER_DROP_ME' },
       { role: 'user', content: [{ type: 'text', text: 'do the thing' }] },
       {

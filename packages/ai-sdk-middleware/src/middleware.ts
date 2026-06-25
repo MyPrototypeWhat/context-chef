@@ -1,8 +1,8 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3Message,
-  LanguageModelV3Prompt,
-  LanguageModelV3StreamPart,
+  LanguageModelV4,
+  LanguageModelV4Message,
+  LanguageModelV4Prompt,
+  LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import {
   type ChefLogger,
@@ -56,14 +56,12 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   // `contextWindow`. Truncate/compact/skill/dynamicState-only
   // configurations get no Janitor at all: no budget checks, no token-usage
   // capture, and none of the Janitor's missing-tokenizer warnings.
-  const budgeting = Boolean(
-    options.compress || options.onCompress || options.onBeforeCompress || options.onBudgetExceeded,
-  );
+  const budgeting = Boolean(options.compress || options.onCompress || options.onBeforeCompress);
 
   if (budgeting && options.contextWindow == null) {
     throw new Error(
       '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
-        '`onCompress`, `onBeforeCompress`, `onBudgetExceeded`) is configured — the budget ' +
+        '`onCompress`, `onBeforeCompress`) is configured — the budget ' +
         'check has nothing to compare against without it.',
     );
   }
@@ -115,7 +113,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   }
 
   return {
-    specificationVersion: 'v3',
+    specificationVersion: 'v4',
 
     transformParams: async ({ params }) => {
       let { prompt } = params;
@@ -202,7 +200,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 
       const { stream, ...rest } = await doStream();
 
-      const transform = new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
+      const transform = new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>({
         transform(chunk, controller) {
           if (chunk.type === 'finish') {
             if (chunk.usage?.inputTokens?.total != null) {
@@ -254,7 +252,7 @@ function createJanitor(
         compressedMessages: toAISDK(details.compressedMessages),
       });
     },
-    onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
+    onBeforeCompress: options.onBeforeCompress,
     logger,
   };
 
@@ -283,18 +281,18 @@ function createJanitor(
 }
 
 /**
- * Prunes a LanguageModelV3Prompt via AI SDK's pruneMessages.
+ * Prunes a LanguageModelV4Prompt via AI SDK's pruneMessages.
  *
- * LanguageModelV3Message (from @ai-sdk/provider) and ModelMessage
+ * LanguageModelV4Message (from @ai-sdk/provider) and ModelMessage
  * (from @ai-sdk/provider-utils) share identical runtime structure but
  * differ at the TypeScript level (e.g. ImagePart, FilePart.data).
  * Since pruneMessages only filters — never transforms — every content
- * part in the output is an original V3 part, making the casts safe.
+ * part in the output is an original V4 part, making the casts safe.
  */
 function compactPrompt(
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
   config: Omit<Parameters<typeof pruneMessages>[0], 'messages'>,
-): LanguageModelV3Prompt {
+): LanguageModelV4Prompt {
   const messages = prompt.map(
     (msg) =>
       ({
@@ -310,7 +308,7 @@ function compactPrompt(
         role: msg.role,
         content: msg.content,
         providerOptions: msg.providerOptions,
-      }) as LanguageModelV3Message,
+      }) as LanguageModelV4Message,
   );
 }
 
@@ -339,9 +337,9 @@ async function resolveSkillMessages(skill: ContextChefOptions['skill']): Promise
  * - `system`: Adds as a standalone system message at the end.
  */
 async function injectDynamicState(
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
   config: DynamicStateConfig,
-): Promise<LanguageModelV3Prompt> {
+): Promise<LanguageModelV4Prompt> {
   const state = await config.getState();
   const xml = XmlGenerator.objectToXml(state, 'dynamic_state');
   const placement = config.placement ?? 'last_user';
@@ -383,7 +381,7 @@ function toCompressRole(role: string): CompressRole {
 }
 
 /**
- * Adapts an AI SDK LanguageModelV3 into the compressionModel callback
+ * Adapts an AI SDK LanguageModelV4 into the compressionModel callback
  * that Janitor expects: (messages: Message[]) => Promise<string>
  *
  * Tool messages are converted to user messages describing the tool interaction,
@@ -450,8 +448,8 @@ export type SummarizeMessagesOptions = SummarizeHistoryOptions;
  * `truncate`, `clear`, and `dynamicState`, remain safe to use alongside.
  */
 export async function summarizeMessages(
-  prompt: LanguageModelV3Prompt,
-  model: LanguageModelV3,
+  prompt: LanguageModelV4Prompt,
+  model: LanguageModelV4,
   opts: SummarizeMessagesOptions = {},
 ): Promise<string> {
   const ir = fromAISDK(prompt).filter((m) => m.role !== 'system');

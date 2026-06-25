@@ -1,4 +1,4 @@
-import type { LanguageModelV3, LanguageModelV3Prompt } from '@ai-sdk/provider';
+import type { LanguageModelV4, LanguageModelV4Prompt } from '@ai-sdk/provider';
 import type {
   ChefLogger,
   ClearTarget,
@@ -67,7 +67,7 @@ export interface TruncateOptions {
  */
 export interface CompressOptions {
   /** A cheap model used for summarization (e.g. openai('gpt-4o-mini')). */
-  model: LanguageModelV3;
+  model: LanguageModelV4;
   /** Ratio of context window to preserve for recent messages. Default: 0.8 */
   preserveRatio?: number;
   /**
@@ -159,7 +159,7 @@ export interface ContextChefOptions {
    * The model's context window size in tokens.
    *
    * Required when a compression option is configured (`compress`,
-   * `onCompress`, `onBeforeCompress`, `onBudgetExceeded`) —
+   * `onCompress`, `onBeforeCompress`) —
    * `createMiddleware` throws otherwise. Optional (and unused) for
    * truncate / compact / skill / dynamicState-only configurations,
    * which involve no budget check.
@@ -233,7 +233,7 @@ export interface ContextChefOptions {
   onCompress?: (
     summary: string,
     truncatedCount: number,
-    details: { compressedMessages: LanguageModelV3Prompt },
+    details: { compressedMessages: LanguageModelV4Prompt },
   ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.
@@ -245,19 +245,12 @@ export interface ContextChefOptions {
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
   /**
-   * @deprecated Use `onBeforeCompress` instead. Will be removed in the next major version.
-   */
-  onBudgetExceeded?: (
-    history: Message[],
-    tokenInfo: { currentTokens: number; limit: number },
-  ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
-  /**
    * Transform the AI SDK prompt after compression, before sending to the model.
    * Use for custom prompt manipulation, RAG injection, etc.
    */
   transformContext?: (
-    prompt: LanguageModelV3Prompt,
-  ) => LanguageModelV3Prompt | Promise<LanguageModelV3Prompt>;
+    prompt: LanguageModelV4Prompt,
+  ) => LanguageModelV4Prompt | Promise<LanguageModelV4Prompt>;
   /**
    * Sink for degradation warnings (storage write failures, missing usage
    * data, misconfiguration). Defaults to `console`. Forwarded to the
