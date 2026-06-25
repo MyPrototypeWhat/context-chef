@@ -21,6 +21,30 @@ type UserContent = Extract<ModelMessage, { role: 'user' }>['content'];
 type AssistantContent = Extract<ModelMessage, { role: 'assistant' }>['content'];
 type ToolContent = Extract<ModelMessage, { role: 'tool' }>['content'];
 type ProviderOptions = Extract<ModelMessage, { role: 'system' }>['providerOptions'];
+type MMFilePart = Extract<Exclude<UserContent, string>[number], { type: 'file' }>;
+
+/**
+ * Extracts the Attachment presence/metadata signal from an app-altitude file
+ * part's `data`. The app `ModelMessage` accepts both the bare shorthand
+ * (`string | Uint8Array | URL`) and V4's tagged shapes (`{ type: 'data', data }`,
+ * `{ type: 'url', url }`, …). Only inline string data yields a signal — bytes,
+ * URLs, and references become `''`, mirroring the provider-prompt adapter's
+ * `fileDataSignal`. The real payload round-trips losslessly via `_mm*Content`;
+ * this value is only read by Janitor via `attachments?.length`.
+ */
+function fileDataSignal(data: MMFilePart['data']): string {
+  if (typeof data === 'string') return data;
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    'type' in data &&
+    data.type === 'data' &&
+    typeof data.data === 'string'
+  ) {
+    return data.data;
+  }
+  return '';
+}
 
 /**
  * IR message carrying the original ModelMessage content for lossless round-trip.
@@ -80,7 +104,7 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
           if (part.type === 'file') {
             attachments.push({
               mediaType: part.mediaType,
-              data: typeof part.data === 'string' ? part.data : '',
+              data: fileDataSignal(part.data),
               ...(part.filename ? { filename: part.filename } : {}),
             });
           } else if (part.type === 'image') {
@@ -142,7 +166,7 @@ export function fromModelMessages(messages: ModelMessage[]): ModelMessageIR[] {
           } else if (part.type === 'file') {
             attachments.push({
               mediaType: part.mediaType,
-              data: typeof part.data === 'string' ? part.data : '',
+              data: fileDataSignal(part.data),
               ...(part.filename ? { filename: part.filename } : {}),
             });
           }

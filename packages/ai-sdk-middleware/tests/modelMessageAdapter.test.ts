@@ -29,6 +29,23 @@ describe('fromModelMessages', () => {
     ]);
   });
 
+  it('records V4 tagged file data ({ type: "data" }) as the attachment signal', () => {
+    const messages: ModelMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'tagged' },
+          { type: 'file', data: { type: 'data', data: 'base64str' }, mediaType: 'image/png' },
+        ],
+      },
+    ];
+    const ir = fromModelMessages(messages);
+    // Tagged inline string data yields the same presence signal as the bare shorthand.
+    expect(ir[0].attachments).toEqual([{ mediaType: 'image/png', data: 'base64str' }]);
+    // The real (tagged) payload round-trips verbatim via the pass-through field.
+    expect(toModelMessages(ir)).toEqual(messages);
+  });
+
   it('extracts assistant tool calls and reasoning', () => {
     const messages: ModelMessage[] = [
       { role: 'user', content: 'use a tool' },
