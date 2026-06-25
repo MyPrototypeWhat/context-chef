@@ -312,54 +312,6 @@ if (toSummarize.length > 0) {
 
 ModelMessage-altitude sibling of [`summarizeMessages`](#summarizemessagesprompt-model-options): summarize a `ModelMessage[]` slice into a single summary string via the same pipeline (role-flattening + core `summarizeHistory`). System messages are dropped. An empty slice returns `''` without a model call; it throws if the model call fails. Use it with `planCompactionModelMessages` when you want to drive summarization yourself instead of the one-shot `compactModelMessages`.
 
-### `compactHistory(prompt, model, options)`
-
-> **Deprecated.** `compactHistory` / `planCompaction` take and return
-> `LanguageModelV3Prompt` — the provider-protocol altitude, which nobody
-> persists. Use [`compactModelMessages`](#compactmodelmessagesmessages-model-options)
-> / `planCompactionModelMessages` instead. Still exported and working; removed in the next major.
-
-The V3-prompt variant of `compactModelMessages`. It splits the history on turn boundaries, summarizes the old slice, and returns a new prompt ready to persist — `[...system, <summary>, ...recent turns]`:
-
-```typescript
-import { compactHistory } from '@context-chef/ai-sdk-middleware';
-
-// Between model calls, when you own `messages`:
-messages = await compactHistory(messages, summarizerModel, {
-  keepRecentTurns: 4,           // keep the last 4 atomic turns verbatim
-  toolResultStubThreshold: 5000,
-});
-// Persist the result — history actually shrinks and stays shrunk.
-```
-
-- The cut lands only on **turn boundaries** (an assistant + its tool results stay together), so it never orphans a tool result or splits a multi-block assistant message.
-- System messages are preserved verbatim and never summarized.
-- Returns the prompt **unchanged** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — safe to call unconditionally. Throws only if the model call throws.
-- Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
-
-### `planCompaction(prompt, options)`
-
-> **Deprecated.** Use [`planCompactionModelMessages`](#plancompactionmodelmessagesmessages-options).
-> This V3-prompt variant is the provider-protocol altitude — a type you never
-> persist. Still exported and working; removed in the next major.
-
-The synchronous split behind `compactHistory`, for when you want the boundary without summarizing (persist your own marker, or use a different summarizer). Returns `{ system, toSummarize, toKeep }` (all `LanguageModelV3Prompt`), cut on turn boundaries:
-
-```typescript
-import { planCompaction, summarizeMessages } from '@context-chef/ai-sdk-middleware';
-import { Prompts } from '@context-chef/core';
-
-const { system, toSummarize, toKeep } = planCompaction(messages, { keepRecentTurns: 4 });
-if (toSummarize.length > 0) {
-  const summary = await summarizeMessages(toSummarize, model);
-  messages = [
-    ...system,
-    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
-    ...toKeep,
-  ];
-}
-```
-
 ## How It Works
 
 ```

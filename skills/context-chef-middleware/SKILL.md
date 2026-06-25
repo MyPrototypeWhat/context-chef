@@ -1,6 +1,6 @@
 ---
 name: context-chef-middleware
-description: "Helps developers integrate @context-chef/ai-sdk-middleware into their Vercel AI SDK (v6+) projects. Use this skill when the user wants to add transparent context management to an AI SDK app, wrap a model with automatic history compression, truncate large tool results, manage token budgets, or inject dynamic state into AI SDK prompts. Also trigger when the user mentions 'context-chef middleware', 'AI SDK middleware', 'ai-sdk context', or asks about compressing history / truncating tool results / managing tokens in a Vercel AI SDK project."
+description: "Helps developers integrate @context-chef/ai-sdk-middleware into their Vercel AI SDK (v7+) projects. Use this skill when the user wants to add transparent context management to an AI SDK app, wrap a model with automatic history compression, truncate large tool results, manage token budgets, or inject dynamic state into AI SDK prompts. Also trigger when the user mentions 'context-chef middleware', 'AI SDK middleware', 'ai-sdk context', or asks about compressing history / truncating tool results / managing tokens in a Vercel AI SDK project."
 argument-hint: "[feature-focus]"
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 ---
@@ -16,7 +16,7 @@ The key selling point: **zero code changes** to existing `generateText` / `strea
 Before asking questions, silently inspect the project:
 
 ```
-1. package.json → confirm they use `ai` (v6+) and an AI SDK provider (@ai-sdk/openai, @ai-sdk/anthropic, @ai-sdk/google, etc.)
+1. package.json → confirm they use `ai` (v7+) and an AI SDK provider (@ai-sdk/openai, @ai-sdk/anthropic, @ai-sdk/google, etc.)
 2. Lock file → detect package manager (pnpm-lock.yaml / yarn.lock / package-lock.json / bun.lockb)
 3. tsconfig.json → TypeScript or JavaScript?
 4. Existing AI SDK usage → look for patterns like:
@@ -40,7 +40,7 @@ Based on what you found, present a brief summary of their setup and ask which fe
 | Need to inject task state for LLM attention | Dynamic state as XML in prompt | `dynamicState` |
 | Want custom prompt manipulation (RAG, metadata) | Post-compression transform hook | `transformContext` |
 | Want to know when compression happens | Compression callback | `onCompress` |
-| Need control over what happens at budget limit | Budget exceeded hook | `onBudgetExceeded` |
+| Need control over what happens at budget limit | Budget exceeded hook | `onBeforeCompress` |
 
 If the developer is unsure, recommend starting with: **compression + truncation** — these solve the most common problems with minimal setup.
 
@@ -55,7 +55,7 @@ yarn add @context-chef/ai-sdk-middleware
 bun add @context-chef/ai-sdk-middleware
 ```
 
-The middleware depends on `ai` (v6+) and `@ai-sdk/provider` (v3+) as peer dependencies — the developer should already have these.
+The middleware depends on `ai` (v7+) and `@ai-sdk/provider` (v4+) as peer dependencies — the developer should already have these.
 
 ## Step 4: Generate integration code
 
@@ -154,9 +154,9 @@ transformContext: (prompt) => {
 }
 ```
 
-**Budget exceeded hook (`onBudgetExceeded`):**
+**Budget exceeded hook (`onBeforeCompress`):**
 ```typescript
-onBudgetExceeded: (history, { currentTokens, limit }) => {
+onBeforeCompress: (history, { currentTokens, limit }) => {
   // Return modified messages, or null to let default compression handle it
   console.log(`Budget exceeded: ${currentTokens}/${limit} tokens`);
   return null;
@@ -240,7 +240,7 @@ const aiSdkPrompt = toAISDK(irMessages);
 
 After generating the code:
 
-1. Verify `ai` (v6+) is in their dependencies — the middleware requires AI SDK v6
+1. Verify `ai` (v7+) is in their dependencies — the middleware requires AI SDK v7
 2. Verify they have at least one `@ai-sdk/*` provider installed
 3. Explain the processing pipeline briefly:
    - Truncate large tool results (if configured)
@@ -255,7 +255,7 @@ After generating the code:
 - Don't create a new wrapped model per LLM call — reuse it across the conversation (it tracks token usage)
 - Don't manually call `reportTokenUsage()` — the middleware extracts it automatically from `generateText` / `streamText` responses
 - The `compress.model` should be a cheap, fast model (e.g. `gpt-4o-mini`, `claude-haiku`) — it's used for summarization, not the main task
-- `withContextChef()` returns a standard `LanguageModelV3` — it works anywhere the original model works
+- `withContextChef()` returns a standard `LanguageModelV4` — it works anywhere the original model works
 - If using `compact` with `truncate` together, `truncate` runs first (on the raw AI SDK prompt), then `compact` runs on the IR (after conversion)
 
 ## When to recommend @context-chef/core instead
