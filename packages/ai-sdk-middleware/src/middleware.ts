@@ -56,14 +56,12 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   // `contextWindow`. Truncate/compact/skill/dynamicState-only
   // configurations get no Janitor at all: no budget checks, no token-usage
   // capture, and none of the Janitor's missing-tokenizer warnings.
-  const budgeting = Boolean(
-    options.compress || options.onCompress || options.onBeforeCompress || options.onBudgetExceeded,
-  );
+  const budgeting = Boolean(options.compress || options.onCompress || options.onBeforeCompress);
 
   if (budgeting && options.contextWindow == null) {
     throw new Error(
       '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
-        '`onCompress`, `onBeforeCompress`, `onBudgetExceeded`) is configured — the budget ' +
+        '`onCompress`, `onBeforeCompress`) is configured — the budget ' +
         'check has nothing to compare against without it.',
     );
   }
@@ -254,7 +252,7 @@ function createJanitor(
         compressedMessages: toAISDK(details.compressedMessages),
       });
     },
-    onBeforeCompress: options.onBeforeCompress ?? options.onBudgetExceeded,
+    onBeforeCompress: options.onBeforeCompress,
     logger,
   };
 

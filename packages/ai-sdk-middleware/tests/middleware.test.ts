@@ -516,12 +516,12 @@ describe('compact', () => {
   });
 });
 
-describe('onBudgetExceeded', () => {
+describe('onBeforeCompress', () => {
   it('calls hook when budget is exceeded', async () => {
-    const onBudgetExceeded = vi.fn().mockReturnValue(null);
+    const onBeforeCompress = vi.fn().mockReturnValue(null);
     const middleware = createMiddleware({
       contextWindow: 100,
-      onBudgetExceeded,
+      onBeforeCompress,
     });
 
     const model = createMockModel({ inputTokens: 200 });
@@ -550,7 +550,7 @@ describe('onBudgetExceeded', () => {
       model,
     });
 
-    expect(onBudgetExceeded).toHaveBeenCalled();
+    expect(onBeforeCompress).toHaveBeenCalled();
   });
 });
 

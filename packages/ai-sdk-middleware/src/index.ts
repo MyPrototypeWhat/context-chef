@@ -7,12 +7,9 @@ import type { ContextChefOptions } from './types';
 export type { ClearTarget } from '@context-chef/core';
 export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export {
-  type CompactionPlan,
   type CompactionPlanModelMessages,
-  compactHistory,
   compactModelMessages,
   type PlanCompactionOptions,
-  planCompaction,
   planCompactionModelMessages,
 } from './compaction';
 export {

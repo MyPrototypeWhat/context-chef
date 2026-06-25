@@ -15,6 +15,13 @@ rejects a v3-spec middleware, so this is a breaking change that requires AI SDK 
 - Still on AI SDK v6 (`ai@6`): stay on `@context-chef/ai-sdk-middleware@1` — the 1.x
   line continues to support the v3 spec. No code change is forced on you.
 
+**Removed** (deprecated APIs that were slated for removal in the next major):
+
+- `planCompaction`, `compactHistory`, and the `CompactionPlan` type (the provider-prompt
+  altitude variants) — use `planCompactionModelMessages` / `compactModelMessages` /
+  `CompactionPlanModelMessages` at the `ModelMessage` altitude instead.
+- `onBudgetExceeded` on `ContextChefOptions` — use `onBeforeCompress` instead.
+
 Runtime behavior is unchanged. The only V4 nuance: provider-level `FilePart.data`
 became a tagged union (`SharedV4FileData`); the prompt adapter handles it
 transparently and the binary/URL payload still round-trips losslessly.

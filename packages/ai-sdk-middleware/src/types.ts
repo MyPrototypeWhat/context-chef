@@ -159,7 +159,7 @@ export interface ContextChefOptions {
    * The model's context window size in tokens.
    *
    * Required when a compression option is configured (`compress`,
-   * `onCompress`, `onBeforeCompress`, `onBudgetExceeded`) —
+   * `onCompress`, `onBeforeCompress`) —
    * `createMiddleware` throws otherwise. Optional (and unused) for
    * truncate / compact / skill / dynamicState-only configurations,
    * which involve no budget check.
@@ -241,13 +241,6 @@ export interface ContextChefOptions {
    * let default compression handle it.
    */
   onBeforeCompress?: (
-    history: Message[],
-    tokenInfo: { currentTokens: number; limit: number },
-  ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
-  /**
-   * @deprecated Use `onBeforeCompress` instead. Will be removed in the next major version.
-   */
-  onBudgetExceeded?: (
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
