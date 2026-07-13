@@ -198,6 +198,15 @@ export interface ContextChefOptions {
    */
   logger?: ChefLogger;
   /**
+   * Cap on concurrently tracked conversations. Each `ctx.conversationId`
+   * gets its own Janitor so token-usage feeds and compression state never
+   * leak across conversations sharing one middleware instance.
+   * Least-recently-used conversations beyond the cap are dropped and
+   * transparently recreated on next access. Must be a positive integer —
+   * the pool throws a RangeError otherwise. Default: 256.
+   */
+  maxSessions?: number;
+  /**
    * Hook called after compression occurs.
    *
    * `details.compressedMessages` is the exact slice (TanStack format) that

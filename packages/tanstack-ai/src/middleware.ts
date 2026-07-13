@@ -2,9 +2,13 @@ import {
   type ChefLogger,
   type CompressionDetails,
   compactMessages as clearMessages,
+  dedupeConstructionWarnings,
+  flattenForCompression,
   Janitor,
   type Message,
+  normalizeSessionKey,
   Prompts,
+  SessionPool,
   XmlGenerator,
 } from '@context-chef/core';
 import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
@@ -13,8 +17,6 @@ import { fromTanStackAI, toTanStackAI } from './adapter';
 import { compactMessages } from './compact';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
-
-type CompressRole = 'system' | 'user' | 'assistant';
 
 /**
  * Creates a TanStack AI ChatMiddleware that transparently applies
@@ -90,24 +92,52 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     usagePreference = 'max';
   }
 
-  const janitor = options.tokenizer
-    ? new Janitor({
-        ...sharedJanitorConfig,
-        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
-        preserveRatio: options.compress?.preserveRatio ?? 0.8,
-        usagePreference,
-      })
-    : new Janitor({
-        ...sharedJanitorConfig,
-        // 'tokenizerFirst' has been sanitized above; the cast narrows the
-        // remaining values to the no-tokenizer branch.
-        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
-      });
+  // One Janitor per conversation. A middleware instance is usually created
+  // once and reused across chat() calls for many conversations — sharing one
+  // Janitor would leak token-usage feeds, compression suppression, and
+  // circuit-breaker counts across them. TanStack AI supplies the conversation
+  // identity via ctx.conversationId; calls without one share the default
+  // session (prior behavior). Construction-time config nags are deduped
+  // across conversations — the config is identical for every pooled Janitor.
+  const janitors = new SessionPool(
+    dedupeConstructionWarnings(logger, (constructionLogger) =>
+      options.tokenizer
+        ? new Janitor({
+            ...sharedJanitorConfig,
+            logger: constructionLogger,
+            tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
+            preserveRatio: options.compress?.preserveRatio ?? 0.8,
+            usagePreference,
+          })
+        : new Janitor({
+            ...sharedJanitorConfig,
+            logger: constructionLogger,
+            // 'tokenizerFirst' has been sanitized above; the cast narrows the
+            // remaining values to the no-tokenizer branch.
+            usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
+          }),
+    ),
+    { maxSize: options.maxSessions },
+  );
+
+  let invalidConversationIdWarned = false;
+  const flagInvalidConversationId = (raw: unknown) => {
+    if (invalidConversationIdWarned) return;
+    invalidConversationIdWarned = true;
+    logger.warn(
+      '[context-chef] Invalid ctx.conversationId (expected a non-empty string, got ' +
+        `${raw === '' ? 'empty string' : typeof raw}); routing to the default conversation slot.`,
+    );
+  };
+
+  const janitorFor = (ctx: { conversationId?: string }): Janitor =>
+    janitors.get(normalizeSessionKey(ctx.conversationId, flagInvalidConversationId));
 
   return {
     name: 'context-chef',
 
-    onConfig: async (_ctx, config) => {
+    onConfig: async (ctx, config) => {
+      const janitor = janitorFor(ctx);
       let { messages } = config;
       let systemPrompts = [...config.systemPrompts];
 
@@ -166,9 +196,9 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       return { messages, systemPrompts };
     },
 
-    onUsage: (_ctx, usage) => {
+    onUsage: (ctx, usage) => {
       if (usage.promptTokens != null) {
-        janitor.feedTokenUsage(usage.promptTokens);
+        janitorFor(ctx).feedTokenUsage(usage.promptTokens);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
         logger.warn(
@@ -193,31 +223,11 @@ function createCompressionAdapter(
   adapter: AnyTextAdapter,
 ): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
-    const formatted = messages.map((m): { role: CompressRole; content: string } => {
-      if (m.role === 'tool') {
-        return {
-          role: 'user' satisfies CompressRole,
-          content: `[Tool result${m.tool_call_id ? ` (${m.tool_call_id})` : ''}: ${m.content}]`,
-        };
-      }
-      if (m.role === 'assistant' && m.tool_calls?.length) {
-        const toolCallsDesc = m.tool_calls
-          .map((tc) => `[Called tool: ${tc.function.name}(${tc.function.arguments})]`)
-          .join('\n');
-        return {
-          role: 'assistant' satisfies CompressRole,
-          content: m.content ? `${m.content}\n${toolCallsDesc}` : toolCallsDesc,
-        };
-      }
-      return {
-        role: toCompressRole(m.role),
-        content: m.content,
-      };
-    });
-
-    // Convert to ModelMessage format for chatStream
-    const modelMessages: ModelMessage[] = formatted.map((m) => ({
-      role: m.role === 'system' ? ('user' as const) : (m.role as 'user' | 'assistant'),
+    // Role-flatten via the shared core helper, then convert to ModelMessage
+    // for chatStream — providers reject a `system` role mid-conversation
+    // here, so it degrades to `user`.
+    const modelMessages: ModelMessage[] = flattenForCompression(messages).map((m) => ({
+      role: m.role === 'system' ? ('user' as const) : m.role,
       content: m.content,
     }));
 
@@ -287,11 +297,6 @@ async function injectDynamicState(
     messages,
     systemPrompts: [...systemPrompts, `CURRENT TASK STATE:\n${xml}`],
   };
-}
-
-function toCompressRole(role: string): CompressRole {
-  if (role === 'system' || role === 'user' || role === 'assistant') return role;
-  return 'user';
 }
 
 /**

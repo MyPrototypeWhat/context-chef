@@ -4,6 +4,7 @@ import type {
   LanguageModelV4ToolResultPart,
 } from '@ai-sdk/provider';
 import { type ChefLogger, Offloader } from '@context-chef/core';
+import { stringifyToolOutput } from './adapter';
 import type { TruncateOptions } from './types';
 
 /**
@@ -141,16 +142,13 @@ function extractText(output: LanguageModelV4ToolResultOutput): string {
   switch (output.type) {
     case 'text':
     case 'error-text':
-      return output.value;
     case 'json':
     case 'error-json':
-      return JSON.stringify(output.value);
     case 'content':
-      return output.value
-        .map((v: { type: string; text?: string }) => (v.type === 'text' ? (v.text ?? '') : ''))
-        .filter(Boolean)
-        .join('\n');
+      return stringifyToolOutput(output);
     default:
+      // Marker outputs (e.g. execution-denied) measure as empty — they must
+      // never be rewritten by truncation.
       return '';
   }
 }

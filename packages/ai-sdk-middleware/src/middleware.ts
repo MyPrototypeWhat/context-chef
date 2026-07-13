@@ -8,9 +8,14 @@ import {
   type ChefLogger,
   type CompressionDetails,
   compactMessages,
+  DEFAULT_SESSION_KEY,
+  dedupeConstructionWarnings,
+  flattenForCompression,
   Janitor,
   type Message,
+  normalizeSessionKey,
   Prompts,
+  SessionPool,
   type SummarizeHistoryOptions,
   summarizeHistory,
   XmlGenerator,
@@ -27,8 +32,6 @@ import { fromAISDK, toAISDK } from './adapter';
 import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
-
-type CompressRole = 'system' | 'user' | 'assistant';
 
 /**
  * After this many compressions fire without an `onCompress` persistence hook,
@@ -92,9 +95,49 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   };
 
-  const janitor = budgeting
-    ? createJanitor(options, options.contextWindow as number, logger, onCompressionFired)
+  // One Janitor per session. A middleware instance is usually created once at
+  // module scope (`const model = withContextChef(...)`) but serves many
+  // conversations — sharing one Janitor would leak token-usage feeds,
+  // compression suppression, and circuit-breaker counts across them. Callers
+  // opt in per call via `providerOptions: { contextChef: { sessionId } }`;
+  // calls without a sessionId share the default session (prior behavior).
+  // Construction-time config nags are deduped across sessions — the config
+  // is identical for every pooled Janitor, so once is enough.
+  const janitors = budgeting
+    ? new SessionPool(
+        dedupeConstructionWarnings(logger, (constructionLogger) =>
+          createJanitor(
+            options,
+            options.contextWindow as number,
+            constructionLogger,
+            onCompressionFired,
+          ),
+        ),
+        { maxSize: options.maxSessions },
+      )
     : null;
+
+  let invalidSessionKeyWarned = false;
+  const flagInvalidSessionKey = (raw: unknown) => {
+    if (invalidSessionKeyWarned) return;
+    invalidSessionKeyWarned = true;
+    logger.warn(
+      '[context-chef] Invalid providerOptions.contextChef sessionId (expected a non-empty ' +
+        `string, got ${raw === '' ? 'empty string' : typeof raw}); routing to the default session.`,
+    );
+  };
+
+  const janitorFor = (params: { providerOptions?: Record<string, unknown> }): Janitor | null => {
+    if (!janitors) return null;
+    const ns = params.providerOptions?.contextChef;
+    if (ns != null && typeof ns !== 'object') {
+      // Malformed namespace (e.g. contextChef: 'abc') — never a session key.
+      flagInvalidSessionKey(ns);
+      return janitors.get(DEFAULT_SESSION_KEY);
+    }
+    const raw = ns ? (ns as Record<string, unknown>).sessionId : undefined;
+    return janitors.get(normalizeSessionKey(raw, flagInvalidSessionKey));
+  };
 
   const clearsToolResults = !!options.clear?.some(
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
@@ -116,6 +159,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     specificationVersion: 'v4',
 
     transformParams: async ({ params }) => {
+      const janitor = janitorFor(params);
       let { prompt } = params;
 
       // 1. Truncate large tool results
@@ -176,9 +220,10 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       return { ...params, prompt };
     },
 
-    wrapGenerate: async ({ doGenerate }) => {
+    wrapGenerate: async ({ doGenerate, params }) => {
       const result = await doGenerate();
 
+      const janitor = janitorFor(params);
       if (!janitor) return result;
 
       if (result.usage?.inputTokens?.total != null) {
@@ -195,7 +240,8 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       return result;
     },
 
-    wrapStream: async ({ doStream }) => {
+    wrapStream: async ({ doStream, params }) => {
+      const janitor = janitorFor(params);
       if (!janitor) return doStream();
 
       const { stream, ...rest } = await doStream();
@@ -372,15 +418,6 @@ async function injectDynamicState(
 }
 
 /**
- * Maps an IR role to a role accepted by generateText.
- * Tool messages are handled separately before this is called.
- */
-function toCompressRole(role: string): CompressRole {
-  if (role === 'system' || role === 'user' || role === 'assistant') return role;
-  return 'user';
-}
-
-/**
  * Adapts an AI SDK LanguageModelV4 into the compressionModel callback
  * that Janitor expects: (messages: Message[]) => Promise<string>
  *
@@ -391,31 +428,9 @@ export function createCompressionAdapter(
   model: LanguageModel,
 ): (messages: Message[]) => Promise<string> {
   return async (messages: Message[]): Promise<string> => {
-    const formatted = messages.map((m): { role: CompressRole; content: string } => {
-      if (m.role === 'tool') {
-        return {
-          role: 'user' satisfies CompressRole,
-          content: `[Tool result${m.tool_call_id ? ` (${m.tool_call_id})` : ''}: ${m.content}]`,
-        };
-      }
-      if (m.role === 'assistant' && m.tool_calls?.length) {
-        const toolCallsDesc = m.tool_calls
-          .map((tc) => `[Called tool: ${tc.function.name}(${tc.function.arguments})]`)
-          .join('\n');
-        return {
-          role: 'assistant' satisfies CompressRole,
-          content: m.content ? `${m.content}\n${toolCallsDesc}` : toolCallsDesc,
-        };
-      }
-      return {
-        role: toCompressRole(m.role),
-        content: m.content,
-      };
-    });
-
     const { text } = await generateText({
       model,
-      messages: formatted,
+      messages: flattenForCompression(messages),
       maxOutputTokens: 2048,
     });
 

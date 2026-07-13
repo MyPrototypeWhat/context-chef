@@ -42,6 +42,17 @@ export function fromGemini(
   const system: Message[] = [];
   const history: HistoryMessage[] = [];
 
+  // Gemini has no native tool call IDs. Synthesize `gemini-fc-<name>-<n>` with
+  // a per-name counter spanning the whole conversation so repeat calls stay
+  // unique, and correlate each functionResponse to the oldest unconsumed call
+  // of the same name (FIFO) — responses normally arrive in a later content
+  // entry, so the correlation state must outlive a single message.
+  // FIFO assumes same-name responses arrive in call order (Gemini emits them
+  // in order); out-of-order same-name responses would swap attributions — an
+  // inherent limit of name-only correlation.
+  const callCounters = new Map<string, number>();
+  const pendingCallIds = new Map<string, string[]>();
+
   if (systemInstruction) {
     for (const part of systemInstruction.parts) {
       system.push({ role: 'system', content: part.text });
@@ -72,26 +83,30 @@ export function fromGemini(
           data: part.fileData.fileUri,
         });
       } else if ('functionCall' in part && part.functionCall) {
-        const id = `gemini-fc-${part.functionCall.name}-${toolCalls.length}`;
+        const name = part.functionCall.name;
+        const seq = callCounters.get(name) ?? 0;
+        callCounters.set(name, seq + 1);
+        const id = `gemini-fc-${name}-${seq}`;
+        const pending = pendingCallIds.get(name);
+        if (pending) pending.push(id);
+        else pendingCallIds.set(name, [id]);
         toolCalls.push({
           id,
           type: 'function',
           function: {
-            name: part.functionCall.name,
+            name,
             arguments: JSON.stringify(part.functionCall.args),
           },
         });
       } else if ('functionResponse' in part && part.functionResponse) {
-        // Gemini has no native tool call IDs. Use a synthetic ID derived from
-        // the function name to enable cross-provider compilation (e.g. → OpenAI).
         const name = part.functionResponse.name;
-        // Try to match a preceding functionCall by name for ID correlation
-        const matchingCall = toolCalls.find((tc) => tc.function.name === name);
+        // Orphan responses (no unconsumed call of this name) fall back to `-0`
+        // and are cleaned up by ensureValidHistory below.
         history.push({
           role: 'tool',
           content: JSON.stringify(part.functionResponse.response),
           name,
-          tool_call_id: matchingCall?.id ?? `gemini-fc-${name}-0`,
+          tool_call_id: pendingCallIds.get(name)?.shift() ?? `gemini-fc-${name}-0`,
         });
       }
     }

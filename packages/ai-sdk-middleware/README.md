@@ -126,6 +126,26 @@ Tools not listed fall back to the top-level defaults. The lookup key is `tool-re
 
 The middleware automatically extracts token usage from `generateText` and `streamText` responses and feeds it back to the compression engine. No manual `reportTokenUsage()` calls needed.
 
+### Session Isolation (Multi-User Servers)
+
+A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
+
+```typescript
+const model = withContextChef(openai('gpt-4o'), {
+  contextWindow: 128_000,
+  compress: { model: openai('gpt-4o-mini') },
+});
+
+// Per request:
+const result = await generateText({
+  model,
+  messages,
+  providerOptions: { contextChef: { sessionId: conversationId } },
+});
+```
+
+Calls without a `sessionId` share one default session — fine for single-conversation processes (a CLI, a notebook, one agent loop), wrong for multi-user servers: one user's over-budget conversation would trigger or suppress compression for everyone else. Up to `maxSessions` sessions are tracked concurrently (default 256, LRU-evicted); an evicted session is transparently recreated on next access, losing only its fed token usage.
+
 ### Compact (Mechanical Pruning)
 
 Zero-LLM-cost message pruning via AI SDK's `pruneMessages` — removes reasoning, tool calls, and empty messages:

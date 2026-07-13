@@ -10,6 +10,7 @@ import {
   type Attachment,
   ensureValidHistory,
   type Message,
+  Prompts,
   type ToolCall,
 } from '@context-chef/core';
 
@@ -314,7 +315,16 @@ export function stringifyToolOutput(output: LanguageModelV4ToolResultOutput): st
       return JSON.stringify(output.value);
     case 'content':
       return output.value
-        .map((v) => (v.type === 'text' ? v.text : ''))
+        .map((v) => {
+          if (v.type === 'text') return v.text;
+          // Non-text parts (files/media) must leave a trace in the flattened
+          // text — silently dropping them would break the round-trip claim
+          // and hide the part from compression/truncation entirely.
+          if (v.type === 'file') {
+            return Prompts.getToolResultFilePlaceholder(v.mediaType, v.filename);
+          }
+          return Prompts.getToolResultPartPlaceholder((v as { type: string }).type);
+        })
         .filter(Boolean)
         .join('\n');
     default:

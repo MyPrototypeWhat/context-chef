@@ -1,7 +1,31 @@
-import type { LanguageModelV4Prompt } from '@ai-sdk/provider';
+import type { LanguageModelV4Prompt, LanguageModelV4ToolResultOutput } from '@ai-sdk/provider';
 import type { Message } from '@context-chef/core';
 import { describe, expect, it } from 'vitest';
-import { fromAISDK, toAISDK } from '../src/adapter';
+import { fromAISDK, stringifyToolOutput, toAISDK } from '../src/adapter';
+
+describe('stringifyToolOutput', () => {
+  it('keeps a typed placeholder for non-text content parts instead of dropping them', () => {
+    const output: LanguageModelV4ToolResultOutput = {
+      type: 'content',
+      value: [
+        { type: 'text', text: 'Chart generated.' },
+        {
+          type: 'file',
+          data: { type: 'url', url: new URL('https://example.com/chart.png') },
+          mediaType: 'image/png',
+          filename: 'chart.png',
+        },
+      ],
+    };
+
+    const text = stringifyToolOutput(output);
+
+    expect(text).toContain('Chart generated.');
+    // The file part must leave a trace — not vanish silently.
+    expect(text).toContain('image/png');
+    expect(text).toContain('chart.png');
+  });
+});
 
 describe('fromAISDK', () => {
   it('converts system messages', () => {

@@ -395,4 +395,18 @@ describe('OpenAIAdapter — attachments output', () => {
     expect(Array.isArray(msg.content)).toBe(true);
     expect((msg.content as unknown as unknown[]).length).toBe(3);
   });
+
+  it('serializes toJSON-bearing values (e.g. Date) like the JSON round-trip did', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'hi',
+        meta: { at: new Date('2026-01-02T03:04:05.000Z') },
+      } as unknown as Message,
+    ];
+    const result = adapter.compile(messages);
+
+    const cloned = result.messages[0] as unknown as { meta: { at: unknown } };
+    expect(cloned.meta.at).toBe('2026-01-02T03:04:05.000Z');
+  });
 });

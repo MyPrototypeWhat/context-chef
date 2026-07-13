@@ -725,6 +725,64 @@ describe('fromGemini', () => {
     expect(toolMsg?.content).toBe('{"temp":15}');
   });
 
+  it('correlates parallel same-name functionResponses to distinct call IDs', () => {
+    const contents: Content[] = [
+      { role: 'user', parts: [{ text: 'weather in SF and NY?' }] },
+      {
+        role: 'model',
+        parts: [
+          { functionCall: { name: 'get_weather', args: { city: 'SF' } } },
+          { functionCall: { name: 'get_weather', args: { city: 'NY' } } },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          { functionResponse: { name: 'get_weather', response: { temp: 15 } } },
+          { functionResponse: { name: 'get_weather', response: { temp: 8 } } },
+        ],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    const callIds = history.find((m) => m.role === 'assistant')?.tool_calls?.map((tc) => tc.id);
+    expect(callIds).toEqual(['gemini-fc-get_weather-0', 'gemini-fc-get_weather-1']);
+
+    const toolMsgs = history.filter((m) => m.role === 'tool');
+    expect(toolMsgs.map((m) => m.tool_call_id)).toEqual([
+      'gemini-fc-get_weather-0',
+      'gemini-fc-get_weather-1',
+    ]);
+    expect(toolMsgs.map((m) => m.content)).toEqual(['{"temp":15}', '{"temp":8}']);
+  });
+
+  it('generates unique call IDs for repeat calls of the same tool across turns', () => {
+    const contents: Content[] = [
+      { role: 'user', parts: [{ text: 'ls' }] },
+      { role: 'model', parts: [{ functionCall: { name: 'run_bash', args: { cmd: 'ls' } } }] },
+      {
+        role: 'user',
+        parts: [{ functionResponse: { name: 'run_bash', response: { out: 'a.ts' } } }],
+      },
+      { role: 'model', parts: [{ functionCall: { name: 'run_bash', args: { cmd: 'pwd' } } }] },
+      {
+        role: 'user',
+        parts: [{ functionResponse: { name: 'run_bash', response: { out: '/repo' } } }],
+      },
+    ];
+    const { history } = fromGemini(contents);
+
+    const assistantMsgs = history.filter((m) => m.role === 'assistant');
+    expect(assistantMsgs[0]?.tool_calls?.[0].id).toBe('gemini-fc-run_bash-0');
+    expect(assistantMsgs[1]?.tool_calls?.[0].id).toBe('gemini-fc-run_bash-1');
+
+    const toolMsgs = history.filter((m) => m.role === 'tool');
+    expect(toolMsgs.map((m) => m.tool_call_id)).toEqual([
+      'gemini-fc-run_bash-0',
+      'gemini-fc-run_bash-1',
+    ]);
+  });
+
   it('handles image-only messages (no text)', () => {
     const contents: Content[] = [
       {

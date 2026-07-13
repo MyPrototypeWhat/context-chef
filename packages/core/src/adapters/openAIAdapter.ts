@@ -138,6 +138,34 @@ export function fromOpenAI(messages: SDKMessageParam[]): ParsedMessages {
 
 // ─── Output: IR → OpenAI ───
 
+/**
+ * Deep-clones plain message data, dropping `undefined`-valued properties.
+ * Equivalent to a `JSON.parse(JSON.stringify(...))` round-trip for this data
+ * domain (plain objects/arrays/primitives) without serializing — the string
+ * detour is measurably expensive for messages carrying base64 attachments.
+ *
+ * Matches JSON semantics for `toJSON`-bearing values (a Date lands as its
+ * ISO string, not `{}`). Assumes acyclic data: a circular reference
+ * overflows the stack, where the old round-trip threw a TypeError.
+ */
+function cloneWithoutUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(cloneWithoutUndefined) as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const toJSON = (value as { toJSON?: () => unknown }).toJSON;
+    if (typeof toJSON === 'function') {
+      return cloneWithoutUndefined(toJSON.call(value)) as T;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) out[k] = cloneWithoutUndefined(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 export class OpenAIAdapter implements ITargetAdapter {
   compile(messages: Message[]): OpenAIPayload {
     const formattedMessages: SDKMessageParam[] = messages.map((msg) => {
@@ -163,10 +191,13 @@ export class OpenAIAdapter implements ITargetAdapter {
             });
           }
         }
-        return JSON.parse(JSON.stringify({ ...cleanMsg, content: contentParts }));
+        return cloneWithoutUndefined({
+          ...cleanMsg,
+          content: contentParts,
+        }) as unknown as SDKMessageParam;
       }
 
-      return JSON.parse(JSON.stringify(cleanMsg));
+      return cloneWithoutUndefined(cleanMsg) as SDKMessageParam;
     });
 
     if (formattedMessages.length > 0) {

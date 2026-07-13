@@ -220,6 +220,49 @@ Do not output any introductory text or acknowledgement. Start directly with the 
 </ephemeral_message>
 `.trim(),
 
+  // ─── Placeholder vocabulary ───
+  // Three placeholder families coexist, each serving a distinct purpose:
+  //   1. getAttachmentPlaceholder — stands in for binary attachments shown to
+  //      the COMPRESSION model (janitor strips media before summarizing).
+  //   2. getToolResultFilePlaceholder / getToolResultPartPlaceholder — stand
+  //      in for non-text tool-result content parts flattened to text by the
+  //      middleware adapters (dropping them silently would hide the part
+  //      from compression and truncation entirely).
+  //   3. getVFSOffloadReminder (above) — a dereferenceable `context://`
+  //      pointer, not a placeholder: the full content is retrievable.
+  // Formats are frozen conventions — changing one reshapes what compression
+  // models see mid-conversation.
+
+  /**
+   * Single-line text placeholder for a media attachment, shown to the
+   * compression model in place of binary data. Includes the filename when
+   * available so the summary can reference it by name.
+   *
+   *   ('image/png', 'photo.png')   → '[image: photo.png]'
+   *   ('image/png')                → '[image]'
+   *   ('application/pdf', 'r.pdf') → '[document: r.pdf]'
+   *   ('')                         → '[attachment]'
+   *
+   * Categorization mirrors Claude Code's binary image-vs-document split —
+   * keeping the placeholder vocabulary small reduces surprises for the
+   * compression model.
+   */
+  getAttachmentPlaceholder: (mediaType: string, filename?: string): string => {
+    const mt = mediaType.toLowerCase();
+    const kind = mt.startsWith('image/') ? 'image' : mt ? 'document' : 'attachment';
+    return filename ? `[${kind}: ${filename}]` : `[${kind}]`;
+  },
+
+  /**
+   * Placeholder for a file/media part inside a tool result that is being
+   * flattened to text — the part must leave a trace, not vanish silently.
+   */
+  getToolResultFilePlaceholder: (mediaType: string, filename?: string): string =>
+    `[tool result file: ${mediaType}${filename ? ` (${filename})` : ''}]`,
+
+  /** Placeholder for any other non-text tool-result content part. */
+  getToolResultPartPlaceholder: (partType: string): string => `[tool result part: ${partType}]`,
+
   /**
    * Static instruction injected into the system prompt when memory is enabled.
    * Guides the LLM to use memory tools for persistence.

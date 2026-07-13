@@ -47,8 +47,8 @@
     "@context-chef/core": "workspace:*"
   },
   "peerDependencies": {
-    "@ai-sdk/provider": ">=4",
-    "ai": ">=7"
+    "@ai-sdk/provider": "^4.0.0",
+    "ai": "^7.0.0"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.0",

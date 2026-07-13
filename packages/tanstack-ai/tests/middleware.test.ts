@@ -242,6 +242,78 @@ describe('contextChefMiddleware', () => {
     });
   });
 
+  it('isolates janitor state between conversations via ctx.conversationId', async () => {
+    // Window large enough that the heuristic estimate of the short history
+    // stays under budget — only the FED usage (conversation A's) exceeds it.
+    const mw = contextChefMiddleware({ contextWindow: 10_000 });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' },
+      { role: 'user', content: 'q3' },
+      { role: 'assistant', content: 'a3' },
+    ];
+
+    // Conversation A exceeds the budget (20_000 > 10_000).
+    mw.onUsage?.(createMockCtx({ conversationId: 'conv-a' }), {
+      promptTokens: 20_000,
+      completionTokens: 10,
+      totalTokens: 20_010,
+    });
+
+    // Conversation B must NOT inherit A's fed token usage — no compression.
+    const resB = await mw.onConfig?.(
+      createMockCtx({ conversationId: 'conv-b' }),
+      createMockConfig(messages),
+    );
+    expect(getResult(resB ?? {}).messages).toHaveLength(messages.length);
+
+    // Conversation A compresses on its own next call.
+    const resA = await mw.onConfig?.(
+      createMockCtx({ conversationId: 'conv-a' }),
+      createMockConfig(messages),
+    );
+    expect(getResult(resA ?? {}).messages.length).toBeLessThan(messages.length);
+  });
+
+  it('routes an empty conversationId to the default slot and warns once', async () => {
+    const warn = vi.fn();
+    const mw = contextChefMiddleware({ contextWindow: 10_000, logger: { warn } });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' },
+    ];
+
+    // Over-budget usage reported under an EMPTY conversationId (invalid).
+    mw.onUsage?.(createMockCtx({ conversationId: '' }), {
+      promptTokens: 20_000,
+      completionTokens: 10,
+      totalTokens: 20_010,
+    });
+
+    // A call with NO conversationId shares the default slot → sees the fed usage.
+    const res = await mw.onConfig?.(createMockCtx(), createMockConfig(messages));
+    expect(getResult(res ?? {}).messages.length).toBeLessThan(messages.length);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('conversationId'));
+  });
+
+  it('emits the missing-compression-config nag once across conversations', async () => {
+    const warn = vi.fn();
+    const mw = contextChefMiddleware({ contextWindow: 100_000, logger: { warn } });
+    const messages: ModelMessage[] = [{ role: 'user', content: 'hi' }];
+
+    await mw.onConfig?.(createMockCtx({ conversationId: 'conv-a' }), createMockConfig(messages));
+    await mw.onConfig?.(createMockCtx({ conversationId: 'conv-b' }), createMockConfig(messages));
+
+    const nags = warn.mock.calls.filter((c) =>
+      String(c[0]).includes('No tokenizer and no compressionModel'),
+    );
+    expect(nags).toHaveLength(1);
+  });
+
   it('warns once when promptTokens is missing', () => {
     const localWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const mw = contextChefMiddleware({ contextWindow: 100_000 });
