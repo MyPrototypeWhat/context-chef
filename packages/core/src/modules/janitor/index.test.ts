@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
-import { compactMessages, groupIntoTurns, Janitor } from '.';
+import { compactMessages, flattenForCompression, groupIntoTurns, Janitor } from '.';
 
 // ─── Helpers ───
 
@@ -1118,6 +1118,139 @@ describe('Janitor — compression circuit breaker', () => {
 
     janitor.restoreState(snap);
     expect(janitor['_consecutiveFailures']).toBe(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// flattenForCompression — role-flattening for text-only compression models
+// ═══════════════════════════════════════════════════════
+
+describe('flattenForCompression', () => {
+  it('flattens tool results into user messages and tool calls into assistant text', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: 'ok',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'run', arguments: '{"a":1}' } },
+        ],
+      },
+      { role: 'tool', content: 'output', tool_call_id: 'c1' },
+    ];
+
+    expect(flattenForCompression(messages)).toEqual([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'do it' },
+      { role: 'assistant', content: 'ok\n[Called tool: run({"a":1})]' },
+      { role: 'user', content: '[Tool result (c1): output]' },
+    ]);
+  });
+
+  it('describes tool calls alone when the assistant message has no text', () => {
+    const messages: Message[] = [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'done', tool_call_id: undefined },
+    ];
+
+    expect(flattenForCompression(messages)).toEqual([
+      { role: 'assistant', content: '[Called tool: run({})]' },
+      { role: 'user', content: '[Tool result: done]' },
+    ]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Compression failure degradation
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — compression failure degradation', () => {
+  it('keeps the raw error out of the LLM-bound fallback summary and logs it instead', async () => {
+    const compressionModel = vi.fn().mockRejectedValue(new Error('ECONNRESET at http.Agent'));
+    const logger = { warn: vi.fn() };
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+      logger,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    const summary = result[0];
+    expect(summary.content).toContain('older messages were truncated');
+    expect(summary.content).not.toContain('ECONNRESET');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('compression model failed'),
+      expect.any(Error),
+    );
+  });
+
+  it('does not abort compression when onCompress throws', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>ok</summary>');
+    const logger = { warn: vi.fn() };
+    const onCompress = vi.fn().mockRejectedValue(new Error('db down'));
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+      onCompress,
+      logger,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(onCompress).toHaveBeenCalled();
+    expect(result.length).toBeLessThan(5);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onCompress'),
+      expect.any(Error),
+    );
+  });
+
+  it('falls back to default compression when onBeforeCompress throws', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>ok</summary>');
+    const logger = { warn: vi.fn() };
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      compressionModel,
+      onBeforeCompress: () => {
+        throw new Error('hook boom');
+      },
+      logger,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    // The throw is treated as "return null": default compression proceeds.
+    expect(result.length).toBeLessThan(5);
+    expect(compressionModel).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onBeforeCompress'),
+      expect.any(Error),
+    );
+  });
+
+  it('does not abort the no-compressionModel fallback when onCompress throws', async () => {
+    const logger = { warn: vi.fn() };
+    const janitor = new Janitor({
+      contextWindow: 30,
+      tokenizer: makeTokenizer(10),
+      onCompress: vi.fn().mockRejectedValue(new Error('db down')),
+      logger,
+    });
+
+    await expect(janitor.compress(buildHistory(5))).resolves.toBeDefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onCompress'),
+      expect.any(Error),
+    );
   });
 });
 

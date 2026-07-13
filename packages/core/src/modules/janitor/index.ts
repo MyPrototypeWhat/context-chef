@@ -1,10 +1,43 @@
 import { Prompts } from '../../prompts';
-import type { Attachment, ChefLogger, CompactOptions, Message } from '../../types';
+import type { ChefLogger, CompactOptions, Message } from '../../types';
 import { estimateObject } from '../../utils/tokenUtils';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
 const DEFAULT_PRESERVE_RECENT_MESSAGES = 1;
 const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
+
+/**
+ * Role-flattens history for a text-only compression model: tool results
+ * become user messages describing the result, and assistant tool calls are
+ * appended to the assistant text. This is the canonical implementation of
+ * the role-flattening contract documented on {@link summarizeHistory} —
+ * plain chat-completion endpoints reject `tool` roles and `tool_calls`
+ * fields, so a `compress` callback must flatten before forwarding.
+ */
+export function flattenForCompression(
+  messages: Message[],
+): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return {
+        role: 'user' as const,
+        content: `[Tool result${m.tool_call_id ? ` (${m.tool_call_id})` : ''}: ${m.content}]`,
+      };
+    }
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      const toolCallsDesc = m.tool_calls
+        .map((tc) => `[Called tool: ${tc.function.name}(${tc.function.arguments})]`)
+        .join('\n');
+      return {
+        role: 'assistant' as const,
+        content: m.content ? `${m.content}\n${toolCallsDesc}` : toolCallsDesc,
+      };
+    }
+    const role =
+      m.role === 'system' || m.role === 'user' || m.role === 'assistant' ? m.role : 'user';
+    return { role, content: m.content };
+  });
+}
 
 // ─── Turn-based grouping ───
 
@@ -53,25 +86,6 @@ export function groupIntoTurns(history: Message[]): Turn[] {
 // ─── Attachment stripping for compression ───
 
 /**
- * Builds a single-line text placeholder for an attachment.
- * Includes the filename when available so the summary can reference it by name.
- *
- *   { mediaType: 'image/png', filename: 'photo.png' }   → '[image: photo.png]'
- *   { mediaType: 'image/png' }                          → '[image]'
- *   { mediaType: 'application/pdf', filename: 'r.pdf' } → '[document: r.pdf]'
- *   { mediaType: 'application/pdf' }                    → '[document]'
- *   { mediaType: '' }                                  → '[attachment]'
- *
- * Categorization mirrors Claude Code's binary image-vs-document split — keeping
- * the placeholder vocabulary small reduces surprises for the compression model.
- */
-function attachmentToPlaceholder(att: Attachment): string {
-  const mt = att.mediaType.toLowerCase();
-  const kind = mt.startsWith('image/') ? 'image' : mt ? 'document' : 'attachment';
-  return att.filename ? `[${kind}: ${att.filename}]` : `[${kind}]`;
-}
-
-/**
  * Replaces media attachments with text placeholders for the compression model.
  *
  * The compression model never sees binary attachment data — it only sees text
@@ -90,7 +104,9 @@ function stripAttachmentsForCompression(messages: Message[]): Message[] {
   return messages.map((msg) => {
     if (!msg.attachments?.length) return msg;
 
-    const placeholders = msg.attachments.map(attachmentToPlaceholder).join('\n');
+    const placeholders = msg.attachments
+      .map((att) => Prompts.getAttachmentPlaceholder(att.mediaType, att.filename))
+      .join('\n');
     const newContent = msg.content ? `${placeholders}\n${msg.content}` : placeholders;
 
     const { attachments: _attachments, ...rest } = msg;
@@ -264,8 +280,9 @@ interface JanitorConfigBase {
    * @param details - Boundary metadata: the exact messages that were replaced,
    *   useful for persistence layers that need to map the summary back to their store.
    *
-   * Contract: must not throw or reject. Errors propagate out of compile() — there
-   * is no fallback path. Wrap your logic in try/catch if it can fail.
+   * Contract: should not throw or reject. As a safety net, a throwing hook is
+   * caught and logged via `logger` — the compression result is kept and
+   * compile() continues, but your sink may have missed the summary.
    */
   onCompress?: (
     summaryMessage: Message,
@@ -278,8 +295,10 @@ interface JanitorConfigBase {
    * Return a modified Message[] to replace the history before compression proceeds,
    * or return null/undefined to let the default compression handle it.
    *
-   * Contract: must not throw or reject. Errors propagate out of compile() — return
-   * null on failure to fall back to default LLM compression rather than throwing.
+   * Contract: should not throw or reject. As a safety net, a throwing hook is
+   * caught and logged via `logger`, then treated as if it returned null —
+   * default compression proceeds (the same failure recipe the return
+   * contract documents). Mirrors the `onCompress` degradation stance.
    */
   onBeforeCompress?: (
     history: Message[],
@@ -545,10 +564,23 @@ export class Janitor {
     // Fire onBeforeCompress hook — developer gets a chance to intervene
     const hook = this.config.onBeforeCompress ?? this.config.onBudgetExceeded;
     if (hook) {
-      const modified = await hook(history, {
-        currentTokens,
-        limit: this.config.contextWindow,
-      });
+      let modified: Message[] | null | undefined;
+      try {
+        modified = await hook(history, {
+          currentTokens,
+          limit: this.config.contextWindow,
+        });
+      } catch (error) {
+        // Same degradation stance as onCompress: a broken hook must not fail
+        // compile(). A throw is treated as "return null" — the failure recipe
+        // the return contract already documents — so default compression
+        // proceeds.
+        (this.config.logger ?? console).warn(
+          '[context-chef] onBeforeCompress hook threw — proceeding with default compression',
+          error,
+        );
+        modified = null;
+      }
 
       if (modified != null) {
         // Re-evaluate with the developer-modified history
@@ -702,13 +734,11 @@ export class Janitor {
     const toKeep = history.slice(splitIndex);
 
     if (!this.config.compressionModel) {
-      if (this.config.onCompress) {
-        await this.config.onCompress(
-          { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
-          toCompress.length,
-          { compressedMessages: toCompress },
-        );
-      }
+      await this._fireOnCompress(
+        { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
+        toCompress.length,
+        { compressedMessages: toCompress },
+      );
       this._suppressNextCompression = true;
       return [...toKeep];
     }
@@ -731,9 +761,14 @@ export class Janitor {
       // Increment circuit breaker. After MAX_CONSECUTIVE_COMPRESSION_FAILURES,
       // compress() will short-circuit to avoid futile retries.
       this._consecutiveFailures++;
-      summaryText =
-        Prompts.getFallbackCompressionSummary(toCompress.length) +
-        `\n(Compression failed: ${error})`;
+      // The raw error belongs in the logger, not in the LLM-bound summary.
+      // The compressed slice is still dropped — recover it via onCompress
+      // details if you need durable history.
+      (this.config.logger ?? console).warn(
+        '[context-chef] compression model failed — compressed messages replaced by a bare truncation notice',
+        error,
+      );
+      summaryText = Prompts.getFallbackCompressionSummary(toCompress.length);
     }
 
     const summaryMessage: Message = {
@@ -741,15 +776,34 @@ export class Janitor {
       content: Prompts.getCompactSummaryWrapper(summaryText),
     };
 
-    if (this.config.onCompress) {
-      await this.config.onCompress(summaryMessage, toCompress.length, {
-        compressedMessages: toCompress,
-      });
-    }
+    await this._fireOnCompress(summaryMessage, toCompress.length, {
+      compressedMessages: toCompress,
+    });
 
     // E10: Suppress the immediate next compression check.
     this._suppressNextCompression = true;
 
     return [summaryMessage, ...toKeep];
+  }
+
+  /**
+   * Invokes the `onCompress` hook, downgrading a throwing/rejecting hook to a
+   * logger warning. The hook is an observation/persistence sink — its failure
+   * must not discard an already-computed compression or fail compile().
+   */
+  private async _fireOnCompress(
+    summaryMessage: Message,
+    truncatedCount: number,
+    details: CompressionDetails,
+  ): Promise<void> {
+    if (!this.config.onCompress) return;
+    try {
+      await this.config.onCompress(summaryMessage, truncatedCount, details);
+    } catch (error) {
+      (this.config.logger ?? console).warn(
+        '[context-chef] onCompress hook threw — compression result is kept, but your sink may have missed this summary',
+        error,
+      );
+    }
   }
 }

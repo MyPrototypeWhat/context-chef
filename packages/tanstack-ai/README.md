@@ -118,6 +118,10 @@ The lookup key is the tool's name — read from `ModelMessage.name` when set, ot
 
 The middleware automatically extracts token usage from `onUsage` callbacks and feeds it back to the compression engine. No manual tracking needed.
 
+### Conversation Isolation
+
+Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per `ctx.conversationId`, so one middleware instance safely serves many conversations. Pass a `conversationId` to `chat()`; calls without one share a default slot — fine for single-conversation processes, wrong for multi-user servers. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted); an evicted conversation is transparently recreated on next access, losing only its fed token usage.
+
 ### Compact (Mechanical Pruning)
 
 Zero-LLM-cost message pruning — removes tool call/result pairs and empty messages before compression:

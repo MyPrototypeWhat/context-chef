@@ -57,6 +57,7 @@ export { Guardrail } from './modules/guardrail';
 export {
   type CompressionDetails,
   compactMessages,
+  flattenForCompression,
   groupIntoTurns,
   Janitor,
   type JanitorConfig,
@@ -114,6 +115,12 @@ export type { ChefLogger, ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
+export {
+  DEFAULT_SESSION_KEY,
+  dedupeConstructionWarnings,
+  normalizeSessionKey,
+  SessionPool,
+} from './utils/sessionPool';
 export { TokenUtils } from './utils/tokenUtils';
 export { XmlGenerator } from './utils/xmlGenerator';
 

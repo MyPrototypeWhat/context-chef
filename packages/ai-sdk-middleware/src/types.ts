@@ -257,4 +257,14 @@ export interface ContextChefOptions {
    * underlying Janitor and Offloader.
    */
   logger?: ChefLogger;
+  /**
+   * Cap on concurrently tracked sessions when session isolation is used
+   * (see the `providerOptions.contextChef.sessionId` docs on the package
+   * README). Each session gets its own Janitor so token-usage feeds and
+   * compression state never leak across conversations. Least-recently-used
+   * sessions beyond the cap are dropped and transparently recreated on next
+   * access. Must be a positive integer — the pool throws a RangeError
+   * otherwise. Default: 256.
+   */
+  maxSessions?: number;
 }

@@ -280,6 +280,127 @@ describe('createMiddleware', () => {
     expect(result.prompt.length).toBeLessThan(longPrompt.length);
   });
 
+  it('isolates janitor state between sessions via providerOptions.contextChef.sessionId', async () => {
+    // Window large enough that the heuristic estimate of the short prompt
+    // stays under budget — only the FED usage (session A's) exceeds it.
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      onCompress: vi.fn(),
+    });
+
+    const model = createMockModel({ inputTokens: 20_000 });
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
+
+    const sessionA = { contextChef: { sessionId: 'user-a' } };
+    const sessionB = { contextChef: { sessionId: 'user-b' } };
+
+    // Session A exceeds the budget (20_000 > 10_000).
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [], providerOptions: sessionA },
+      model,
+    });
+
+    const longPrompt = makeConversation(10);
+
+    // Session B must NOT inherit A's fed token usage — no compression.
+    const resultB = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt, providerOptions: sessionB },
+      type: 'generate',
+      model,
+    });
+    expect(resultB.prompt.length).toBe(longPrompt.length);
+
+    // Session A compresses on its own next call.
+    const resultA = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt, providerOptions: sessionA },
+      type: 'generate',
+      model,
+    });
+    expect(resultA.prompt.length).toBeLessThan(longPrompt.length);
+  });
+
+  it('routes an invalid sessionId to the default session and warns once', async () => {
+    const warn = vi.fn();
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      onCompress: vi.fn(),
+      logger: { warn },
+    });
+
+    const model = createMockModel({ inputTokens: 20_000 });
+    const doGenerate = (): PromiseLike<LanguageModelV4GenerateResult> =>
+      model.doGenerate({ prompt: [] });
+    const doStream = (): PromiseLike<LanguageModelV4StreamResult> => model.doStream({ prompt: [] });
+
+    // Over-budget usage fed under an EMPTY-string sessionId (invalid).
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate,
+      doStream,
+      params: { prompt: [], providerOptions: { contextChef: { sessionId: '' } } },
+      model,
+    });
+
+    // A call with NO sessionId shares the default session → sees the fed usage.
+    const longPrompt = makeConversation(10);
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt },
+      type: 'generate',
+      model,
+    });
+    expect(result.prompt.length).toBeLessThan(longPrompt.length);
+
+    const invalidWarns = warn.mock.calls.filter((c) => String(c[0]).includes('sessionId'));
+    expect(invalidWarns).toHaveLength(1);
+  });
+
+  it('emits the missing-compression-config nag once across sessions', async () => {
+    const warn = vi.fn();
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      onBeforeCompress: () => undefined,
+      logger: { warn },
+    });
+    const model = createMockModel();
+
+    for (const sessionId of ['user-a', 'user-b']) {
+      await assertDefined(
+        middleware.transformParams,
+        'transformParams',
+      )({
+        params: {
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          providerOptions: { contextChef: { sessionId } },
+        },
+        type: 'generate',
+        model,
+      });
+    }
+
+    const nags = warn.mock.calls.filter((c) =>
+      String(c[0]).includes('No tokenizer and no compressionModel'),
+    );
+    expect(nags).toHaveLength(1);
+  });
+
   it('onCompress receives the compressed slice in AI SDK format', async () => {
     const onCompressSpy = vi.fn();
     const middleware = createMiddleware({
