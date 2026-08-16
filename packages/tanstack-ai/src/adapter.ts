@@ -1,4 +1,5 @@
 import {
+  type Attachment,
   type ToolCall as CoreToolCall,
   ensureValidHistory,
   type Message,
@@ -7,27 +8,47 @@ import type { ContentPart, ModelMessage, ToolCall } from '@tanstack/ai';
 
 /**
  * Extended IR message with pass-through fields for lossless TanStack AI round-trip.
- * `_originalContent` preserves multimodal content parts so unmodified messages
- * can be reconstructed without loss.
- * `_originalToolCalls` preserves providerMetadata on tool calls.
+ *
+ * `_original` holds the source ModelMessage by reference; `toTanStackAI`
+ * re-emits its fields verbatim for every aspect (content / tool calls /
+ * thinking) the pipeline did not modify, so multimodal parts, tool-call
+ * `metadata`, `id`, and `createdAt` survive untouched.
+ *
+ * `_originalText` / `_originalThinkingText` cache the extracted projections
+ * so modification by Janitor/compact/clear can be detected per aspect.
  */
 export interface TanStackAIMessage extends Message {
-  _originalContent?: ModelMessage['content'];
+  _original?: ModelMessage;
   _originalText?: string;
-  _originalToolCalls?: ToolCall[];
+  _originalThinkingText?: string;
 }
 
 /**
- * Converts TanStack AI ModelMessages to context-chef IR messages.
+ * Converts TanStack AI ModelMessages (0.44 shape) to context-chef IR messages.
  *
- * Original content is stored in `_originalContent` for lossless round-trip.
- * `_originalText` caches extracted text so `toTanStackAI` can detect Janitor modifications.
- * `_originalToolCalls` preserves TanStack AI ToolCalls (including providerMetadata).
+ * Projections:
+ * - `content` — text parts joined with `\n` (string content passes through;
+ *   `null` becomes `''`). Original content round-trips via `_original`.
+ * - `toolCalls` → IR `tool_calls` (id/type/function only; `metadata` rides
+ *   on `_original` and is restored when the calls are unmodified).
+ * - `thinking: Array<{content, signature?}>` → IR `thinking` as a single
+ *   `{ thinking, signature }`: contents joined with `\n`, signature taken
+ *   from the FIRST element. This projection is lossy in isolation, but the
+ *   full array round-trips losslessly via `_original` whenever the message's
+ *   thinking is not modified or cleared by the pipeline.
+ * - Media content parts (image/audio/video/document) → IR `attachments`
+ *   presence signal (`mediaType` from `source.mimeType` or a `type/*`
+ *   fallback, `data` from `source.value`). Read by Janitor to steer the
+ *   compression prompt; the real parts round-trip via `_original`.
+ *
+ * Note: TanStack AI 0.44 has no `system` role in `ModelMessage` — system
+ * prompts travel separately via `config.systemPrompts` and never pass
+ * through this adapter.
  *
  * Boundary sanitization: the result is run through {@link ensureValidHistory}
  * to fix orphan tool results, missing tool results, and ensure the first
- * non-system message is a user message. This is a system boundary — IR
- * downstream is trusted to satisfy invariants.
+ * message is a user message. This is a system boundary — IR downstream is
+ * trusted to satisfy invariants.
  */
 export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
   const result: TanStackAIMessage[] = [];
@@ -35,13 +56,16 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
   for (const msg of messages) {
     if (msg.role === 'user') {
       const text = extractTextContent(msg.content);
-      result.push({
+      const m: TanStackAIMessage = {
         role: 'user',
         content: text,
-        _originalContent: msg.content,
+        _original: msg,
         _originalText: text,
         ...(msg.name ? { name: msg.name } : {}),
-      });
+      };
+      const attachments = extractAttachments(msg.content);
+      if (attachments.length) m.attachments = attachments;
+      result.push(m);
       continue;
     }
 
@@ -50,14 +74,23 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
       const m: TanStackAIMessage = {
         role: 'assistant',
         content: text,
-        _originalContent: msg.content,
+        _original: msg,
         _originalText: text,
         ...(msg.name ? { name: msg.name } : {}),
       };
       if (msg.toolCalls?.length) {
         m.tool_calls = msg.toolCalls.map(convertToolCall);
-        m._originalToolCalls = msg.toolCalls;
       }
+      if (msg.thinking?.length) {
+        const thinkingText = joinThinking(msg.thinking);
+        m.thinking = {
+          thinking: thinkingText,
+          ...(msg.thinking[0]?.signature ? { signature: msg.thinking[0].signature } : {}),
+        };
+        m._originalThinkingText = thinkingText;
+      }
+      const attachments = extractAttachments(msg.content);
+      if (attachments.length) m.attachments = attachments;
       result.push(m);
       continue;
     }
@@ -68,51 +101,57 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
         role: 'tool',
         content: text,
         tool_call_id: msg.toolCallId ?? '',
-        _originalContent: msg.content,
+        _original: msg,
         _originalText: text,
+        ...(msg.name ? { name: msg.name } : {}),
       });
     }
   }
 
   // Sanitize at boundary: enforce IR invariants before handing to caller.
-  // Cast is safe — ensureValidHistory only inserts plain user/tool messages without
-  // _originalContent/_originalToolCalls fields; toTanStackAI falls back to constructing
-  // from IR fields for any message lacking those.
+  // Cast is safe — ensureValidHistory only inserts plain user/tool messages
+  // without pass-through fields; toTanStackAI falls back to constructing
+  // from IR fields for any message lacking them.
   return ensureValidHistory(result) as TanStackAIMessage[];
 }
 
 /**
  * Converts context-chef IR messages back to TanStack AI ModelMessages.
  *
- * Uses original content when unmodified (detected via `_originalText`).
- * Uses original tool calls when unmodified (detected via ID comparison).
- * Falls back to constructing from IR fields when modified by Janitor.
+ * Per-aspect reconstruction: each aspect (content, tool calls, thinking)
+ * uses the original field verbatim when the IR projection is unmodified,
+ * and is rebuilt from IR fields when the pipeline changed it:
+ *
+ * - Modified content → IR text replaces the original content wholesale
+ *   (multimodal parts of a rewritten message are dropped by design).
+ * - Modified tool calls (id set changed) → rebuilt without `metadata`.
+ * - Cleared thinking (IR `thinking` absent while the original had it) →
+ *   the `thinking` field is omitted. Modified thinking text → rebuilt as a
+ *   single-element array carrying the IR signature (if any).
+ *
+ * IR `role: 'system'` messages (possible via `onBeforeCompress` or direct
+ * calls — never produced by `fromTanStackAI`) are converted to `user`
+ * messages, since TanStack AI's ModelMessage has no system role.
  */
 export function toTanStackAI(messages: Message[]): ModelMessage[] {
   const result: ModelMessage[] = [];
 
   for (const msg of messages) {
     const ext = msg as TanStackAIMessage;
+    const original = ext._original;
     const contentModified = ext._originalText !== undefined && ext._originalText !== msg.content;
 
     if (msg.role === 'system') {
       // Defensive: TanStack AI ModelMessage has no 'system' role.
-      // Converts to user message if system-role messages are injected
-      // via onBeforeCompress or direct toTanStackAI calls.
-      result.push({
-        role: 'user' as const,
-        content: msg.content,
-      });
+      result.push({ role: 'user' as const, content: msg.content });
       continue;
     }
 
     if (msg.role === 'user') {
       result.push({
+        ...(original ? passthroughFields(original) : {}),
         role: 'user' as const,
-        content:
-          !contentModified && ext._originalContent !== undefined
-            ? ext._originalContent
-            : msg.content,
+        content: !contentModified && original ? original.content : msg.content,
         ...(msg.name ? { name: msg.name } : {}),
       });
       continue;
@@ -120,17 +159,14 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
 
     if (msg.role === 'assistant') {
       const m: ModelMessage = {
+        ...(original ? passthroughFields(original) : {}),
         role: 'assistant' as const,
-        content:
-          !contentModified && ext._originalContent !== undefined
-            ? ext._originalContent
-            : msg.content,
+        content: !contentModified && original ? original.content : msg.content,
         ...(msg.name ? { name: msg.name } : {}),
       };
       if (msg.tool_calls?.length) {
-        // toolCallsUnmodified checks originals is defined, safe to cast
-        m.toolCalls = toolCallsUnmodified(msg.tool_calls, ext._originalToolCalls)
-          ? (ext._originalToolCalls as ToolCall[])
+        m.toolCalls = toolCallsUnmodified(msg.tool_calls, original?.toolCalls)
+          ? (original?.toolCalls as ToolCall[])
           : msg.tool_calls.map(
               (tc): ToolCall => ({
                 id: tc.id,
@@ -142,23 +178,44 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
               }),
             );
       }
+      if (msg.thinking?.thinking) {
+        const thinkingModified =
+          ext._originalThinkingText === undefined ||
+          ext._originalThinkingText !== msg.thinking.thinking;
+        m.thinking =
+          !thinkingModified && original?.thinking
+            ? original.thinking
+            : [
+                {
+                  content: msg.thinking.thinking,
+                  ...(msg.thinking.signature ? { signature: msg.thinking.signature } : {}),
+                },
+              ];
+      }
       result.push(m);
       continue;
     }
 
     if (msg.role === 'tool') {
       result.push({
+        ...(original ? passthroughFields(original) : {}),
         role: 'tool' as const,
-        content:
-          !contentModified && ext._originalContent !== undefined
-            ? ext._originalContent
-            : msg.content,
+        content: !contentModified && original ? original.content : msg.content,
         toolCallId: msg.tool_call_id ?? '',
+        ...(msg.name ? { name: msg.name } : {}),
       });
     }
   }
 
   return result;
+}
+
+/** Message-level fields carried over verbatim from the original ModelMessage. */
+function passthroughFields(original: ModelMessage): Partial<ModelMessage> {
+  return {
+    ...(original.id !== undefined ? { id: original.id } : {}),
+    ...(original.createdAt !== undefined ? { createdAt: original.createdAt } : {}),
+  };
 }
 
 /** Checks if IR tool_calls match the originals (same length and IDs). */
@@ -179,12 +236,45 @@ function convertToolCall(tc: ToolCall): CoreToolCall {
   };
 }
 
+/** Joins a ModelMessage thinking array into the IR single-string projection. */
+function joinThinking(thinking: NonNullable<ModelMessage['thinking']>): string {
+  return thinking.map((t) => t.content).join('\n');
+}
+
 /** Extracts text from ModelMessage content (string, null, or ContentPart[]). */
 function extractTextContent(content: ModelMessage['content']): string {
   if (content == null) return '';
   if (typeof content === 'string') return content;
-  return (content as ContentPart[])
-    .filter((p) => p.type === 'text')
-    .map((p) => (p as { type: 'text'; content: string }).content)
+  return content
+    .filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.content)
     .join('\n');
+}
+
+/** MIME-type fallbacks when a media part's source carries no mimeType. */
+const MEDIA_TYPE_FALLBACK: Record<string, string> = {
+  image: 'image/*',
+  audio: 'audio/*',
+  video: 'video/*',
+  document: 'application/octet-stream',
+};
+
+/**
+ * Projects media content parts into IR attachments. `data` carries the
+ * source value (base64 for `data` sources, the URL for `url` sources) —
+ * read by Janitor only as a presence/metadata signal; the real parts
+ * round-trip via `_original`.
+ */
+function extractAttachments(content: ModelMessage['content']): Attachment[] {
+  if (content == null || typeof content === 'string') return [];
+  const attachments: Attachment[] = [];
+  for (const part of content) {
+    if (part.type === 'text') continue;
+    attachments.push({
+      mediaType:
+        part.source.mimeType ?? MEDIA_TYPE_FALLBACK[part.type] ?? 'application/octet-stream',
+      data: part.source.value,
+    });
+  }
+  return attachments;
 }
