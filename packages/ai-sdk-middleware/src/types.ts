@@ -167,6 +167,24 @@ export interface ContextChefOptions {
   contextWindow?: number;
   /** Enable history compression. Omit for no compression. */
   compress?: CompressOptions;
+  /**
+   * Run middleware compression even when a call opts into Anthropic
+   * server-side context management
+   * (`providerOptions.anthropic.contextManagement`).
+   *
+   * By default (`false`) the middleware detects that option on a call and
+   * skips its own compression step for that call — the server is already
+   * managing (compacting or clearing) the history, and compressing it here
+   * as well would rewrite the same history twice. A one-time warning is
+   * logged when the guard first fires. `truncate`, `compact`, `clear`,
+   * `dynamicState`, and `skill` are unaffected; only the compression step
+   * yields to the server.
+   *
+   * Set to `true` to disable the guard (no skip, no warning) — e.g. when
+   * middleware compression is tuned to trigger well below the server-side
+   * threshold on purpose.
+   */
+  allowDoubleCompression?: boolean;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
