@@ -54,8 +54,9 @@ describe('Janitor — tokenizer path', () => {
     expect(result.length).toBeLessThan(buildHistory(5).length + 1);
   });
 
-  it('preserveRatio defaults to DEFAULT_PRESERVE_RATIO', async () => {
-    // 5 × 10 = 50 > 40, preserve = floor(40 * 0.8) = 32 → keeps 3 messages (30 ≤ 32)
+  it('preserveRatio defaults to DEFAULT_PRESERVE_RATIO (applied to the effective trigger budget)', async () => {
+    // limit = 40 × 0.7 (default triggerRatio) = 28; 50 > 28 triggers.
+    // preserve = floor(28 × 0.8) = 22 → keeps 2 messages (20 ≤ 22)
     const mockModel = vi.fn().mockResolvedValue('<history_summary>DEFAULT</history_summary>');
     const janitor = new Janitor({
       contextWindow: 40,
@@ -67,8 +68,37 @@ describe('Janitor — tokenizer path', () => {
 
     expect(mockModel).toHaveBeenCalledTimes(1);
     expect(result[0].role).toBe('user');
-    // summary + 3 kept messages = 4
-    expect(result).toHaveLength(4);
+    // summary + 2 kept messages = 3
+    expect(result).toHaveLength(3);
+  });
+
+  it('triggerRatio defaults to 0.7 — tokens above 0.7×window trigger compression', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 60, // limit = 42; 5 × 10 = 50 > 42 triggers even though 50 < 60
+      tokenizer: makeTokenizer(10),
+      compressionModel: mockModel,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).toHaveBeenCalledTimes(1);
+    expect(result[0].content).toContain('S');
+  });
+
+  it('triggerRatio: 1 restores trigger-at-window behavior', async () => {
+    const mockModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 60, // 50 ≤ 60 → no compression at ratio 1
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      compressionModel: mockModel,
+    });
+
+    const result = await janitor.compress(buildHistory(5));
+
+    expect(mockModel).not.toHaveBeenCalled();
+    expect(result).toHaveLength(5);
   });
 
   it('calls tokenizer with Message[] directly', async () => {
@@ -448,7 +478,8 @@ describe('Janitor — onBudgetExceeded hook', () => {
     expect(onBudgetExceeded).toHaveBeenCalledTimes(1);
     const [, tokenInfo] = onBudgetExceeded.mock.calls[0];
     expect(tokenInfo.currentTokens).toBe(50);
-    expect(tokenInfo.limit).toBe(30);
+    // limit is the effective trigger threshold: contextWindow × default triggerRatio
+    expect(tokenInfo.limit).toBe(30 * 0.7);
   });
 
   it('skips compression when hook brings history under budget', async () => {
@@ -1017,25 +1048,16 @@ describe('Janitor — compression circuit breaker', () => {
       compressionModel,
     });
 
-    // Each call exceeds budget and tries to compress. E10 suppression alternates,
-    // so we need to alternate calls to exercise the breaker.
-    // First failure
+    // Failed compressions leave history unchanged and do NOT set E10
+    // suppression (nothing was compressed), so every call attempts
+    // compression until the breaker trips.
     await janitor.compress(buildHistory(5));
     expect(compressionModel).toHaveBeenCalledTimes(1);
     expect(janitor['_consecutiveFailures']).toBe(1);
 
-    // E10 suppresses next call (no compressionModel invocation)
-    await janitor.compress(buildHistory(5));
-    expect(compressionModel).toHaveBeenCalledTimes(1);
-
-    // Second failure
     await janitor.compress(buildHistory(5));
     expect(compressionModel).toHaveBeenCalledTimes(2);
     expect(janitor['_consecutiveFailures']).toBe(2);
-
-    // E10 suppresses
-    await janitor.compress(buildHistory(5));
-    expect(compressionModel).toHaveBeenCalledTimes(2);
 
     // Third failure — breaker trips after this
     await janitor.compress(buildHistory(5));
@@ -1067,15 +1089,13 @@ describe('Janitor — compression circuit breaker', () => {
       compressionModel,
     });
 
-    // Fail twice
+    // Fail twice (failures don't set E10 suppression — history was unchanged)
     await janitor.compress(buildHistory(5));
-    await janitor.compress(buildHistory(5)); // E10 suppressed
     await janitor.compress(buildHistory(5));
     expect(janitor['_consecutiveFailures']).toBe(2);
 
     // Flip to success
     shouldFail = false;
-    await janitor.compress(buildHistory(5)); // E10 suppressed
     await janitor.compress(buildHistory(5)); // success
     expect(janitor['_consecutiveFailures']).toBe(0);
   });
@@ -1089,7 +1109,6 @@ describe('Janitor — compression circuit breaker', () => {
     });
 
     await janitor.compress(buildHistory(5));
-    await janitor.compress(buildHistory(5)); // E10 suppressed
     await janitor.compress(buildHistory(5));
     expect(janitor['_consecutiveFailures']).toBe(2);
 
@@ -1106,7 +1125,6 @@ describe('Janitor — compression circuit breaker', () => {
     });
 
     await janitor.compress(buildHistory(5));
-    await janitor.compress(buildHistory(5)); // E10 suppressed
     await janitor.compress(buildHistory(5));
     expect(janitor['_consecutiveFailures']).toBe(2);
 
@@ -1170,7 +1188,7 @@ describe('flattenForCompression', () => {
 // ═══════════════════════════════════════════════════════
 
 describe('Janitor — compression failure degradation', () => {
-  it('keeps the raw error out of the LLM-bound fallback summary and logs it instead', async () => {
+  it('leaves history unchanged and logs when the compression model fails', async () => {
     const compressionModel = vi.fn().mockRejectedValue(new Error('ECONNRESET at http.Agent'));
     const logger = { warn: vi.fn() };
     const janitor = new Janitor({
@@ -1180,11 +1198,12 @@ describe('Janitor — compression failure degradation', () => {
       logger,
     });
 
-    const result = await janitor.compress(buildHistory(5));
+    const history = buildHistory(5);
+    const result = await janitor.compress(history);
 
-    const summary = result[0];
-    expect(summary.content).toContain('older messages were truncated');
-    expect(summary.content).not.toContain('ECONNRESET');
+    // History is returned UNCHANGED — no lossy placeholder truncation.
+    expect(result).toEqual(history);
+    expect(JSON.stringify(result)).not.toContain('ECONNRESET');
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('compression model failed'),
       expect.any(Error),
@@ -1613,13 +1632,14 @@ describe('Janitor — toolResultStubThreshold', () => {
       return '<history_summary>S</history_summary>';
     });
     // 8 messages × 10 tokens = 80 tokens current
-    // contextWindow=50 → triggers compress; preserveTarget = 50 × 0.6 = 30
+    // contextWindow=50, triggerRatio=1 → limit 50; preserveTarget = 50 × 0.6 = 30
     // Iterating turns from tail: q4(10) + assistant+tool_b(20) = 30 exactly fit
     // → splitIndex lands between turn 3 (q3) and turn 4 (assistant_b),
     //   so toCompress = first 5 messages (call_a tool included),
     //   toKeep    = last 3 messages (call_b tool preserved verbatim).
     const janitor = new Janitor({
       contextWindow: 50,
+      triggerRatio: 1,
       tokenizer: makeTokenizer(10),
       preserveRatio: 0.6,
       compressionModel: mockModel,

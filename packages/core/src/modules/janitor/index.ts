@@ -5,6 +5,29 @@ import { estimateObject } from '../../utils/tokenUtils';
 const DEFAULT_PRESERVE_RATIO = 0.8;
 const DEFAULT_PRESERVE_RECENT_MESSAGES = 1;
 const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
+/**
+ * Compression triggers at this fraction of `contextWindow` by default.
+ * "Pre-rot": model quality degrades well before the hard window limit, so
+ * compressing early keeps the model in its reliable range. Set
+ * `triggerRatio: 1` to restore the pre-4.0 trigger-at-window behavior.
+ */
+const DEFAULT_TRIGGER_RATIO = 0.7;
+/**
+ * A compression result must shrink the compressed span's character length by
+ * at least this ratio by default, or it is treated as a failed compression.
+ * Guards against the "compression that doesn't shrink" death loop observed in
+ * production agents (each turn re-triggers compression, costs grow unbounded).
+ */
+const DEFAULT_MIN_SHRINK_RATIO = 0.5;
+/**
+ * The shrink guard only applies to spans at least this long. A tiny span
+ * cannot meaningfully shrink below a well-formed summary's natural length,
+ * and the death-loop scenario the guard prevents only occurs on large spans.
+ */
+const MIN_SHRINK_GUARD_SPAN_CHARS = 2000;
+
+/** Strips `<think>...</think>` reasoning blocks emitted inline by some reasoning models. */
+const REASONING_TAG_RE = /<think>[\s\S]*?<\/think>/gi;
 
 /**
  * Role-flattens history for a text-only compression model: tool results
@@ -81,6 +104,37 @@ export function groupIntoTurns(history: Message[]): Turn[] {
   }
 
   return turns;
+}
+
+// ─── Constraint pinning ───
+
+/**
+ * Returns the set of message indices protected by pinning, turn-scoped:
+ * pinning any message of an atomic turn protects every message of that turn,
+ * so an assistant+tool_calls unit and its tool results stay coherent.
+ */
+function collectPinnedTurnIndices(history: Message[]): Set<number> {
+  const pinned = new Set<number>();
+  for (const turn of groupIntoTurns(history)) {
+    let hasPinned = false;
+    for (let i = turn.startIndex; i < turn.endIndex; i++) {
+      if (history[i].pinned) {
+        hasPinned = true;
+        break;
+      }
+    }
+    if (hasPinned) {
+      for (let i = turn.startIndex; i < turn.endIndex; i++) pinned.add(i);
+    }
+  }
+  return pinned;
+}
+
+/** Extracts the pinned (turn-scoped) messages of a slice, in original order. */
+function extractPinnedMessages(messages: Message[]): Message[] {
+  const indices = collectPinnedTurnIndices(messages);
+  if (indices.size === 0) return [];
+  return messages.filter((_, i) => indices.has(i));
 }
 
 // ─── Attachment stripping for compression ───
@@ -205,15 +259,111 @@ export interface CompressionDetails {
 }
 
 /**
+ * Where compressed spans are archived for reversible compression.
+ * `store` receives the serialized span (`JSON.stringify({version: 1, messages})`)
+ * and returns a URI the summary will cite (e.g. `context://vfs/...`).
+ */
+export interface CompressionArchiveConfig {
+  store: (serialized: string, meta: { messageCount: number }) => string | Promise<string>;
+}
+
+/**
  * Fields shared by every JanitorConfig variant. Not exported on its own —
  * downstream callers should use {@link JanitorConfig}.
  */
 interface JanitorConfigBase {
   /**
    * The model's context window size (in tokens).
-   * Compression is triggered when token usage exceeds this value.
+   * Compression is triggered when token usage exceeds
+   * `contextWindow * triggerRatio` (default 0.7 — see {@link triggerRatio}).
    */
   contextWindow: number;
+
+  /**
+   * Fraction of `contextWindow` at which compression triggers (0–1].
+   * Default 0.7: model quality degrades well before the hard window limit
+   * ("pre-rot"), so compressing early keeps the model in its reliable range.
+   * Set to 1 to restore the pre-4.0 trigger-at-window behavior.
+   *
+   * In the tokenizer path, `preserveRatio` is applied to this effective
+   * trigger budget (`contextWindow * triggerRatio`), not to the raw window.
+   */
+  triggerRatio?: number;
+
+  /**
+   * A compression result must shrink the compressed span's character length
+   * by at least this ratio (0–1, default 0.5). A summary failing the check is
+   * treated as a failed compression: history is returned unchanged and the
+   * failure counts toward the circuit breaker — so a summarizer that echoes
+   * its input trips the breaker instead of looping forever. Set to 0 to
+   * disable the check.
+   */
+  minShrinkRatio?: number;
+
+  /**
+   * Structured domain guidelines appended (numbered) to the compression
+   * prompt, after the default scaffolding and before
+   * `customCompressionInstructions`. Same additive contract: the
+   * `<analysis>`/`<summary>` parsing scaffolding is always preserved.
+   *
+   * @example
+   * compressionGuidelines: [
+   *   'Preserve all file paths and ticket IDs verbatim.',
+   *   'Record why each abandoned approach failed.',
+   * ]
+   */
+  compressionGuidelines?: string[];
+
+  /**
+   * Summary generation strategy:
+   * - `'rewrite'` (default): each compression regenerates the whole summary
+   *   from the evicted span (previous summaries get re-summarized when they
+   *   fall into a later evicted span).
+   * - `'incremental-anchored'`: the Janitor maintains a persistent "anchor
+   *   document"; each compression summarizes ONLY the newly evicted span and
+   *   merges it into the anchor. Avoids the drift/loss of repeated whole-
+   *   summary rewrites and keeps the summary prefix stable for caching.
+   *   The anchor survives snapshot()/restore() and clears on reset().
+   */
+  compressionMode?: 'rewrite' | 'incremental-anchored';
+
+  /**
+   * Compression scheduling:
+   * - `'blocking'` (default): `compress()` awaits summarization.
+   * - `'background'`: the first over-budget `compress()` returns history
+   *   UNCHANGED and starts summarization in the background; a later
+   *   `compress()` call swaps the finished summary in, but only if the
+   *   compressed span is still a prefix of the current history (checked by
+   *   message identity) — otherwise the result is discarded and the budget
+   *   is re-evaluated fresh. Background state does not survive
+   *   snapshot()/restore().
+   */
+  compressionScheduling?: 'blocking' | 'background';
+
+  /**
+   * Post-summarization validation gate. Return `false` to REJECT the summary:
+   * rejection is treated as a compression failure (history unchanged, circuit
+   * breaker incremented). Use to check that forward intent and load-bearing
+   * facts survived (trajectory-grounded validation). A throwing/rejecting
+   * hook is treated as `false` with a logged warning.
+   */
+  validateCompression?: (
+    summary: string,
+    info: { compressed: Message[]; kept: Message[] },
+  ) => boolean | Promise<boolean>;
+
+  /**
+   * Reversible compression: archive the full pre-compression span and cite
+   * the archive URI in the summary, so exact details remain retrievable
+   * (pair with `getRecallToolDefinition()` + `chef.resolveRecall()`).
+   *
+   * Pass `'vfs'` under ContextChef to store spans in the configured VFS
+   * (ContextChef wires the store automatically). A standalone Janitor needs
+   * the object form with an explicit `store`. Archiving is best-effort: a
+   * failing store logs a warning and the compression proceeds without a
+   * citation.
+   */
+  archive?: CompressionArchiveConfig | 'vfs';
 
   /**
    * [Tokenizer path only] The ratio of contextWindow to preserve for recent messages.
@@ -360,6 +510,8 @@ export interface JanitorSnapshot {
   externalTokenUsage: number | null;
   suppressNextCompression: boolean;
   consecutiveFailures: number;
+  /** Persistent anchor document ('incremental-anchored' mode). Null when absent. */
+  anchorDoc?: string | null;
 }
 
 /**
@@ -371,50 +523,79 @@ export function compactMessages(history: Message[], options: CompactOptions): Me
   // Parse targets: separate simple strings from object configs
   let clearToolResult = false;
   let toolResultKeepRecent: number | undefined;
+  let toolFilter: string[] | undefined;
+  let exemptTools: string[] | undefined;
   let clearThinking = false;
+  let clearReasoningTags = false;
 
   for (const target of options.clear) {
     if (target === 'tool-result') {
       clearToolResult = true;
     } else if (target === 'thinking') {
       clearThinking = true;
+    } else if (target === 'reasoning-tags') {
+      clearReasoningTags = true;
     } else if (typeof target === 'object' && target.target === 'tool-result') {
       clearToolResult = true;
       toolResultKeepRecent = target.keepRecent;
+      toolFilter = target.toolFilter;
+      exemptTools = target.exemptTools;
     }
   }
 
-  // Build the set of tool message indices to skip (keepRecent)
+  // Pinned protection is turn-scoped and applies to every clearing target.
+  const pinnedIndices = collectPinnedTurnIndices(history);
+
+  // Tool-name resolution only when a name-based filter is in play.
+  const nameMap = toolFilter || exemptTools ? buildToolNameMap(history) : undefined;
+
+  const isClearableToolResult = (idx: number, msg: Message): boolean => {
+    if (pinnedIndices.has(idx)) return false;
+    if (nameMap) {
+      const name = msg.tool_call_id ? nameMap.get(msg.tool_call_id) : undefined;
+      if (toolFilter && (name === undefined || !toolFilter.includes(name))) return false;
+      if (exemptTools && name !== undefined && exemptTools.includes(name)) return false;
+    }
+    return true;
+  };
+
+  // keepRecent counts within the CLEARABLE set (post pinning/filter/exemption)
   let toolResultSkipSet: Set<number> | undefined;
   if (clearToolResult && toolResultKeepRecent !== undefined) {
     const keepCount = Math.max(1, toolResultKeepRecent);
-    // Collect indices of all tool messages (in order)
-    const toolIndices: number[] = [];
+    const clearableIndices: number[] = [];
     for (let i = 0; i < history.length; i++) {
-      if (history[i].role === 'tool') {
-        toolIndices.push(i);
+      const msg = history[i];
+      if (msg.role === 'tool' && isClearableToolResult(i, msg)) {
+        clearableIndices.push(i);
       }
     }
-    // The last keepCount tool messages are preserved
-    const preserveIndices = toolIndices.slice(-keepCount);
-    toolResultSkipSet = new Set(preserveIndices);
+    // The last keepCount clearable tool messages are preserved
+    toolResultSkipSet = new Set(clearableIndices.slice(-keepCount));
   }
 
   return history.map((msg, idx) => {
     let result = msg;
 
-    if (clearToolResult && msg.role === 'tool') {
+    if (clearToolResult && msg.role === 'tool' && isClearableToolResult(idx, msg)) {
       // Skip (preserve) if this index is in the keepRecent set
       if (!toolResultSkipSet?.has(idx)) {
         result = { ...result, content: '[Old tool result content cleared]' };
       }
     }
 
-    if (clearThinking && msg.role === 'assistant') {
+    if (clearThinking && msg.role === 'assistant' && !pinnedIndices.has(idx)) {
       if (msg.thinking || msg.redacted_thinking) {
         // Set to undefined rather than destructure-delete: keeps Message typing
         // clean (adapters use truthy checks, undefined is dropped by JSON.stringify).
         result = { ...result, thinking: undefined, redacted_thinking: undefined };
+      }
+    }
+
+    if (clearReasoningTags && msg.role === 'assistant' && !pinnedIndices.has(idx)) {
+      const stripped = result.content.replace(REASONING_TAG_RE, '');
+      if (stripped !== result.content) {
+        result = { ...result, content: stripped.replace(/\n{3,}/g, '\n\n').trim() };
       }
     }
 
@@ -429,6 +610,13 @@ export interface SummarizeHistoryOptions {
   /** Replace tool-result content longer than this many chars with a one-line
    *  metadata stub before summarizing (saves summarizer tokens). */
   toolResultStubThreshold?: number;
+  /** Numbered domain guidelines injected after the base instruction and
+   *  before customCompressionInstructions. See JanitorConfig.compressionGuidelines. */
+  compressionGuidelines?: string[];
+  /** Replace the BASE instruction (default CONTEXT_COMPACTION_INSTRUCTION).
+   *  The replacement must keep the <analysis>/<summary> output contract —
+   *  used internally for the anchored-compaction instruction. */
+  baseInstruction?: string;
 }
 
 /**
@@ -462,7 +650,11 @@ export async function summarizeHistory(
 ): Promise<string> {
   if (messages.length === 0) return '';
 
-  let instruction = Prompts.CONTEXT_COMPACTION_INSTRUCTION;
+  let instruction = opts.baseInstruction ?? Prompts.CONTEXT_COMPACTION_INSTRUCTION;
+  const guidelines = (opts.compressionGuidelines ?? []).map((g) => g.trim()).filter(Boolean);
+  if (guidelines.length > 0) {
+    instruction += `\n\nDomain Guidelines:\n${guidelines.map((g, i) => `${i + 1}. ${g}`).join('\n')}`;
+  }
   const extra = opts.customCompressionInstructions?.trim();
   if (extra) {
     instruction += `\n\nAdditional Instructions:\n${extra}`;
@@ -482,6 +674,17 @@ export async function summarizeHistory(
   return Prompts.formatCompactSummary(raw);
 }
 
+/** In-flight background compression job (compressionScheduling: 'background'). */
+interface BackgroundCompressionJob {
+  settled: boolean;
+  /** Head to splice in ([summaryMessage, ...pinned]) or null on failure. */
+  head: Message[] | null;
+  splitIndex: number;
+  firstMessage: Message | undefined;
+  lastCompressedMessage: Message;
+  toCompress: Message[];
+}
+
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
@@ -493,6 +696,10 @@ export class Janitor {
    * to prevent hammering a broken compression model on every turn.
    */
   private _consecutiveFailures = 0;
+  /** Persistent anchor document ('incremental-anchored' mode). */
+  private _anchorDoc: string | null = null;
+  /** Pending background summarization ('background' scheduling). Not snapshotted. */
+  private _pendingBackground?: BackgroundCompressionJob;
 
   constructor(private config: JanitorConfig) {
     // Warn if feedTokenUsage path is likely used without a compressionModel
@@ -503,6 +710,18 @@ export class Janitor {
           'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.',
       );
     }
+    if (config.archive === 'vfs') {
+      (config.logger ?? console).warn(
+        "[Janitor] archive: 'vfs' requires ContextChef wiring (it substitutes the VFS-backed " +
+          'store). This standalone Janitor has no VFS — archiving is disabled. Pass an ' +
+          'explicit { store } to archive on a standalone Janitor.',
+      );
+    }
+  }
+
+  /** Resolved archive config — the 'vfs' shorthand is only usable via ContextChef wiring. */
+  private get _archive(): CompressionArchiveConfig | undefined {
+    return typeof this.config.archive === 'object' ? this.config.archive : undefined;
   }
 
   public snapshotState(): JanitorSnapshot {
@@ -510,6 +729,7 @@ export class Janitor {
       externalTokenUsage: this._externalTokenUsage,
       suppressNextCompression: this._suppressNextCompression,
       consecutiveFailures: this._consecutiveFailures,
+      anchorDoc: this._anchorDoc,
     };
   }
 
@@ -517,6 +737,9 @@ export class Janitor {
     this._externalTokenUsage = state.externalTokenUsage;
     this._suppressNextCompression = state.suppressNextCompression;
     this._consecutiveFailures = state.consecutiveFailures ?? 0;
+    this._anchorDoc = state.anchorDoc ?? null;
+    // A pending background job belongs to the pre-restore timeline — drop it.
+    this._pendingBackground = undefined;
   }
 
   /**
@@ -527,6 +750,13 @@ export class Janitor {
     this._externalTokenUsage = null;
     this._suppressNextCompression = false;
     this._consecutiveFailures = 0;
+    this._anchorDoc = null;
+    this._pendingBackground = undefined;
+  }
+
+  /** Current anchor document ('incremental-anchored' mode), for observability. */
+  public getAnchorDoc(): string | null {
+    return this._anchorDoc;
   }
 
   /**
@@ -546,30 +776,98 @@ export class Janitor {
    * - Tokenizer path: precise splitIndex based on per-turn token costs.
    * - FeedTokenUsage path: full compression, keeping only the last N turns.
    *
-   * Circuit breaker: if the compressionModel has failed MAX_CONSECUTIVE_COMPRESSION_FAILURES
-   * times in a row, compress() returns history unchanged to avoid futile retries.
+   * Structured in three phases: `_prepareCompression` (budget evaluation +
+   * developer hook), `_summarize` (model call + quality guards + archive),
+   * and finalization (summary application + onCompress + suppression), which
+   * runs inline here for blocking scheduling or in `_trySwapInBackgroundResult`
+   * for background scheduling.
+   *
+   * Guarantees:
+   * - Pinned (turn-scoped) messages inside the compressed span are re-inserted
+   *   verbatim after the summary, never summarized away.
+   * - A failed/rejected/non-shrinking summary leaves history UNCHANGED and
+   *   counts toward the circuit breaker; after
+   *   MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive failures compress()
+   *   short-circuits entirely.
    */
   public async compress(history: Message[]): Promise<Message[]> {
+    // 0. Background job bookkeeping (background scheduling only)
+    const swapped = this._trySwapInBackgroundResult(history);
+    if (swapped) return swapped;
+    if (this._pendingBackground) {
+      // Job still running — don't stack a second evaluation on top of it.
+      return history;
+    }
+
     // Circuit breaker: bail out if compression is consistently failing.
     if (this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
       return history;
     }
 
+    // 1. Prepare: budget evaluation + onBeforeCompress hook
+    const prepared = await this._prepareCompression(history);
+    if (prepared.splitIndex === null) return prepared.history;
+    const { splitIndex } = prepared;
+    history = prepared.history;
+
+    const toCompress = history.slice(0, splitIndex);
+    const toKeep = history.slice(splitIndex);
+    if (toCompress.length === 0) return history;
+
+    // Pinned (turn-scoped) messages survive verbatim in all outcomes below.
+    const pinned = extractPinnedMessages(toCompress);
+
+    // 2a. No compression model: drop the span (placeholder summary via
+    //     onCompress only), keeping pinned messages.
+    if (!this.config.compressionModel) {
+      await this._fireOnCompress(
+        { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
+        toCompress.length,
+        { compressedMessages: toCompress },
+      );
+      this._suppressNextCompression = true;
+      return [...pinned, ...toKeep];
+    }
+
+    // 2b. Background scheduling: kick the summarization off and return
+    //     history unchanged; a later compress() call swaps the result in.
+    if ((this.config.compressionScheduling ?? 'blocking') === 'background') {
+      this._startBackgroundJob(history, toCompress, splitIndex, pinned);
+      return history;
+    }
+
+    // 2c. Blocking: summarize now.
+    const summaryMessage = await this._summarize(toCompress, toKeep);
+    if (summaryMessage === null) return history; // guard/model failure — unchanged
+
+    // 3. Finalize
+    await this._fireOnCompress(summaryMessage, toCompress.length, {
+      compressedMessages: toCompress,
+    });
+    this._suppressNextCompression = true;
+    return [summaryMessage, ...pinned, ...toKeep];
+  }
+
+  /**
+   * Phase 1: evaluates the budget and runs the onBeforeCompress hook.
+   * Returns the (possibly hook-modified) history and the split index, or
+   * `splitIndex: null` when no compression is needed.
+   */
+  private async _prepareCompression(
+    history: Message[],
+  ): Promise<{ history: Message[]; splitIndex: number | null }> {
     const evaluation = this.evaluateBudget(history);
-    if (evaluation === null) return history;
+    if (evaluation === null) return { history, splitIndex: null };
 
     let { splitIndex } = evaluation;
-    const { currentTokens } = evaluation;
+    const { currentTokens, limit } = evaluation;
 
     // Fire onBeforeCompress hook — developer gets a chance to intervene
     const hook = this.config.onBeforeCompress ?? this.config.onBudgetExceeded;
     if (hook) {
       let modified: Message[] | null | undefined;
       try {
-        modified = await hook(history, {
-          currentTokens,
-          limit: this.config.contextWindow,
-        });
+        modified = await hook(history, { currentTokens, limit });
       } catch (error) {
         // Same degradation stance as onCompress: a broken hook must not fail
         // compile(). A throw is treated as "return null" — the failure recipe
@@ -585,13 +883,13 @@ export class Janitor {
       if (modified != null) {
         // Re-evaluate with the developer-modified history
         const reEval = this.evaluateBudget(modified);
-        if (reEval === null) return modified;
+        if (reEval === null) return { history: modified, splitIndex: null };
         history = modified;
         splitIndex = reEval.splitIndex;
       }
     }
 
-    return this.executeCompression(history, splitIndex);
+    return { history, splitIndex };
   }
 
   /**
@@ -637,12 +935,19 @@ export class Janitor {
    * Evaluates token budgets and returns the split index for compression,
    * or null if no compression is needed.
    *
+   * The effective trigger threshold is `contextWindow * triggerRatio`
+   * (default 0.7 — "pre-rot"). In the tokenizer path, `preserveRatio` is
+   * applied to that same effective budget so post-compression usage lands
+   * safely below the trigger point (no compress-every-turn thrash).
+   *
    * Uses turn-based grouping: messages are grouped into atomic turns
    * (assistant+tool_calls+tool_results as one unit), and splits only happen
    * on turn boundaries. This guarantees tool pair integrity and valid
    * message alternation without post-hoc corrections.
    */
-  private evaluateBudget(history: Message[]): { splitIndex: number; currentTokens: number } | null {
+  private evaluateBudget(
+    history: Message[],
+  ): { splitIndex: number; currentTokens: number; limit: number } | null {
     if (history.length === 0) return null;
 
     // E10: Skip check once after a successful compression to avoid cascading re-compression.
@@ -651,6 +956,7 @@ export class Janitor {
       return null;
     }
 
+    const limit = this.config.contextWindow * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
     const turns = groupIntoTurns(history);
 
     // ─── Tokenizer path: precise per-message calculation ───
@@ -675,12 +981,12 @@ export class Janitor {
           effectiveTokens = Math.max(tokenizerTokens, fedTokens ?? 0);
       }
 
-      if (effectiveTokens <= this.config.contextWindow) {
+      if (effectiveTokens <= limit) {
         return null;
       }
 
       const preserveTarget = Math.floor(
-        this.config.contextWindow * (this.config.preserveRatio ?? DEFAULT_PRESERVE_RATIO),
+        limit * (this.config.preserveRatio ?? DEFAULT_PRESERVE_RATIO),
       );
 
       // Iterate turns from the tail, accumulating token costs per turn
@@ -705,14 +1011,14 @@ export class Janitor {
       if (splitTurn <= 0) return null;
 
       const splitIndex = turns[splitTurn].startIndex;
-      return { splitIndex, currentTokens: effectiveTokens };
+      return { splitIndex, currentTokens: effectiveTokens, limit };
     }
 
     // ─── FeedTokenUsage path: simple total comparison, keep last N turns ───
     const currentTokens = this._externalTokenUsage ?? estimateObject(history);
     this._externalTokenUsage = null;
 
-    if (currentTokens <= this.config.contextWindow) {
+    if (currentTokens <= limit) {
       return null;
     }
 
@@ -726,64 +1032,182 @@ export class Janitor {
     if (splitTurn <= 0) return null;
 
     const splitIndex = turns[splitTurn].startIndex;
-    return { splitIndex, currentTokens };
+    return { splitIndex, currentTokens, limit };
   }
 
-  private async executeCompression(history: Message[], splitIndex: number): Promise<Message[]> {
-    const toCompress = history.slice(0, splitIndex);
-    const toKeep = history.slice(splitIndex);
-
-    if (!this.config.compressionModel) {
-      await this._fireOnCompress(
-        { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
-        toCompress.length,
-        { compressedMessages: toCompress },
-      );
-      this._suppressNextCompression = true;
-      return [...toKeep];
-    }
-
-    if (toCompress.length === 0) {
-      return history;
-    }
-
+  /**
+   * Phase 2: produce the summary message for a compressed span, applying
+   * quality guards, archiving, and anchor bookkeeping.
+   *
+   * Returns the ready summary Message, or null on ANY failure — model throw,
+   * shrink-guard rejection, or validateCompression rejection. Every failure
+   * increments the circuit breaker and leaves history for the caller to
+   * return UNCHANGED (never a lossy placeholder truncation — the pre-4.0
+   * behavior of dropping the span with a bare notice applied only to the
+   * model-throw path and made a bad situation worse).
+   */
+  private async _summarize(toCompress: Message[], toKeep: Message[]): Promise<Message | null> {
     const compressionModel = this.config.compressionModel;
+    if (!compressionModel) return null;
+    const logger = this.config.logger ?? console;
+    const anchored = this.config.compressionMode === 'incremental-anchored';
 
+    // ── Model call
     let summaryText: string;
     try {
       summaryText = await summarizeHistory(toCompress, compressionModel, {
         customCompressionInstructions: this.config.customCompressionInstructions,
         toolResultStubThreshold: this.config.toolResultStubThreshold,
+        compressionGuidelines: this.config.compressionGuidelines,
+        baseInstruction: anchored
+          ? Prompts.getAnchoredCompactionInstruction(this._anchorDoc)
+          : undefined,
       });
-      // Reset circuit breaker on success.
-      this._consecutiveFailures = 0;
     } catch (error) {
-      // Increment circuit breaker. After MAX_CONSECUTIVE_COMPRESSION_FAILURES,
-      // compress() will short-circuit to avoid futile retries.
       this._consecutiveFailures++;
-      // The raw error belongs in the logger, not in the LLM-bound summary.
-      // The compressed slice is still dropped — recover it via onCompress
-      // details if you need durable history.
-      (this.config.logger ?? console).warn(
-        '[context-chef] compression model failed — compressed messages replaced by a bare truncation notice',
+      logger.warn(
+        '[context-chef] compression model failed — history left unchanged (failure ' +
+          `${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
         error,
       );
-      summaryText = Prompts.getFallbackCompressionSummary(toCompress.length);
+      return null;
     }
 
-    const summaryMessage: Message = {
+    // ── Shrink guard: a summary that doesn't shrink the span is a failure.
+    //    Only applied to spans >= MIN_SHRINK_GUARD_SPAN_CHARS — tiny spans
+    //    can't shrink below a well-formed summary's natural length, and the
+    //    death loop this prevents only occurs on large spans.
+    const minShrink = this.config.minShrinkRatio ?? DEFAULT_MIN_SHRINK_RATIO;
+    if (minShrink > 0) {
+      const spanChars = toCompress.reduce(
+        (sum, m) => sum + m.content.length + (m.thinking?.thinking.length ?? 0),
+        0,
+      );
+      if (
+        spanChars >= MIN_SHRINK_GUARD_SPAN_CHARS &&
+        summaryText.length > (1 - minShrink) * spanChars
+      ) {
+        this._consecutiveFailures++;
+        logger.warn(
+          `[context-chef] compression result failed the shrink guard (summary ${summaryText.length} chars ` +
+            `vs span ${spanChars} chars, minShrinkRatio ${minShrink}) — history left unchanged (failure ` +
+            `${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
+        );
+        return null;
+      }
+    }
+
+    // ── Validation gate
+    if (this.config.validateCompression) {
+      let valid: boolean;
+      try {
+        valid = await this.config.validateCompression(summaryText, {
+          compressed: toCompress,
+          kept: toKeep,
+        });
+      } catch (error) {
+        logger.warn(
+          '[context-chef] validateCompression threw — treating the summary as rejected',
+          error,
+        );
+        valid = false;
+      }
+      if (!valid) {
+        this._consecutiveFailures++;
+        logger.warn(
+          '[context-chef] compression summary rejected by validateCompression — history left ' +
+            `unchanged (failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
+        );
+        return null;
+      }
+    }
+
+    // ── Success: breaker reset, anchor bookkeeping, best-effort archive
+    this._consecutiveFailures = 0;
+    if (anchored) {
+      this._anchorDoc = summaryText;
+    }
+
+    let citation = '';
+    const archive = this._archive;
+    if (archive) {
+      try {
+        const serialized = JSON.stringify({ version: 1, messages: toCompress });
+        const uri = await archive.store(serialized, { messageCount: toCompress.length });
+        citation = `\n\n${Prompts.getArchiveCitation(uri, toCompress.length)}`;
+      } catch (error) {
+        logger.warn(
+          '[context-chef] compression archive store failed — proceeding without a citation',
+          error,
+        );
+      }
+    }
+
+    return {
       role: 'user',
-      content: Prompts.getCompactSummaryWrapper(summaryText),
+      content: Prompts.getCompactSummaryWrapper(summaryText + citation),
     };
+  }
 
-    await this._fireOnCompress(summaryMessage, toCompress.length, {
-      compressedMessages: toCompress,
+  /** Kicks off a background summarization job ('background' scheduling). */
+  private _startBackgroundJob(
+    history: Message[],
+    toCompress: Message[],
+    splitIndex: number,
+    pinned: Message[],
+  ): void {
+    const job: BackgroundCompressionJob = {
+      settled: false,
+      head: null,
+      splitIndex,
+      firstMessage: history[0],
+      lastCompressedMessage: toCompress[toCompress.length - 1],
+      toCompress,
+    };
+    this._pendingBackground = job;
+    const toKeep = history.slice(splitIndex);
+    void this._summarize(toCompress, toKeep)
+      .then((summaryMessage) => {
+        job.head = summaryMessage === null ? null : [summaryMessage, ...pinned];
+      })
+      .catch((error) => {
+        // _summarize handles its own failures; this is a belt-and-braces net.
+        (this.config.logger ?? console).warn(
+          '[context-chef] background compression job crashed unexpectedly',
+          error,
+        );
+      })
+      .finally(() => {
+        job.settled = true;
+      });
+  }
+
+  /**
+   * Applies a finished background job to the current history, if it is still
+   * applicable. Returns the swapped history, or null when there is nothing to
+   * apply (no job, job unsettled, job failed, or job stale — the compressed
+   * span is no longer a prefix of the current history, checked by message
+   * identity).
+   */
+  private _trySwapInBackgroundResult(history: Message[]): Message[] | null {
+    const job = this._pendingBackground;
+    if (!job || !job.settled) return null;
+    this._pendingBackground = undefined;
+    if (!job.head) return null; // failed job — breaker already counted it
+
+    const stillPrefix =
+      history.length >= job.splitIndex &&
+      history[0] === job.firstMessage &&
+      history[job.splitIndex - 1] === job.lastCompressedMessage;
+    if (!stillPrefix) return null; // stale — discard, fall through to fresh evaluation
+
+    // Finalize at application time (not at computation time): persistence
+    // consumers should only see summaries that actually entered the history.
+    void this._fireOnCompress(job.head[0], job.toCompress.length, {
+      compressedMessages: job.toCompress,
     });
-
-    // E10: Suppress the immediate next compression check.
     this._suppressNextCompression = true;
-
-    return [summaryMessage, ...toKeep];
+    return [...job.head, ...history.slice(job.splitIndex)];
   }
 
   /**

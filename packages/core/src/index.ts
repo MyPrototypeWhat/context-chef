@@ -55,6 +55,7 @@ export { fromOpenAI } from './adapters/openAIAdapter';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
+  type CompressionArchiveConfig,
   type CompressionDetails,
   compactMessages,
   flattenForCompression,
@@ -102,6 +103,7 @@ export {
   type VFSResult,
   type VFSStorageAdapter,
 } from './modules/offloader';
+export { getRecallToolDefinition } from './modules/offloader/recallTool';
 export {
   Pruner,
   type PrunerConfig,
@@ -317,9 +319,30 @@ export class ContextChef {
     // Bridge Janitor's onCompress callback to the unified event system
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
     const userOnCompress = janitorConfig.onCompress;
+    // The 'vfs' archive shorthand stores compressed spans in this chef's VFS.
+    // Substituted here because only the facade holds the Offloader.
+    const archive =
+      janitorConfig.archive === 'vfs'
+        ? {
+            store: async (serialized: string): Promise<string> => {
+              // threshold 0 forces storage regardless of size; head/tail 0
+              // because only the URI is used (no inline preview needed).
+              const result = await this.offloader.offloadAsync(serialized, {
+                threshold: 0,
+                headChars: 0,
+                tailChars: 0,
+              });
+              if (!result.isOffloaded || !result.uri) {
+                throw new Error('VFS archive store failed: content was not offloaded');
+              }
+              return result.uri;
+            },
+          }
+        : janitorConfig.archive;
     this.janitor = new Janitor({
       logger: config.logger,
       ...janitorConfig,
+      archive,
       onCompress: async (summary, truncatedCount, details) => {
         if (userOnCompress) await userOnCompress(summary, truncatedCount, details);
         await this.emitter.emit(
@@ -658,6 +681,16 @@ export class ContextChef {
   public async offloadAsync(content: string, options?: OffloadOptions): Promise<string> {
     const result = await this.offloader.offloadAsync(content, options);
     return result.content;
+  }
+
+  /**
+   * Resolves a `context://` URI back to its full stored content — offloaded
+   * tool output or an archived compressed span (see `JanitorConfig.archive`).
+   * Returns null when the URI is unknown. Pair with
+   * {@link getRecallToolDefinition} to let the model request retrieval.
+   */
+  public async resolveRecall(uri: string): Promise<string | null> {
+    return this.offloader.resolveAsync(uri);
   }
 
   /**

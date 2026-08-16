@@ -114,7 +114,7 @@ Your final summary (inside <summary></summary> tags) should be structured, conci
    What has been completed so far. Key outputs, artifacts, or findings produced. Any state or identifiers that need to persist (file paths, URLs, ticket IDs, etc.) — preserve these verbatim.
 
 3. Important Discoveries
-   Constraints or requirements uncovered. Decisions made and their rationale. Approaches that were tried and didn't work (and why). Errors encountered and how they were resolved.
+   Constraints or requirements uncovered. Decisions made and their rationale. Approaches that were tried and didn't work (and why). Errors encountered and how they were resolved. Prioritize decision-relevant information — facts that would change future actions, exact identifiers, and the reasons approaches failed — over narrative completeness.
 
 4. Next Steps
    Specific actions needed to complete the task. Any blockers or open questions. Priority order if multiple steps remain.
@@ -181,6 +181,58 @@ Be concise but complete — err on the side of including information that would 
     // Collapse 3+ consecutive newlines into 2, then trim
     return out.replace(/\n{3,}/g, '\n\n').trim();
   },
+
+  /**
+   * Instruction for 'incremental-anchored' compression mode: the model
+   * maintains a persistent "anchor document" and merges each newly evicted
+   * span into it, instead of regenerating the whole summary every time.
+   * Keeps the exact same <analysis>/<summary> output contract as
+   * CONTEXT_COMPACTION_INSTRUCTION so formatCompactSummary() parses both.
+   */
+  getAnchoredCompactionInstruction: (previousAnchor: string | null): string => {
+    const anchorSection = previousAnchor
+      ? `A running summary (the "anchor document") already covers everything that happened before the messages above. Here is the current anchor document:
+
+<anchor>
+${previousAnchor}
+</anchor>
+
+Update the anchor document by merging in what the messages above add. Do not drop or rewrite existing anchor content unless the messages above supersede it. Deduplicate anything the messages repeat (including any earlier continuation summaries embedded in them — the anchor already covers that ground).`
+      : `No anchor document exists yet. Create the initial anchor document from the messages above.`;
+
+    return `
+You maintain a persistent continuation summary (the "anchor document") for a conversation that has exceeded its context window. ${anchorSection}
+
+Before providing the updated anchor, wrap your analysis in <analysis></analysis> tags to organize your thoughts. This scratchpad will be stripped from the final output.
+
+Your final output (inside <summary></summary> tags) must be the COMPLETE updated anchor document, structured as:
+
+1. Task Overview
+   The user's core request and success criteria. Any clarifications or constraints specified.
+
+2. Current State
+   What has been completed so far. Key outputs, artifacts, or findings produced. Identifiers that must persist (file paths, URLs, ticket IDs, etc.) — preserve these verbatim.
+
+3. Important Discoveries
+   Constraints uncovered, decisions and their rationale, approaches that failed (and why), errors resolved. Prioritize decision-relevant information — facts that would change future actions — over narrative completeness.
+
+4. Next Steps
+   Specific actions needed to complete the task, in priority order. Blockers or open questions.
+
+5. Context to Preserve
+   User preferences and style requirements. Domain-specific details. Promises made to the user.
+
+Be concise but complete. The anchor document replaces all prior history, so anything not in it is lost.
+`.trim();
+  },
+
+  /**
+   * Citation line appended to a compression summary when the compressed span
+   * was archived (reversible compression). Points the model at the archive
+   * URI so exact details remain retrievable via a recall tool.
+   */
+  getArchiveCitation: (uri: string, messageCount: number): string =>
+    `[The ${messageCount} compacted messages are archived in full at ${uri} — retrieve them if exact details beyond this summary are needed.]`,
 
   /**
    * Wraps a compression summary with context explanation.

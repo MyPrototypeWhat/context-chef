@@ -101,21 +101,57 @@ export interface Message {
    * to guide the model toward describing media content in the summary.
    */
   attachments?: Attachment[];
+  /**
+   * Constraint pinning: a pinned message survives every lossy operation
+   * verbatim. `Janitor.compress()` re-inserts it (in original order) right
+   * after the summary instead of summarizing it away, and `compact()` never
+   * clears its tool results / thinking / reasoning tags.
+   *
+   * Pinning is turn-scoped: pinning any message of an atomic turn (assistant
+   * with tool_calls + its tool results) protects the whole turn, so tool
+   * pairing stays intact.
+   *
+   * Use for governance/safety constraints, standing task rules, and anything
+   * whose loss would change behavior. Research background: compaction that
+   * drops policy text raises constraint-violation rates from 0% to 30%+
+   * (arXiv:2606.22528); pinning restores 0%.
+   */
+  pinned?: boolean;
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }
 
 // ─── Compact options ───
 
-/** Object form for tool-result clearing with keepRecent support. */
+/** Object form for tool-result clearing with keepRecent / name-based filtering. */
 export interface ToolResultClearTarget {
   target: 'tool-result';
-  /** Number of most recent tool results to preserve. Floored to 1 (never clears all). */
+  /** Number of most recent clearable tool results to preserve. Floored to 1 (never clears all). */
   keepRecent?: number;
+  /**
+   * Only clear results produced by these tool names. Tool names are resolved
+   * from the preceding assistant turn's `tool_calls` via `tool_call_id`;
+   * results whose name cannot be resolved are left untouched when a filter
+   * is present. Mirrors Anthropic `clear_tool_uses` semantics locally.
+   */
+  toolFilter?: string[];
+  /**
+   * Never clear results produced by these tool names. Applied after
+   * `toolFilter` (an exemption wins over a filter match). Mirrors Anthropic
+   * `exclude_tools`.
+   */
+  exemptTools?: string[];
 }
 
-/** Clearing targets for `Janitor.compact()`. */
-export type ClearTarget = 'thinking' | 'tool-result' | ToolResultClearTarget;
+/**
+ * Clearing targets for `Janitor.compact()`.
+ *
+ * - `'thinking'`: strips Anthropic-native `thinking` / `redacted_thinking` fields
+ * - `'tool-result'`: replaces old tool-result content with a placeholder
+ * - `'reasoning-tags'`: strips `<think>...</think>` XML blocks from assistant
+ *   content strings (DeepSeek-R1 / QwQ / locally-hosted reasoning models)
+ */
+export type ClearTarget = 'thinking' | 'tool-result' | 'reasoning-tags' | ToolResultClearTarget;
 
 /**
  * Options for `Janitor.compact()` — mechanical, zero-LLM-cost history compaction.
