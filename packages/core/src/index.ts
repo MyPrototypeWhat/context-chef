@@ -53,6 +53,11 @@ export {
 export { fromAnthropic } from './adapters/anthropicAdapter';
 export { fromGemini } from './adapters/geminiAdapter';
 export { fromOpenAI } from './adapters/openAIAdapter';
+export {
+  fromOpenAIResponses,
+  OpenAIResponsesAdapter,
+  type OpenAIResponsesPayload,
+} from './adapters/openAIResponsesAdapter';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
