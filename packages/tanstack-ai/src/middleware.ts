@@ -7,9 +7,9 @@ import {
   Janitor,
   type Message,
   normalizeSessionKey,
+  objectToXml,
   Prompts,
   SessionPool,
-  XmlGenerator,
 } from '@context-chef/core';
 import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
 
@@ -261,7 +261,7 @@ async function injectDynamicState(
   config: DynamicStateConfig,
 ): Promise<{ messages: ModelMessage[]; systemPrompts: string[] }> {
   const state = await config.getState();
-  const xml = XmlGenerator.objectToXml(state, 'dynamic_state');
+  const xml = objectToXml(state, 'dynamic_state');
   const placement = config.placement ?? 'last_user';
 
   if (placement === 'system') {

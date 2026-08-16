@@ -11,7 +11,7 @@
  *   npx tsx examples/basic-chat.ts
  */
 
-import { ContextChef } from 'context-chef';
+import { ContextChef, flattenForCompression } from '@context-chef/core';
 import OpenAI from 'openai';
 import { z } from 'zod';
 
@@ -24,17 +24,9 @@ const chef = new ContextChef({
     compressionModel: async (msgs) => {
       const res = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Summarize the following conversation concisely, preserving key facts and decisions.',
-          },
-          ...msgs.map((m) => ({
-            role: m.role as 'user' | 'assistant',
-            content: String(m.content),
-          })),
-        ],
+        // flattenForCompression maps tool results / tool calls to plain
+        // user/assistant text — chat endpoints reject raw `tool` roles.
+        messages: flattenForCompression(msgs),
       });
       return res.choices[0].message.content ?? '';
     },
@@ -60,12 +52,12 @@ async function chat(userMessage: string) {
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o',
-    ...payload,
+    messages: payload.messages,
   });
 
   // Feed token usage back for compression tracking
   if (response.usage) {
-    chef.feedTokenUsage(response.usage.prompt_tokens);
+    chef.reportTokenUsage(response.usage.prompt_tokens);
   }
 
   const reply = response.choices[0].message.content ?? '';

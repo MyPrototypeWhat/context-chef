@@ -10,7 +10,7 @@
  *   npx tsx examples/multi-provider.ts
  */
 
-import { ContextChef } from 'context-chef';
+import { ContextChef } from '@context-chef/core';
 import { z } from 'zod';
 
 const TaskSchema = z.object({
@@ -68,7 +68,7 @@ async function main() {
   console.log(`Has cache_control: ${JSON.stringify(anthropicPayload).includes('cache_control')}\n`);
 
   console.log('--- Gemini Payload ---');
-  console.log(`Contents: ${geminiPayload.contents.length}`);
+  console.log(`Contents: ${geminiPayload.messages.length}`);
   console.log(`System instruction: ${geminiPayload.systemInstruction ? 'present' : 'absent'}\n`);
 
   console.log('Same prompt, three formats. Zero rewrite.');

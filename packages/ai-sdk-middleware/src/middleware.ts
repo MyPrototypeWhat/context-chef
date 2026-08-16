@@ -14,11 +14,11 @@ import {
   Janitor,
   type Message,
   normalizeSessionKey,
+  objectToXml,
   Prompts,
   SessionPool,
   type SummarizeHistoryOptions,
   summarizeHistory,
-  XmlGenerator,
 } from '@context-chef/core';
 import {
   generateText,
@@ -387,7 +387,7 @@ async function injectDynamicState(
   config: DynamicStateConfig,
 ): Promise<LanguageModelV4Prompt> {
   const state = await config.getState();
-  const xml = XmlGenerator.objectToXml(state, 'dynamic_state');
+  const xml = objectToXml(state, 'dynamic_state');
   const placement = config.placement ?? 'last_user';
 
   if (placement === 'system') {

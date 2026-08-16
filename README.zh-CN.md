@@ -392,7 +392,7 @@ chef.getPruner().setBlockedTools(["delete_file", "tail_logs"]);
 
 // agent loop 里每次 dispatch 前过一道：
 for (const call of response.tool_calls) {
-  const check = chef.checkToolCall(call);
+  const check = chef.checkToolCall({ name: call.function.name });
   if (!check.allowed) {
     history.push({
       role: "tool",

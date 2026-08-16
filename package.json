@@ -15,5 +15,6 @@
     "@biomejs/biome": "^2.4.15",
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.31.0"
-  }
+  },
+  "packageManager": "pnpm@10.28.1"
 }

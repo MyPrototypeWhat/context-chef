@@ -9,7 +9,7 @@
  *   npx tsx examples/tool-pruning.ts
  */
 
-import { ContextChef } from 'context-chef';
+import { ContextChef } from '@context-chef/core';
 
 // ============================================
 // Example 1: Flat Mode (tag-based pruning)
@@ -29,13 +29,13 @@ function flatModeExample() {
   ]);
 
   // Prune for a file-reading task
-  const result = chef.tools().pruneByTask('Read the auth.ts file and check for bugs');
+  const result = chef.getPruner().pruneByTask('Read the auth.ts file and check for bugs');
   console.log(
     'Task: "Read the auth.ts file"',
     '\nKept:',
     result.tools.map((t) => t.name),
     '\nRemoved:',
-    result.removed.map((t) => t.name),
+    result.removed,
     '\n',
   );
 }
@@ -100,7 +100,7 @@ function namespaceModeExample() {
     },
   ]);
 
-  const { tools, directoryXml } = chef.tools().compile();
+  const { tools, directoryXml } = chef.getPruner().compile();
 
   console.log(
     'Compiled tools (always stable):',

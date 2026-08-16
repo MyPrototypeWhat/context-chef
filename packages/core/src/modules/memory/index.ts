@@ -222,8 +222,10 @@ export class Memory {
 
   /**
    * Sweep expired entries: delete them from the store and notify via onMemoryExpired.
-   * Called by ContextChef.compile() before injection.
    * Returns the keys that were expired.
+   *
+   * Standalone API — ContextChef.compile() uses {@link compileArtifacts}, which
+   * folds the sweep into its single store read.
    */
   async sweepExpired(): Promise<string[]> {
     const allEntries = await this.getAll();
@@ -231,23 +233,71 @@ export class Memory {
 
     for (const entry of allEntries) {
       if (this._isExpired(entry)) {
-        if (this.onMemoryExpired) {
-          await this.onMemoryExpired(entry);
-        }
-        await this.store.delete(entry.key);
-        if (this.onMemoryChanged) {
-          await this.onMemoryChanged({
-            type: 'expire',
-            key: entry.key,
-            value: null,
-            oldValue: entry.value,
-          });
-        }
+        await this._expireEntry(entry);
         expiredKeys.push(entry.key);
       }
     }
 
     return expiredKeys;
+  }
+
+  /**
+   * Single-pass compile-time artifact builder: ONE full store read per compile.
+   * Sweeps expired entries, applies the selector exactly once, and derives the
+   * injection XML and tool definitions from that same read.
+   *
+   * Motivation: the previous compile() flow performed four full store scans
+   * (sweepExpired → getSelectedEntries → toXml → getToolDefinitions), which on
+   * async stores (Redis etc.) meant 4×(1 + N) network round-trips per compile,
+   * and a non-deterministic selector could desync `injectedMemoryKeys` from the
+   * actually-injected XML.
+   */
+  async compileArtifacts(): Promise<{
+    /** Keys swept this call (onMemoryExpired / onMemoryChanged already fired). */
+    expiredKeys: string[];
+    /** Post-sweep entries with the selector applied exactly once. */
+    selected: MemoryEntry[];
+    /** `<memory>` XML for the selected entries, or '' when none. */
+    dataXml: string;
+    /** Tool definitions derived from the post-sweep live keys. */
+    toolDefinitions: ToolDefinition[];
+  }> {
+    const all = await this.getAll();
+    const live: MemoryEntry[] = [];
+    const expiredKeys: string[] = [];
+
+    for (const entry of all) {
+      if (this._isExpired(entry)) {
+        await this._expireEntry(entry);
+        expiredKeys.push(entry.key);
+      } else {
+        live.push(entry);
+      }
+    }
+
+    const selected = this.selector ? this.selector(live) : live;
+    return {
+      expiredKeys,
+      selected,
+      dataXml: this._renderXml(selected),
+      toolDefinitions: this._buildToolDefinitions(live.map((e) => e.key)),
+    };
+  }
+
+  /** Delete an expired entry and fire the expiry hooks. */
+  private async _expireEntry(entry: MemoryEntry): Promise<void> {
+    if (this.onMemoryExpired) {
+      await this.onMemoryExpired(entry);
+    }
+    await this.store.delete(entry.key);
+    if (this.onMemoryChanged) {
+      await this.onMemoryChanged({
+        type: 'expire',
+        key: entry.key,
+        value: null,
+        oldValue: entry.value,
+      });
+    }
   }
 
   /**
@@ -262,8 +312,17 @@ export class Memory {
     return entries;
   }
 
-  async toXml(): Promise<string> {
-    const entries = await this.getSelectedEntries();
+  /**
+   * Render the `<memory>` XML block. When `entries` is provided they are
+   * rendered directly (no store read); otherwise the selected entries are
+   * fetched first.
+   */
+  async toXml(entries?: MemoryEntry[]): Promise<string> {
+    const resolved = entries ?? (await this.getSelectedEntries());
+    return this._renderXml(resolved);
+  }
+
+  private _renderXml(entries: MemoryEntry[]): string {
     if (entries.length === 0) return '';
     const inner = entries
       .map((e) => {
@@ -360,9 +419,13 @@ export class Memory {
    * - `modify_memory`: Update or delete an existing memory entry (key is enum of existing keys).
    *   Only generated when there are existing keys.
    */
-  async getToolDefinitions(): Promise<ToolDefinition[]> {
+  async getToolDefinitions(existingKeys?: string[]): Promise<ToolDefinition[]> {
+    const keys = existingKeys ?? (await this.getAll()).map((e) => e.key);
+    return this._buildToolDefinitions(keys);
+  }
+
+  private _buildToolDefinitions(existingKeys: string[]): ToolDefinition[] {
     const tools: ToolDefinition[] = [];
-    const existingKeys = (await this.getAll()).map((e) => e.key);
 
     // create_memory
     const createKeyParam: Record<string, unknown> = {

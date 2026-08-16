@@ -61,10 +61,14 @@ export {
   groupIntoTurns,
   Janitor,
   type JanitorConfig,
+  type JanitorConfigWithoutTokenizer,
+  type JanitorConfigWithTokenizer,
   type JanitorSnapshot,
   type SummarizeHistoryOptions,
   summarizeHistory,
   type Turn,
+  type UsagePreferenceWithoutTokenizer,
+  type UsagePreferenceWithTokenizer,
 } from './modules/janitor';
 export {
   type CompactionPlan,
@@ -95,9 +99,15 @@ export {
   type VFSConfig,
   type VFSEntryMeta,
   type VFSEvictionReason,
+  type VFSResult,
   type VFSStorageAdapter,
 } from './modules/offloader';
-export { Pruner, type PrunerConfig, type PrunerSnapshot } from './modules/pruner';
+export {
+  Pruner,
+  type PrunerConfig,
+  type PrunerResult,
+  type PrunerSnapshot,
+} from './modules/pruner';
 export {
   type FormatSkillListingOptions,
   formatSkillListing,
@@ -111,7 +121,6 @@ export {
   type SkillLoadResult,
 } from './modules/skill';
 export * from './prompts';
-export type { ChefLogger, ClearTarget, CompactOptions } from './types';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
@@ -122,7 +131,7 @@ export {
   SessionPool,
 } from './utils/sessionPool';
 export { TokenUtils } from './utils/tokenUtils';
-export { XmlGenerator } from './utils/xmlGenerator';
+export { objectToXml, XmlGenerator } from './utils/xmlGenerator';
 
 /**
  * Read-only snapshot of the current context, passed to the onBeforeCompile hook.
@@ -273,7 +282,7 @@ export class ContextChef {
     context: BeforeCompileContext,
   ) => string | null | Promise<string | null>;
   private defaultTarget?: TargetProvider | ITargetAdapter;
-  private emitter = new TypedEventEmitter<ChefEvents>();
+  private emitter: TypedEventEmitter<ChefEvents>;
 
   /**
    * Cancellation signal for the in-flight compile() call. Set in compile()
@@ -296,6 +305,7 @@ export class ContextChef {
   private _skillInstructions: string = '';
 
   constructor(config: ChefConfig = {}) {
+    this.emitter = new TypedEventEmitter<ChefEvents>(config.logger);
     this.assembler = new Assembler();
     this.offloader = new Offloader({ logger: config.logger, ...config.vfs });
     this.guardrail = new Guardrail();
@@ -651,7 +661,8 @@ export class ContextChef {
   }
 
   /**
-   * Builds the per-turn memory artifacts that {@link compile} injects into the sandwich.
+   * Shapes the per-turn memory artifacts that {@link compile} injects into the
+   * sandwich, from a single-read {@link Memory.compileArtifacts} result.
    *
    * Behavior depends on {@link MemoryConfig.memoryPlacement}:
    * - `'after_system'` (default): the stable instruction and the volatile
@@ -663,44 +674,28 @@ export class ContextChef {
    *   Assembler to append to the last user message. The volatile text never
    *   enters the top-level system parameter on Anthropic/Gemini, so cache
    *   breakpoints earlier in the message stream survive memory mutations.
-   *
-   * Consolidates what was previously two `getSelectedEntries()` round-trips
-   * (one for the XML, one for `injectedMemoryKeys`) into a single read.
    */
-  private async _buildMemorySandwichParts(): Promise<{
-    topMessages: Message[];
-    tailDataXml: string;
-    injectedMemoryKeys: string[];
-  }> {
-    if (!this.memory) {
-      return { topMessages: [], tailDataXml: '', injectedMemoryKeys: [] };
-    }
+  private _shapeMemorySandwichParts(
+    dataXml: string,
+    injectedMemoryKeys: string[],
+  ): { topMessages: Message[]; tailDataXml: string } {
+    if (!this.memory) return { topMessages: [], tailDataXml: '' };
 
-    const selected = await this.memory.getSelectedEntries();
-    const injectedMemoryKeys = selected.map((e) => e.key);
-
-    let dataBlock = '';
-    if (selected.length > 0) {
-      const xml = await this.memory.toXml();
-      dataBlock = Prompts.getMemoryBlock(xml, injectedMemoryKeys, this.memory.allowedKeys);
-    }
+    const dataBlock = dataXml
+      ? Prompts.getMemoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
+      : '';
 
     if (this.memory.placement === 'after_system') {
       const content = dataBlock
         ? `${Prompts.MEMORY_INSTRUCTION}\n\n${dataBlock}`
         : Prompts.MEMORY_INSTRUCTION;
-      return {
-        topMessages: [{ role: 'system', content }],
-        tailDataXml: '',
-        injectedMemoryKeys,
-      };
+      return { topMessages: [{ role: 'system', content }], tailDataXml: '' };
     }
 
     // 'before_history_tail': instruction at top, volatile data at tail
     return {
       topMessages: [{ role: 'system', content: Prompts.MEMORY_INSTRUCTION }],
       tailDataXml: dataBlock,
-      injectedMemoryKeys,
     };
   }
 
@@ -893,30 +888,33 @@ export class ContextChef {
         );
       }
 
-      // 4. Memory: sweep expired entries, then advance turn counter
+      // 4+5. Memory: single-read artifacts — sweep expired entries, apply the
+      //      selector exactly once, and derive injection XML + tool definitions
+      //      from the same store read (Memory.compileArtifacts), then advance
+      //      the turn counter and shape the sandwich parts:
+      //      - `topMessages`: system message(s) that always sit at the top
+      //      - `tailDataXml`: volatile <memory> block to inject at user tail
+      //                       (empty unless memoryPlacement === 'before_history_tail')
       let memoryExpiredKeys: string[] = [];
       let injectedMemoryKeys: string[] = [];
+      let memoryTools: ToolDefinition[] = [];
+      let memoryMessages: Message[] = [];
+      let memoryTailDataXml = '';
       if (this.memory) {
-        memoryExpiredKeys = await this.memory.sweepExpired();
+        const artifacts = await this.memory.compileArtifacts();
         this.memory.advanceTurn();
+        memoryExpiredKeys = artifacts.expiredKeys;
+        injectedMemoryKeys = artifacts.selected.map((e) => e.key);
+        memoryTools = artifacts.toolDefinitions;
+        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, injectedMemoryKeys);
+        memoryMessages = parts.topMessages;
+        memoryTailDataXml = parts.tailDataXml;
       }
-      // sweepExpired() awaits per-entry onMemoryExpired hooks, so handler
+      // compileArtifacts() awaits per-entry onMemoryExpired hooks, so handler
       // latency adds up before the next throwIfAborted at step 7. Caveat:
       // turn counter has already advanced; aborting here means TTL state
       // diverges from payload state. Documented in CompileOptions.signal.
       signal?.throwIfAborted();
-
-      // 5. Memory: build sandwich parts (top instruction + optional tail data)
-      //    `_buildMemorySandwichParts` consolidates the previously-duplicated
-      //    `getSelectedEntries()` calls into a single read and returns:
-      //      - `topMessages`: system message(s) that always sit at the top
-      //      - `tailDataXml`: volatile <memory> block to inject at user tail
-      //                       (empty unless memoryPlacement === 'before_history_tail')
-      //      - `injectedMemoryKeys`: meta for the compile() return payload
-      const memoryParts = await this._buildMemorySandwichParts();
-      const memoryMessages = memoryParts.topMessages;
-      const memoryTailDataXml = memoryParts.tailDataXml;
-      injectedMemoryKeys = memoryParts.injectedMemoryKeys;
 
       // 5b. Skill instructions slot — single dedicated system message between
       //     userSystemPrompt and memoryMessages. NOT appended to user system
@@ -979,7 +977,6 @@ export class ContextChef {
       const adapterPayload = adapter.compile([...rawPayload.messages]);
 
       const prunerTools = this._getPrunerTools();
-      const memoryTools = this.memory ? await this.memory.getToolDefinitions() : [];
       const tools = [...prunerTools, ...memoryTools];
       const meta: CompileMeta = { injectedMemoryKeys, memoryExpiredKeys };
       if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;

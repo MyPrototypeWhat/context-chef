@@ -1198,3 +1198,126 @@ describe('Memory selector', () => {
     expect(memMsg?.content).not.toContain('trivial');
   });
 });
+
+describe('Memory compileArtifacts (single-scan)', () => {
+  /** Store wrapper counting full-scan reads (keys() calls). */
+  function countingStore() {
+    const inner = new InMemoryStore();
+    let keysCalls = 0;
+    const store = {
+      get: (key: string) => inner.get(key),
+      set: (key: string, entry: Parameters<InMemoryStore['set']>[1]) => inner.set(key, entry),
+      delete: (key: string) => inner.delete(key),
+      keys: () => {
+        keysCalls++;
+        return inner.keys();
+      },
+    };
+    return { store, getKeysCalls: () => keysCalls };
+  }
+
+  it('performs exactly one keys() scan and calls the selector exactly once', async () => {
+    const { store, getKeysCalls } = countingStore();
+    const selectorSpy = vi.fn((entries) => entries);
+    const mem = new Memory({ store, selector: selectorSpy });
+
+    await mem.set('a', '1');
+    await mem.set('b', '2');
+    const before = getKeysCalls();
+
+    const artifacts = await mem.compileArtifacts();
+
+    expect(getKeysCalls() - before).toBe(1);
+    expect(selectorSpy).toHaveBeenCalledTimes(1);
+    expect(artifacts.selected.map((e) => e.key).sort()).toEqual(['a', 'b']);
+    expect(artifacts.dataXml).toContain('key="a"');
+    expect(artifacts.toolDefinitions.map((t) => t.name)).toEqual([
+      'create_memory',
+      'modify_memory',
+    ]);
+  });
+
+  it('one compile() does exactly one store scan', async () => {
+    const { store, getKeysCalls } = countingStore();
+    const chef = new ContextChef({ memory: { store } });
+    await chef.getMemory().set('k', 'v');
+
+    chef.setSystemPrompt([{ role: 'system', content: 'sys' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+    const before = getKeysCalls();
+
+    await chef.compile({ target: 'openai' });
+
+    expect(getKeysCalls() - before).toBe(1);
+  });
+
+  it('sweeps expired entries, fires hooks, and excludes them from selected + tools', async () => {
+    const store = new InMemoryStore();
+    const expired = vi.fn();
+    const changed = vi.fn();
+    const mem = new Memory({ store, onMemoryExpired: expired, onMemoryChanged: changed });
+
+    await mem.set('stale', 'old', { ttl: 1 });
+    await mem.set('fresh', 'new');
+    mem.advanceTurn(); // stale now at its expiry turn
+
+    const artifacts = await mem.compileArtifacts();
+
+    expect(artifacts.expiredKeys).toEqual(['stale']);
+    expect(artifacts.selected.map((e) => e.key)).toEqual(['fresh']);
+    expect(artifacts.dataXml).not.toContain('stale');
+    // modify_memory enum only carries live keys
+    const modify = artifacts.toolDefinitions.find((t) => t.name === 'modify_memory');
+    expect(JSON.stringify(modify?.parameters)).toContain('fresh');
+    expect(JSON.stringify(modify?.parameters)).not.toContain('stale');
+    expect(expired).toHaveBeenCalledTimes(1);
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ type: 'expire', key: 'stale' }));
+  });
+
+  it('non-deterministic selector cannot desync injected keys from the XML', async () => {
+    const store = new InMemoryStore();
+    let flip = false;
+    const mem = new Memory({
+      store,
+      selector: (entries) => {
+        flip = !flip;
+        return flip ? entries.filter((e) => e.key === 'a') : entries.filter((e) => e.key === 'b');
+      },
+    });
+    await mem.set('a', '1');
+    await mem.set('b', '2');
+
+    const artifacts = await mem.compileArtifacts();
+    const keys = artifacts.selected.map((e) => e.key);
+    for (const key of keys) {
+      expect(artifacts.dataXml).toContain(`key="${key}"`);
+    }
+    const other = keys.includes('a') ? 'b' : 'a';
+    expect(artifacts.dataXml).not.toContain(`key="${other}"`);
+  });
+
+  it('toXml(entries) renders the given entries without a store read', async () => {
+    const { store, getKeysCalls } = countingStore();
+    const mem = new Memory({ store });
+    await mem.set('x', 'val');
+    const entries = await mem.getAll();
+    const before = getKeysCalls();
+
+    const xml = await mem.toXml(entries);
+
+    expect(getKeysCalls() - before).toBe(0);
+    expect(xml).toContain('key="x"');
+  });
+
+  it('getToolDefinitions(existingKeys) skips the store read', async () => {
+    const { store, getKeysCalls } = countingStore();
+    const mem = new Memory({ store });
+    const before = getKeysCalls();
+
+    const tools = await mem.getToolDefinitions(['pre']);
+
+    expect(getKeysCalls() - before).toBe(0);
+    const modify = tools.find((t) => t.name === 'modify_memory');
+    expect(JSON.stringify(modify?.parameters)).toContain('pre');
+  });
+});
