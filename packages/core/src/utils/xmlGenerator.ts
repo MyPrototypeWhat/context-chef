@@ -42,6 +42,3 @@ export function objectToXml(obj: unknown, rootName = 'data'): string {
 
   return xml;
 }
-
-/** @deprecated Use objectToXml() instead */
-export const XmlGenerator = { objectToXml };

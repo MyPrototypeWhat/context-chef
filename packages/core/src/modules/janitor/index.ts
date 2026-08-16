@@ -454,14 +454,6 @@ interface JanitorConfigBase {
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
-
-  /**
-   * @deprecated Use `onBeforeCompress` instead. Will be removed in the next major version.
-   */
-  onBudgetExceeded?: (
-    history: Message[],
-    tokenInfo: { currentTokens: number; limit: number },
-  ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
 }
 
 /**
@@ -863,7 +855,7 @@ export class Janitor {
     const { currentTokens, limit } = evaluation;
 
     // Fire onBeforeCompress hook — developer gets a chance to intervene
-    const hook = this.config.onBeforeCompress ?? this.config.onBudgetExceeded;
+    const hook = this.config.onBeforeCompress;
     if (hook) {
       let modified: Message[] | null | undefined;
       try {

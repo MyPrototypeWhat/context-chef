@@ -461,29 +461,29 @@ describe('Janitor — usagePreference', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// onBudgetExceeded hook
+// onBeforeCompress hook
 // ═══════════════════════════════════════════════════════
 
-describe('Janitor — onBudgetExceeded hook', () => {
+describe('Janitor — onBeforeCompress hook', () => {
   it('fires with token info before compression', async () => {
-    const onBudgetExceeded = vi.fn().mockReturnValue(null);
+    const onBeforeCompress = vi.fn().mockReturnValue(null);
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
-      onBudgetExceeded,
+      onBeforeCompress,
     });
 
     await janitor.compress(buildHistory(5));
 
-    expect(onBudgetExceeded).toHaveBeenCalledTimes(1);
-    const [, tokenInfo] = onBudgetExceeded.mock.calls[0];
+    expect(onBeforeCompress).toHaveBeenCalledTimes(1);
+    const [, tokenInfo] = onBeforeCompress.mock.calls[0];
     expect(tokenInfo.currentTokens).toBe(50);
     // limit is the effective trigger threshold: contextWindow × default triggerRatio
     expect(tokenInfo.limit).toBe(30 * 0.7);
   });
 
   it('skips compression when hook brings history under budget', async () => {
-    const onBudgetExceeded = vi.fn().mockImplementation((history: Message[]) => {
+    const onBeforeCompress = vi.fn().mockImplementation((history: Message[]) => {
       return history.slice(-2); // 2 × 10 = 20 ≤ 30
     });
     const compressionModel = vi.fn().mockResolvedValue('summary');
@@ -491,7 +491,7 @@ describe('Janitor — onBudgetExceeded hook', () => {
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
       compressionModel,
-      onBudgetExceeded,
+      onBeforeCompress,
     });
 
     const result = await janitor.compress(buildHistory(5));
@@ -501,16 +501,16 @@ describe('Janitor — onBudgetExceeded hook', () => {
   });
 
   it('does NOT fire when under budget', async () => {
-    const onBudgetExceeded = vi.fn();
+    const onBeforeCompress = vi.fn();
     const janitor = new Janitor({
       contextWindow: 1000,
       tokenizer: makeTokenizer(10),
-      onBudgetExceeded,
+      onBeforeCompress,
     });
 
     await janitor.compress(buildHistory(5));
 
-    expect(onBudgetExceeded).not.toHaveBeenCalled();
+    expect(onBeforeCompress).not.toHaveBeenCalled();
   });
 });
 

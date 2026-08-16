@@ -18,6 +18,3 @@ export type { ITargetAdapter };
 export function getAdapter(target: TargetProvider): ITargetAdapter {
   return adapterRegistry.get(target);
 }
-
-/** @deprecated Use `getAdapter()` or `adapterRegistry` directly. */
-export const AdapterFactory = { getAdapter };

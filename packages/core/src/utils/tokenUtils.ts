@@ -32,6 +32,3 @@ export function estimateObject(obj: unknown): number {
   }
   return estimate(JSON.stringify(obj));
 }
-
-/** @deprecated Use estimate() and estimateObject() instead */
-export const TokenUtils = { estimate, estimateObject };
