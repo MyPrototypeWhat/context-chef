@@ -34,24 +34,28 @@ describe('ContextChef API', () => {
       })
       .compile({ target: 'openai' });
 
-    expect(payload.messages.length).toBe(3);
+    // v4 layout: guardrail is its own message at the sandwich end (no longer
+    // merged into the dynamic-state message).
+    expect(payload.messages.length).toBe(4);
 
     // 0: Top
     expect(payload.messages[0].content).toBe('You are an expert.');
     // 1: History
     expect(payload.messages[1].content).toBe('Help me.');
 
-    // 2: System Message (Combined DynamicState and Guardrail Rules)
-    const sysMsg = payload.messages[2];
-    expect(sysMsg.role).toBe('system');
+    // 2: Dynamic state system message
+    const stateMsg = payload.messages[2];
+    expect(stateMsg.role).toBe('system');
+    expect(stateMsg.content).toContain('<dynamic_state>');
+    expect(stateMsg.content).toContain('<activeFile>index.ts</activeFile>');
+    expect(stateMsg.content).toContain('<item>implement tests</item>');
 
-    expect(sysMsg.content).toContain('<dynamic_state>');
-    expect(sysMsg.content).toContain('<activeFile>index.ts</activeFile>');
-    expect(sysMsg.content).toContain('<item>implement tests</item>');
-
-    expect(sysMsg.content).toContain('CRITICAL OUTPUT FORMAT INSTRUCTIONS:');
-    expect(sysMsg.content).toContain('<EPHEMERAL_MESSAGE>');
-    expect(sysMsg.content).toContain(
+    // 3: Guardrail system message (enforce-XML + degraded prefill)
+    const guardMsg = payload.messages[3];
+    expect(guardMsg.role).toBe('system');
+    expect(guardMsg.content).toContain('CRITICAL OUTPUT FORMAT INSTRUCTIONS:');
+    expect(guardMsg.content).toContain('<EPHEMERAL_MESSAGE>');
+    expect(guardMsg.content).toContain(
       'SYSTEM INSTRUCTION: Your response MUST start verbatim with the following text:',
     );
   });

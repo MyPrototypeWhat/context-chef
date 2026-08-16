@@ -6,7 +6,14 @@ import type {
   TextPart as SDKTextPart,
 } from '@google/generative-ai';
 import { Prompts } from '../prompts';
-import type { Attachment, GeminiPayload, HistoryMessage, Message, ParsedMessages } from '../types';
+import type {
+  Attachment,
+  ChefLogger,
+  GeminiPayload,
+  HistoryMessage,
+  Message,
+  ParsedMessages,
+} from '../types';
 import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
@@ -155,7 +162,24 @@ export function fromGemini(
  * - `_cache_breakpoint` is silently ignored (Gemini uses a separate CachedContent API).
  * - Prefill degradation follows the same pattern as OpenAI (Gemini doesn't support trailing model messages).
  */
+export interface GeminiAdapterOptions {
+  /**
+   * When true, Anthropic-style `thinking` on assistant messages is converted
+   * to a `<thinking>...</thinking>` text prefix instead of being dropped, so
+   * reasoning survives cross-provider replay. `redacted_thinking` is NEVER
+   * textified (opaque encrypted blob) — dropped with a one-time warning.
+   * Default: false (drop thinking, pre-4.0 behavior).
+   */
+  preserveThinkingAsText?: boolean;
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+}
+
 export class GeminiAdapter implements ITargetAdapter {
+  private _redactedWarned = false;
+
+  constructor(private readonly options: GeminiAdapterOptions = {}) {}
+
   compile(messages: Message[]): GeminiPayload {
     const systemParts: SDKTextPart[] = [];
     const contents: SDKContent[] = [];
@@ -188,13 +212,27 @@ export class GeminiAdapter implements ITargetAdapter {
       if (msg.role === 'assistant') {
         const parts: SDKPart[] = [];
 
-        // thinking / redacted_thinking have no Gemini request equivalent — silently discard.
-        // thought:true is an output-only field in Gemini responses; multi-turn thinking
-        // is maintained via thoughtSignature at the Content level (handled by the SDK).
+        // thinking / redacted_thinking have no Gemini request equivalent —
+        // discarded unless preserveThinkingAsText converts thinking to a text
+        // prefix. thought:true is an output-only field in Gemini responses;
+        // multi-turn thinking is maintained via thoughtSignature on parts.
+        let content = msg.content;
+        if (this.options.preserveThinkingAsText) {
+          if (msg.thinking?.thinking) {
+            content = `<thinking>\n${msg.thinking.thinking}\n</thinking>\n\n${content ?? ''}`;
+          }
+          if (msg.redacted_thinking && !this._redactedWarned) {
+            this._redactedWarned = true;
+            (this.options.logger ?? console).warn(
+              '[context-chef] redacted_thinking is an opaque encrypted blob and cannot be ' +
+                'preserved as text — dropped on the Gemini target (warned once).',
+            );
+          }
+        }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-          if (msg.content) {
-            const textPart: SDKTextPart = { text: msg.content };
+          if (content) {
+            const textPart: SDKTextPart = { text: content };
             if (typeof msg._gemini_thought_signature === 'string') {
               (textPart as { thoughtSignature?: string }).thoughtSignature =
                 msg._gemini_thought_signature;
@@ -217,7 +255,7 @@ export class GeminiAdapter implements ITargetAdapter {
             parts.push(part);
           }
         } else {
-          const textPart: SDKTextPart = { text: msg.content };
+          const textPart: SDKTextPart = { text: content };
           if (typeof msg._gemini_thought_signature === 'string') {
             (textPart as { thoughtSignature?: string }).thoughtSignature =
               msg._gemini_thought_signature;

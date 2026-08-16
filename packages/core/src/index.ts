@@ -201,6 +201,8 @@ export interface ChefSnapshot {
    * older snapshot).
    */
   readonly skillInstructions?: string;
+  /** Guardrail options active at snapshot time (withGuardrails). */
+  readonly guardrailOptions?: GuardrailOptions;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -226,6 +228,28 @@ export interface ChefConfig {
    * messages on failure.
    */
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  /**
+   * Uniform tool-result transform, applied to every `role: 'tool'` message at
+   * the START of compile() — BEFORE compression, so the compression model and
+   * every later stage see the transformed content. Use for auto-offloading
+   * large results, PII redaction, or error-format normalization without
+   * writing per-tool if/else chains in the agent loop.
+   *
+   * `info.toolName` is resolved from the preceding assistant turn's
+   * `tool_calls` via `tool_call_id` (null when unresolvable).
+   *
+   * Contract: must not throw or reject. Errors propagate out of compile() —
+   * return the original content on failure. Non-mutating: the stored history
+   * is never modified.
+   *
+   * @example
+   * transformToolResult: async (content, { toolName }) =>
+   *   content.length > 5000 ? await chef.offloadAsync(content) : content,
+   */
+  transformToolResult?: (
+    content: string,
+    info: { toolName: string | null; toolCallId: string | null },
+  ) => string | Promise<string>;
   /**
    * Lifecycle hook invoked before each compile(), after Janitor compression.
    * Use this to inject externally-retrieved context (RAG results, AST snippets, MCP queries, etc.)
@@ -311,10 +335,28 @@ export interface ChefEvents {
   'compile:done': {
     payload: TargetPayload;
   };
+  /** Budget exceeded — compression is about to run (before summarization). */
+  'compress:start': {
+    historyLength: number;
+    currentTokens: number;
+    limit: number;
+  };
+  /** Compression phase finished. `compressed: false` = budget was fine or the result was rejected. */
+  'compress:end': {
+    compressed: boolean;
+  };
   compress: {
     summary: Message;
     truncatedCount: number;
     details: CompressionDetails;
+  };
+  /** Content was offloaded to the VFS (via chef.offload/offloadAsync or the compression archive). */
+  'offload:created': {
+    uri: string;
+  };
+  /** checkToolCall() rejected a tool call against the Pruner blocklist. */
+  'pruner:tool-blocked': {
+    name: string;
   };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
@@ -328,11 +370,20 @@ export class ContextChef {
   private pruner: Pruner;
   private memory: Memory | null;
   private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  private transformToolResult?: ChefConfig['transformToolResult'];
   private onBeforeCompile?: (
     context: BeforeCompileContext,
   ) => string | null | Promise<string | null>;
   private defaultTarget?: TargetProvider | ITargetAdapter;
   private contextManagement?: ChefConfig['contextManagement'];
+  /**
+   * Serializes compile() calls on this instance (Snapshot + Serialize model):
+   * concurrent callers queue instead of interleaving the mutable state a
+   * compile pass holds across await points.
+   */
+  private _compileChain: Promise<unknown> = Promise.resolve();
+  /** Guardrail options stored by withGuardrails(); applied during compile(). */
+  private _guardrailOptions?: GuardrailOptions;
   private emitter: TypedEventEmitter<ChefEvents>;
 
   /**
@@ -362,6 +413,7 @@ export class ContextChef {
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
     this.transformContext = config.transformContext;
+    this.transformToolResult = config.transformToolResult;
     this.onBeforeCompile = config.onBeforeCompile;
     this.defaultTarget = config.defaultTarget;
     this.contextManagement = config.contextManagement;
@@ -376,6 +428,7 @@ export class ContextChef {
     // Bridge Janitor's onCompress callback to the unified event system
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
     const userOnCompress = janitorConfig.onCompress;
+    const userOnBeforeCompress = janitorConfig.onBeforeCompress ?? janitorConfig.onBudgetExceeded;
     // The 'vfs' archive shorthand stores compressed spans in this chef's VFS.
     // Substituted here because only the facade holds the Offloader.
     const archive =
@@ -392,6 +445,7 @@ export class ContextChef {
               if (!result.isOffloaded || !result.uri) {
                 throw new Error('VFS archive store failed: content was not offloaded');
               }
+              await this.emitter.emit('offload:created', { uri: result.uri }, this._currentSignal);
               return result.uri;
             },
           }
@@ -407,6 +461,18 @@ export class ContextChef {
           { summary, truncatedCount, details },
           this._currentSignal,
         );
+      },
+      onBeforeCompress: async (history, tokenInfo) => {
+        await this.emitter.emit(
+          'compress:start',
+          {
+            historyLength: history.length,
+            currentTokens: tokenInfo.currentTokens,
+            limit: tokenInfo.limit,
+          },
+          this._currentSignal,
+        );
+        return userOnBeforeCompress ? userOnBeforeCompress(history, tokenInfo) : null;
       },
     });
 
@@ -516,11 +582,18 @@ export class ContextChef {
   }
 
   /**
-   * Applies the Guardrail's rules.
+   * Sets the Guardrail rules for subsequent compile() calls.
    * If a specific `target` is provided during `compile()`, it will elegantly degrade prefill.
+   *
+   * Replace semantics: each call REPLACES the previous options (no
+   * accumulation); pass `null` to clear. Application is deferred to
+   * `compile()`, so call order relative to `setDynamicState` no longer
+   * matters (pre-4.0, calling `setDynamicState` after `withGuardrails`
+   * silently discarded the guardrail). The enforce-XML instruction and
+   * prefill land at the very end of the sandwich, closest to generation.
    */
-  public withGuardrails(options: GuardrailOptions): this {
-    this.dynamicState = this.guardrail.apply(this.dynamicState, options);
+  public withGuardrails(options: GuardrailOptions | null): this {
+    this._guardrailOptions = options ? structuredClone(options) : undefined;
     return this;
   }
 
@@ -613,6 +686,8 @@ export class ContextChef {
     }
     const blocked = this.pruner.getBlockedTools();
     if (blocked.includes(toolCall.name)) {
+      // Fire-and-forget observation event (checkToolCall is sync by contract).
+      void this.emitter.emit('pruner:tool-blocked', { name: toolCall.name }, this._currentSignal);
       return {
         allowed: false,
         reason: `Tool "${toolCall.name}" is currently blocked.`,
@@ -729,6 +804,9 @@ export class ContextChef {
    */
   public offload(content: string, options?: OffloadOptions): string {
     const result = this.offloader.offload(content, options);
+    if (result.isOffloaded && result.uri) {
+      void this.emitter.emit('offload:created', { uri: result.uri }, this._currentSignal);
+    }
     return result.content;
   }
 
@@ -737,6 +815,9 @@ export class ContextChef {
    */
   public async offloadAsync(content: string, options?: OffloadOptions): Promise<string> {
     const result = await this.offloader.offloadAsync(content, options);
+    if (result.isOffloaded && result.uri) {
+      await this.emitter.emit('offload:created', { uri: result.uri }, this._currentSignal);
+    }
     return result.content;
   }
 
@@ -837,6 +918,9 @@ export class ContextChef {
       // the `'' || undefined` trap that would silently drop an active skill
       // whose instructions happen to be empty.
       skillInstructions: this._activeSkill ? this._skillInstructions : undefined,
+      guardrailOptions: this._guardrailOptions
+        ? structuredClone(this._guardrailOptions)
+        : undefined,
       label,
       createdAt: Date.now(),
     };
@@ -858,6 +942,9 @@ export class ContextChef {
     this.dynamicState = structuredClone(snapshot.dynamicState);
     this.dynamicStatePlacement = snapshot.dynamicStatePlacement;
     this.dynamicStateXml = snapshot.dynamicStateXml;
+    this._guardrailOptions = snapshot.guardrailOptions
+      ? structuredClone(snapshot.guardrailOptions)
+      : undefined;
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);
@@ -926,6 +1013,18 @@ export class ContextChef {
   public async compile(options: { target: string; signal?: AbortSignal }): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload> {
+    // Snapshot + Serialize: queue behind any in-flight compile on this
+    // instance (a failed predecessor does not poison the chain).
+    const run = () => this._compileInner(options);
+    const result = this._compileChain.then(run, run);
+    this._compileChain = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async _compileInner(options?: CompileOptions): Promise<TargetPayload> {
     const signal = options?.signal;
     // Stash signal so event-bridge closures (Janitor.onCompress, Memory.onMemoryChanged,
     // Memory.onMemoryExpired) can forward it to handlers. Cleared in finally.
@@ -944,13 +1043,42 @@ export class ContextChef {
       );
       signal?.throwIfAborted();
 
+      // 0.5 transformToolResult: uniform tool-result rewrite BEFORE compression
+      //     so the summarizer and all later stages see transformed content.
+      let workingHistory = this.history;
+      if (this.transformToolResult) {
+        const transform = this.transformToolResult;
+        const nameById = new Map<string, string>();
+        for (const m of workingHistory) {
+          if (m.role === 'assistant' && m.tool_calls) {
+            for (const tc of m.tool_calls) nameById.set(tc.id, tc.function.name);
+          }
+        }
+        workingHistory = await Promise.all(
+          workingHistory.map(async (m) => {
+            if (m.role !== 'tool') return m;
+            const content = await transform(m.content, {
+              toolName: (m.tool_call_id && nameById.get(m.tool_call_id)) || null,
+              toolCallId: m.tool_call_id ?? null,
+            });
+            return content === m.content ? m : { ...m, content };
+          }),
+        );
+        signal?.throwIfAborted();
+      }
+
       // 1. Janitor: Compress history if needed. Under server-side context
       //    management the provider compacts — client compression is skipped
       //    (mechanical compact() and all other modules remain available).
       const compressedHistory =
         this.contextManagement?.strategy === 'server'
-          ? this.history
-          : await this.janitor.compress(this.history);
+          ? workingHistory
+          : await this.janitor.compress(workingHistory);
+      await this.emitter.emit(
+        'compress:end',
+        { compressed: compressedHistory !== workingHistory },
+        signal,
+      );
       signal?.throwIfAborted();
 
       // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
@@ -1019,6 +1147,13 @@ export class ContextChef {
           ? [{ role: 'system', content: this._skillInstructions }]
           : [];
 
+      // 5c. Guardrail messages (enforce-XML instruction + prefill) — applied
+      //     from the stored options at compile time, closest to generation.
+      //     Independent of setDynamicState call order by design.
+      const guardrailMessages: Message[] = this._guardrailOptions
+        ? this.guardrail.apply([], this._guardrailOptions)
+        : [];
+
       // 6. Sandwich assembly
       let messages = [
         ...this.systemPrompt,
@@ -1026,6 +1161,7 @@ export class ContextChef {
         ...memoryMessages,
         ...compressedHistory,
         ...dynamicState,
+        ...guardrailMessages,
       ];
 
       // 7. Transform hook

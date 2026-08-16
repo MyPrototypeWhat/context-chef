@@ -3,7 +3,14 @@ import type {
   ChatCompletionMessageParam as SDKMessageParam,
 } from 'openai/resources/chat/completions/completions';
 import { Prompts } from '../prompts';
-import type { Attachment, HistoryMessage, Message, OpenAIPayload, ParsedMessages } from '../types';
+import type {
+  Attachment,
+  ChefLogger,
+  HistoryMessage,
+  Message,
+  OpenAIPayload,
+  ParsedMessages,
+} from '../types';
 import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
@@ -166,11 +173,53 @@ function cloneWithoutUndefined<T>(value: T): T {
   return value;
 }
 
+export interface OpenAIAdapterOptions {
+  /**
+   * When true, Anthropic-style `thinking` on assistant messages is converted
+   * to a `<thinking>...</thinking>` text prefix instead of being dropped, so
+   * reasoning survives cross-provider replay. `redacted_thinking` is NEVER
+   * textified (it is an opaque encrypted blob) — it is dropped with a
+   * one-time warning. Default: false (drop thinking, pre-4.0 behavior).
+   */
+  preserveThinkingAsText?: boolean;
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+}
+
 export class OpenAIAdapter implements ITargetAdapter {
+  private _redactedWarned = false;
+
+  constructor(private readonly options: OpenAIAdapterOptions = {}) {}
+
   compile(messages: Message[]): OpenAIPayload {
     const formattedMessages: SDKMessageParam[] = messages.map((msg) => {
-      // Strip internal fields and thinking (Chat Completions does not accept reasoning input)
-      const { _cache_breakpoint, thinking, redacted_thinking, attachments, ...cleanMsg } = msg;
+      // Strip internal/passthrough fields and thinking (Chat Completions does
+      // not accept reasoning input, and IR-internal fields must never reach
+      // the wire).
+      const {
+        _cache_breakpoint,
+        thinking,
+        redacted_thinking,
+        attachments,
+        pinned: _pinned,
+        _anthropic_compaction,
+        _gemini_thought_signature,
+        _openai_reasoning,
+        ...cleanMsg
+      } = msg;
+
+      if (msg.role === 'assistant' && this.options.preserveThinkingAsText) {
+        if (thinking?.thinking) {
+          cleanMsg.content = `<thinking>\n${thinking.thinking}\n</thinking>\n\n${cleanMsg.content ?? ''}`;
+        }
+        if (redacted_thinking && !this._redactedWarned) {
+          this._redactedWarned = true;
+          (this.options.logger ?? console).warn(
+            '[context-chef] redacted_thinking is an opaque encrypted blob and cannot be ' +
+              'preserved as text — dropped on the OpenAI target (warned once).',
+          );
+        }
+      }
 
       // Convert attachments to OpenAI content parts for user messages
       if (attachments?.length && (msg.role === 'user' || msg.role === 'system')) {
