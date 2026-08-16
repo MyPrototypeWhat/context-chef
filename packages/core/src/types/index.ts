@@ -28,6 +28,14 @@ export interface ToolCall {
     name: string;
     arguments: string; // JSON string
   };
+  /**
+   * Gemini thought signature riding on this functionCall part. Gemini 3.x
+   * validates that function calls in the current turn echo their signature
+   * verbatim (400 error otherwise). Stored here — NOT in `Message.thinking` —
+   * so `compact({ clear: ['thinking'] })` can never destroy it. Round-trips
+   * through `fromGemini` / the Gemini target adapter; other adapters ignore it.
+   */
+  thoughtSignature?: string;
 }
 
 /**
@@ -40,6 +48,15 @@ export interface ToolDefinition {
   description: string;
   parameters?: Record<string, unknown>;
   tags?: string[];
+  /**
+   * Anthropic Tool Search annotation: a tool marked `defer_loading: true` is
+   * not loaded into the initial context — Claude discovers it on demand via a
+   * tool search tool, without breaking prompt caching. ContextChef passes the
+   * flag through `payload.tools` verbatim; converting to the provider's wire
+   * field (`defer_loading`) is the caller's tool-conversion step, same as the
+   * rest of the definition. Ignored by providers without deferred loading.
+   */
+  deferLoading?: boolean;
 }
 
 /**
@@ -268,6 +285,18 @@ export interface AnthropicPayload {
   messages: AnthropicMessageParam[];
   tools?: ToolDefinition[];
   meta?: CompileMeta;
+  /**
+   * Server-side context management config, set when
+   * `ChefConfig.contextManagement.strategy === 'server'`. Spread into the
+   * Messages API request verbatim (`context_management: { edits: [...] }`).
+   */
+  context_management?: unknown;
+  /**
+   * Beta headers the emitted `context_management` edits require
+   * (e.g. 'compact-2026-01-12', 'context-management-2025-06-27'). Pass as the
+   * `anthropic-beta` header / SDK `betas` option.
+   */
+  betas?: string[];
 }
 
 export interface GeminiPayload {

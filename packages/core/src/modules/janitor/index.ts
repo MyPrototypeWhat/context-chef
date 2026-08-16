@@ -1191,7 +1191,7 @@ export class Janitor {
    */
   private _trySwapInBackgroundResult(history: Message[]): Message[] | null {
     const job = this._pendingBackground;
-    if (!job || !job.settled) return null;
+    if (!job?.settled) return null;
     this._pendingBackground = undefined;
     if (!job.head) return null; // failed job — breaker already counted it
 

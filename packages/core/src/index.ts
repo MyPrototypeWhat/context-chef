@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { adapterRegistry } from './adapters/adapterRegistry';
+import { AnthropicAdapter } from './adapters/anthropicAdapter';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import {
@@ -136,6 +137,20 @@ export { TokenUtils } from './utils/tokenUtils';
 export { objectToXml, XmlGenerator } from './utils/xmlGenerator';
 
 /**
+ * Maps the edit types of a server-side context-management config to the
+ * `anthropic-beta` header values they require.
+ */
+function computeAnthropicBetas(server: unknown): string[] {
+  const betas = new Set<string>();
+  const edits = (server as { edits?: Array<{ type?: string }> } | undefined)?.edits ?? [];
+  for (const edit of edits) {
+    if (edit?.type === 'compact_20260112') betas.add('compact-2026-01-12');
+    else if (edit?.type) betas.add('context-management-2025-06-27');
+  }
+  return [...betas];
+}
+
+/**
  * Read-only snapshot of the current context, passed to the onBeforeCompile hook.
  */
 export interface BeforeCompileContext {
@@ -236,6 +251,34 @@ export interface ChefConfig {
    *   `options.target` → `defaultTarget` → `'openai'` (final fallback)
    */
   defaultTarget?: TargetProvider | ITargetAdapter;
+
+  /**
+   * Where history compression happens:
+   *
+   * - `'client'` (default): ContextChef's Janitor compresses locally (today's
+   *   behavior on every provider).
+   * - `'server'`: compression is DELEGATED to the provider's server-side
+   *   context management. The Janitor's LLM compression is skipped entirely
+   *   (mechanical `compact()` and every other module still work), and on the
+   *   Anthropic target the payload carries `context_management` + the
+   *   matching `betas` headers. Compaction blocks returned by the API round-
+   *   trip through `fromAnthropic` → history → compile verbatim (pinned).
+   *
+   * Rationale: providers now run compaction server-side (Anthropic
+   * `compact_20260112`, OpenAI `/responses/compact`) — one model call fewer
+   * and exact token accounting. What stays client-side is everything servers
+   * don't do: tool pruning, skills, memory, VFS, dynamic state.
+   */
+  contextManagement?: {
+    strategy: 'client' | 'server';
+    /**
+     * Provider-shaped edits config passed through verbatim, e.g. Anthropic
+     * `{ edits: [{ type: 'compact_20260112', trigger: {...} }] }`. When
+     * omitted under `'server'`, a default single `compact_20260112` edit is
+     * emitted (server-side default trigger).
+     */
+    server?: unknown;
+  };
 }
 
 export type { CompiledTools, DynamicStatePlacement, GuardrailOptions, ResolvedToolCall, ToolGroup };
@@ -284,6 +327,7 @@ export class ContextChef {
     context: BeforeCompileContext,
   ) => string | null | Promise<string | null>;
   private defaultTarget?: TargetProvider | ITargetAdapter;
+  private contextManagement?: ChefConfig['contextManagement'];
   private emitter: TypedEventEmitter<ChefEvents>;
 
   /**
@@ -315,6 +359,14 @@ export class ContextChef {
     this.transformContext = config.transformContext;
     this.onBeforeCompile = config.onBeforeCompile;
     this.defaultTarget = config.defaultTarget;
+    this.contextManagement = config.contextManagement;
+    if (config.contextManagement?.strategy === 'server' && config.janitor?.compressionModel) {
+      (config.logger ?? console).warn(
+        "[context-chef] contextManagement.strategy 'server' is configured together with a " +
+          'janitor.compressionModel. Server-side compaction wins — the client-side compression ' +
+          "model will never run. Remove one of the two (or switch strategy to 'client').",
+      );
+    }
 
     // Bridge Janitor's onCompress callback to the unified event system
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
@@ -887,8 +939,13 @@ export class ContextChef {
       );
       signal?.throwIfAborted();
 
-      // 1. Janitor: Compress history if needed
-      const compressedHistory = await this.janitor.compress(this.history);
+      // 1. Janitor: Compress history if needed. Under server-side context
+      //    management the provider compacts — client compression is skipped
+      //    (mechanical compact() and all other modules remain available).
+      const compressedHistory =
+        this.contextManagement?.strategy === 'server'
+          ? this.history
+          : await this.janitor.compress(this.history);
       signal?.throwIfAborted();
 
       // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
@@ -1015,6 +1072,20 @@ export class ContextChef {
       if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;
       const payload: TargetPayload = { ...adapterPayload, meta };
       if (tools.length > 0) payload.tools = tools;
+
+      // Server-side context management: on the Anthropic target, carry the
+      // edits config + required beta headers in the payload.
+      if (this.contextManagement?.strategy === 'server') {
+        const isAnthropic = target === 'anthropic' || adapter instanceof AnthropicAdapter;
+        if (isAnthropic) {
+          const server = this.contextManagement.server ?? {
+            edits: [{ type: 'compact_20260112' }],
+          };
+          const anthropicPayload = payload as AnthropicPayload;
+          anthropicPayload.context_management = server;
+          anthropicPayload.betas = computeAnthropicBetas(server);
+        }
+      }
 
       // 9. Emit compile:done
       await this.emitter.emit('compile:done', { payload }, signal);
