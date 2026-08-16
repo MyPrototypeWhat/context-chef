@@ -5,7 +5,12 @@ import type {
   Skill,
   VFSStorageAdapter,
 } from '@context-chef/core';
-import type { AnyTextAdapter, ModelMessage } from '@tanstack/ai';
+import type {
+  AnyTextAdapter,
+  ChatMiddlewareContext,
+  ModelMessage,
+  SystemPrompt,
+} from '@tanstack/ai';
 
 export interface TruncateOptions {
   /** Character count threshold to trigger truncation. */
@@ -57,6 +62,17 @@ export interface TruncateOptions {
   >;
 }
 
+/**
+ * History compression via LLM summarization.
+ *
+ * **Persistence:** the middleware compresses the engine's in-flight message
+ * state — it rewrites what the model sees but does NOT mutate your own
+ * message store. For a sustained over-budget conversation, persist the
+ * summary via {@link ContextChefOptions.onCompress} (replace the compressed
+ * slice in your store) or use `compactTanStackMessages` for durable
+ * compaction. The middleware warns once if compression keeps firing without
+ * `onCompress`.
+ */
 export interface CompressOptions {
   /** A cheap TanStack AI adapter used for summarization (e.g. openaiText('gpt-4o-mini')). */
   adapter: AnyTextAdapter;
@@ -91,20 +107,44 @@ export interface CompressOptions {
 
 /**
  * Mechanical compaction options — zero LLM cost.
- * Removes tool call/result pairs and empty messages before LLM-based compression.
+ * Removes reasoning, tool call/result pairs, and empty messages before
+ * LLM-based compression. Mirrors `@context-chef/ai-sdk-middleware`'s
+ * CompactConfig (AI SDK `pruneMessages` semantics).
  */
 export interface CompactConfig {
   /**
+   * Controls removal of `thinking` (reasoning) content from assistant messages.
+   * - `'all'`: Remove reasoning from all messages.
+   * - `'before-last-message'`: Keep reasoning only in the final message.
+   * - `'none'` (default): Keep all reasoning.
+   */
+  reasoning?: 'all' | 'before-last-message' | 'none';
+  /**
    * Controls removal of tool-call and tool-result message pairs.
    * - `'all'`: Remove all tool-call/result pairs.
-   * - `'before-last-message'`: Keep tool pairs only in the final assistant turn.
-   * - `'before-last-${N}-messages'`: Keep tool pairs in the last N messages.
+   * - `'before-last-message'`: Keep tool pairs only in the last message.
+   * - `'before-last-${N}-messages'`: Keep tool pairs referenced by the last N messages.
    * - `'none'` (default): Keep all tool pairs.
+   * - Array form allows per-tool control: each entry applies its removal
+   *   mode only to the tools named in `tools` (all tools when omitted).
+   *
+   * Window semantics follow AI SDK `pruneMessages`: "last N messages"
+   * counts messages of the whole array (any role); tool calls/results
+   * referenced from inside that window are kept everywhere.
    */
-  toolCalls?: 'all' | 'before-last-message' | `before-last-${number}-messages` | 'none';
+  toolCalls?:
+    | 'all'
+    | 'before-last-message'
+    | `before-last-${number}-messages`
+    | 'none'
+    | Array<{
+        type: 'all' | 'before-last-message' | `before-last-${number}-messages`;
+        tools?: string[];
+      }>;
   /**
    * Whether to retain messages with no content after pruning.
-   * - `'remove'` (default): Exclude empty messages.
+   * - `'remove'` (default): Exclude messages with no text content, no tool
+   *   calls, and no attachments.
    * - `'keep'`: Retain them.
    */
   emptyMessages?: 'keep' | 'remove';
@@ -117,7 +157,8 @@ export interface CompactConfig {
 export interface DynamicStateConfig {
   /**
    * Returns the current state object. Auto-converted to XML via `objectToXml`.
-   * Called on every model invocation.
+   * Called on every model invocation (init and each agent iteration); the
+   * previously injected block is replaced, never duplicated.
    */
   getState: () => Record<string, unknown> | Promise<Record<string, unknown>>;
   /**
@@ -129,35 +170,43 @@ export interface DynamicStateConfig {
 }
 
 export interface ContextChefOptions {
-  /** The model's context window size in tokens. */
-  contextWindow: number;
+  /**
+   * The model's context window size in tokens.
+   *
+   * Required when a compression option is configured (`compress`,
+   * `onCompress`, `onBeforeCompress`) — `contextChefMiddleware` throws
+   * otherwise. Optional (and unused) for truncate / compact / clear /
+   * skill / dynamicState-only configurations, which involve no budget
+   * check.
+   */
+  contextWindow?: number;
   /** Enable history compression. Omit for no compression. */
   compress?: CompressOptions;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
-   * Placeholder-style clearing of **tool results**: matched results are
-   * replaced with `'[Old tool result content cleared]'` instead of being
-   * deleted — message structure and tool-call pairing stay intact, unlike
-   * `compact` (deletion-style), which removes content outright.
+   * Placeholder-style clearing (core semantics):
    *
-   * Runs AFTER compression, so the summarizer still sees full tool output.
-   * When tool results are targeted, an instruction explaining the
-   * placeholder is auto-appended to `systemPrompts` so the model doesn't
-   * read it as an error.
+   * - `'tool-result'` targets replace matched tool results with
+   *   `'[Old tool result content cleared]'` instead of deleting them —
+   *   message structure and tool-call pairing stay intact, unlike
+   *   `compact` (deletion-style). When tool results are targeted, an
+   *   instruction explaining the placeholder is auto-appended to
+   *   `systemPrompts` so the model doesn't read it as an error.
+   * - `'thinking'` strips `thinking` (reasoning) content from assistant
+   *   messages. Equivalent to `compact: { reasoning: 'all' }` except it
+   *   runs AFTER compression instead of before.
+   *
+   * Runs AFTER compression, so the summarizer still sees full content.
    *
    * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing
    * boundary advances each turn, which invalidates the provider prefix
    * cache at the first newly-cleared message — inherent to the semantics.
-   *
-   * Scope: only `'tool-result'` targets take effect here. A `'thinking'`
-   * target is a no-op (reasoning parts pass through the adapter unchanged)
-   * and logs a warning — use `compact` to drop reasoning.
    */
   clear?: ClearTarget[];
   /**
    * Mechanical compaction — zero LLM cost.
-   * Prunes tool call/result pairs and empty messages before compression.
+   * Prunes reasoning, tool call/result pairs, and empty messages before compression.
    */
   compact?: CompactConfig;
   /**
@@ -167,7 +216,7 @@ export interface ContextChefOptions {
   dynamicState?: DynamicStateConfig;
   /**
    * Inject the active skill's instructions as an additional system prompt
-   * before the chat() call. Mirrors the `dynamicState` pattern.
+   * before the model call. Mirrors the `dynamicState` pattern.
    *
    * - Pass a `Skill` object for static activation.
    * - Pass a function returning `Skill | null | undefined` for dynamic
@@ -179,7 +228,7 @@ export interface ContextChefOptions {
    * (see SKILL_SPEC §6.3 — instructions sit between userSystemPrompt and
    * memoryMessages; in TanStack AI all `systemPrompts` collapse to system
    * messages prepended to the conversation, so appending here yields the
-   * equivalent ordering).
+   * equivalent ordering). Injection is idempotent across agent iterations.
    *
    * Decoupled from tool restriction — `skill.allowedTools` is annotation
    * only; chef does NOT enforce it (Claude Code semantics, see SKILL_SPEC
@@ -193,14 +242,14 @@ export interface ContextChefOptions {
   tokenizer?: (messages: Message[]) => number;
   /**
    * Sink for degradation warnings (storage write failures, missing usage
-   * data, misconfiguration). Defaults to `console`. Forwarded to the
-   * underlying Janitor and Offloader.
+   * data, misconfiguration, hook failures). Defaults to `console`.
+   * Forwarded to the underlying Janitor and Offloader.
    */
   logger?: ChefLogger;
   /**
-   * Cap on concurrently tracked conversations. Each `ctx.conversationId`
-   * gets its own Janitor so token-usage feeds and compression state never
-   * leak across conversations sharing one middleware instance.
+   * Cap on concurrently tracked conversations. Each `ctx.threadId` gets
+   * its own Janitor so token-usage feeds and compression state never leak
+   * across conversations sharing one middleware instance.
    * Least-recently-used conversations beyond the cap are dropped and
    * transparently recreated on next access. Must be a positive integer —
    * the pool throws a RangeError otherwise. Default: 256.
@@ -230,13 +279,20 @@ export interface ContextChefOptions {
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
   /**
-   * Transform the messages and system prompts after compression, before sending to the model.
-   * Use for custom prompt manipulation, RAG injection, etc.
+   * Transform the messages and system prompts after compression, before
+   * sending to the model. Use for custom prompt manipulation, RAG
+   * injection, etc.
+   *
+   * Runs on EVERY `onConfig` firing — at init and at the start of every
+   * agent iteration — and the transformed config carries over to the next
+   * iteration, so the hook MUST be idempotent (check before appending, or
+   * gate on `ctx.phase === 'init'`).
    */
   transformContext?: (
     messages: ModelMessage[],
-    systemPrompts: string[],
+    systemPrompts: SystemPrompt[],
+    ctx: ChatMiddlewareContext,
   ) =>
-    | { messages: ModelMessage[]; systemPrompts: string[] }
-    | Promise<{ messages: ModelMessage[]; systemPrompts: string[] }>;
+    | { messages: ModelMessage[]; systemPrompts: SystemPrompt[] }
+    | Promise<{ messages: ModelMessage[]; systemPrompts: SystemPrompt[] }>;
 }

@@ -9,5 +9,5 @@ export default defineConfig({
   platform: 'node',
   treeshake: true,
   sourcemap: true,
-  external: ['@context-chef/core', '@tanstack/ai'],
+  external: ['@context-chef/core', /^@tanstack\/ai(\/.*)?$/],
 });
