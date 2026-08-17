@@ -892,3 +892,31 @@ describe('GeminiAdapter — attachments output', () => {
     expect(result.messages[0].parts[0].text).toBe('Plain text');
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// GeminiAdapter.compile — compaction degradation
+// ═══════════════════════════════════════════════════════
+
+describe('GeminiAdapter — compaction degradation', () => {
+  const adapter = new GeminiAdapter();
+
+  it('inlines _anthropic_compaction as a marked summary block instead of stripping it', () => {
+    const messages: Message[] = [
+      {
+        role: 'assistant',
+        content: 'Continuing from the summary.',
+        _anthropic_compaction: 'Summary of the earlier conversation.',
+        pinned: true,
+      },
+      { role: 'user', content: 'next question' },
+    ];
+    const result = toPlain(adapter.compile([...messages]));
+    const model = result.messages.find((m) => m.role === 'model');
+    const text = model?.parts[0]?.text ?? '';
+
+    expect(text).toContain('[Summary of earlier conversation (compacted server-side)]');
+    expect(text).toContain('Summary of the earlier conversation.');
+    expect(text).toContain('Continuing from the summary.');
+    expect(JSON.stringify(result)).not.toContain('_anthropic_compaction');
+  });
+});

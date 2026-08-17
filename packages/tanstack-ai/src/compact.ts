@@ -1,10 +1,31 @@
 import type { TanStackAIMessage } from './adapter';
 import type { CompactConfig } from './types';
 
+type ToolCallsEntry = {
+  type: 'all' | 'before-last-message' | `before-last-${number}-messages`;
+  tools?: string[];
+};
+
 /**
- * Mechanical compaction — zero LLM cost.
- * Removes tool-call/result pairs and empty messages from IR messages
- * before LLM-based compression to reduce token usage cheaply.
+ * Mechanical compaction — zero LLM cost. Operates on IR messages between
+ * `fromTanStackAI` and compression.
+ *
+ * Semantics mirror AI SDK `pruneMessages` (and therefore
+ * `@context-chef/ai-sdk-middleware`'s `compact`):
+ *
+ * - `reasoning`: strips IR `thinking` from assistant messages —
+ *   `'before-last-message'` keeps it only on the final message of the array.
+ * - `toolCalls`: "last N messages" windows count messages of the whole
+ *   array (any role). Tool calls/results referenced from inside the window
+ *   are kept everywhere; outside it, matching tool calls are stripped from
+ *   assistant messages and their result messages removed. Array entries
+ *   apply their mode only to the tools named in `tools` (all when omitted)
+ *   and are applied in order.
+ * - `emptyMessages` (default `'remove'`): drops messages left with no text
+ *   content, no tool calls, no thinking, and no attachments. `role: 'tool'`
+ *   messages are structural and never removed here — an empty string is a
+ *   valid tool result, and dropping it while the assistant tool_call that
+ *   references it survives would orphan the call (providers reject that).
  */
 export function compactMessages(
   messages: TanStackAIMessage[],
@@ -12,86 +33,127 @@ export function compactMessages(
 ): TanStackAIMessage[] {
   let result = messages;
 
-  if (config.toolCalls && config.toolCalls !== 'none') {
-    result = compactToolCalls(result, config.toolCalls);
+  if (config.reasoning === 'all' || config.reasoning === 'before-last-message') {
+    const keepLastIndex = config.reasoning === 'before-last-message' ? result.length - 1 : -1;
+    result = result.map((m, i) =>
+      m.role === 'assistant' && m.thinking && i !== keepLastIndex
+        ? { ...m, thinking: undefined }
+        : m,
+    );
   }
 
-  if (config.emptyMessages === 'remove') {
-    result = result.filter((m) => m.content !== '' || (m.tool_calls && m.tool_calls.length > 0));
+  for (const entry of normalizeToolCallsConfig(config.toolCalls)) {
+    result = applyToolCallsEntry(result, entry);
+  }
+
+  if (config.emptyMessages !== 'keep') {
+    result = result.filter(
+      (m) =>
+        m.role === 'tool' || // structural: an empty tool result still answers its call
+        m.content !== '' ||
+        (m.tool_calls && m.tool_calls.length > 0) ||
+        m.thinking ||
+        (m.attachments && m.attachments.length > 0),
+    );
   }
 
   return result;
 }
 
-/**
- * Removes tool-call/result pairs from messages based on the configured strategy.
- *
- * When an assistant message's tool_calls are removed, its corresponding
- * tool-result messages (matched by tool_call_id) are also removed to
- * maintain conversation coherence.
- */
-function compactToolCalls(
-  messages: TanStackAIMessage[],
-  mode: Exclude<CompactConfig['toolCalls'], 'none' | undefined>,
-): TanStackAIMessage[] {
-  const protectedCount = getProtectedCount(mode);
+/** Normalizes the `toolCalls` option to a homogeneous entry list. */
+function normalizeToolCallsConfig(toolCalls: CompactConfig['toolCalls']): ToolCallsEntry[] {
+  if (toolCalls === undefined || toolCalls === 'none') return [];
+  if (Array.isArray(toolCalls)) {
+    for (const entry of toolCalls) windowSize(entry.type); // validate eagerly
+    return toolCalls;
+  }
+  windowSize(toolCalls); // validate eagerly
+  return [{ type: toolCalls }];
+}
 
-  // Find assistant messages that actually have tool_calls
-  const toolAssistantIndices: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === 'assistant' && messages[i].tool_calls?.length) {
-      toolAssistantIndices.push(i);
+/**
+ * Number of trailing messages protected by a mode; `undefined` for 'all'
+ * (no window — everything is prunable).
+ */
+function windowSize(mode: ToolCallsEntry['type']): number | undefined {
+  if (mode === 'all') return undefined;
+  if (mode === 'before-last-message') return 1;
+
+  const match = /^before-last-(\d+)-messages$/.exec(mode);
+  if (match) return Number.parseInt(match[1], 10);
+
+  throw new Error(
+    `[context-chef] Unrecognized toolCalls compact mode: "${mode}". ` +
+      `Valid modes: 'none', 'all', 'before-last-message', 'before-last-N-messages' ` +
+      `(replace N with a positive integer, e.g. 'before-last-3-messages'), ` +
+      `or an array of { type, tools? } entries using those modes.`,
+  );
+}
+
+/**
+ * Applies one toolCalls entry: strips matching tool calls from assistant
+ * messages outside the protected window and removes their result messages.
+ * Tool-call IDs referenced anywhere inside the window are kept everywhere,
+ * so a result inside the window never loses its originating call.
+ */
+function applyToolCallsEntry(
+  messages: TanStackAIMessage[],
+  entry: ToolCallsEntry,
+): TanStackAIMessage[] {
+  const size = windowSize(entry.type);
+  const windowStart = size === undefined ? messages.length : Math.max(0, messages.length - size);
+
+  const keptIds = new Set<string>();
+  for (let i = windowStart; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) keptIds.add(tc.id);
+    } else if (msg.role === 'tool' && msg.tool_call_id) {
+      keptIds.add(msg.tool_call_id);
     }
   }
 
-  const protectedStart =
-    protectedCount === 0
-      ? messages.length // protect nothing
-      : toolAssistantIndices.length - protectedCount >= 0
-        ? toolAssistantIndices[toolAssistantIndices.length - protectedCount]
-        : 0; // protect all if fewer tool-assistants than protectedCount
+  // Resolve tool names for result messages that lack `name`.
+  const idToName = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) idToName.set(tc.id, tc.function.name);
+    }
+  }
 
-  // Collect tool_call_ids to remove (from unprotected assistant messages)
-  const removedToolCallIds = new Set<string>();
+  // With a `tools` filter, only the named tools are pruned; a result whose
+  // tool name cannot be resolved is conservatively kept.
+  const shouldPrune = (name: string | undefined): boolean =>
+    entry.tools == null || (name !== undefined && entry.tools.includes(name));
+
   const result: TanStackAIMessage[] = [];
-
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
-    if (msg.role === 'assistant' && msg.tool_calls?.length && i < protectedStart) {
-      // Strip tool_calls from this assistant message
-      for (const tc of msg.tool_calls) {
-        removedToolCallIds.add(tc.id);
-      }
-      result.push({
-        ...msg,
-        tool_calls: undefined,
-      });
+    if (i >= windowStart) {
+      result.push(msg);
       continue;
     }
 
-    if (msg.role === 'tool' && msg.tool_call_id && removedToolCallIds.has(msg.tool_call_id)) {
-      // Remove corresponding tool result
+    if (msg.role === 'assistant' && msg.tool_calls?.length) {
+      const kept = msg.tool_calls.filter(
+        (tc) => keptIds.has(tc.id) || !shouldPrune(tc.function.name),
+      );
+      result.push(
+        kept.length === msg.tool_calls.length
+          ? msg
+          : { ...msg, tool_calls: kept.length ? kept : undefined },
+      );
       continue;
+    }
+
+    if (msg.role === 'tool' && msg.tool_call_id && !keptIds.has(msg.tool_call_id)) {
+      const name = msg.name ?? idToName.get(msg.tool_call_id);
+      if (shouldPrune(name)) continue; // drop the result message
     }
 
     result.push(msg);
   }
 
   return result;
-}
-
-/** Determines how many trailing assistant messages are protected from compaction. */
-function getProtectedCount(mode: Exclude<CompactConfig['toolCalls'], 'none' | undefined>): number {
-  if (mode === 'all') return 0;
-  if (mode === 'before-last-message') return 1;
-
-  const match = mode.match(/^before-last-(\d+)-messages$/);
-  if (match) return parseInt(match[1], 10);
-
-  throw new Error(
-    `[context-chef] Unrecognized toolCalls compact mode: "${mode}". ` +
-      `Valid modes: 'none', 'all', 'before-last-message', 'before-last-N-messages' ` +
-      `(replace N with a positive integer, e.g. 'before-last-3-messages').`,
-  );
 }

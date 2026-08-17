@@ -127,6 +127,54 @@ describe('TypedEventEmitter', () => {
     expect(handler).toHaveBeenCalledWith({ name: 'world' }, undefined);
   });
 
+  // ───── handler error isolation ─────
+
+  it('a throwing handler does not prevent later handlers from running', async () => {
+    const logger = { warn: vi.fn() };
+    const emitter = new TypedEventEmitter<TestEvents>(logger);
+    const after = vi.fn();
+
+    emitter.on('hello', () => {
+      throw new Error('observer boom');
+    });
+    emitter.on('hello', after);
+
+    await expect(emitter.emit('hello', { name: 'world' })).resolves.toBeUndefined();
+
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('event handler for "hello" threw');
+  });
+
+  it('a rejecting async handler is isolated the same way', async () => {
+    const logger = { warn: vi.fn() };
+    const emitter = new TypedEventEmitter<TestEvents>(logger);
+    const after = vi.fn();
+
+    emitter.on('count', async () => {
+      throw new Error('async observer boom');
+    });
+    emitter.on('count', after);
+
+    await expect(emitter.emit('count', { n: 1 })).resolves.toBeUndefined();
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to console.warn when no logger is configured', async () => {
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const emitter = new TypedEventEmitter<TestEvents>();
+      emitter.on('hello', () => {
+        throw new Error('boom');
+      });
+      await emitter.emit('hello', { name: 'x' });
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('does NOT short-circuit remaining handlers when signal aborts mid-iteration', async () => {
     // Pure pass-through semantics: emit() never decides whether to skip handlers.
     const emitter = new TypedEventEmitter<TestEvents>();

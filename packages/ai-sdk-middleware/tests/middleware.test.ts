@@ -1520,3 +1520,301 @@ describe('compress persistence warning', () => {
     expect(persistenceWarns).toHaveLength(0);
   });
 });
+
+describe('compress.triggerRatio / compress.minShrinkRatio', () => {
+  async function feedUsage(
+    middleware: ReturnType<typeof createMiddleware>,
+    model: LanguageModelV4,
+  ): Promise<void> {
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate: () => model.doGenerate({ prompt: [] }),
+      doStream: () => model.doStream({ prompt: [] }),
+      params: { prompt: [] },
+      model,
+    });
+  }
+
+  async function transform(
+    middleware: ReturnType<typeof createMiddleware>,
+    model: LanguageModelV4,
+    prompt: LanguageModelV4Prompt,
+  ): Promise<{ prompt: LanguageModelV4Prompt }> {
+    return assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model,
+    });
+  }
+
+  it('triggerRatio: 1 does not compress just under the window and compresses just over', async () => {
+    const prompt = makeConversation(10);
+    const summarizer = createMockModel();
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      compress: { model: summarizer, triggerRatio: 1 },
+      onCompress: vi.fn(),
+    });
+
+    // Just under the raw window. The default 0.7 trigger would fire here
+    // (9_999 > 7_000) — triggerRatio: 1 must not.
+    await feedUsage(middleware, createMockModel({ inputTokens: 9_999 }));
+    const under = await transform(middleware, summarizer, prompt);
+    expect(under.prompt.length).toBe(prompt.length);
+
+    // Just over the raw window: compression fires.
+    await feedUsage(middleware, createMockModel({ inputTokens: 10_001 }));
+    const over = await transform(middleware, summarizer, prompt);
+    expect(over.prompt.length).toBeLessThan(prompt.length);
+  });
+
+  it('default trigger (0.7) compresses the same just-under-window usage', async () => {
+    const prompt = makeConversation(10);
+    const summarizer = createMockModel();
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      compress: { model: summarizer },
+      onCompress: vi.fn(),
+    });
+
+    await feedUsage(middleware, createMockModel({ inputTokens: 9_999 }));
+    const result = await transform(middleware, summarizer, prompt);
+    expect(result.prompt.length).toBeLessThan(prompt.length);
+  });
+
+  it('minShrinkRatio: 0 accepts a non-shrinking summary that the default guard rejects', async () => {
+    // Span (~2.5k chars) exceeds the 2000-char shrink-guard floor; the echo
+    // summarizer's 3000-char output cannot shrink it.
+    const prompt = makeConversation(12);
+    const echoSummarizer = createMockModel({ outputText: 'S'.repeat(3000) });
+
+    // Default guard (0.5): the summary is rejected, history left unchanged.
+    const guarded = createMiddleware({
+      contextWindow: 100,
+      compress: { model: echoSummarizer },
+      onCompress: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+    await feedUsage(guarded, createMockModel({ inputTokens: 200 }));
+    const rejected = await transform(guarded, echoSummarizer, prompt);
+    expect(rejected.prompt.length).toBe(prompt.length);
+
+    // minShrinkRatio: 0 disables the guard: the same summary is accepted.
+    const disabled = createMiddleware({
+      contextWindow: 100,
+      compress: { model: echoSummarizer, minShrinkRatio: 0 },
+      onCompress: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+    await feedUsage(disabled, createMockModel({ inputTokens: 200 }));
+    const accepted = await transform(disabled, echoSummarizer, prompt);
+    expect(accepted.prompt.length).toBeLessThan(prompt.length);
+  });
+});
+
+describe('anthropic server-side context management guard', () => {
+  const compactionManagement = {
+    edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 150_000 } }],
+  };
+  const clearOnlyManagement = {
+    edits: [
+      { type: 'clear_tool_uses_20250919', keep: { type: 'tool_uses', value: 3 } },
+      { type: 'clear_thinking_20251015' },
+    ],
+  };
+
+  /** Feed over-budget usage so the next transformParams would compress. */
+  async function feedOverBudget(
+    middleware: ReturnType<typeof createMiddleware>,
+    model: LanguageModelV4,
+  ): Promise<void> {
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate: () => model.doGenerate({ prompt: [] }),
+      doStream: () => model.doStream({ prompt: [] }),
+      params: { prompt: [] },
+      model,
+    });
+  }
+
+  function guardWarns(warn: ReturnType<typeof vi.fn>): string[] {
+    return warn.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((msg) => msg.includes('contextManagement'));
+  }
+
+  it('skips compression and warns once across multiple calls', async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: vi.fn(),
+      logger,
+    });
+    const model = createMockModel({ inputTokens: 200 });
+    await feedOverBudget(middleware, model);
+
+    const longPrompt = makeConversation(10);
+    const providerOptions = { anthropic: { contextManagement: compactionManagement } };
+
+    for (let i = 0; i < 2; i++) {
+      const result = await assertDefined(
+        middleware.transformParams,
+        'transformParams',
+      )({
+        params: { prompt: longPrompt, providerOptions },
+        type: 'generate',
+        model,
+      });
+      // Compression was skipped — nothing summarized or discarded.
+      expect(result.prompt.length).toBe(longPrompt.length);
+    }
+
+    const warns = guardWarns(logger.warn);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('allowDoubleCompression');
+    // Compaction wording, not the clear-only variant.
+    expect(warns[0]).not.toContain('clear_*');
+  });
+
+  it('words the warning for clear-only edits and still skips', async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: vi.fn(),
+      logger,
+    });
+    const model = createMockModel({ inputTokens: 200 });
+    await feedOverBudget(middleware, model);
+
+    const longPrompt = makeConversation(10);
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: {
+        prompt: longPrompt,
+        providerOptions: { anthropic: { contextManagement: clearOnlyManagement } },
+      },
+      type: 'generate',
+      model,
+    });
+
+    expect(result.prompt.length).toBe(longPrompt.length);
+    const warns = guardWarns(logger.warn);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('clear_*');
+    expect(warns[0]).toContain('allowDoubleCompression');
+  });
+
+  it('compresses normally when providerOptions.anthropic has no contextManagement', async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: vi.fn(),
+      logger,
+    });
+    const model = createMockModel({ inputTokens: 200 });
+    await feedOverBudget(middleware, model);
+
+    const longPrompt = makeConversation(10);
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt, providerOptions: { anthropic: { effort: 'low' } } },
+      type: 'generate',
+      model,
+    });
+
+    expect(result.prompt.length).toBeLessThan(longPrompt.length);
+    expect(guardWarns(logger.warn)).toHaveLength(0);
+  });
+
+  it('allowDoubleCompression: true compresses and does not warn', async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: vi.fn(),
+      allowDoubleCompression: true,
+      logger,
+    });
+    const model = createMockModel({ inputTokens: 200 });
+    await feedOverBudget(middleware, model);
+
+    const longPrompt = makeConversation(10);
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: {
+        prompt: longPrompt,
+        providerOptions: { anthropic: { contextManagement: compactionManagement } },
+      },
+      type: 'generate',
+      model,
+    });
+
+    expect(result.prompt.length).toBeLessThan(longPrompt.length);
+    expect(guardWarns(logger.warn)).toHaveLength(0);
+  });
+
+  it('does not warn when no compression is configured', async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({
+      truncate: { threshold: 1000 },
+      logger,
+    });
+
+    const prompt: LanguageModelV4Prompt = [
+      { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+    ];
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: {
+        prompt,
+        providerOptions: { anthropic: { contextManagement: compactionManagement } },
+      },
+      type: 'generate',
+      model: createMockModel(),
+    });
+
+    expect(result.prompt).toEqual(prompt);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('leaves non-anthropic providerOptions untouched and compresses normally', async () => {
+    const logger = { warn: vi.fn() };
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      onCompress: vi.fn(),
+      logger,
+    });
+    const model = createMockModel({ inputTokens: 200 });
+    await feedOverBudget(middleware, model);
+
+    const longPrompt = makeConversation(10);
+    const providerOptions = { openai: { store: false }, contextChef: {} };
+    const result = await assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt: longPrompt, providerOptions },
+      type: 'generate',
+      model,
+    });
+
+    expect(result.prompt.length).toBeLessThan(longPrompt.length);
+    expect(guardWarns(logger.warn)).toHaveLength(0);
+    // providerOptions pass through unchanged.
+    expect(result.providerOptions).toBe(providerOptions);
+  });
+});

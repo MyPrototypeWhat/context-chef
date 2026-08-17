@@ -375,10 +375,13 @@ const chef = new ContextChef({
     onCompress: (summaryMessage, count, details) => {
       console.log(`Compressed ${count} messages`);
     },
-    onBudgetExceeded: (history) => {
-      // First pass: mechanically strip tool results (zero LLM cost)
-      return compactJanitor.compact(history, { clear: ['tool-result'] });
+    onBeforeCompress: (history) => {
+      // First pass: mechanically strip thinking blocks (zero LLM cost).
+      // Don't clear tool-result here — LLM compression follows; use
+      // toolResultStubThreshold for large tool outputs instead.
+      return compactJanitor.compact(history, { clear: ['thinking'] });
     },
+    toolResultStubThreshold: 5000,
   },
   memory: {
     store: new VFSMemoryStore(".context-memory"),

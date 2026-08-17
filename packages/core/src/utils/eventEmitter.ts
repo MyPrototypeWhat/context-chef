@@ -1,3 +1,5 @@
+import type { ChefLogger } from '../types';
+
 export type EventHandler<T> = (payload: T, signal?: AbortSignal) => void | Promise<void>;
 
 /**
@@ -13,6 +15,8 @@ export type EventHandler<T> = (payload: T, signal?: AbortSignal) => void | Promi
  */
 export class TypedEventEmitter<Events extends { [K in keyof Events]: unknown }> {
   private listeners = new Map<keyof Events, Set<EventHandler<never>>>();
+
+  constructor(private logger?: ChefLogger) {}
 
   on<K extends keyof Events>(event: K, handler: EventHandler<Events[K]>): this {
     let set = this.listeners.get(event);
@@ -37,6 +41,11 @@ export class TypedEventEmitter<Events extends { [K in keyof Events]: unknown }> 
    * `signal.aborted` and does NOT short-circuit the iteration when a handler
    * fires after abort — observability is preserved on cancel paths.
    * Cooperative cancellation is the handler's responsibility.
+   *
+   * Handler errors are isolated: a throwing/rejecting handler is logged via the
+   * configured logger and does not prevent later handlers from running, nor
+   * does it fail the emitting operation. Observation events must never break
+   * compile() — the same degradation stance as Janitor's onCompress hook.
    */
   async emit<K extends keyof Events>(
     event: K,
@@ -46,11 +55,18 @@ export class TypedEventEmitter<Events extends { [K in keyof Events]: unknown }> 
     const set = this.listeners.get(event);
     if (!set) return;
     for (const handler of set) {
-      // Unavoidable cast: handlers are stored as EventHandler<never> so we can
-      // put specific types into the set, but to call them with a real payload
-      // we need to widen back to the specific event type. Runtime is safe
-      // because on() only ever adds handlers matching their event's type.
-      await (handler as EventHandler<Events[K]>)(payload, signal);
+      try {
+        // Unavoidable cast: handlers are stored as EventHandler<never> so we can
+        // put specific types into the set, but to call them with a real payload
+        // we need to widen back to the specific event type. Runtime is safe
+        // because on() only ever adds handlers matching their event's type.
+        await (handler as EventHandler<Events[K]>)(payload, signal);
+      } catch (error) {
+        (this.logger ?? console).warn(
+          `[context-chef] event handler for "${String(event)}" threw — other handlers and the emitting operation continue`,
+          error,
+        );
+      }
     }
   }
 }

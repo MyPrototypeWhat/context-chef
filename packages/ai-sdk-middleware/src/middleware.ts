@@ -14,11 +14,11 @@ import {
   Janitor,
   type Message,
   normalizeSessionKey,
+  objectToXml,
   Prompts,
   SessionPool,
   type SummarizeHistoryOptions,
   summarizeHistory,
-  XmlGenerator,
 } from '@context-chef/core';
 import {
   generateText,
@@ -139,6 +139,30 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     return janitors.get(normalizeSessionKey(raw, flagInvalidSessionKey));
   };
 
+  // Anti-double-compression guard: when a call opts into Anthropic
+  // server-side context management, the server already compacts/clears the
+  // history — compressing it here as well would rewrite it twice. Warned
+  // once per middleware instance; `allowDoubleCompression: true` disables
+  // the guard entirely.
+  let doubleCompressionWarned = false;
+  const warnServerManagedOnce = (clearOnly: boolean) => {
+    if (doubleCompressionWarned) return;
+    doubleCompressionWarned = true;
+    logger.warn(
+      clearOnly
+        ? '[context-chef] Anthropic server-side context management detected ' +
+            '(providerOptions.anthropic.contextManagement with only clear_* edits). The server ' +
+            'is already managing context by clearing old tool uses/thinking, so middleware ' +
+            'compression is skipped for these calls to avoid managing the same history twice. ' +
+            'Set `allowDoubleCompression: true` to compress anyway.'
+        : '[context-chef] Anthropic server-side context management detected ' +
+            '(providerOptions.anthropic.contextManagement). The server manages the context ' +
+            'window (including compaction), so middleware compression is skipped for these ' +
+            'calls to avoid compressing the same history twice. Set ' +
+            '`allowDoubleCompression: true` to compress anyway.',
+    );
+  };
+
   const clearsToolResults = !!options.clear?.some(
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
   );
@@ -179,9 +203,19 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       const systemMessages = allIR.filter((m) => m.role === 'system');
       let conversation = allIR.filter((m) => m.role !== 'system');
 
-      // 4. Compress conversation history if over token budget (budgeting only)
+      // 4. Compress conversation history if over token budget (budgeting
+      //    only). Yields to Anthropic server-side context management when
+      //    the call declares it (see warnServerManagedOnce above) — every
+      //    other step still runs; only this one is skipped.
       if (janitor) {
-        conversation = await janitor.compress(conversation);
+        const serverManagement = options.allowDoubleCompression
+          ? null
+          : detectServerContextManagement(params.providerOptions);
+        if (serverManagement) {
+          warnServerManagedOnce(serverManagement.clearOnly);
+        } else {
+          conversation = await janitor.compress(conversation);
+        }
       }
 
       // 4.5 Placeholder-style clearing (core semantics) — after compress so
@@ -270,6 +304,37 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 }
 
 /**
+ * Detects Anthropic server-side context management on a call's
+ * providerOptions (`providerOptions.anthropic.contextManagement`, per
+ * `@ai-sdk/anthropic`). Returns null when absent or malformed.
+ *
+ * `clearOnly` is true when the edits array holds exclusively `clear_*`
+ * edits (e.g. `clear_tool_uses_20250919`, `clear_thinking_20251015`) and
+ * no `compact_20260112` — the server clears rather than compacts, which
+ * only changes the warning wording, not the skip decision.
+ */
+function detectServerContextManagement(
+  providerOptions: Record<string, unknown> | undefined,
+): { clearOnly: boolean } | null {
+  const anthropic = providerOptions?.anthropic;
+  if (anthropic == null || typeof anthropic !== 'object') return null;
+  const contextManagement = (anthropic as Record<string, unknown>).contextManagement;
+  if (contextManagement == null || typeof contextManagement !== 'object') return null;
+  const edits = (contextManagement as Record<string, unknown>).edits;
+  const clearOnly =
+    Array.isArray(edits) &&
+    edits.length > 0 &&
+    edits.every(
+      (edit) =>
+        edit != null &&
+        typeof edit === 'object' &&
+        typeof (edit as Record<string, unknown>).type === 'string' &&
+        ((edit as Record<string, unknown>).type as string).startsWith('clear_'),
+    );
+  return { clearOnly };
+}
+
+/**
  * Builds the stateful Janitor for budget-dependent configurations.
  *
  * The Janitor config is a discriminated union on `tokenizer`. Build the
@@ -286,6 +351,8 @@ function createJanitor(
   const userOnCompress = options.onCompress;
   const sharedJanitorConfig = {
     contextWindow,
+    triggerRatio: options.compress?.triggerRatio,
+    minShrinkRatio: options.compress?.minShrinkRatio,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.model
       ? createCompressionAdapter(options.compress.model)
@@ -387,7 +454,7 @@ async function injectDynamicState(
   config: DynamicStateConfig,
 ): Promise<LanguageModelV4Prompt> {
   const state = await config.getState();
-  const xml = XmlGenerator.objectToXml(state, 'dynamic_state');
+  const xml = objectToXml(state, 'dynamic_state');
   const placement = config.placement ?? 'last_user';
 
   if (placement === 'system') {

@@ -241,17 +241,17 @@ describe('compact — keepRecent', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// Integration with onBudgetExceeded
+// Integration with onBeforeCompress
 // ═══════════════════════════════════════════════════════
 
-describe('compact — integration with onBudgetExceeded', () => {
-  it('can be used inside onBudgetExceeded as a first-pass compaction', async () => {
+describe('compact — integration with onBeforeCompress', () => {
+  it('can be used inside onBeforeCompress as a first-pass compaction', async () => {
     const compactJanitor = new Janitor({ contextWindow: Infinity });
     const chef = new ContextChef({
       janitor: {
         contextWindow: 30,
         tokenizer: (msgs) => msgs.length * 10,
-        onBudgetExceeded: (history) => {
+        onBeforeCompress: (history) => {
           return compactJanitor.compact(history, { clear: ['tool-result'] });
         },
       },
@@ -267,7 +267,7 @@ describe('compact — integration with onBudgetExceeded', () => {
     chef.setHistory(history);
     const payload = await chef.compile();
 
-    // onBudgetExceeded returned compacted history (4 msgs × 10 = 40 > 30),
+    // onBeforeCompress returned compacted history (4 msgs × 10 = 40 > 30),
     // but compact only clears content, doesn't reduce message count,
     // so Janitor still compresses after re-evaluation
     const messages = payload.messages;

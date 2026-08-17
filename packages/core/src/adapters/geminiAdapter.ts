@@ -6,7 +6,14 @@ import type {
   TextPart as SDKTextPart,
 } from '@google/generative-ai';
 import { Prompts } from '../prompts';
-import type { Attachment, GeminiPayload, HistoryMessage, Message, ParsedMessages } from '../types';
+import type {
+  Attachment,
+  ChefLogger,
+  GeminiPayload,
+  HistoryMessage,
+  Message,
+  ParsedMessages,
+} from '../types';
 import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
@@ -67,11 +74,22 @@ export function fromGemini(
       id: string;
       type: 'function';
       function: { name: string; arguments: string };
+      thoughtSignature?: string;
     }[] = [];
+    let textSignature: string | undefined;
+
+    // Gemini 3 thought signatures ride on parts (first functionCall of each
+    // step, sometimes a text part) and MUST be echoed verbatim in later
+    // requests — a missing signature on a current-turn function call is a
+    // 400. The SDK part types may not declare the field; read it structurally.
+    const partSignature = (part: SDKPart): string | undefined =>
+      (part as { thoughtSignature?: string }).thoughtSignature;
 
     for (const part of content.parts) {
       if ('text' in part && part.text != null) {
         textParts.push(part.text);
+        const sig = partSignature(part);
+        if (sig) textSignature = sig;
       } else if ('inlineData' in part && part.inlineData) {
         attachments.push({
           mediaType: part.inlineData.mimeType,
@@ -90,14 +108,17 @@ export function fromGemini(
         const pending = pendingCallIds.get(name);
         if (pending) pending.push(id);
         else pendingCallIds.set(name, [id]);
-        toolCalls.push({
+        const call: (typeof toolCalls)[number] = {
           id,
           type: 'function',
           function: {
             name,
             arguments: JSON.stringify(part.functionCall.args),
           },
-        });
+        };
+        const sig = partSignature(part);
+        if (sig) call.thoughtSignature = sig;
+        toolCalls.push(call);
       } else if ('functionResponse' in part && part.functionResponse) {
         const name = part.functionResponse.name;
         // Orphan responses (no unconsumed call of this name) fall back to `-0`
@@ -116,6 +137,9 @@ export function fromGemini(
       const ir: HistoryMessage = { role, content: textParts.join('\n') };
       if (attachments.length) ir.attachments = attachments;
       if (toolCalls.length) ir.tool_calls = toolCalls;
+      // Text-part thought signature: message-level passthrough (text parts are
+      // joined in IR, so a single signature per message is retained).
+      if (textSignature) ir._gemini_thought_signature = textSignature;
       history.push(ir);
     }
   }
@@ -128,6 +152,14 @@ export function fromGemini(
 // ─── Output: IR → Gemini ───
 
 /**
+ * Header for an Anthropic server-side compaction summary degraded to plain
+ * text. Gemini has no compaction block, and the Anthropic API drops
+ * everything before that block — silently stripping it on a provider switch
+ * would lose the entire compacted history.
+ */
+const COMPACTION_SUMMARY_HEADER = '[Summary of earlier conversation (compacted server-side)]';
+
+/**
  * Adapts ContextChef IR to Google Gemini's generateContent format.
  *
  * Key differences from OpenAI/Anthropic:
@@ -138,7 +170,24 @@ export function fromGemini(
  * - `_cache_breakpoint` is silently ignored (Gemini uses a separate CachedContent API).
  * - Prefill degradation follows the same pattern as OpenAI (Gemini doesn't support trailing model messages).
  */
+export interface GeminiAdapterOptions {
+  /**
+   * When true, Anthropic-style `thinking` on assistant messages is converted
+   * to a `<thinking>...</thinking>` text prefix instead of being dropped, so
+   * reasoning survives cross-provider replay. `redacted_thinking` is NEVER
+   * textified (opaque encrypted blob) — dropped with a one-time warning.
+   * Default: false (drop thinking, pre-4.0 behavior).
+   */
+  preserveThinkingAsText?: boolean;
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+}
+
 export class GeminiAdapter implements ITargetAdapter {
+  private _redactedWarned = false;
+
+  constructor(private readonly options: GeminiAdapterOptions = {}) {}
+
   compile(messages: Message[]): GeminiPayload {
     const systemParts: SDKTextPart[] = [];
     const contents: SDKContent[] = [];
@@ -171,13 +220,38 @@ export class GeminiAdapter implements ITargetAdapter {
       if (msg.role === 'assistant') {
         const parts: SDKPart[] = [];
 
-        // thinking / redacted_thinking have no Gemini request equivalent — silently discard.
-        // thought:true is an output-only field in Gemini responses; multi-turn thinking
-        // is maintained via thoughtSignature at the Content level (handled by the SDK).
+        // thinking / redacted_thinking have no Gemini request equivalent —
+        // discarded unless preserveThinkingAsText converts thinking to a text
+        // prefix. thought:true is an output-only field in Gemini responses;
+        // multi-turn thinking is maintained via thoughtSignature on parts.
+        let content = msg.content;
+        if (this.options.preserveThinkingAsText) {
+          if (msg.thinking?.thinking) {
+            content = `<thinking>\n${msg.thinking.thinking}\n</thinking>\n\n${content ?? ''}`;
+          }
+          if (msg.redacted_thinking && !this._redactedWarned) {
+            this._redactedWarned = true;
+            (this.options.logger ?? console).warn(
+              '[context-chef] redacted_thinking is an opaque encrypted blob and cannot be ' +
+                'preserved as text — dropped on the Gemini target (warned once).',
+            );
+          }
+        }
+
+        // Degrade an Anthropic server-side compaction to a marked summary
+        // block prepended to the message text (it summarizes everything before
+        // it, so it must come first — ahead of any textified thinking).
+        if (typeof msg._anthropic_compaction === 'string') {
+          content = `${COMPACTION_SUMMARY_HEADER}\n${msg._anthropic_compaction}\n\n${content ?? ''}`;
+        }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-          if (msg.content) {
-            const textPart: SDKTextPart = { text: msg.content };
+          if (content) {
+            const textPart: SDKTextPart = { text: content };
+            if (typeof msg._gemini_thought_signature === 'string') {
+              (textPart as { thoughtSignature?: string }).thoughtSignature =
+                msg._gemini_thought_signature;
+            }
             parts.push(textPart);
           }
           for (const tc of msg.tool_calls) {
@@ -188,10 +262,19 @@ export class GeminiAdapter implements ITargetAdapter {
                 args,
               },
             };
+            // Echo the thought signature verbatim — Gemini 3 rejects
+            // current-turn function calls without their signature.
+            if (tc.thoughtSignature) {
+              (part as { thoughtSignature?: string }).thoughtSignature = tc.thoughtSignature;
+            }
             parts.push(part);
           }
         } else {
-          const textPart: SDKTextPart = { text: msg.content };
+          const textPart: SDKTextPart = { text: content };
+          if (typeof msg._gemini_thought_signature === 'string') {
+            (textPart as { thoughtSignature?: string }).thoughtSignature =
+              msg._gemini_thought_signature;
+          }
           parts.push(textPart);
         }
 
@@ -199,7 +282,11 @@ export class GeminiAdapter implements ITargetAdapter {
         continue;
       }
 
-      const userTextPart: SDKTextPart = { text: msg.content };
+      let userContent = msg.content;
+      if (typeof msg._anthropic_compaction === 'string') {
+        userContent = `${COMPACTION_SUMMARY_HEADER}\n${msg._anthropic_compaction}\n\n${userContent}`;
+      }
+      const userTextPart: SDKTextPart = { text: userContent };
       const userParts: SDKPart[] = [userTextPart];
       // Convert attachments to Gemini inlineData/fileData parts
       if (msg.attachments?.length) {

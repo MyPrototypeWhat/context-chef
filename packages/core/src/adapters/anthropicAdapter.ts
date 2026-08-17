@@ -65,8 +65,15 @@ export function fromAnthropic(
     const toolCalls: ToolCall[] = [];
     let thinking: { thinking: string; signature?: string } | undefined;
     let redactedThinking: { data: string } | undefined;
+    let compaction: string | undefined;
 
     for (const block of msg.content) {
+      // Server-side compaction block (compact_20260112). The SDK type union
+      // may lag behind the API — match on the type string.
+      if ((block as { type: string }).type === 'compaction') {
+        compaction = (block as unknown as { content: string }).content;
+        continue;
+      }
       switch (block.type) {
         case 'text':
           textParts.push(block.text);
@@ -162,7 +169,8 @@ export function fromAnthropic(
       toolCalls.length ||
       attachments.length ||
       thinking ||
-      redactedThinking
+      redactedThinking ||
+      compaction !== undefined
     ) {
       const ir: HistoryMessage = {
         role: msg.role,
@@ -172,6 +180,14 @@ export function fromAnthropic(
       if (toolCalls.length) ir.tool_calls = toolCalls;
       if (thinking) ir.thinking = thinking;
       if (redactedThinking) ir.redacted_thinking = redactedThinking;
+      if (compaction !== undefined) {
+        // Passthrough field re-emitted verbatim by the Anthropic target
+        // adapter. Pinned so no lossy operation (compress/compact) can
+        // destroy it — the API drops everything before this block, so
+        // losing it would lose the whole compacted history.
+        ir._anthropic_compaction = compaction;
+        ir.pinned = true;
+      }
       history.push(ir);
     }
   }
@@ -233,6 +249,15 @@ export class AnthropicAdapter implements ITargetAdapter {
         const role: 'user' | 'assistant' =
           msg.role === 'tool' ? 'user' : (msg.role as 'user' | 'assistant');
         const content: SDKContentBlockParam[] = [];
+
+        // Re-emit a server-side compaction block verbatim, ahead of any other
+        // content of the message (the API ignores everything before it).
+        if (typeof msg._anthropic_compaction === 'string') {
+          content.push({
+            type: 'compaction',
+            content: msg._anthropic_compaction,
+          } as unknown as SDKContentBlockParam);
+        }
 
         if (msg.role === 'tool') {
           const block: SDKToolResultBlockParam = {

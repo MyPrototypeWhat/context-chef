@@ -7,11 +7,20 @@ import {
   Janitor,
   type Message,
   normalizeSessionKey,
+  objectToXml,
   Prompts,
   SessionPool,
-  XmlGenerator,
 } from '@context-chef/core';
-import type { AnyTextAdapter, ChatMiddleware, ModelMessage } from '@tanstack/ai';
+import {
+  type AnyTextAdapter,
+  type ChatMiddleware,
+  type ChatMiddlewareConfig,
+  type ChatMiddlewareContext,
+  EventType,
+  type ModelMessage,
+  type SystemPrompt,
+} from '@tanstack/ai';
+import { resolveDebugOption } from '@tanstack/ai/adapter-internals';
 
 import { fromTanStackAI, toTanStackAI } from './adapter';
 import { compactMessages } from './compact';
@@ -19,11 +28,33 @@ import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
 
 /**
+ * After this many compressions fire without an `onCompress` persistence hook,
+ * warn once. The middleware compresses the engine's in-flight state only — it
+ * never mutates the caller's message store — so without write-back the history
+ * re-expands every chat() call and the outgoing payload grows unbounded. A
+ * couple of fires is a transient spike (fine); repeated fires signal a
+ * sustained over-budget conversation that needs durable persistence.
+ */
+const COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD = 3;
+
+/**
  * Creates a TanStack AI ChatMiddleware that transparently applies
  * context-chef compression and truncation to chat() calls.
  *
- * The middleware holds a stateful Janitor instance that tracks
- * token usage across calls for compression decisions.
+ * The middleware holds a stateful Janitor per conversation (keyed by
+ * `ctx.threadId`) that tracks token usage across calls for compression
+ * decisions.
+ *
+ * `onConfig` fires at `phase: 'init'` AND at the start of every agent
+ * iteration (`phase: 'beforeModel'`), and the engine carries the transformed
+ * config into the next firing — every transform here is therefore
+ * idempotent: injections (skill, clear explainer, dynamic state) check for /
+ * replace their previous output instead of appending again.
+ *
+ * Robustness: middleware hooks that throw FAIL the host chat() run in
+ * TanStack AI. Every hook body is wrapped — on an unexpected error the
+ * middleware logs through the configured logger and passes the request
+ * through unchanged instead of breaking the run.
  *
  * @example
  * ```typescript
@@ -34,6 +65,7 @@ import type { ContextChefOptions, DynamicStateConfig } from './types';
  * const stream = chat({
  *   adapter: openaiText('gpt-4o'),
  *   messages,
+ *   threadId: 'conversation-1', // keys per-conversation compression state
  *   middleware: [
  *     contextChefMiddleware({
  *       contextWindow: 128_000,
@@ -46,39 +78,237 @@ import type { ContextChefOptions, DynamicStateConfig } from './types';
  */
 export function contextChefMiddleware(options: ContextChefOptions): ChatMiddleware {
   const logger: ChefLogger = options.logger ?? console;
+  let usageWarned = false;
+
+  // Budget-dependent features: compression and its hooks. Any of them
+  // signals compression intent and needs a Janitor — and therefore a
+  // `contextWindow`. Truncate/compact/clear/skill/dynamicState-only
+  // configurations get no Janitor at all: no budget checks, no token-usage
+  // capture, and none of the Janitor's missing-tokenizer warnings.
+  const budgeting = Boolean(options.compress || options.onCompress || options.onBeforeCompress);
+
+  if (budgeting && options.contextWindow == null) {
+    throw new Error(
+      '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
+        '`onCompress`, `onBeforeCompress`) is configured — the budget ' +
+        'check has nothing to compare against without it.',
+    );
+  }
+
+  // Surface the in-flight-without-persistence footgun: if compression keeps
+  // firing but no `onCompress` is configured, the summary is discarded when
+  // the run ends and the caller's history re-expands on the next chat() call.
+  let compressionsFired = 0;
+  let persistenceWarned = false;
+  const onCompressionFired = () => {
+    compressionsFired++;
+    if (
+      persistenceWarned ||
+      options.onCompress ||
+      compressionsFired < COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD
+    ) {
+      return;
+    }
+    persistenceWarned = true;
+    logger.warn(
+      `[context-chef] compress has fired ${compressionsFired}× but no \`onCompress\` is ` +
+        'configured. In-flight compression only rewrites the outgoing request — the summary is ' +
+        'not persisted, so your message history re-expands on the next chat() call and the ' +
+        'payload grows unbounded (eventually overflowing the context window). For sustained ' +
+        'compression, persist the summary via `onCompress` (replace the compressed slice in ' +
+        'your own store), or use `compactTanStackMessages` for durable compaction.',
+    );
+  };
+
+  // One Janitor per conversation. A middleware instance is usually created
+  // once and reused across chat() calls for many conversations — sharing one
+  // Janitor would leak token-usage feeds, compression suppression, and
+  // circuit-breaker counts across them. TanStack AI supplies the conversation
+  // identity via ctx.threadId (auto-generated per run when the caller passes
+  // none — pass an explicit `threadId` to chat() for cross-call continuity).
+  // Construction-time config nags are deduped across conversations — the
+  // config is identical for every pooled Janitor.
+  const janitors = budgeting
+    ? new SessionPool(
+        dedupeConstructionWarnings(logger, (constructionLogger) =>
+          createJanitor(
+            options,
+            options.contextWindow as number,
+            constructionLogger,
+            onCompressionFired,
+          ),
+        ),
+        { maxSize: options.maxSessions },
+      )
+    : null;
+
+  let invalidThreadIdWarned = false;
+  const flagInvalidThreadId = (raw: unknown) => {
+    if (invalidThreadIdWarned) return;
+    invalidThreadIdWarned = true;
+    logger.warn(
+      '[context-chef] Invalid ctx.threadId (expected a non-empty string, got ' +
+        `${raw === '' ? 'empty string' : typeof raw}); routing to the default conversation slot.`,
+    );
+  };
+
+  const janitorFor = (ctx: { threadId?: string; conversationId?: string }): Janitor | null => {
+    if (!janitors) return null;
+    // conversationId is a deprecated alias of threadId — fall back to it for
+    // contexts constructed by pre-rename hosts or hand-rolled test doubles.
+    return janitors.get(
+      normalizeSessionKey(ctx.threadId ?? ctx.conversationId, flagInvalidThreadId),
+    );
+  };
+
   const clearsToolResults = !!options.clear?.some(
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
   );
 
-  // `clear` only round-trips tool-result placeholders. Reasoning lives in the
-  // assistant message's content parts, which the adapter passes through
-  // untouched — so a `'thinking'` target here is a silent no-op. Use `compact`
-  // for reasoning removal.
-  if (options.clear?.some((t) => t === 'thinking')) {
-    logger.warn(
-      "[context-chef] `clear: ['thinking']` has no effect in the middleware — reasoning " +
-        'parts pass through the adapter unchanged. Use `compact` to remove reasoning.',
-    );
-  }
+  const transformConfig = async (
+    ctx: ChatMiddlewareContext,
+    config: ChatMiddlewareConfig,
+  ): Promise<Partial<ChatMiddlewareConfig>> => {
+    const janitor = janitorFor(ctx);
+    let { messages } = config;
+    let systemPrompts = [...config.systemPrompts];
 
-  let usageWarned = false;
+    // 1. Truncate large tool results
+    if (options.truncate) {
+      messages = await truncateToolResults(messages, options.truncate, logger);
+    }
 
-  // The Janitor config is a discriminated union on `tokenizer`. Build the two
-  // branches separately so the literal type matches one of the union members
-  // exactly — a single literal carrying `tokenizer: Fn | undefined` would not
-  // narrow to either branch.
+    // 2–5. IR pipeline: convert to IR, compact (mechanical, zero LLM cost),
+    // compress when over budget (budgeting only), then placeholder-style
+    // clearing (after compress so the summarizer saw full content), and
+    // convert back. Skipped entirely when no IR-consuming option is
+    // configured — truncate works on ModelMessages directly and the
+    // skill/dynamicState/systemPrompts paths below never need IR, so the
+    // round-trip would be pure per-call overhead (it also rebuilds every
+    // message object; the fast path passes them through by identity).
+    if (options.compact || janitor || options.clear?.length) {
+      let irMessages = fromTanStackAI(messages);
+      if (options.compact) {
+        irMessages = compactMessages(irMessages, options.compact);
+      }
+      if (janitor) {
+        irMessages = await janitor.compress(irMessages);
+      }
+      if (options.clear?.length) {
+        irMessages = clearMessages(irMessages, { clear: options.clear });
+      }
+      messages = toTanStackAI(irMessages);
+    }
+
+    // 6. Skill instructions injection (appended after user system prompts,
+    //    before dynamicState — matches @context-chef/core compile() ordering).
+    //    Idempotent: skipped when the instructions are already present.
+    if (options.skill) {
+      const instructions = await resolveSkillInstructions(options.skill);
+      if (instructions && !hasSystemPrompt(systemPrompts, instructions)) {
+        systemPrompts = [...systemPrompts, instructions];
+      }
+    }
+
+    // Append tool-result clearing explainer when tool results are targeted,
+    // so the model doesn't misread placeholders as an error. Idempotent.
+    if (
+      clearsToolResults &&
+      !hasSystemPrompt(systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION)
+    ) {
+      systemPrompts = [...systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION];
+    }
+
+    // 7. Dynamic state injection (replaces the previous iteration's block)
+    if (options.dynamicState) {
+      const injected = await injectDynamicState(messages, systemPrompts, options.dynamicState);
+      messages = injected.messages;
+      systemPrompts = injected.systemPrompts;
+    }
+
+    // 8. Custom transform hook
+    if (options.transformContext) {
+      const transformed = await options.transformContext(messages, systemPrompts, ctx);
+      messages = transformed.messages;
+      systemPrompts = transformed.systemPrompts;
+    }
+
+    return { messages, systemPrompts };
+  };
+
+  return {
+    name: 'context-chef',
+
+    onConfig: async (ctx, config) => {
+      // A throwing onConfig fails the whole chat() run in TanStack AI —
+      // degrade to pass-through instead of breaking the host call.
+      try {
+        return await transformConfig(ctx, config);
+      } catch (error) {
+        logger.warn(
+          '[context-chef] onConfig transform failed; passing the request through unchanged. ' +
+            `Error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return undefined;
+      }
+    },
+
+    onUsage: (ctx, usage) => {
+      try {
+        const janitor = janitorFor(ctx);
+        if (!janitor) return;
+
+        if (usage.promptTokens != null) {
+          janitor.feedTokenUsage(usage.promptTokens);
+        } else if (!usageWarned && !options.tokenizer) {
+          usageWarned = true;
+          logger.warn(
+            '[context-chef] Model response did not include usage.promptTokens. ' +
+              'Token-based compression may not trigger accurately. ' +
+              'Consider providing a tokenizer for precise token counting.',
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          '[context-chef] onUsage failed; token usage not recorded for this iteration. ' +
+            `Error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    },
+  };
+}
+
+/**
+ * Builds the stateful Janitor for budget-dependent configurations.
+ *
+ * The Janitor config is a discriminated union on `tokenizer`. Build the two
+ * branches separately so the literal type matches one of the union members
+ * exactly — a single literal carrying `tokenizer: Fn | undefined` would not
+ * narrow to either branch.
+ */
+function createJanitor(
+  options: ContextChefOptions,
+  contextWindow: number,
+  logger: ChefLogger,
+  onCompressionFired: () => void,
+): Janitor {
+  const userOnCompress = options.onCompress;
   const sharedJanitorConfig = {
-    contextWindow: options.contextWindow,
+    contextWindow,
+    triggerRatio: options.compress?.triggerRatio,
+    minShrinkRatio: options.compress?.minShrinkRatio,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.adapter
       ? createCompressionAdapter(options.compress.adapter)
       : undefined,
-    onCompress: options.onCompress
-      ? (summary: Message, count: number, details: CompressionDetails) =>
-          options.onCompress?.(summary.content, count, {
-            compressedMessages: toTanStackAI(details.compressedMessages),
-          })
-      : undefined,
+    // Always installed so every compression is counted for the persistence
+    // warning; the user's hook is forwarded when configured.
+    onCompress: (summary: Message, count: number, details: CompressionDetails) => {
+      onCompressionFired();
+      userOnCompress?.(summary.content, count, {
+        compressedMessages: toTanStackAI(details.compressedMessages),
+      });
+    },
     onBeforeCompress: options.onBeforeCompress,
     logger,
   };
@@ -92,123 +322,19 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     usagePreference = 'max';
   }
 
-  // One Janitor per conversation. A middleware instance is usually created
-  // once and reused across chat() calls for many conversations — sharing one
-  // Janitor would leak token-usage feeds, compression suppression, and
-  // circuit-breaker counts across them. TanStack AI supplies the conversation
-  // identity via ctx.conversationId; calls without one share the default
-  // session (prior behavior). Construction-time config nags are deduped
-  // across conversations — the config is identical for every pooled Janitor.
-  const janitors = new SessionPool(
-    dedupeConstructionWarnings(logger, (constructionLogger) =>
-      options.tokenizer
-        ? new Janitor({
-            ...sharedJanitorConfig,
-            logger: constructionLogger,
-            tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
-            preserveRatio: options.compress?.preserveRatio ?? 0.8,
-            usagePreference,
-          })
-        : new Janitor({
-            ...sharedJanitorConfig,
-            logger: constructionLogger,
-            // 'tokenizerFirst' has been sanitized above; the cast narrows the
-            // remaining values to the no-tokenizer branch.
-            usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
-          }),
-    ),
-    { maxSize: options.maxSessions },
-  );
-
-  let invalidConversationIdWarned = false;
-  const flagInvalidConversationId = (raw: unknown) => {
-    if (invalidConversationIdWarned) return;
-    invalidConversationIdWarned = true;
-    logger.warn(
-      '[context-chef] Invalid ctx.conversationId (expected a non-empty string, got ' +
-        `${raw === '' ? 'empty string' : typeof raw}); routing to the default conversation slot.`,
-    );
-  };
-
-  const janitorFor = (ctx: { conversationId?: string }): Janitor =>
-    janitors.get(normalizeSessionKey(ctx.conversationId, flagInvalidConversationId));
-
-  return {
-    name: 'context-chef',
-
-    onConfig: async (ctx, config) => {
-      const janitor = janitorFor(ctx);
-      let { messages } = config;
-      let systemPrompts = [...config.systemPrompts];
-
-      // 1. Truncate large tool results
-      if (options.truncate) {
-        messages = await truncateToolResults(messages, options.truncate, logger);
-      }
-
-      // 2. Convert to IR
-      let irMessages = fromTanStackAI(messages);
-
-      // 3. Compact (mechanical, zero LLM cost)
-      if (options.compact) {
-        irMessages = compactMessages(irMessages, options.compact);
-      }
-
-      // 4. Compress conversation history if over token budget
-      irMessages = await janitor.compress(irMessages);
-
-      // 4.5 Placeholder-style clearing (core semantics) — after compress so
-      // the summarizer saw full content; placeholders only hit the kept tail.
-      if (options.clear?.length) {
-        irMessages = clearMessages(irMessages, { clear: options.clear });
-      }
-
-      // 5. Convert back to TanStack AI format
-      messages = toTanStackAI(irMessages);
-
-      // 6. Skill instructions injection (appended after user system prompts,
-      //    before dynamicState — matches @context-chef/core compile() ordering).
-      if (options.skill) {
-        const instructions = await resolveSkillInstructions(options.skill);
-        if (instructions) systemPrompts = [...systemPrompts, instructions];
-      }
-
-      // Append tool-result clearing explainer when tool results are targeted,
-      // so the model doesn't misread placeholders as an error.
-      if (clearsToolResults) {
-        systemPrompts = [...systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION];
-      }
-
-      // 7. Dynamic state injection
-      if (options.dynamicState) {
-        const injected = await injectDynamicState(messages, systemPrompts, options.dynamicState);
-        messages = injected.messages;
-        systemPrompts = injected.systemPrompts;
-      }
-
-      // 8. Custom transform hook
-      if (options.transformContext) {
-        const transformed = await options.transformContext(messages, systemPrompts);
-        messages = transformed.messages;
-        systemPrompts = transformed.systemPrompts;
-      }
-
-      return { messages, systemPrompts };
-    },
-
-    onUsage: (ctx, usage) => {
-      if (usage.promptTokens != null) {
-        janitorFor(ctx).feedTokenUsage(usage.promptTokens);
-      } else if (!usageWarned && !options.tokenizer) {
-        usageWarned = true;
-        logger.warn(
-          '[context-chef] Model response did not include usage.promptTokens. ' +
-            'Token-based compression may not trigger accurately. ' +
-            'Consider providing a tokenizer for precise token counting.',
-        );
-      }
-    },
-  };
+  return options.tokenizer
+    ? new Janitor({
+        ...sharedJanitorConfig,
+        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
+        preserveRatio: options.compress?.preserveRatio ?? 0.8,
+        usagePreference,
+      })
+    : new Janitor({
+        ...sharedJanitorConfig,
+        // 'tokenizerFirst' has been sanitized above; the cast narrows the
+        // remaining values to the no-tokenizer branch.
+        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
+      });
 }
 
 /**
@@ -216,12 +342,18 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
  * that Janitor expects: (messages: Message[]) => Promise<string>
  *
  * Calls the adapter's chatStream() directly to bypass the middleware stack.
- * Tool messages are converted to user messages describing the tool interaction,
- * since most providers only accept user/assistant roles for simple text generation.
+ * Tool messages are role-flattened to user messages describing the tool
+ * interaction, since providers only accept user/assistant roles for simple
+ * text generation.
  */
-function createCompressionAdapter(
+export function createCompressionAdapter(
   adapter: AnyTextAdapter,
 ): (messages: Message[]) => Promise<string> {
+  // chatStream requires the engine's internal logger when called directly.
+  // Fully silenced — errors propagate as throws and are reported by the
+  // caller (Janitor circuit breaker / durable-compaction helpers).
+  const internalLogger = resolveDebugOption(false);
+
   return async (messages: Message[]): Promise<string> => {
     // Role-flatten via the shared core helper, then convert to ModelMessage
     // for chatStream — providers reject a `system` role mid-conversation
@@ -234,12 +366,12 @@ function createCompressionAdapter(
     const stream = adapter.chatStream({
       model: adapter.model,
       messages: modelMessages,
-      maxTokens: 2048,
+      logger: internalLogger,
     });
 
     let text = '';
     for await (const chunk of stream) {
-      if (chunk.type === 'TEXT_MESSAGE_CONTENT') {
+      if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
         text += chunk.delta;
       }
     }
@@ -248,55 +380,92 @@ function createCompressionAdapter(
   };
 }
 
+/** Extracts the comparable text of a SystemPrompt entry. */
+function systemPromptText(prompt: SystemPrompt): string {
+  return typeof prompt === 'string' ? prompt : prompt.content;
+}
+
+/** Whether `systemPrompts` already contains an entry with this exact content. */
+function hasSystemPrompt(systemPrompts: SystemPrompt[], content: string): boolean {
+  return systemPrompts.some((p) => systemPromptText(p) === content);
+}
+
+const DYNAMIC_STATE_SYSTEM_PREFIX = 'CURRENT TASK STATE:\n<dynamic_state>';
+const DYNAMIC_STATE_USER_SUFFIX =
+  'Above is the current system state. Use it to guide your next action.';
+/** Matches a previously injected last_user dynamic-state block (any state). */
+const DYNAMIC_STATE_BLOCK_RE =
+  /\n*<dynamic_state>[\s\S]*?<\/dynamic_state>\nAbove is the current system state\. Use it to guide your next action\./g;
+
 /**
  * Injects dynamic state XML into the TanStack AI messages/system prompts.
  *
  * - `last_user`: Appends to the last user message's content.
  *   Leverages Recency Bias for maximum LLM attention.
  * - `system`: Adds as a standalone system prompt at the end.
+ *
+ * Idempotent across agent iterations: any block injected by a previous
+ * `onConfig` firing is removed before the fresh state is placed, so state
+ * is REPLACED, never accumulated. User-authored system prompts (including
+ * object-form entries with metadata) are preserved untouched.
  */
 async function injectDynamicState(
   messages: ModelMessage[],
-  systemPrompts: string[],
+  systemPrompts: SystemPrompt[],
   config: DynamicStateConfig,
-): Promise<{ messages: ModelMessage[]; systemPrompts: string[] }> {
+): Promise<{ messages: ModelMessage[]; systemPrompts: SystemPrompt[] }> {
   const state = await config.getState();
-  const xml = XmlGenerator.objectToXml(state, 'dynamic_state');
+  const xml = objectToXml(state, 'dynamic_state');
   const placement = config.placement ?? 'last_user';
 
   if (placement === 'system') {
+    // Replace (not append after) any block from a previous iteration.
+    const withoutPrevious = systemPrompts.filter(
+      (p) => !(typeof p === 'string' && p.startsWith(DYNAMIC_STATE_SYSTEM_PREFIX)),
+    );
     return {
       messages,
-      systemPrompts: [...systemPrompts, `CURRENT TASK STATE:\n${xml}`],
+      systemPrompts: [...withoutPrevious, `CURRENT TASK STATE:\n${xml}`],
     };
   }
 
   // last_user: inject into the last user message
   const result = [...messages];
-  const stateBlock = `\n\n${xml}\nAbove is the current system state. Use it to guide your next action.`;
+  const stateBlock = `\n\n${xml}\n${DYNAMIC_STATE_USER_SUFFIX}`;
 
   for (let i = result.length - 1; i >= 0; i--) {
     const msg = result[i];
-    if (msg.role === 'user') {
-      const currentContent = msg.content;
-      const newContent =
-        typeof currentContent === 'string'
-          ? currentContent + stateBlock
-          : currentContent == null
-            ? stateBlock.trim()
-            : Array.isArray(currentContent)
-              ? [...currentContent, { type: 'text' as const, content: stateBlock.trim() }]
-              : currentContent;
-      result[i] = { ...msg, content: newContent };
-      return { messages: result, systemPrompts };
+    if (msg.role !== 'user') continue;
+
+    const currentContent = msg.content;
+    let newContent: ModelMessage['content'];
+    if (typeof currentContent === 'string') {
+      newContent = currentContent.replace(DYNAMIC_STATE_BLOCK_RE, '') + stateBlock;
+    } else if (currentContent == null) {
+      newContent = stateBlock.trim();
+    } else {
+      const withoutPrevious = currentContent.filter(
+        (part) => !(part.type === 'text' && isDynamicStateText(part.content)),
+      );
+      newContent = [...withoutPrevious, { type: 'text' as const, content: stateBlock.trim() }];
     }
+    result[i] = { ...msg, content: newContent };
+    return { messages: result, systemPrompts };
   }
 
-  // No user message found — add as system prompt
+  // No user message found — add as system prompt (replace previous block)
+  const withoutPrevious = systemPrompts.filter(
+    (p) => !(typeof p === 'string' && p.startsWith(DYNAMIC_STATE_SYSTEM_PREFIX)),
+  );
   return {
     messages,
-    systemPrompts: [...systemPrompts, `CURRENT TASK STATE:\n${xml}`],
+    systemPrompts: [...withoutPrevious, `CURRENT TASK STATE:\n${xml}`],
   };
+}
+
+/** Whether a text part is a previously injected dynamic-state block. */
+function isDynamicStateText(content: string): boolean {
+  return content.startsWith('<dynamic_state>') && content.endsWith(DYNAMIC_STATE_USER_SUFFIX);
 }
 
 /**

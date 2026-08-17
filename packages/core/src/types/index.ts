@@ -28,6 +28,14 @@ export interface ToolCall {
     name: string;
     arguments: string; // JSON string
   };
+  /**
+   * Gemini thought signature riding on this functionCall part. Gemini 3.x
+   * validates that function calls in the current turn echo their signature
+   * verbatim (400 error otherwise). Stored here — NOT in `Message.thinking` —
+   * so `compact({ clear: ['thinking'] })` can never destroy it. Round-trips
+   * through `fromGemini` / the Gemini target adapter; other adapters ignore it.
+   */
+  thoughtSignature?: string;
 }
 
 /**
@@ -40,6 +48,15 @@ export interface ToolDefinition {
   description: string;
   parameters?: Record<string, unknown>;
   tags?: string[];
+  /**
+   * Anthropic Tool Search annotation: a tool marked `defer_loading: true` is
+   * not loaded into the initial context — Claude discovers it on demand via a
+   * tool search tool, without breaking prompt caching. ContextChef passes the
+   * flag through `payload.tools` verbatim; converting to the provider's wire
+   * field (`defer_loading`) is the caller's tool-conversion step, same as the
+   * rest of the definition. Ignored by providers without deferred loading.
+   */
+  deferLoading?: boolean;
 }
 
 /**
@@ -101,21 +118,57 @@ export interface Message {
    * to guide the model toward describing media content in the summary.
    */
   attachments?: Attachment[];
+  /**
+   * Constraint pinning: a pinned message survives every lossy operation
+   * verbatim. `Janitor.compress()` re-inserts it (in original order) right
+   * after the summary instead of summarizing it away, and `compact()` never
+   * clears its tool results / thinking / reasoning tags.
+   *
+   * Pinning is turn-scoped: pinning any message of an atomic turn (assistant
+   * with tool_calls + its tool results) protects the whole turn, so tool
+   * pairing stays intact.
+   *
+   * Use for governance/safety constraints, standing task rules, and anything
+   * whose loss would change behavior. Research background: compaction that
+   * drops policy text raises constraint-violation rates from 0% to 30%+
+   * (arXiv:2606.22528); pinning restores 0%.
+   */
+  pinned?: boolean;
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }
 
 // ─── Compact options ───
 
-/** Object form for tool-result clearing with keepRecent support. */
+/** Object form for tool-result clearing with keepRecent / name-based filtering. */
 export interface ToolResultClearTarget {
   target: 'tool-result';
-  /** Number of most recent tool results to preserve. Floored to 1 (never clears all). */
+  /** Number of most recent clearable tool results to preserve. Floored to 1 (never clears all). */
   keepRecent?: number;
+  /**
+   * Only clear results produced by these tool names. Tool names are resolved
+   * from the preceding assistant turn's `tool_calls` via `tool_call_id`;
+   * results whose name cannot be resolved are left untouched when a filter
+   * is present. Mirrors Anthropic `clear_tool_uses` semantics locally.
+   */
+  toolFilter?: string[];
+  /**
+   * Never clear results produced by these tool names. Applied after
+   * `toolFilter` (an exemption wins over a filter match). Mirrors Anthropic
+   * `exclude_tools`.
+   */
+  exemptTools?: string[];
 }
 
-/** Clearing targets for `Janitor.compact()`. */
-export type ClearTarget = 'thinking' | 'tool-result' | ToolResultClearTarget;
+/**
+ * Clearing targets for `Janitor.compact()`.
+ *
+ * - `'thinking'`: strips Anthropic-native `thinking` / `redacted_thinking` fields
+ * - `'tool-result'`: replaces old tool-result content with a placeholder
+ * - `'reasoning-tags'`: strips `<think>...</think>` XML blocks from assistant
+ *   content strings (DeepSeek-R1 / QwQ / locally-hosted reasoning models)
+ */
+export type ClearTarget = 'thinking' | 'tool-result' | 'reasoning-tags' | ToolResultClearTarget;
 
 /**
  * Options for `Janitor.compact()` — mechanical, zero-LLM-cost history compaction.
@@ -232,6 +285,18 @@ export interface AnthropicPayload {
   messages: AnthropicMessageParam[];
   tools?: ToolDefinition[];
   meta?: CompileMeta;
+  /**
+   * Server-side context management config, set when
+   * `ChefConfig.contextManagement.strategy === 'server'`. Spread into the
+   * Messages API request verbatim (`context_management: { edits: [...] }`).
+   */
+  context_management?: unknown;
+  /**
+   * Beta headers the emitted `context_management` edits require
+   * (e.g. 'compact-2026-01-12', 'context-management-2025-06-27'). Pass as the
+   * `anthropic-beta` header / SDK `betas` option.
+   */
+  betas?: string[];
 }
 
 export interface GeminiPayload {

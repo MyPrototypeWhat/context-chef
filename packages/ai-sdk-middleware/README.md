@@ -8,7 +8,7 @@
 
 [Vercel AI SDK](https://ai-sdk.dev) middleware powered by [context-chef](https://github.com/MyPrototypeWhat/context-chef). Transparent history compression, tool result truncation, and token budget management — zero code changes required.
 
-![Quick Start](../../@context-chef_ai-sdk-middleware.png)
+![Quick Start](https://github.com/MyPrototypeWhat/context-chef/releases/download/media-assets/%40context-chef_ai-sdk-middleware.png)
 
 ## Installation
 
@@ -69,6 +69,29 @@ const model = withContextChef(openai('gpt-4o'), {
 ```
 
 > **In-flight vs durable.** Middleware `compress` is *in-flight*: it rewrites each outgoing request but does **not** mutate your message store. So for a *sustained* over-budget conversation (a long chat, or a long multi-step loop) the summary is discarded each call and the history re-expands — compression then effectively fires only every other call and the payload keeps growing. For a one-off spike that's fine; for sustained use, **persist** the summary via `onCompress`, or compact your own store with [`compactModelMessages`](#compactmodelmessagesmessages-model-options) (recommended). The middleware logs a one-time warning if `compress` keeps firing without `onCompress`.
+
+### Anthropic Server-Side Context Management
+
+`@ai-sdk/anthropic` can hand context management to the Anthropic API itself via
+`providerOptions.anthropic.contextManagement` (edits such as `compact_20260112`,
+`clear_tool_uses_20250919`, `clear_thinking_20251015`). If a call declares that
+option **and** this middleware has compression configured, the same history
+would be managed twice — once here, once again on the server.
+
+The middleware detects this per call and **skips its own compression step**
+(server wins), logging a one-time warning. `truncate`, `compact`, `clear`,
+`dynamicState`, and `skill` still run — only the compression step yields.
+
+To intentionally run both — e.g. middleware compression tuned to fire well
+below the server-side trigger — disable the guard:
+
+```typescript
+const model = withContextChef(anthropic('claude-sonnet-4-6'), {
+  contextWindow: 200_000,
+  compress: { model: anthropic('claude-haiku-4-5') },
+  allowDoubleCompression: true, // skip the guard: no skip, no warning
+});
+```
 
 ### Tool Result Truncation
 
@@ -190,8 +213,11 @@ const wrappedModel = withContextChef(model, options);
 | `compress` | `CompressOptions` | No | Enable LLM-based compression |
 | `compress.model` | `LanguageModelV3` | Yes (if compress) | Cheap model for summarization |
 | `compress.preserveRatio` | `number` | No | Ratio of context to preserve (default: `0.8`) |
+| `compress.triggerRatio` | `number` | No | Fraction of `contextWindow` at which compression triggers (0–1]. Default `0.7` ("pre-rot" — model quality degrades well before the hard window limit, so compress early). Set to `1` to restore the pre-4.0 trigger-at-window behavior. With a `tokenizer`, `preserveRatio` applies to `contextWindow * triggerRatio`, not the raw window. |
+| `compress.minShrinkRatio` | `number` | No | A compression result must shrink the compressed span's character length by at least this ratio (0–1, default `0.5`). A failing summary is treated as a failed compression: history left unchanged, counts toward the circuit breaker. Set to `0` to disable the check. |
 | `compress.toolResultStubThreshold` | `number` | No | Replace tool-result content longer than this many chars with a one-line metadata stub (`[Tool name returned N chars; omitted before summarization]`) before sending the to-be-summarized history to the compression model. Recent (preserved) tool results untouched. Default: undefined (disabled). |
 | `compress.usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | No | Which token source drives the trigger when both `tokenizer` and the AI SDK's reported usage are available. Default `'max'` (most conservative — `Math.max(tokenizer, fed)`). Use `'feedFirst'` to trust the API's reported usage and ignore tokenizer over-estimation; use `'tokenizerFirst'` to ignore the fed value entirely. `'tokenizerFirst'` requires `tokenizer` — if missing, it is sanitized to `'max'` at construction time with a console warning. |
+| `allowDoubleCompression` | `boolean` | No | Run middleware compression even when a call declares Anthropic server-side context management (`providerOptions.anthropic.contextManagement`). Default `false`: the guard skips the compression step for such calls (server wins) and logs a one-time warning. See [Anthropic Server-Side Context Management](#anthropic-server-side-context-management). |
 | `truncate` | `TruncateOptions` | No | Enable tool result truncation |
 | `truncate.threshold` | `number` | Yes (if truncate) | Character count to trigger truncation |
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |

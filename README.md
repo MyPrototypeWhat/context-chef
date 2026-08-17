@@ -9,7 +9,7 @@
 [![CI](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml/badge.svg)](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="./ContextChef.gif" alt="ContextChef Demo" width="600" />
+  <img src="https://github.com/MyPrototypeWhat/context-chef/releases/download/media-assets/ContextChef.gif" alt="ContextChef Demo" width="600" />
 </p>
 
 Context compiler for TypeScript/JavaScript AI agents.
@@ -89,11 +89,17 @@ For direct control over the compilation pipeline — dynamic state injection, to
 ## Features
 
 - **Conversations too long?** — Automatically compress history, preserve recent memory, delegate old messages to a small model for summarization
+- **Losing constraints to compression?** — Constraint pinning (v4): `pinned: true` messages survive compression verbatim and are never cleared by `compact()`
+- **Summary dropped a detail you need back?** — Reversible archive + recall (v4): the full pre-compression span is stored and cited by URI; a `recall_context` tool restores it on demand
+- **Provider does compaction for you?** — Server-side context management (v4): `contextManagement: { strategy: 'server' }` delegates LLM compression to Anthropic's server-side compaction while pruning/skills/memory/VFS stay client-side
+- **Compression latency on the hot path?** — Background compression (v4): summarization runs off-turn and swaps in only when still valid; anchored mode incrementally merges evicted spans into a persistent summary document
+- **Own your message store?** — Durable compaction: `planCompaction` / `compactHistory` (plus AI SDK and TanStack ports) compact your store once and persist the result, instead of re-compressing in-flight on every call
 - **Too many tools?** — Dynamically prune the tool list per task, or use a two-layer architecture (stable namespaces + on-demand loading) to eliminate tool hallucinations
 - **Need to block tools at runtime?** — Pruner blocklist + `checkToolCall` gate for permission, environment safety, rate limits, and sandboxing — KV-cache preserving by default
 - **Mode-based behavior?** — `Skill` primitive bundles instructions and tool annotations per phase; loadable from `SKILL.md` files (compatible with Claude Code / Mastra / OpenCode formats)
 - **Switching providers?** — Same prompt architecture compiles to OpenAI / Anthropic / Gemini with automatic prefill, cache, and tool call format adaptation
 - **Long tasks drifting?** — Zod schema-based state injection forces the model to stay aligned with the current task on every call
+- **Output format drifting?** — Guardrail: `withGuardrails` enforces an XML output contract and sets an assistant prefill, auto-degraded on providers without native prefill
 - **Terminal output too large?** — Auto-truncate and offload to VFS, keeping error lines + a `context://` URI pointer for on-demand retrieval
 - **Can't remember across sessions?** — Memory lets the model persist key information (project rules, user preferences) via tool calls, auto-injected on the next session
 - **Need to rollback?** — Snapshot & Restore captures and rolls back full context state for branching and exploration
@@ -149,6 +155,8 @@ const response = await anthropic.messages.create(payload);
 ---
 
 ## API Reference
+
+> **Removed in 4.0** — each has a direct replacement: `TokenUtils` → `estimate` / `estimateObject`, `XmlGenerator` → `objectToXml`, `AdapterFactory` → `getAdapter` / `adapterRegistry`, `JanitorConfig.onBudgetExceeded` → `onBeforeCompress`. See [MIGRATION-4.md](./MIGRATION-4.md) for the full migration guide.
 
 ### `new ContextChef(config?)`
 
@@ -211,6 +219,8 @@ chef.withGuardrails({
 });
 ```
 
+**v4 semantics.** Options are now *stored* and applied at `compile()`, so call order relative to `setDynamicState` no longer matters (pre-4.0, calling `setDynamicState` after `withGuardrails` silently discarded the guardrail). Each call **replaces** the previous options (no accumulation); `withGuardrails(null)` clears them. The stored options are persisted in `ChefSnapshot` (`guardrailOptions`), and the guardrail message lands at the very end of the sandwich as its own message — closest to generation, no longer merged into the dynamic-state message.
+
 #### `chef.compile(options?): Promise<TargetPayload>`
 
 Compiles everything into a provider-ready payload. Triggers Janitor compression. Registered tools are auto-included.
@@ -271,22 +281,118 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 | Option                          | Type                                        | Default    | Description                                                                                  |
 | ------------------------------- | ------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
-| `contextWindow`                 | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds this.          |
+| `contextWindow`                 | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds `contextWindow × triggerRatio`. |
+| `triggerRatio`                  | `number`                                    | `0.7`      | Fraction of `contextWindow` at which compression fires ("pre-rot"). Set `1` to restore the pre-4.0 trigger-at-window behavior. |
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
-| `preserveRatio`                 | `number`                                    | `0.8`      | [Tokenizer path] Ratio of `contextWindow` to preserve for recent messages.                   |
+| `preserveRatio`                 | `number`                                    | `0.8`      | [Tokenizer path] Ratio of the effective budget (`contextWindow × triggerRatio`) to preserve for recent messages. |
 | `preserveRecentMessages`        | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing.                     |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. Without `tokenizer`, the value union narrows to `'max' \| 'feedFirst'` — TypeScript rejects `'tokenizerFirst'` at compile time. See the [core package README](./packages/core) for the full breakdown. |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
 | `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). |
+| `compressionGuidelines`         | `string[]`                                  | —          | Numbered domain guidelines injected into the compression prompt, before `customCompressionInstructions`. |
+| `toolResultStubThreshold`       | `number`                                    | —          | Replace tool-result content longer than this many chars with a one-line metadata stub before summarizing (saves summarizer tokens). |
+| `minShrinkRatio`                | `number`                                    | `0.5`      | Quality gate: a summary must shrink the compressed span by at least this ratio (spans ≥ 2000 chars only); otherwise the compression fails and history is unchanged. `0` disables. |
+| `validateCompression`           | `(summary, { compressed, kept }) => boolean \| Promise<boolean>` | — | Post-summarization gate. Return `false` (or throw) to reject the summary — history unchanged, circuit breaker incremented. |
+| `archive`                       | `CompressionArchiveConfig \| 'vfs'`         | —          | Reversible compression: store the full pre-compression span, cite its URI in the summary. See [Compression pipeline v2](#compression-pipeline-v2-v4). |
+| `compressionMode`               | `'rewrite' \| 'incremental-anchored'`       | `'rewrite'`| Anchored mode keeps a persistent anchor document and merges only the newly evicted span into it on each compression. |
+| `compressionScheduling`         | `'blocking' \| 'background'`                | `'blocking'` | Background mode runs summarization off-turn; the over-budget compile returns history unchanged and the result is swapped in later if still valid. |
 | `onCompress`                    | `(summary, count, details) => void`         | —          | Fires after compression with the summary message and truncated count. `details.compressedMessages` is the exact slice of history the summary replaced. |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before LLM compression. Return modified history to intervene, or null to proceed normally. |
 | `logger`                        | `ChefLogger`                                | —          | Sink for degradation warnings (storage/compaction); defaults to `console`. |
 
 **Compression output contract.** Janitor's default prompt instructs the compression model to produce an `<analysis>` scratchpad (stripped from the final output) followed by a structured `<summary>` block with 5 domain-agnostic sections (Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve). Raw output is piped through `Prompts.formatCompactSummary` before injection. See the [core package README](./packages/core) for the full contract and `customCompressionInstructions` usage.
 
-**Circuit breaker.** If `compressionModel` throws three times in a row, `compress()` becomes a no-op until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. The failure counter is preserved by `chef.snapshot()` / `chef.restore()`.
+**Failure semantics (changed in 4.0).** A compression-model failure — a throw, a summary that fails `minShrinkRatio`, or a `validateCompression` rejection — leaves history **unchanged** (pre-4.0 truncated it with a placeholder) and increments the circuit breaker. If three consecutive `compress()` calls fail, `compress()` becomes a no-op until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. The failure counter is preserved by `chef.snapshot()` / `chef.restore()`.
 
-**Standalone summarization.** `summarizeHistory(messages, compress, opts?): Promise<string>` is the provider-agnostic primitive behind this path — call it directly to compress a slice in your own store (durable compaction). Empty slice → `''`; stateless and **throws** if `compress` throws; the `compress` callback **must role-flatten** `tool` roles. See the [core package README](./packages/core) for the full contract. ai-sdk users should prefer `summarizeMessages` from [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware), which wires the flattening adapter for you.
+**Standalone summarization.** `summarizeHistory(messages, compress, opts?): Promise<string>` is the provider-agnostic primitive behind this path — call it directly to compress a slice in your own store. Empty slice → `''`; stateless and **throws** if `compress` throws; the `compress` callback **must role-flatten** `tool` roles. Options include `customCompressionInstructions`, `toolResultStubThreshold`, `compressionGuidelines`, and `baseInstruction`. See the [core package README](./packages/core) for the full contract, and [Durable compaction](#durable-compaction) below for the higher-level helpers.
+
+#### Compression pipeline v2 (v4)
+
+v4 rebuilds the compression path around one rule: a bad summary must never replace good history.
+
+- **Pre-rot trigger — `triggerRatio` (default `0.7`)**: compression fires at `contextWindow × 0.7` instead of at the hard limit — model quality degrades well before the window is full. `preserveRatio` applies to this effective budget. `triggerRatio: 1` restores the pre-4.0 behavior.
+- **Constraint pinning — `pinned: true`**: pinned messages survive `compress()` verbatim (re-inserted after the summary, in order) and are never cleared by `compact()`. Pinning any message of an atomic turn protects the whole turn. Use it for policy and constraint text — compaction that drops policy text raises violation rates from 0% to 30%+ (arXiv:2606.22528).
+- **Shrink guard — `minShrinkRatio` (default `0.5`)**: a summary that doesn't shrink the compressed span by ≥ 50% (character length; spans ≥ 2000 chars only) is a failed compression — history unchanged, circuit breaker incremented. Prevents compression death loops. `0` disables.
+- **`validateCompression`**: post-summarization gate `(summary, { compressed, kept }) => boolean | Promise<boolean>` — return `false` or throw to reject the result (history unchanged, breaker incremented).
+- **Reversible archive — `archive`**: the compressed span is serialized and stored via `store(serialized, { messageCount }) => uri`, and the summary cites the URI, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032). `archive: 'vfs'` stores in the chef's VFS. Best-effort: a store failure logs a warning and skips the citation.
+- **`compressionGuidelines`**: numbered domain guidelines injected into the compression prompt, before `customCompressionInstructions`.
+- **Incremental-anchored mode — `compressionMode: 'incremental-anchored'`**: keeps a persistent anchor document; each compression merges only the newly evicted span into it instead of rewriting the whole summary (Factory.ai pattern). Read it via `janitor.getAnchorDoc()`; it is part of `JanitorSnapshot` and cleared by `reset()`.
+- **Background scheduling — `compressionScheduling: 'background'`**: the first over-budget `compile()` returns history unchanged and starts summarization in the background; a later `compress()` swaps the result in only if the summarized span is still a prefix of the current history (stale results are discarded; `onCompress` fires at application time). Keeps compression latency off the hot path (arXiv:2605.08580). Background state is not snapshotted.
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200_000,
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
+    triggerRatio: 0.7,       // default — compress "pre-rot"
+    minShrinkRatio: 0.5,     // default — reject summaries that barely shrink
+    archive: "vfs",          // reversible: full span stored, summary cites a context:// URI
+    compressionGuidelines: ["Preserve ticket IDs and SKUs verbatim."],
+  },
+});
+
+// Pin constraint text — survives compress() verbatim, never cleared by compact()
+history.push({
+  role: "user",
+  content: "NEVER touch prod. Deploy only from CI.",
+  pinned: true,
+});
+```
+
+**Recall tool recipe.** With `archive` (or VFS offloading) enabled, register the built-in `recall_context` tool so the model can pull archived content back on demand:
+
+```typescript
+import { getRecallToolDefinition } from "@context-chef/core";
+
+chef.registerTools([getRecallToolDefinition()]);
+
+// In your agent loop:
+if (call.function.name === "recall_context") {
+  const { uri } = JSON.parse(call.function.arguments);
+  const content = await chef.resolveRecall(uri); // full stored content, or null
+  history.push({
+    role: "tool",
+    tool_call_id: call.id,
+    content: content ?? "[not found]",
+  });
+}
+```
+
+#### Durable compaction
+
+In-flight compression (above) rewrites each outgoing payload but does not touch your message store — for a sustained over-budget conversation the summary is recomputed on every call. When you own the store, compact it once and persist the result. All three helpers split on atomic turn boundaries (an assistant message and its tool results never separate), summarize the old slice, and return `[...system, <summary>, ...recent turns]`; on a no-op the input reference is returned unchanged, so you can skip persistence via `result === input`.
+
+Core — provider-agnostic, operates on IR `Message[]`:
+
+```typescript
+import { compactHistory, planCompaction } from "@context-chef/core";
+
+// myCompressFn must role-flatten tool messages (same contract as summarizeHistory)
+history = await compactHistory(history, myCompressFn, { keepRecentTurns: 4 });
+// planCompaction(history, { keepRecentTurns }) is the synchronous split behind it
+```
+
+Vercel AI SDK — `ModelMessage` altitude, role-flattening wired for you:
+
+```typescript
+import { compactModelMessages } from "@context-chef/ai-sdk-middleware";
+
+messages = await compactModelMessages(messages, openai("gpt-4o-mini"), {
+  keepRecentTurns: 4,
+});
+```
+
+TanStack AI — takes any TanStack text adapter:
+
+```typescript
+import { compactTanStackMessages } from "@context-chef/tanstack-ai";
+
+messages = await compactTanStackMessages(messages, openaiText("gpt-4o-mini"), {
+  keepRecentTurns: 4,
+});
+```
+
+`keepRecentTurns: 0` is full Claude-Code-style compaction — the whole conversation collapses into `[...system, <summary>]`. Don't combine durable compaction with in-flight compression on the same conversation (double compression). See the [core](./packages/core), [ai-sdk-middleware](./packages/ai-sdk-middleware), and [tanstack-ai](./packages/tanstack-ai) READMEs for the full contracts.
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
@@ -335,7 +441,22 @@ history = janitor.compact(history, {
 history = janitor.compact(history, {
   clear: [{ target: 'tool-result', keepRecent: 5 }, 'thinking'],
 });
+
+// v4: strip <think>...</think> tags from assistant text (open-weight reasoning models)
+history = janitor.compact(history, { clear: ['reasoning-tags'] });
+
+// v4: per-tool granularity — clear only these tools, never those
+history = janitor.compact(history, {
+  clear: [{
+    target: 'tool-result',
+    keepRecent: 5,          // counts within the clearable set
+    toolFilter: ['run_bash'],   // only clear these tools
+    exemptTools: ['read_file'], // never clear these (wins over toolFilter)
+  }],
+});
 ```
+
+Pinned messages (`pinned: true`) are never cleared by `compact()`, and Gemini thought signatures are immune to `compact(['thinking'])`.
 
 #### `ensureValidHistory(history)`
 
@@ -353,6 +474,28 @@ chef.setHistory(safeHistory);
 #### `chef.clearHistory(): this`
 
 Explicitly clear history and reset Janitor state when switching topics or completing sub-tasks.
+
+---
+
+### Server-side context management (v4)
+
+Providers now run compaction server-side (Anthropic `compact_20260112`, OpenAI `/responses/compact`) — one model call fewer and exact token accounting. `ChefConfig.contextManagement` lets you delegate LLM compression to the provider; everything servers don't do stays client-side: tool pruning, skills, memory, VFS offloading, dynamic state.
+
+```typescript
+const chef = new ContextChef({
+  contextManagement: { strategy: "server" }, // 'client' (default) keeps Janitor LLM compression
+});
+
+const payload = await chef.compile({ target: "anthropic" });
+// payload.context_management === { edits: [{ type: "compact_20260112" }] }  (default when `server` omitted)
+// payload.betas === ["compact-2026-01-12"]                                  (auto-derived per edit type)
+```
+
+- `strategy: 'server'` skips client-side LLM compression entirely. A construction-time warning fires if a `compressionModel` is also configured — pick one.
+- `server` is a provider-shaped edits config passed through verbatim, e.g. `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` or `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`. `payload.betas` is auto-derived: `'compact-2026-01-12'` for compaction edits, `'context-management-2025-06-27'` for the clear-tool-uses / clear-thinking edits.
+- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched.
+
+This is a hybrid positioning, not an either/or: LLM compression can be delegated to the provider while ContextChef keeps doing the parts servers don't — pruning, skills, memory, VFS, and dynamic state. AI SDK users get a matching guard: the middleware detects `providerOptions.anthropic.contextManagement` on a call and skips its own compression for that call (see the [ai-sdk-middleware README](./packages/ai-sdk-middleware/README.md#anthropic-server-side-context-management)).
 
 ---
 
@@ -452,7 +595,7 @@ chef.getPruner().setBlockedTools(["delete_file", "tail_logs"]);
 
 // In your agent loop, gate every tool call before dispatch:
 for (const call of response.tool_calls) {
-  const check = chef.checkToolCall(call);
+  const check = chef.checkToolCall({ name: call.function.name });
   if (!check.allowed) {
     history.push({
       role: "tool",
@@ -544,6 +687,12 @@ for (const toolCall of response.tool_calls) {
   }
 }
 ```
+
+> **One level is enough.** The two-layer namespace → tools depth is the empirically optimal hierarchy for tool selection — deeper nesting hurts accuracy without saving meaningful context (arXiv:2607.17598). Don't nest namespaces inside namespaces.
+
+#### Deferred tool loading — `deferLoading` (v4)
+
+Set `deferLoading: true` on a `ToolDefinition` to annotate it for Anthropic's server-side Tool Search: the flag passes through `payload.tools` verbatim on the Anthropic target, letting the API surface the tool's full schema on demand instead of loading it up front. It is an annotation only — other targets ignore it.
 
 ---
 
@@ -747,11 +896,17 @@ chef.on('memory:changed', ({ type, key, value }) => {
 |---|---|---|
 | `compile:start` | `{ systemPrompt, history }` | Emitted at the start of `compile()` |
 | `compile:done` | `{ payload }` | Emitted after `compile()` produces the final payload |
-| `compress` | `{ summary, truncatedCount }` | Emitted after Janitor compresses history |
+| `compress:start` | `{ historyLength, currentTokens, limit }` | Budget exceeded — compression is about to run (before summarization) |
+| `compress:end` | `{ compressed }` | Compression phase finished. `compressed: false` = budget was fine or the result was rejected |
+| `compress` | `{ summary, truncatedCount, details }` | Emitted after Janitor compresses history |
+| `offload:created` | `{ uri }` | Content was offloaded to the VFS (via `chef.offload` / `offloadAsync` or the compression archive) |
+| `pruner:tool-blocked` | `{ name }` | `checkToolCall()` rejected a tool call against the Pruner blocklist |
 | `memory:changed` | `{ type, key, value, oldValue }` | Emitted after any memory mutation (set, delete, expire) |
 | `memory:expired` | `MemoryEntry` | Emitted when a memory entry expires during `compile()` |
 
 Events are **observation-only** — they don't affect control flow. Intercept hooks (`onBeforeCompress`, `onMemoryUpdate`, `onBeforeCompile`, `transformContext`) remain as config callbacks.
+
+**Handler error isolation (v4).** A throwing or rejecting event handler is logged and the remaining handlers still run — pre-4.0, a throwing handler failed the whole `compile()`.
 
 Events coexist with existing config callbacks: if you provide `onCompress` in `JanitorConfig`, it fires first, then the `compress` event is emitted.
 
@@ -874,6 +1029,27 @@ const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
 
+#### `openai-responses` target (v4)
+
+A fourth built-in target for the OpenAI Responses API. `compile({ target: "openai-responses" })` produces an `OpenAIResponsesPayload { instructions?, input, tools?, meta? }`, and `fromOpenAIResponses(items, instructions?)` is the matching input adapter:
+
+```typescript
+import { fromOpenAIResponses } from "@context-chef/core";
+
+const payload = await chef.compile({ target: "openai-responses" });
+const { system, history } = fromOpenAIResponses(response.output, instructions);
+```
+
+The round-trip handles `message` / `function_call` / `function_call_output` items (joined by `call_id`, out-of-order safe), preserves reasoning items' `encrypted_content` byte-identically, and converts `input_image` / `input_file` parts to IR attachments.
+
+#### Gemini thought signatures (v4)
+
+Gemini 3.x rejects current-turn function calls whose thought signatures are missing (HTTP 400). `fromGemini` captures them — `ToolCall.thoughtSignature` for `functionCall` parts, a passthrough field for text parts — and `GeminiAdapter` re-emits them verbatim. They are immune to `compact({ clear: ['thinking'] })`.
+
+#### `preserveThinkingAsText` (v4)
+
+`new OpenAIAdapter({ preserveThinkingAsText: true })` / `new GeminiAdapter({ preserveThinkingAsText: true })` convert Anthropic-style `thinking` into a `<thinking>...</thinking>` text prefix instead of dropping it — useful when moving a Claude conversation to another provider mid-session. `redacted_thinking` is never textified (dropped, with one warning). Default `false`.
+
 #### Custom adapters — `adapterRegistry` and `defaultTarget`
 
 The three built-ins (`'openai' | 'anthropic' | 'gemini'`) are registered automatically. To plug in a third-party provider (Cohere, Mistral, an in-house protocol), implement `ITargetAdapter` and register it once:
@@ -930,7 +1106,6 @@ ContextChef provides [Claude Code Skills](https://docs.anthropic.com/en/docs/cla
 |---|---|
 | `context-chef-core` | Integrate `@context-chef/core` — full control over compilation pipeline, multi-provider support |
 | `context-chef-middleware` | Integrate `@context-chef/ai-sdk-middleware` — drop-in AI SDK middleware, zero code changes |
-| `context-chef-tanstack` | Integrate `@context-chef/tanstack-ai` — TanStack AI ChatMiddleware with compression and state injection |
 
 ### Install
 
@@ -942,9 +1117,6 @@ npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
 
 # AI SDK middleware (Vercel AI SDK v7+)
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
-
-# TanStack AI middleware (TanStack AI v0.10+)
-npx skills add MyPrototypeWhat/context-chef --skill context-chef-tanstack
 
 # All
 npx skills add MyPrototypeWhat/context-chef

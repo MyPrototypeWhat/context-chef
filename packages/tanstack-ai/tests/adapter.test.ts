@@ -10,7 +10,7 @@ describe('fromTanStackAI', () => {
       expect.objectContaining({
         role: 'user',
         content: 'Hello',
-        _originalContent: 'Hello',
+        _original: messages[0],
         _originalText: 'Hello',
       }),
     ]);
@@ -34,7 +34,31 @@ describe('fromTanStackAI', () => {
     const messages: ModelMessage[] = [{ role: 'user', content: parts }];
     const result = fromTanStackAI(messages);
     expect(result[0].content).toBe('Hello\nWorld');
-    expect(result[0]._originalContent).toBe(parts);
+    expect(result[0]._original?.content).toBe(parts);
+  });
+
+  it('projects media content parts to IR attachments', () => {
+    const messages: ModelMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', content: 'Look at these' },
+          {
+            type: 'image',
+            source: { type: 'data', value: 'aGVsbG8=', mimeType: 'image/png' },
+          },
+          {
+            type: 'document',
+            source: { type: 'url', value: 'https://example.com/doc.pdf' },
+          },
+        ],
+      },
+    ];
+    const result = fromTanStackAI(messages);
+    expect(result[0].attachments).toEqual([
+      { mediaType: 'image/png', data: 'aGVsbG8=' },
+      { mediaType: 'application/octet-stream', data: 'https://example.com/doc.pdf' },
+    ]);
   });
 
   it('converts assistant message with tool calls', () => {
@@ -63,6 +87,23 @@ describe('fromTanStackAI', () => {
         function: { name: 'search', arguments: '{"q":"test"}' },
       },
     ]);
+  });
+
+  it('maps a thinking array to a joined IR thinking with first signature', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: 'answer',
+        thinking: [
+          { content: 'step one', signature: 'sig_1' },
+          { content: 'step two', signature: 'sig_2' },
+        ],
+      },
+    ];
+    const result = fromTanStackAI(messages);
+    const assistant = result.find((m) => m.role === 'assistant');
+    expect(assistant?.thinking).toEqual({ thinking: 'step one\nstep two', signature: 'sig_1' });
   });
 
   it('converts tool message with toolCallId', () => {
@@ -104,8 +145,7 @@ describe('fromTanStackAI', () => {
     const placeholder = result.find((m) => m.role === 'tool' && m.tool_call_id === 'tc_1');
     expect(placeholder?.content).toBe('[No tool result available]');
     // Placeholder carries the originating tool name so output adapters that
-    // need it (e.g. AI SDK toolName, Gemini functionResponse.name) can emit
-    // a real value instead of falling back to 'unknown'.
+    // need it can emit a real value instead of falling back to 'unknown'.
     expect(placeholder?.name).toBe('run');
   });
 
@@ -162,7 +202,17 @@ describe('toTanStackAI', () => {
     expect(roundTripped).toEqual(original);
   });
 
-  it('preserves providerMetadata on tool calls during round-trip', () => {
+  it('round-trips message id and createdAt', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z');
+    const original: ModelMessage[] = [
+      { role: 'user', content: 'Hello', id: 'msg_1', createdAt },
+      { role: 'assistant', content: 'Hi', id: 'msg_2', createdAt },
+    ];
+    const roundTripped = toTanStackAI(fromTanStackAI(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it('preserves metadata on tool calls during round-trip', () => {
     const original: ModelMessage[] = [
       { role: 'user', content: 'find something' },
       {
@@ -173,7 +223,7 @@ describe('toTanStackAI', () => {
             id: 'tc_1',
             type: 'function',
             function: { name: 'search', arguments: '{"q":"test"}' },
-            providerMetadata: { openai: { index: 0 } },
+            metadata: { thoughtSignature: 'abc' },
           },
         ],
       },
@@ -182,12 +232,52 @@ describe('toTanStackAI', () => {
     const ir = fromTanStackAI(original);
     const roundTripped = toTanStackAI(ir);
     const assistant = roundTripped.find((m) => m.role === 'assistant');
-    expect(assistant?.toolCalls?.[0].providerMetadata).toEqual({
-      openai: { index: 0 },
-    });
+    expect(assistant?.toolCalls?.[0].metadata).toEqual({ thoughtSignature: 'abc' });
   });
 
-  it('reconstructs tool calls from IR when modified', () => {
+  it('round-trips an unmodified thinking array byte-exact', () => {
+    const thinking = [{ content: 'step one', signature: 'sig_1' }, { content: 'step two' }];
+    const original: ModelMessage[] = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a', thinking },
+    ];
+    const roundTripped = toTanStackAI(fromTanStackAI(original));
+    const assistant = roundTripped.find((m) => m.role === 'assistant');
+    expect(assistant?.thinking).toBe(thinking); // same reference
+  });
+
+  it('omits thinking when the pipeline cleared it', () => {
+    const original: ModelMessage[] = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a', thinking: [{ content: 'private reasoning' }] },
+    ];
+    const ir = fromTanStackAI(original);
+    const assistant = ir.find((m) => m.role === 'assistant');
+    // Simulate clear/compact stripping the reasoning
+    if (assistant) assistant.thinking = undefined;
+    const roundTripped = toTanStackAI(ir);
+    const out = roundTripped.find((m) => m.role === 'assistant');
+    expect(out?.thinking).toBeUndefined();
+  });
+
+  it('rebuilds thinking from IR when modified', () => {
+    const original: ModelMessage[] = [
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: 'a',
+        thinking: [{ content: 'original reasoning', signature: 'sig_1' }],
+      },
+    ];
+    const ir = fromTanStackAI(original);
+    const assistant = ir.find((m) => m.role === 'assistant');
+    if (assistant?.thinking) assistant.thinking = { ...assistant.thinking, thinking: 'rewritten' };
+    const roundTripped = toTanStackAI(ir);
+    const out = roundTripped.find((m) => m.role === 'assistant');
+    expect(out?.thinking).toEqual([{ content: 'rewritten', signature: 'sig_1' }]);
+  });
+
+  it('reconstructs tool calls from IR when modified (metadata dropped)', () => {
     const original: ModelMessage[] = [
       { role: 'user', content: 'do two things' },
       {
@@ -198,7 +288,7 @@ describe('toTanStackAI', () => {
             id: 'tc_1',
             type: 'function',
             function: { name: 'search', arguments: '{"q":"test"}' },
-            providerMetadata: { openai: { index: 0 } },
+            metadata: { providerExecuted: true },
           },
           {
             id: 'tc_2',
@@ -217,9 +307,9 @@ describe('toTanStackAI', () => {
     assistant!.tool_calls = [assistant!.tool_calls![0]];
     const roundTripped = toTanStackAI(ir);
     const roundTrippedAssistant = roundTripped.find((m) => m.role === 'assistant');
-    // Tool calls were modified (different length), so providerMetadata is lost
+    // Tool calls were modified (different length), so metadata is lost
     expect(roundTrippedAssistant?.toolCalls).toHaveLength(1);
-    expect(roundTrippedAssistant?.toolCalls?.[0].providerMetadata).toBeUndefined();
+    expect(roundTrippedAssistant?.toolCalls?.[0].metadata).toBeUndefined();
   });
 
   it('detects modified content and reconstructs from IR', () => {

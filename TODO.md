@@ -257,9 +257,13 @@ Implementation notes:
 
 ---
 
-## Planned
+### ✅ `compact()` — `toolFilter` Support
 
-### `compact()` — `toolFilter` Support
+**Landed in v4.0.0** (compression pipeline v2, commit `3f8b220`; see MIGRATION-4.md).
+
+Implemented as planned, plus one addition beyond the original spec: `ToolResultClearTarget` gained `exemptTools?: string[]` alongside `toolFilter?: string[]` — exempt tools are never cleared, and an exemption wins over a filter match. `keepRecent` now counts within the clearable set (after filter/exemption), not across all tool results.
+
+Original plan (for traceability):
 
 **Priority: Low** — Selective clearing by tool name.
 
@@ -279,7 +283,13 @@ Resolving the tool name requires scanning the preceding assistant message for th
 
 ---
 
-### Strip Reasoning Model `<think>` Tags in `compact()`
+### ✅ Strip Reasoning Model `<think>` Tags in `compact()`
+
+**Landed in v4.0.0** (compression pipeline v2, commit `3f8b220`; see MIGRATION-4.md).
+
+Implemented exactly as designed: `ClearTarget` gained `'reasoning-tags'`, which strips `<think>...</think>` blocks from assistant content strings. `compact()`-only, no auto-trigger, `formatCompactSummary` untouched.
+
+Original plan (for traceability):
 
 **Priority: Low** — Defensive cleanup for reasoning models (DeepSeek-R1, QwQ, gpt-oss, locally hosted reasoning models).
 
@@ -299,6 +309,8 @@ type ClearTarget = 'thinking' | 'tool-result' | 'reasoning-tags' | ToolResultCle
 Only applies when `compact()` is called; does not auto-trigger. Out of scope for `formatCompactSummary` — that handles compression model output, this handles history messages.
 
 ---
+
+## Planned
 
 ### Pruner — State-Scoped Tool Whitelists
 
@@ -444,9 +456,10 @@ Replaced the closed switch-case in `getAdapter()` with an open `AdapterRegistry`
 
 ### T2.3 — `preserveThinkingAsText` opt-in for cross-provider replay
 
-**Status**: Planned
-**ETA**: half-day
+**Status**: ✅ Done (v4.0.0, commit `baea961`)
 **Files**: `packages/core/src/adapters/openAIAdapter.ts`, `geminiAdapter.ts`
+
+**What landed**: constructor option — `new OpenAIAdapter({ preserveThinkingAsText: true })` / `new GeminiAdapter({ ... })` (default false). Anthropic-style `thinking` blocks become a `<thinking>...</thinking>` text prefix instead of being dropped. Divergence from the plan below: `redacted_thinking` is NEVER textified — it is always dropped with a single warning. The planned "preserve with signature for same-model replay" case doesn't apply here: these adapters are cross-provider by definition, so opaque encrypted content can only be dropped.
 
 Currently `openAIAdapter` and `geminiAdapter` strip Anthropic `thinking` blocks. Add option to convert them to `<thinking>...</thinking>` text blocks instead.
 
@@ -478,7 +491,13 @@ All 6 typed `compile()` overloads now accept `signal?: AbortSignal` alongside `t
 
 ### T2.4.1 — `compile()` Concurrency Safety (Snapshot + Serialize)
 
-**Status**: Planned (queued from T2.4 self-review on 2026-05-14, demoted on 2026-05-15)
+**Status**: ✅ Done (v4.0.0, commit `baea961`)
+
+**What landed**: recommended design (B) as specified below — concurrent `compile()` calls on one instance queue via Snapshot + Serialize; value-type inputs snapshot at call time; Memory/Janitor state intentionally shared across queued compiles; a rejected compile does not poison the chain. "One chef per concurrent caller" remains the documented canonical pattern.
+
+Original entry (for traceability):
+
+**Status (superseded)**: Planned (queued from T2.4 self-review on 2026-05-14, demoted on 2026-05-15)
 **Priority**: **Low** — defensive hardening, not a critical fix. The canonical "one chef per concurrent caller" pattern (documented in README → "Concurrency Model") sidesteps the hazard entirely. T2.4.1's value is only catching user bugs where someone accidentally shares a chef across concurrent `compile()` calls.
 **Estimated scope**: ~80 LOC implementation + ~120 LOC tests + ~30 LOC docs ≈ 230-line diff
 **Files**: `packages/core/src/index.ts`, `packages/core/tests/concurrency.test.ts` (new), README + zh-CN + core README
@@ -562,11 +581,12 @@ async compile(options?: CompileOptions): Promise<TargetPayload> {
 
 ### T2.5 — Granular event expansion
 
-**Status**: Planned
-**ETA**: half-day
-**Files**: `packages/core/src/index.ts`
+**Status**: ✅ Done (v4.0.0, commit `baea961`) — partial scope
+**Files**: `packages/core/src/chef.ts` (ChefEvents)
 
-Add: `compress:start` / `compress:end` (with `tokenInfo` so handler can decide to skip), `offload:created` / `offload:resolved`, `pruner:tool-blocked`, split `memory:changed` into `memory:set` / `memory:delete`.
+**What landed**: `'compress:start' {historyLength, currentTokens, limit}`, `'compress:end' {compressed}`, `'offload:created' {uri}`, `'pruner:tool-blocked' {name}`. Event handlers additionally became error-isolated (a throwing handler logs and continues — pre-4.0 it failed `compile()`; not in the original plan). **Not landed** from the plan below: `offload:resolved` and the `memory:changed` → `memory:set` / `memory:delete` split — revisit if a concrete need surfaces.
+
+Original plan: Add: `compress:start` / `compress:end` (with `tokenInfo` so handler can decide to skip), `offload:created` / `offload:resolved`, `pruner:tool-blocked`, split `memory:changed` into `memory:set` / `memory:delete`.
 
 **Reference**: pi `AssistantMessageEvent` has 11 events (text/thinking/toolcall × {start, delta, end} + start/done/error); pi `AgentEvent` has 9.
 
@@ -574,9 +594,12 @@ Add: `compress:start` / `compress:end` (with `tokenInfo` so handler can decide t
 
 ### T2.6 — `transformToolResult` unified hook
 
-**Status**: Planned
-**ETA**: half-day
-**Files**: `packages/core/src/index.ts`
+**Status**: ✅ Done (v4.0.0, commit `baea961`)
+**Files**: `packages/core/src/chef.ts` (ChefConfig)
+
+**What landed** (signature differs from the plan below): `transformToolResult?: (content: string, info: { toolName: string | null; toolCallId: string | null }) => string | Promise<string>` on `ChefConfig`. Runs on every `role: 'tool'` message at the START of `compile()`, BEFORE compression, non-mutating (stored history untouched); `toolName` resolved from the preceding assistant turn's `tool_calls` (null when unresolvable). The planned `(call, result)` shape was dropped — ContextChef is pre-call, so there is no runtime `call` object to hand over; the resolved `{toolName, toolCallId}` info object covers the same routing needs.
+
+Original plan:
 
 ```typescript
 new ContextChef({
@@ -673,3 +696,15 @@ For a future blog post or comparison doc:
 - [MAGMA (arXiv 2601.03236)](https://arxiv.org/abs/2601.03236)
 - [Memory in the Age of AI Agents Survey (arXiv 2512.13564)](https://arxiv.org/abs/2512.13564)
 - [Generative Agents (ar5iv 2304.03442)](https://ar5iv.labs.arxiv.org/html/2304.03442)
+
+---
+
+# v4 Review Follow-ups (PR #47, 2026-08-18)
+
+The 8-angle review confirmed 41 findings; the correctness ones were fixed pre-merge. Deferred (cleanup/altitude, all CONFIRMED but non-blocking):
+
+- **Cross-package duplication → hoist into core**: the compress-without-persistence warn machinery, `createJanitor` assembly, and the redacted-thinking warn-once block are near-identical in ai-sdk-middleware and tanstack-ai (and the `<thinking>` textifier is duplicated across OpenAI/Gemini adapters). Extract shared helpers in core.
+- **Simplifications**: BackgroundCompressionJob stores fields derivable from `toCompress`; `_summarize`'s three failure paths repeat the breaker-warn block; tanstack adapter `_originalText`/`_originalThinkingText` are derivable projections; `detectServerContextManagement`'s clearOnly analysis only picks a warn string.
+- **Altitude**: move `computeAnthropicBetas` + the default server edits config from the facade into the Anthropic adapter layer; promote `_anthropic_compaction` / `_gemini_thought_signature` / `_openai_reasoning` from index-signature passthroughs to typed optional Message fields (like `ToolCall.thoughtSignature`); give `resolveRecall` a formatted rendering option instead of raw archive JSON.
+- **Docs**: `.agents/skills/integrate/` got a targeted stale-API patch only — needs the same full v4 refresh `skills/context-chef-core/` received.
+- **Events**: `offload:resolved` and the `memory:changed` split (planned in T2.5) did not land in v4 — revisit with real demand.
