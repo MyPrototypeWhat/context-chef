@@ -22,7 +22,10 @@ type ToolCallsEntry = {
  *   apply their mode only to the tools named in `tools` (all when omitted)
  *   and are applied in order.
  * - `emptyMessages` (default `'remove'`): drops messages left with no text
- *   content, no tool calls, no thinking, and no attachments.
+ *   content, no tool calls, no thinking, and no attachments. `role: 'tool'`
+ *   messages are structural and never removed here — an empty string is a
+ *   valid tool result, and dropping it while the assistant tool_call that
+ *   references it survives would orphan the call (providers reject that).
  */
 export function compactMessages(
   messages: TanStackAIMessage[],
@@ -46,6 +49,7 @@ export function compactMessages(
   if (config.emptyMessages !== 'keep') {
     result = result.filter(
       (m) =>
+        m.role === 'tool' || // structural: an empty tool result still answers its call
         m.content !== '' ||
         (m.tool_calls && m.tool_calls.length > 0) ||
         m.thinking ||

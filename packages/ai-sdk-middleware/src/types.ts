@@ -71,6 +71,26 @@ export interface CompressOptions {
   /** Ratio of context window to preserve for recent messages. Default: 0.8 */
   preserveRatio?: number;
   /**
+   * Fraction of `contextWindow` at which compression triggers (0–1].
+   * Default 0.7 ("pre-rot"): model quality degrades well before the hard
+   * window limit, so compressing early keeps the model in its reliable
+   * range. Set to 1 to restore the pre-4.0 trigger-at-window behavior.
+   *
+   * When a `tokenizer` is configured, `preserveRatio` applies to this
+   * effective trigger budget (`contextWindow * triggerRatio`), not to the
+   * raw window.
+   */
+  triggerRatio?: number;
+  /**
+   * A compression result must shrink the compressed span's character
+   * length by at least this ratio (0–1, default 0.5). A summary failing
+   * the check is treated as a failed compression: history is left
+   * unchanged and the failure counts toward the circuit breaker — so a
+   * summarizer that echoes its input trips the breaker instead of looping
+   * forever. Set to 0 to disable the check.
+   */
+  minShrinkRatio?: number;
+  /**
    * Replace tool-result content longer than this many characters with a
    * one-line metadata stub (`[Tool name returned N chars; omitted before
    * summarization]`) before the to-be-summarized history is sent to the

@@ -1,7 +1,12 @@
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { ensureValidHistory } from '../../utils/ensureValidHistory';
-import { groupIntoTurns, type SummarizeHistoryOptions, summarizeHistory } from '.';
+import {
+  groupIntoTurns,
+  partitionPinnedMessages,
+  type SummarizeHistoryOptions,
+  summarizeHistory,
+} from '.';
 
 export interface PlanCompactionOptions {
   /**
@@ -61,10 +66,17 @@ export function planCompaction(history: Message[], options: PlanCompactionOption
   // splitTurn === turns.length only when keep is 0 → summarize everything.
   const splitIndex = splitTurn < turns.length ? turns[splitTurn].startIndex : conversation.length;
 
+  // Pinned contract: pinned (turn-scoped) messages inside the old span are
+  // MOVED to the front of `toKeep` instead of being summarized away — every
+  // consumer persisting `[...system, <summary>, ...toKeep]` preserves them
+  // verbatim with no extra handling (this includes auto-pinned Anthropic
+  // compaction blocks).
+  const { pinned, rest } = partitionPinnedMessages(conversation.slice(0, splitIndex));
+
   return {
     system,
-    toSummarize: conversation.slice(0, splitIndex),
-    toKeep: conversation.slice(splitIndex),
+    toSummarize: rest,
+    toKeep: [...pinned, ...conversation.slice(splitIndex)],
   };
 }
 

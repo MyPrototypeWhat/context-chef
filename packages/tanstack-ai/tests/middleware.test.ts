@@ -215,6 +215,39 @@ describe('contextChefMiddleware', () => {
     expect(assistant?.content).toBe('a');
   });
 
+  it('skips the IR round-trip when only skill/dynamicState are set — messages pass by identity', async () => {
+    const mw = contextChefMiddleware({
+      skill: { name: 's', description: 'd', instructions: 'Plan first.' },
+      dynamicState: { getState: () => ({ step: 1 }), placement: 'system' },
+    });
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'tc_1', type: 'function', function: { name: 'search', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'result', toolCallId: 'tc_1' },
+    ];
+
+    const result = await mw.onConfig?.(createMockCtx(), createMockConfig(messages));
+    const { messages: resultMessages, systemPrompts } = getResult(result);
+
+    // Identity, not just equality: the fromTanStackAI → toTanStackAI
+    // round-trip rebuilds message objects, so reference equality proves
+    // the IR conversion was skipped entirely.
+    expect(resultMessages).toHaveLength(messages.length);
+    for (const [i, m] of resultMessages.entries()) {
+      expect(m).toBe(messages[i]);
+    }
+
+    // The non-IR paths still ran.
+    expect(systemPrompts).toContain('Plan first.');
+    expect(systemPrompts.some((p) => promptText(p).includes('CURRENT TASK STATE'))).toBe(true);
+  });
+
   it('injects dynamic state into last user message (string content)', async () => {
     const mw = contextChefMiddleware({
       dynamicState: {
@@ -973,6 +1006,82 @@ describe('createCompressionAdapter', () => {
     const first = details.compressedMessages[0];
     expect(first).toHaveProperty('role');
     expect(first).toHaveProperty('content');
+  });
+});
+
+describe('compress.triggerRatio / compress.minShrinkRatio forwarding', () => {
+  // 8 messages × 100 tokens = 800: over the default 0.7 trigger of a
+  // 1000-token window (700), but under the window itself.
+  const eightHundredTokens: ModelMessage[] = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'a1' },
+    { role: 'user', content: 'q2' },
+    { role: 'assistant', content: 'a2' },
+    { role: 'user', content: 'q3' },
+    { role: 'assistant', content: 'a3' },
+    { role: 'user', content: 'q4' },
+    { role: 'assistant', content: 'a4' },
+  ];
+
+  it('triggerRatio: 1 restores trigger-at-window behavior', async () => {
+    const makeMw = (triggerRatio?: number) => {
+      const adapter = createMockAdapter();
+      const mw = contextChefMiddleware({
+        contextWindow: 1000,
+        compress: { adapter: adapter as never, ...(triggerRatio != null ? { triggerRatio } : {}) },
+        tokenizer: (msgs: unknown[]) => msgs.length * 100,
+      });
+      return { mw, adapter };
+    };
+
+    // Default (0.7): 800 > 700 → compression fires.
+    const byDefault = makeMw();
+    const resDefault = await byDefault.mw.onConfig?.(
+      createMockCtx(),
+      createMockConfig(eightHundredTokens),
+    );
+    expect(byDefault.adapter.chatStream).toHaveBeenCalled();
+    expect(getResult(resDefault).messages.length).toBeLessThan(eightHundredTokens.length);
+
+    // triggerRatio 1: 800 <= 1000 → no compression.
+    const atWindow = makeMw(1);
+    const resAtWindow = await atWindow.mw.onConfig?.(
+      createMockCtx(),
+      createMockConfig(eightHundredTokens),
+    );
+    expect(atWindow.adapter.chatStream).not.toHaveBeenCalled();
+    expect(getResult(resAtWindow).messages).toHaveLength(eightHundredTokens.length);
+  });
+
+  it('minShrinkRatio is forwarded — echoing summarizer fails the guard by default, passes with 0', async () => {
+    // Long span (≥ 2000 chars, the guard's floor) + a summary as long as the
+    // span → shrink guard rejects by default, so history stays unchanged.
+    const longContent = 'x'.repeat(600);
+    const longMessages: ModelMessage[] = [
+      { role: 'user', content: longContent },
+      { role: 'assistant', content: longContent },
+      { role: 'user', content: longContent },
+      { role: 'assistant', content: longContent },
+      { role: 'user', content: longContent },
+      { role: 'assistant', content: longContent },
+    ];
+    const makeMw = (minShrinkRatio?: number) =>
+      contextChefMiddleware({
+        contextWindow: 10,
+        compress: {
+          adapter: createMockAdapter(['X'.repeat(4000)]) as never,
+          ...(minShrinkRatio != null ? { minShrinkRatio } : {}),
+        },
+        tokenizer: (msgs: unknown[]) => msgs.length * 1000,
+      });
+
+    // Default (0.5): non-shrinking summary is a failed compression.
+    const resDefault = await makeMw().onConfig?.(createMockCtx(), createMockConfig(longMessages));
+    expect(getResult(resDefault).messages).toHaveLength(longMessages.length);
+
+    // minShrinkRatio 0 disables the guard: the same summary is applied.
+    const resDisabled = await makeMw(0).onConfig?.(createMockCtx(), createMockConfig(longMessages));
+    expect(getResult(resDisabled).messages.length).toBeLessThan(longMessages.length);
   });
 });
 

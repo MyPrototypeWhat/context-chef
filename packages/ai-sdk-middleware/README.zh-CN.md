@@ -10,7 +10,7 @@
 
 [English](./README.md)
 
-![Quick Start](../../@context-chef_ai-sdk-middleware.png)
+![Quick Start](https://github.com/MyPrototypeWhat/context-chef/releases/download/media-assets/%40context-chef_ai-sdk-middleware.png)
 
 ## 安装
 
@@ -169,6 +169,8 @@ const wrappedModel = withContextChef(model, options);
 | `compress` | `CompressOptions` | 否 | 启用基于 LLM 的压缩 |
 | `compress.model` | `LanguageModelV3` | 是（如启用 compress） | 用于摘要的便宜模型 |
 | `compress.preserveRatio` | `number` | 否 | 保留上下文的比例（默认：`0.8`） |
+| `compress.triggerRatio` | `number` | 否 | 触发压缩的 `contextWindow` 比例（0–1]。默认 `0.7`（"pre-rot" — 模型质量在触及硬窗口上限之前就已下降，所以提前压缩）。设为 `1` 可恢复 4.0 之前"到窗口才触发"的行为。配置了 `tokenizer` 时，`preserveRatio` 作用于 `contextWindow * triggerRatio` 这个有效预算，而不是原始窗口。 |
+| `compress.minShrinkRatio` | `number` | 否 | 压缩结果必须把被压缩片段的字符长度至少缩小该比例（0–1，默认 `0.5`）。未达标的摘要按压缩失败处理：历史保持不变，并计入熔断器。设为 `0` 可关闭该检查。 |
 | `compress.toolResultStubThreshold` | `number` | 否 | 在把待摘要历史送给 compression model 之前，将超过该字符数的 tool-result 内容替换为一行元信息桩（`[Tool name returned N chars; omitted before summarization]`）。近期保留的 tool-result 不动。默认：undefined（关闭）。 |
 | `compress.usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | 否 | 当 `tokenizer` 与 AI SDK 上报的 usage 同时存在时，决定触发判断使用哪个 token 来源。默认 `'max'`（最保守 — `Math.max(tokenizer, fed)`）。`'feedFirst'` 信任 API 真值，避免 tokenizer 高估导致的提前压缩；`'tokenizerFirst'` 完全忽略上报的 usage。`'tokenizerFirst'` 需要 `tokenizer`，缺失时构造期会被消毒为 `'max'` 并打印控制台警告。 |
 | `truncate` | `TruncateOptions` | 否 | 启用工具结果截断 |

@@ -1,3 +1,4 @@
+import { Prompts } from '../prompts';
 import type {
   Attachment,
   CompileMeta,
@@ -8,6 +9,7 @@ import type {
   ToolDefinition,
 } from '../types';
 import { ensureValidHistory } from '../utils/ensureValidHistory';
+import { extractMediaType } from './openAIAdapter';
 
 // ─── Wire shapes (OpenAI Responses API input items) ───
 
@@ -113,12 +115,6 @@ const REASONING_KEY = '_openai_reasoning';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-/** Extracts MIME type from a data URI. Falls back to the provided default. */
-function extractMediaType(url: string, fallback: string): string {
-  const match = url.match(/^data:([^;,]+)/);
-  return match ? match[1] : fallback;
 }
 
 /** Flattens message content (string or parts) to text + IR attachments. */
@@ -353,6 +349,9 @@ function readReasoningPassthrough(msg: Message): OpenAIResponsesReasoningItem[] 
  *   `encrypted_content` byte-identically)
  * - Anthropic-style `thinking` / `redacted_thinking` and internal fields
  *   (`_cache_breakpoint`) are dropped — the Responses API has no slot for them
+ * - a trailing plain assistant message (prefill) is degraded to an ephemeral
+ *   enforcement instruction on the last user item (or the instructions),
+ *   mirroring the Chat Completions adapter
  *
  * Registered as the `'openai-responses'` builtin target. The payload uses the
  * Responses wire field `input` (not `messages`), so `chef.compile({ target:
@@ -363,6 +362,24 @@ export class OpenAIResponsesAdapter {
   compile(messages: Message[]): OpenAIResponsesPayload {
     const instructionParts: string[] = [];
     const input: OpenAIResponsesInputItem[] = [];
+
+    // Prefill degradation: the Responses API has no assistant-prefill slot —
+    // a trailing plain assistant message (ContextChef's guardrail prefill
+    // convention) would be emitted as a COMPLETED output_text item, silently
+    // neutering the prefill. Mirror the Chat Completions adapter: pop it and
+    // enforce the prefix via an ephemeral instruction on the last user item
+    // (or the instructions when no user item exists). Trailing assistant
+    // messages carrying tool_calls or reasoning passthrough are real turns
+    // and stay untouched.
+    let prefill: string | undefined;
+    const last = messages[messages.length - 1];
+    if (last?.role === 'assistant' && !last.tool_calls?.length && !readReasoningPassthrough(last)) {
+      prefill = last.content;
+      messages = messages.slice(0, -1);
+    }
+    // Parts array of the most recently emitted user message item — the
+    // prefill enforcement injection target.
+    let lastUserParts: OpenAIResponsesContentPart[] | undefined;
 
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -382,9 +399,12 @@ export class OpenAIResponsesAdapter {
       if (msg.role === 'assistant') {
         const reasoning = readReasoningPassthrough(msg);
         if (reasoning) {
-          // Deep-clone so payload mutation cannot corrupt IR; structuredClone
-          // preserves every field byte-identically.
-          for (const item of reasoning) input.push(structuredClone(item));
+          // Immutable passthrough, emitted BY REFERENCE: reasoning items
+          // (often multi-KB encrypted_content blobs) are never mutated by
+          // ContextChef or this adapter, and deep-cloning them on every
+          // compile is measurably expensive. Byte-identity round-trip tests
+          // pin the contract.
+          input.push(...reasoning);
         }
         // Skip an empty message item when the turn is represented by its
         // function_call / reasoning items alone (keeps round-trips exact).
@@ -415,6 +435,26 @@ export class OpenAIResponsesAdapter {
         parts.push(attachmentToPart(att));
       }
       input.push({ type: 'message', role: 'user', content: parts });
+      lastUserParts = parts;
+    }
+
+    if (prefill !== undefined) {
+      const enforcement = Prompts.getPrefillEnforcement(prefill);
+      if (lastUserParts) {
+        // Append to the item's last input_text part; a media-only user item
+        // gets a fresh text part instead.
+        let appended = false;
+        for (let j = lastUserParts.length - 1; j >= 0 && !appended; j--) {
+          const part = lastUserParts[j];
+          if (part.type === 'input_text') {
+            part.text = `${part.text}\n\n${enforcement}`;
+            appended = true;
+          }
+        }
+        if (!appended) lastUserParts.push({ type: 'input_text', text: enforcement });
+      } else {
+        instructionParts.push(enforcement);
+      }
     }
 
     const payload: OpenAIResponsesPayload = { input };

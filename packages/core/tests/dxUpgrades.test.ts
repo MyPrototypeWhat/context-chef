@@ -275,3 +275,115 @@ describe('compile() serialization (T2.4.1)', () => {
     await expect(chef.compile({ target: 'openai' })).resolves.toBeDefined();
   });
 });
+
+describe('review fixes (PR #47)', () => {
+  it('re-entrant compile() inside a hook does not deadlock', async () => {
+    let inner: unknown;
+    const chef = new ContextChef({
+      transformContext: async (messages) => {
+        // A hook compiling a sub-payload — must run inline, not queue.
+        if (!inner) {
+          inner = 'pending';
+          const sub = new Error('marker'); // sentinel to prove we got here
+          void sub;
+          inner = await chef.compile({ target: 'gemini' });
+        }
+        return messages;
+      },
+    });
+    chef.setHistory([{ role: 'user', content: 'q' }]);
+
+    const payload = await Promise.race([
+      chef.compile({ target: 'openai' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('deadlock')), 2000)),
+    ]);
+
+    expect(payload).toBeDefined();
+    expect(inner).toBeDefined();
+    expect(inner).not.toBe('pending');
+  });
+
+  it('transformToolResult reuses cached transformed objects across compiles', async () => {
+    let calls = 0;
+    const chef = new ContextChef({
+      transformToolResult: (content) => {
+        calls++;
+        return `T:${content}`;
+      },
+    });
+    chef.setHistory([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 't', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'c1' },
+      { role: 'user', content: 'next' },
+    ]);
+
+    await chef.compile({ target: 'openai' });
+    await chef.compile({ target: 'openai' });
+    await chef.compile({ target: 'openai' });
+
+    // One transform per source message, NOT per compile.
+    expect(calls).toBe(1);
+  });
+
+  it('server strategy falls back to client compression on non-Anthropic targets (with one warning)', async () => {
+    const compressionModel = vi.fn().mockResolvedValue('<summary>S</summary>');
+    const logger = { warn: vi.fn() };
+    const chef = new ContextChef({
+      logger,
+      contextManagement: { strategy: 'server' },
+      janitor: {
+        contextWindow: 10,
+        triggerRatio: 1,
+        tokenizer: (msgs: Message[]) => msgs.length * 10,
+        compressionModel,
+      },
+    });
+    chef.setHistory([
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' },
+    ]);
+
+    await chef.compile({ target: 'openai' });
+    await chef.compile({ target: 'openai' });
+
+    expect(compressionModel).toHaveBeenCalled(); // client compression ran
+    const fallbackWarns = logger.warn.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes('falling back to client-side compression'),
+    );
+    expect(fallbackWarns).toHaveLength(1); // warned once, not per compile
+  });
+});
+
+describe('durable compaction honors pinned (PR #47 review)', () => {
+  it('planCompaction moves pinned turns out of toSummarize into toKeep', async () => {
+    const { planCompaction, compactHistory } = await import('../src/index');
+    const history: Message[] = [
+      { role: 'user', content: 'old question' },
+      { role: 'assistant', content: 'old answer' },
+      { role: 'user', content: 'POLICY: never touch prod', pinned: true },
+      { role: 'assistant', content: 'more old talk' },
+      { role: 'user', content: 'recent question' },
+      { role: 'assistant', content: 'recent answer' },
+    ];
+
+    const plan = planCompaction(history, { keepRecentTurns: 2 });
+
+    expect(plan.toSummarize.map((m) => m.content)).toEqual([
+      'old question',
+      'old answer',
+      'more old talk',
+    ]);
+    expect(plan.toKeep[0]).toMatchObject({ content: 'POLICY: never touch prod', pinned: true });
+
+    const result = await compactHistory(history, async () => '<summary>S</summary>', {
+      keepRecentTurns: 2,
+    });
+    expect(JSON.stringify(result)).toContain('POLICY: never touch prod');
+  });
+});

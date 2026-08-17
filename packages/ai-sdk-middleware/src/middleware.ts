@@ -351,6 +351,8 @@ function createJanitor(
   const userOnCompress = options.onCompress;
   const sharedJanitorConfig = {
     contextWindow,
+    triggerRatio: options.compress?.triggerRatio,
+    minShrinkRatio: options.compress?.minShrinkRatio,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.model
       ? createCompressionAdapter(options.compress.model)

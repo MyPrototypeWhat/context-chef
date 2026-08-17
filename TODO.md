@@ -696,3 +696,15 @@ For a future blog post or comparison doc:
 - [MAGMA (arXiv 2601.03236)](https://arxiv.org/abs/2601.03236)
 - [Memory in the Age of AI Agents Survey (arXiv 2512.13564)](https://arxiv.org/abs/2512.13564)
 - [Generative Agents (ar5iv 2304.03442)](https://ar5iv.labs.arxiv.org/html/2304.03442)
+
+---
+
+# v4 Review Follow-ups (PR #47, 2026-08-18)
+
+The 8-angle review confirmed 41 findings; the correctness ones were fixed pre-merge. Deferred (cleanup/altitude, all CONFIRMED but non-blocking):
+
+- **Cross-package duplication → hoist into core**: the compress-without-persistence warn machinery, `createJanitor` assembly, and the redacted-thinking warn-once block are near-identical in ai-sdk-middleware and tanstack-ai (and the `<thinking>` textifier is duplicated across OpenAI/Gemini adapters). Extract shared helpers in core.
+- **Simplifications**: BackgroundCompressionJob stores fields derivable from `toCompress`; `_summarize`'s three failure paths repeat the breaker-warn block; tanstack adapter `_originalText`/`_originalThinkingText` are derivable projections; `detectServerContextManagement`'s clearOnly analysis only picks a warn string.
+- **Altitude**: move `computeAnthropicBetas` + the default server edits config from the facade into the Anthropic adapter layer; promote `_anthropic_compaction` / `_gemini_thought_signature` / `_openai_reasoning` from index-signature passthroughs to typed optional Message fields (like `ToolCall.thoughtSignature`); give `resolveRecall` a formatted rendering option instead of raw archive JSON.
+- **Docs**: `.agents/skills/integrate/` got a targeted stale-API patch only — needs the same full v4 refresh `skills/context-chef-core/` received.
+- **Events**: `offload:resolved` and the `memory:changed` split (planned in T2.5) did not land in v4 — revisit with real demand.

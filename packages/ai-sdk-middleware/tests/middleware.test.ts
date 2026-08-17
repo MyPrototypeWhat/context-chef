@@ -1521,6 +1521,102 @@ describe('compress persistence warning', () => {
   });
 });
 
+describe('compress.triggerRatio / compress.minShrinkRatio', () => {
+  async function feedUsage(
+    middleware: ReturnType<typeof createMiddleware>,
+    model: LanguageModelV4,
+  ): Promise<void> {
+    await assertDefined(
+      middleware.wrapGenerate,
+      'wrapGenerate',
+    )({
+      doGenerate: () => model.doGenerate({ prompt: [] }),
+      doStream: () => model.doStream({ prompt: [] }),
+      params: { prompt: [] },
+      model,
+    });
+  }
+
+  async function transform(
+    middleware: ReturnType<typeof createMiddleware>,
+    model: LanguageModelV4,
+    prompt: LanguageModelV4Prompt,
+  ): Promise<{ prompt: LanguageModelV4Prompt }> {
+    return assertDefined(
+      middleware.transformParams,
+      'transformParams',
+    )({
+      params: { prompt },
+      type: 'generate',
+      model,
+    });
+  }
+
+  it('triggerRatio: 1 does not compress just under the window and compresses just over', async () => {
+    const prompt = makeConversation(10);
+    const summarizer = createMockModel();
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      compress: { model: summarizer, triggerRatio: 1 },
+      onCompress: vi.fn(),
+    });
+
+    // Just under the raw window. The default 0.7 trigger would fire here
+    // (9_999 > 7_000) — triggerRatio: 1 must not.
+    await feedUsage(middleware, createMockModel({ inputTokens: 9_999 }));
+    const under = await transform(middleware, summarizer, prompt);
+    expect(under.prompt.length).toBe(prompt.length);
+
+    // Just over the raw window: compression fires.
+    await feedUsage(middleware, createMockModel({ inputTokens: 10_001 }));
+    const over = await transform(middleware, summarizer, prompt);
+    expect(over.prompt.length).toBeLessThan(prompt.length);
+  });
+
+  it('default trigger (0.7) compresses the same just-under-window usage', async () => {
+    const prompt = makeConversation(10);
+    const summarizer = createMockModel();
+    const middleware = createMiddleware({
+      contextWindow: 10_000,
+      compress: { model: summarizer },
+      onCompress: vi.fn(),
+    });
+
+    await feedUsage(middleware, createMockModel({ inputTokens: 9_999 }));
+    const result = await transform(middleware, summarizer, prompt);
+    expect(result.prompt.length).toBeLessThan(prompt.length);
+  });
+
+  it('minShrinkRatio: 0 accepts a non-shrinking summary that the default guard rejects', async () => {
+    // Span (~2.5k chars) exceeds the 2000-char shrink-guard floor; the echo
+    // summarizer's 3000-char output cannot shrink it.
+    const prompt = makeConversation(12);
+    const echoSummarizer = createMockModel({ outputText: 'S'.repeat(3000) });
+
+    // Default guard (0.5): the summary is rejected, history left unchanged.
+    const guarded = createMiddleware({
+      contextWindow: 100,
+      compress: { model: echoSummarizer },
+      onCompress: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+    await feedUsage(guarded, createMockModel({ inputTokens: 200 }));
+    const rejected = await transform(guarded, echoSummarizer, prompt);
+    expect(rejected.prompt.length).toBe(prompt.length);
+
+    // minShrinkRatio: 0 disables the guard: the same summary is accepted.
+    const disabled = createMiddleware({
+      contextWindow: 100,
+      compress: { model: echoSummarizer, minShrinkRatio: 0 },
+      onCompress: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+    await feedUsage(disabled, createMockModel({ inputTokens: 200 }));
+    const accepted = await transform(disabled, echoSummarizer, prompt);
+    expect(accepted.prompt.length).toBeLessThan(prompt.length);
+  });
+});
+
 describe('anthropic server-side context management guard', () => {
   const compactionManagement = {
     edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 150_000 } }],

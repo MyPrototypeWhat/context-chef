@@ -139,6 +139,8 @@ Available `toolCalls` modes:
 
 "Last N messages" counts messages of the whole array (any role); tool calls/results referenced from inside that window are kept everywhere.
 
+`emptyMessages: 'remove'` never drops `role: 'tool'` messages — an empty string is a valid tool result, and removing one would orphan the assistant tool call that references it.
+
 ### Clear (Placeholder-Style)
 
 `clear` replaces content instead of deleting messages, keeping structure and tool-call pairing intact. It runs AFTER compression, so the summarizer still sees full content:
@@ -235,6 +237,8 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `compress` | `CompressOptions` | No | Enable LLM-based compression |
 | `compress.adapter` | `AnyTextAdapter` | Yes (if compress) | Cheap adapter for summarization |
 | `compress.preserveRatio` | `number` | No | Ratio of context to preserve (default: `0.8`) |
+| `compress.triggerRatio` | `number` | No | Fraction of `contextWindow` at which compression triggers (default: `0.7`, "pre-rot"). Set `1` to restore pre-4.0 trigger-at-window timing. In the tokenizer path, `preserveRatio` applies to the effective budget `contextWindow * triggerRatio`. |
+| `compress.minShrinkRatio` | `number` | No | Minimum shrink of the compressed span's char length for a summary to be accepted (default: `0.5`). A failing summary counts as a failed compression: history unchanged, counts toward the circuit breaker. `0` disables the check. |
 | `compress.toolResultStubThreshold` | `number` | No | Replace tool-result content longer than this many chars with a one-line metadata stub before sending the to-be-summarized history to the compression model. Recent (preserved) tool results untouched. Default: undefined (disabled). |
 | `compress.usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | No | Which token source drives the trigger when both `tokenizer` and reported usage are available. Default `'max'` (most conservative). `'tokenizerFirst'` requires `tokenizer` — sanitized to `'max'` with a warning otherwise. |
 | `truncate` | `TruncateOptions` | No | Enable tool result truncation |

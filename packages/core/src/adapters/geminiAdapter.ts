@@ -152,6 +152,14 @@ export function fromGemini(
 // ─── Output: IR → Gemini ───
 
 /**
+ * Header for an Anthropic server-side compaction summary degraded to plain
+ * text. Gemini has no compaction block, and the Anthropic API drops
+ * everything before that block — silently stripping it on a provider switch
+ * would lose the entire compacted history.
+ */
+const COMPACTION_SUMMARY_HEADER = '[Summary of earlier conversation (compacted server-side)]';
+
+/**
  * Adapts ContextChef IR to Google Gemini's generateContent format.
  *
  * Key differences from OpenAI/Anthropic:
@@ -230,6 +238,13 @@ export class GeminiAdapter implements ITargetAdapter {
           }
         }
 
+        // Degrade an Anthropic server-side compaction to a marked summary
+        // block prepended to the message text (it summarizes everything before
+        // it, so it must come first — ahead of any textified thinking).
+        if (typeof msg._anthropic_compaction === 'string') {
+          content = `${COMPACTION_SUMMARY_HEADER}\n${msg._anthropic_compaction}\n\n${content ?? ''}`;
+        }
+
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           if (content) {
             const textPart: SDKTextPart = { text: content };
@@ -267,7 +282,11 @@ export class GeminiAdapter implements ITargetAdapter {
         continue;
       }
 
-      const userTextPart: SDKTextPart = { text: msg.content };
+      let userContent = msg.content;
+      if (typeof msg._anthropic_compaction === 'string') {
+        userContent = `${COMPACTION_SUMMARY_HEADER}\n${msg._anthropic_compaction}\n\n${userContent}`;
+      }
+      const userTextPart: SDKTextPart = { text: userContent };
       const userParts: SDKPart[] = [userTextPart];
       // Convert attachments to Gemini inlineData/fileData parts
       if (msg.attachments?.length) {

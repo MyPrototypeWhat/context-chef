@@ -6,6 +6,7 @@ import { Janitor } from '../modules/janitor';
 import type { AnthropicPayload, Message } from '../types';
 import { AnthropicAdapter, fromAnthropic } from './anthropicAdapter';
 import { fromGemini, GeminiAdapter } from './geminiAdapter';
+import { OpenAIAdapter } from './openAIAdapter';
 
 const makeTokenizer = (perMessage: number) => (messages: Message[]) => messages.length * perMessage;
 
@@ -45,6 +46,33 @@ describe('Anthropic compaction block', () => {
       content: 'Summary of the earlier conversation.',
     });
     expect(blocks.some((b) => b.type === 'text')).toBe(true);
+  });
+
+  it('switching provider preserves the compaction summary as marked text (OpenAI)', () => {
+    const { history } = fromAnthropic(compactionMessages);
+    // Trailing user turn — a trailing plain assistant message would be
+    // treated as a prefill by the adapter's degradation path and popped.
+    const payload = new OpenAIAdapter().compile([
+      ...(history as Message[]),
+      { role: 'user', content: 'next question' },
+    ]);
+
+    const flat = JSON.stringify(payload.messages);
+    expect(flat).toContain('[Summary of earlier conversation (compacted server-side)]');
+    expect(flat).toContain('Summary of the earlier conversation.');
+    expect(flat).not.toContain('_anthropic_compaction');
+  });
+
+  it('switching provider preserves the compaction summary as marked text (Gemini)', () => {
+    const { history } = fromAnthropic(compactionMessages);
+    const payload = new GeminiAdapter().compile([
+      ...(history as Message[]),
+      { role: 'user', content: 'next question' },
+    ]);
+
+    const flat = JSON.stringify(payload.messages);
+    expect(flat).toContain('[Summary of earlier conversation (compacted server-side)]');
+    expect(flat).toContain('Summary of the earlier conversation.');
   });
 
   it('client-side compression cannot destroy a compaction block (pinned)', async () => {

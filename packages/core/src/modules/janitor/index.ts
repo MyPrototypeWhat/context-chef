@@ -29,6 +29,9 @@ const MIN_SHRINK_GUARD_SPAN_CHARS = 2000;
 /** Strips `<think>...</think>` reasoning blocks emitted inline by some reasoning models. */
 const REASONING_TAG_RE = /<think>[\s\S]*?<\/think>/gi;
 
+/** Placeholder written by compact()'s tool-result clearing. */
+const CLEARED_TOOL_RESULT_PLACEHOLDER = '[Old tool result content cleared]';
+
 /**
  * Role-flattens history for a text-only compression model: tool results
  * become user messages describing the result, and assistant tool calls are
@@ -115,6 +118,8 @@ export function groupIntoTurns(history: Message[]): Turn[] {
  */
 function collectPinnedTurnIndices(history: Message[]): Set<number> {
   const pinned = new Set<number>();
+  // Fast path: no pinned messages at all (the common case) — skip grouping.
+  if (!history.some((m) => m.pinned)) return pinned;
   for (const turn of groupIntoTurns(history)) {
     let hasPinned = false;
     for (let i = turn.startIndex; i < turn.endIndex; i++) {
@@ -130,11 +135,42 @@ function collectPinnedTurnIndices(history: Message[]): Set<number> {
   return pinned;
 }
 
+/**
+ * Content-equivalence check for the background-compression staleness test.
+ * Object identity alone is too brittle — pipeline stages (transformToolResult,
+ * compact) may recreate message objects without changing their meaning, and a
+ * recreated-but-identical boundary must not discard a finished job.
+ */
+function messagesEquivalent(a: Message | undefined, b: Message | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.role === b.role && a.content === b.content && a.tool_call_id === b.tool_call_id;
+}
+
 /** Extracts the pinned (turn-scoped) messages of a slice, in original order. */
 function extractPinnedMessages(messages: Message[]): Message[] {
   const indices = collectPinnedTurnIndices(messages);
   if (indices.size === 0) return [];
   return messages.filter((_, i) => indices.has(i));
+}
+
+/**
+ * Splits a slice into its pinned (turn-scoped) messages and the rest, both in
+ * original order. Used by durable compaction to move pinned turns out of the
+ * summarize range so they survive verbatim.
+ */
+export function partitionPinnedMessages(messages: Message[]): {
+  pinned: Message[];
+  rest: Message[];
+} {
+  const indices = collectPinnedTurnIndices(messages);
+  if (indices.size === 0) return { pinned: [], rest: messages };
+  const pinned: Message[] = [];
+  const rest: Message[] = [];
+  messages.forEach((m, i) => {
+    (indices.has(i) ? pinned : rest).push(m);
+  });
+  return { pinned, rest };
 }
 
 // ─── Attachment stripping for compression ───
@@ -174,7 +210,7 @@ function stripAttachmentsForCompression(messages: Message[]): Message[] {
  * The same map covers all tool messages because tool_call ids are unique
  * per invocation.
  */
-function buildToolNameMap(messages: Message[]): Map<string, string> {
+export function buildToolNameMap(messages: Message[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const m of messages) {
     if (m.role === 'assistant' && m.tool_calls) {
@@ -570,9 +606,12 @@ export function compactMessages(history: Message[], options: CompactOptions): Me
     let result = msg;
 
     if (clearToolResult && msg.role === 'tool' && isClearableToolResult(idx, msg)) {
-      // Skip (preserve) if this index is in the keepRecent set
-      if (!toolResultSkipSet?.has(idx)) {
-        result = { ...result, content: '[Old tool result content cleared]' };
+      // Skip (preserve) if this index is in the keepRecent set. Idempotent:
+      // an already-cleared message keeps its object identity, so repeated
+      // compact() passes don't churn references (which would defeat the
+      // background-compression staleness check and similar identity users).
+      if (!toolResultSkipSet?.has(idx) && result.content !== CLEARED_TOOL_RESULT_PLACEHOLDER) {
+        result = { ...result, content: CLEARED_TOOL_RESULT_PLACEHOLDER };
       }
     }
 
@@ -671,6 +710,8 @@ interface BackgroundCompressionJob {
   settled: boolean;
   /** Head to splice in ([summaryMessage, ...pinned]) or null on failure. */
   head: Message[] | null;
+  /** Anchor update to apply at swap time ('incremental-anchored' mode). */
+  anchorUpdate: string | null;
   splitIndex: number;
   firstMessage: Message | undefined;
   lastCompressedMessage: Message;
@@ -784,7 +825,7 @@ export class Janitor {
    */
   public async compress(history: Message[]): Promise<Message[]> {
     // 0. Background job bookkeeping (background scheduling only)
-    const swapped = this._trySwapInBackgroundResult(history);
+    const swapped = await this._trySwapInBackgroundResult(history);
     if (swapped) return swapped;
     if (this._pendingBackground) {
       // Job still running — don't stack a second evaluation on top of it.
@@ -829,15 +870,16 @@ export class Janitor {
     }
 
     // 2c. Blocking: summarize now.
-    const summaryMessage = await this._summarize(toCompress, toKeep);
-    if (summaryMessage === null) return history; // guard/model failure — unchanged
+    const result = await this._summarize(toCompress, toKeep);
+    if (result === null) return history; // guard/model failure — unchanged
 
-    // 3. Finalize
-    await this._fireOnCompress(summaryMessage, toCompress.length, {
+    // 3. Finalize (anchor updates apply only when the summary is applied)
+    this._applyAnchorUpdate(result.anchorUpdate);
+    await this._fireOnCompress(result.summaryMessage, toCompress.length, {
       compressedMessages: toCompress,
     });
     this._suppressNextCompression = true;
-    return [summaryMessage, ...pinned, ...toKeep];
+    return [result.summaryMessage, ...pinned, ...toKeep];
   }
 
   /**
@@ -1038,7 +1080,10 @@ export class Janitor {
    * behavior of dropping the span with a bare notice applied only to the
    * model-throw path and made a bad situation worse).
    */
-  private async _summarize(toCompress: Message[], toKeep: Message[]): Promise<Message | null> {
+  private async _summarize(
+    toCompress: Message[],
+    toKeep: Message[],
+  ): Promise<{ summaryMessage: Message; anchorUpdate: string | null } | null> {
     const compressionModel = this.config.compressionModel;
     if (!compressionModel) return null;
     const logger = this.config.logger ?? console;
@@ -1069,21 +1114,32 @@ export class Janitor {
     //    Only applied to spans >= MIN_SHRINK_GUARD_SPAN_CHARS — tiny spans
     //    can't shrink below a well-formed summary's natural length, and the
     //    death loop this prevents only occurs on large spans.
+    //    Span size counts everything the summarizer consumes: content,
+    //    thinking, AND tool-call arguments (write/edit tools routinely carry
+    //    the bulk of a coding-agent span in `arguments`).
+    //    Anchored mode compares GROWTH, not absolute size — the anchor is
+    //    cumulative, so comparing it against only the newly evicted span
+    //    would inevitably trip the breaker in healthy long sessions.
     const minShrink = this.config.minShrinkRatio ?? DEFAULT_MIN_SHRINK_RATIO;
     if (minShrink > 0) {
       const spanChars = toCompress.reduce(
-        (sum, m) => sum + m.content.length + (m.thinking?.thinking.length ?? 0),
+        (sum, m) =>
+          sum +
+          m.content.length +
+          (m.thinking?.thinking.length ?? 0) +
+          (m.tool_calls?.reduce((s, tc) => s + tc.function.arguments.length, 0) ?? 0),
         0,
       );
-      if (
-        spanChars >= MIN_SHRINK_GUARD_SPAN_CHARS &&
-        summaryText.length > (1 - minShrink) * spanChars
-      ) {
+      const allowance = (1 - minShrink) * spanChars;
+      const effectiveSize = anchored
+        ? summaryText.length - (this._anchorDoc?.length ?? 0)
+        : summaryText.length;
+      if (spanChars >= MIN_SHRINK_GUARD_SPAN_CHARS && effectiveSize > allowance) {
         this._consecutiveFailures++;
         logger.warn(
-          `[context-chef] compression result failed the shrink guard (summary ${summaryText.length} chars ` +
-            `vs span ${spanChars} chars, minShrinkRatio ${minShrink}) — history left unchanged (failure ` +
-            `${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
+          `[context-chef] compression result failed the shrink guard (${anchored ? 'anchor growth' : 'summary'} ` +
+            `${effectiveSize} chars vs span ${spanChars} chars, minShrinkRatio ${minShrink}) — history left ` +
+            `unchanged (failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
         );
         return null;
       }
@@ -1114,11 +1170,12 @@ export class Janitor {
       }
     }
 
-    // ── Success: breaker reset, anchor bookkeeping, best-effort archive
+    // ── Success: breaker reset (model-health signal — a later stale discard
+    //    doesn't change that the model succeeded) + best-effort archive.
+    //    The anchor is NOT written here: it is applied by the caller at
+    //    application time, so a background job discarded as stale can never
+    //    pollute the anchor with content that stays live in history.
     this._consecutiveFailures = 0;
-    if (anchored) {
-      this._anchorDoc = summaryText;
-    }
 
     let citation = '';
     const archive = this._archive;
@@ -1136,9 +1193,19 @@ export class Janitor {
     }
 
     return {
-      role: 'user',
-      content: Prompts.getCompactSummaryWrapper(summaryText + citation),
+      summaryMessage: {
+        role: 'user',
+        content: Prompts.getCompactSummaryWrapper(summaryText + citation),
+      },
+      anchorUpdate: anchored ? summaryText : null,
     };
+  }
+
+  /** Applies a successful summarization's anchor update ('incremental-anchored'). */
+  private _applyAnchorUpdate(anchorUpdate: string | null): void {
+    if (anchorUpdate !== null) {
+      this._anchorDoc = anchorUpdate;
+    }
   }
 
   /** Kicks off a background summarization job ('background' scheduling). */
@@ -1151,6 +1218,7 @@ export class Janitor {
     const job: BackgroundCompressionJob = {
       settled: false,
       head: null,
+      anchorUpdate: null,
       splitIndex,
       firstMessage: history[0],
       lastCompressedMessage: toCompress[toCompress.length - 1],
@@ -1159,8 +1227,11 @@ export class Janitor {
     this._pendingBackground = job;
     const toKeep = history.slice(splitIndex);
     void this._summarize(toCompress, toKeep)
-      .then((summaryMessage) => {
-        job.head = summaryMessage === null ? null : [summaryMessage, ...pinned];
+      .then((result) => {
+        if (result !== null) {
+          job.head = [result.summaryMessage, ...pinned];
+          job.anchorUpdate = result.anchorUpdate;
+        }
       })
       .catch((error) => {
         // _summarize handles its own failures; this is a belt-and-braces net.
@@ -1181,7 +1252,7 @@ export class Janitor {
    * span is no longer a prefix of the current history, checked by message
    * identity).
    */
-  private _trySwapInBackgroundResult(history: Message[]): Message[] | null {
+  private async _trySwapInBackgroundResult(history: Message[]): Promise<Message[] | null> {
     const job = this._pendingBackground;
     if (!job?.settled) return null;
     this._pendingBackground = undefined;
@@ -1189,13 +1260,15 @@ export class Janitor {
 
     const stillPrefix =
       history.length >= job.splitIndex &&
-      history[0] === job.firstMessage &&
-      history[job.splitIndex - 1] === job.lastCompressedMessage;
+      messagesEquivalent(history[0], job.firstMessage) &&
+      messagesEquivalent(history[job.splitIndex - 1], job.lastCompressedMessage);
     if (!stillPrefix) return null; // stale — discard, fall through to fresh evaluation
 
-    // Finalize at application time (not at computation time): persistence
-    // consumers should only see summaries that actually entered the history.
-    void this._fireOnCompress(job.head[0], job.toCompress.length, {
+    // Finalize at application time (not at computation time): the anchor and
+    // persistence consumers only see summaries that actually entered history.
+    // onCompress is awaited so the persistence contract matches blocking mode.
+    this._applyAnchorUpdate(job.anchorUpdate);
+    await this._fireOnCompress(job.head[0], job.toCompress.length, {
       compressedMessages: job.toCompress,
     });
     this._suppressNextCompression = true;

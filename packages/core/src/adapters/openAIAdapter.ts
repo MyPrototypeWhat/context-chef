@@ -18,11 +18,12 @@ import type { ITargetAdapter } from './targetAdapter';
 
 /**
  * Extracts MIME type from a data URI (e.g. "data:image/png;base64,...").
- * Returns 'image/*' as fallback for plain URLs.
+ * Returns `fallback` for plain URLs and other non-data strings.
+ * Shared with the OpenAI Responses adapter — single source of truth.
  */
-function extractMediaType(url: string): string {
+export function extractMediaType(url: string, fallback: string): string {
   const match = url.match(/^data:([^;,]+)/);
-  return match ? match[1] : 'image/*';
+  return match ? match[1] : fallback;
 }
 
 /**
@@ -112,12 +113,12 @@ export function fromOpenAI(messages: SDKMessageParam[]): ParsedMessages {
             textParts.push(part.text);
           } else if (part.type === 'image_url') {
             attachments.push({
-              mediaType: extractMediaType(part.image_url.url),
+              mediaType: extractMediaType(part.image_url.url, 'image/*'),
               data: part.image_url.url,
             });
           } else if (part.type === 'file') {
             attachments.push({
-              mediaType: extractMediaType(part.file.file_data ?? ''),
+              mediaType: extractMediaType(part.file.file_data ?? '', 'image/*'),
               data: part.file.file_data ?? part.file.file_id ?? '',
               filename: part.file.filename,
             });
@@ -173,6 +174,14 @@ function cloneWithoutUndefined<T>(value: T): T {
   return value;
 }
 
+/**
+ * Header for an Anthropic server-side compaction summary degraded to plain
+ * text. Chat Completions has no compaction block, and the Anthropic API drops
+ * everything before that block — silently stripping it on a provider switch
+ * would lose the entire compacted history.
+ */
+const COMPACTION_SUMMARY_HEADER = '[Summary of earlier conversation (compacted server-side)]';
+
 export interface OpenAIAdapterOptions {
   /**
    * When true, Anthropic-style `thinking` on assistant messages is converted
@@ -208,6 +217,16 @@ export class OpenAIAdapter implements ITargetAdapter {
         ...cleanMsg
       } = msg;
 
+      // Drop IR-only tool-call fields (Gemini thoughtSignature) — only
+      // { id, type, function } may reach the Chat Completions wire.
+      if (cleanMsg.tool_calls?.length) {
+        cleanMsg.tool_calls = cleanMsg.tool_calls.map(({ id, type, function: fn }) => ({
+          id,
+          type,
+          function: fn,
+        }));
+      }
+
       if (msg.role === 'assistant' && this.options.preserveThinkingAsText) {
         if (thinking?.thinking) {
           cleanMsg.content = `<thinking>\n${thinking.thinking}\n</thinking>\n\n${cleanMsg.content ?? ''}`;
@@ -219,6 +238,13 @@ export class OpenAIAdapter implements ITargetAdapter {
               'preserved as text — dropped on the OpenAI target (warned once).',
           );
         }
+      }
+
+      // Degrade an Anthropic server-side compaction to a marked summary block
+      // prepended to the message text (it summarizes everything before it, so
+      // it must come first — ahead of any textified thinking).
+      if (typeof _anthropic_compaction === 'string') {
+        cleanMsg.content = `${COMPACTION_SUMMARY_HEADER}\n${_anthropic_compaction}\n\n${cleanMsg.content ?? ''}`;
       }
 
       // Convert attachments to OpenAI content parts for user messages

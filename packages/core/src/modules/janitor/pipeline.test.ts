@@ -625,8 +625,10 @@ describe('Janitor — background compression scheduling', () => {
     await janitor.compress(buildHistory(5));
     await settled(janitor);
 
-    // A DIFFERENT history (fresh message objects) — identity check must fail.
+    // A genuinely DIFFERENT history: the boundary message's CONTENT changed,
+    // so the content-equivalence staleness check must reject the swap.
     const other = buildHistory(6);
+    other[0] = { ...other[0], content: 'edited-msg-1' };
     const r2 = await janitor.compress(other);
 
     expect(r2).toEqual(other); // stale result discarded, new job started instead
@@ -702,5 +704,175 @@ describe('Janitor — background compression scheduling', () => {
 
     janitor.restoreState(janitor.snapshotState());
     expect(janitor['_pendingBackground']).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Review-driven fixes (PR #47 review)
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — review fixes', () => {
+  const settled = (janitor: Janitor) =>
+    vi.waitFor(() => {
+      if (!janitor['_pendingBackground']?.settled) throw new Error('not settled');
+    });
+
+  it('background swap-in ACCEPTS a recreated-but-equivalent boundary message', async () => {
+    const model = vi.fn().mockResolvedValue('<summary>BG</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      compressionModel: model,
+      compressionScheduling: 'background',
+    });
+
+    await janitor.compress(buildHistory(5));
+    await settled(janitor);
+
+    // Same shape and content, entirely fresh objects (what transformToolResult
+    // or a store round-trip produces) — the swap must still apply.
+    const recreated = buildHistory(5);
+    const r2 = await janitor.compress(recreated);
+
+    expect(r2[0].content).toContain('BG');
+    expect(model).toHaveBeenCalledTimes(1); // no wasteful re-spawn
+  });
+
+  it('a stale-discarded background job does NOT pollute the anchor document', async () => {
+    let call = 0;
+    const model = vi.fn(async () => {
+      call++;
+      return `<summary>ANCHOR-v${call}</summary>`;
+    });
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      compressionModel: model,
+      compressionMode: 'incremental-anchored',
+      compressionScheduling: 'background',
+    });
+
+    await janitor.compress(buildHistory(5));
+    await settled(janitor);
+    expect(janitor.getAnchorDoc()).toBeNull(); // not applied yet — computation only
+
+    // History changed at the boundary → job discarded as stale.
+    const other = buildHistory(5);
+    other[0] = { ...other[0], content: 'edited-msg-1' };
+    await janitor.compress(other);
+
+    expect(janitor.getAnchorDoc()).toBeNull(); // discarded job never wrote the anchor
+  });
+
+  it('blocking anchored compression applies the anchor at finalize', async () => {
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      compressionModel: async () => '<summary>A1</summary>',
+      compressionMode: 'incremental-anchored',
+    });
+
+    await janitor.compress(buildHistory(5));
+    expect(janitor.getAnchorDoc()).toBe('A1');
+  });
+
+  it('shrink guard counts tool-call arguments in the span size', async () => {
+    // Span dominated by tool arguments: content is tiny, arguments are 10k chars.
+    const history: Message[] = [
+      { role: 'user', content: 'write the file' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'c1',
+            type: 'function',
+            function: {
+              name: 'write_file',
+              arguments: JSON.stringify({ body: 'x'.repeat(10_000) }),
+            },
+          },
+        ],
+      },
+      { role: 'tool', content: 'ok', tool_call_id: 'c1' },
+      { role: 'user', content: 'next' },
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: 'and next' },
+    ];
+
+    // A faithful ~2.5k-char summary of that span must PASS the guard.
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      compressionModel: async () => `<summary>${'s'.repeat(2500)}</summary>`,
+    });
+
+    const result = await janitor.compress(history);
+
+    expect(result[0].content).toContain('sss'); // compression applied
+    expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  it('anchored mode guards on anchor GROWTH, not absolute anchor size', async () => {
+    const bigAnchor = 'A'.repeat(9_000);
+    let call = 0;
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      compressionModel: async () => {
+        call++;
+        // Second compression returns the big anchor + a modest addition —
+        // absolute size >> span, but GROWTH is small.
+        return call === 1
+          ? `<summary>${bigAnchor}</summary>`
+          : `<summary>${bigAnchor}addition</summary>`;
+      },
+      compressionMode: 'incremental-anchored',
+      minShrinkRatio: 0.5,
+    });
+
+    // First compression establishes the big anchor. The span must be large
+    // enough that a 9k-char initial anchor passes the growth guard
+    // (allowance = 0.5 × spanChars).
+    await janitor.compress(buildLongHistory(5, 5000));
+    expect(janitor.getAnchorDoc()).toBe(bigAnchor);
+
+    // E10 suppression consumes the call right after a successful compression.
+    await janitor.compress(buildLongHistory(6, 5000));
+
+    // Next compression over a long span: absolute anchor size (9k) far
+    // exceeds naive shrink limits, but GROWTH (8 chars) passes easily.
+    const r2 = await janitor.compress(buildLongHistory(6, 5000));
+    expect(janitor.getAnchorDoc()).toBe(`${bigAnchor}addition`);
+    expect(r2[0].content).toContain('addition');
+    expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  it('compact() is idempotent on already-cleared tool results (stable identity)', () => {
+    const janitor = new Janitor({ contextWindow: Infinity });
+    const history: Message[] = [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 't', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'big output', tool_call_id: 'c1' },
+    ];
+
+    const once = janitor.compact(history, { clear: ['tool-result'] });
+    const twice = janitor.compact(once, { clear: ['tool-result'] });
+
+    expect(twice[1]).toBe(once[1]); // same object — no reference churn
+    expect(twice[1].content).toBe('[Old tool result content cleared]');
   });
 });

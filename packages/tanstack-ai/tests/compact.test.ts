@@ -256,6 +256,21 @@ describe('compactMessages', () => {
       const result = compactMessages(messages, { emptyMessages: 'keep' });
       expect(result).toHaveLength(2);
     });
+
+    it('never removes tool messages — empty content is a valid tool result', () => {
+      // Dropping the '' tool result while its assistant tool_call survives
+      // would orphan the call (OpenAI rejects the payload with a 400).
+      const messages: TanStackAIMessage[] = [
+        msg('user', 'Run it'),
+        msg('assistant', '', {
+          tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run', arguments: '{}' } }],
+        }),
+        msg('tool', '', { tool_call_id: 'c1' }),
+      ];
+      const result = compactMessages(messages, {});
+      expect(result).toHaveLength(3);
+      expect(result[2]).toEqual(msg('tool', '', { tool_call_id: 'c1' }));
+    });
   });
 
   describe('combined', () => {

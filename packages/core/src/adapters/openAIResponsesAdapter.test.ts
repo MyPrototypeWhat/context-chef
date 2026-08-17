@@ -247,11 +247,14 @@ describe('fromOpenAIResponses', () => {
 
 describe('OpenAIResponsesAdapter', () => {
   it('joins system messages into instructions and maps text turns to message items', () => {
+    // Trailing user turn — a trailing plain assistant message would be
+    // treated as a prefill by the adapter's degradation path and popped.
     const messages: Message[] = [
       { role: 'system', content: 'You are helpful.' },
       { role: 'system', content: 'Be terse.' },
       { role: 'user', content: 'Hello' },
       { role: 'assistant', content: 'Hi!' },
+      { role: 'user', content: 'Thanks' },
     ];
     const payload = adapter.compile([...messages]);
 
@@ -259,6 +262,7 @@ describe('OpenAIResponsesAdapter', () => {
     expect(payload.input).toEqual([
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hello' }] },
       { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Hi!' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Thanks' }] },
     ]);
   });
 
@@ -390,8 +394,125 @@ describe('OpenAIResponsesAdapter', () => {
     expect(serialized).not.toContain('thinking');
   });
 
+  it('does not leak Gemini thoughtSignature riding on tool_calls into function_call items', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'check flight AA100' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'check_flight', arguments: '{"flight":"AA100"}' },
+            thoughtSignature: 'SIG-FC-1',
+          },
+        ],
+      },
+      { role: 'tool', content: 'on time', tool_call_id: 'call_1' },
+    ];
+    const payload = adapter.compile([...messages]);
+
+    expect(JSON.stringify(payload)).not.toContain('thoughtSignature');
+    expect(payload.input[1]).toEqual({
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'check_flight',
+      arguments: '{"flight":"AA100"}',
+    });
+  });
+
+  it('emits reasoning passthrough items by reference (no per-compile clone)', () => {
+    const reasoning: OpenAIResponsesReasoningItem = {
+      type: 'reasoning',
+      id: 'rs_1',
+      summary: [],
+      encrypted_content: 'gAAAA-multi-kb-blob',
+    };
+    const messages: Message[] = [
+      { role: 'user', content: 'Hi' },
+      { role: 'assistant', content: 'Hello!', _openai_reasoning: [reasoning] },
+    ];
+    const payload = adapter.compile([...messages]);
+
+    expect(payload.input[1]).toBe(reasoning);
+  });
+
   it('is registered as the "openai-responses" builtin target', () => {
     expect(getAdapter('openai-responses')).toBeInstanceOf(OpenAIResponsesAdapter);
+  });
+});
+
+describe('OpenAIResponsesAdapter — prefill degradation', () => {
+  it('degrades a trailing plain assistant message to an enforcement note on the last user item', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'Be helpful.' },
+      { role: 'user', content: 'Help me.' },
+      { role: 'assistant', content: '<thinking>\n1. ' },
+    ];
+    const payload = adapter.compile([...messages]);
+
+    // Prefill item is removed — nothing assistant-authored remains.
+    expect(payload.input).toHaveLength(1);
+    const user = payload.input[0];
+    expect(user).toMatchObject({ type: 'message', role: 'user' });
+    const text = JSON.stringify(user);
+    expect(text).toContain('Help me.');
+    expect(text).toContain('SYSTEM INSTRUCTION: Your response MUST start verbatim');
+    expect(text).toContain('<thinking>');
+    // Enforcement lives on the user item, not in instructions.
+    expect(payload.instructions).toBe('Be helpful.');
+  });
+
+  it('does not degrade a trailing assistant message with tool_calls', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Do it' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'run', arguments: '{}' } },
+        ],
+      },
+    ];
+    const payload = adapter.compile([...messages]);
+
+    expect(payload.input).toHaveLength(2);
+    expect(payload.input[1]).toMatchObject({ type: 'function_call', call_id: 'call_1' });
+    expect(JSON.stringify(payload)).not.toContain('SYSTEM INSTRUCTION');
+  });
+
+  it('does not degrade a trailing assistant stub carrying reasoning passthrough', () => {
+    const reasoning: OpenAIResponsesReasoningItem = {
+      type: 'reasoning',
+      id: 'rs_tail',
+      summary: [],
+      encrypted_content: 'gAAAA-tail',
+    };
+    const messages: Message[] = [
+      { role: 'user', content: 'Hi' },
+      { role: 'assistant', content: '', _openai_reasoning: [reasoning] },
+    ];
+    const payload = adapter.compile([...messages]);
+
+    expect(payload.input).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hi' }] },
+      reasoning,
+    ]);
+    expect(JSON.stringify(payload)).not.toContain('SYSTEM INSTRUCTION');
+  });
+
+  it('degrades prefill into instructions when no user item exists', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'System prompt.' },
+      { role: 'assistant', content: 'Start with this.' },
+    ];
+    const payload = adapter.compile([...messages]);
+
+    expect(payload.input).toHaveLength(0);
+    expect(payload.instructions).toContain('System prompt.');
+    expect(payload.instructions).toContain('Start with this.');
+    expect(payload.instructions).toContain('SYSTEM INSTRUCTION: Your response MUST start verbatim');
   });
 });
 

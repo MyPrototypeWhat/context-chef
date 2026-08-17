@@ -117,7 +117,7 @@ Concurrent `compile()` calls on one instance now queue (snapshot + serialize) in
   createContextMiddleware({ ..., allowDoubleCompression: true })
   ```
 
-- **Inherits core v4 compression behavior**, including the `triggerRatio` 0.7 default — middleware compression now fires at 70% of `contextWindow`. Pass `triggerRatio: 1` to restore v2 timing.
+- **Inherits core v4 compression behavior**, including the `triggerRatio` 0.7 default — middleware compression now fires at 70% of `contextWindow` — and the `minShrinkRatio` 0.5 shrink guard. Both live on the middleware's compress config: pass `compress: { triggerRatio: 1 }` to restore v2 timing, `compress: { minShrinkRatio: 0 }` to disable the shrink guard.
 
 ### 9. `@context-chef/tanstack-ai` 1.0.0 (rewrite for `@tanstack/ai` ^0.44)
 

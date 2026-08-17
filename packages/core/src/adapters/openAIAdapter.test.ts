@@ -97,6 +97,55 @@ describe('OpenAIAdapter', () => {
     expect(msgs[2].tool_call_id).toBe('c1');
   });
 
+  it('drops thoughtSignature from tool_calls on the wire', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'check flight AA100' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'check_flight', arguments: '{"flight":"AA100"}' },
+            thoughtSignature: 'SIG-FC-1',
+          },
+        ],
+      },
+      { role: 'tool', content: 'on time', tool_call_id: 'c1' },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('thoughtSignature');
+    const assistant = toPlainMessages(result).find((m) => m.role === 'assistant');
+    expect(assistant?.tool_calls?.[0]).toEqual({
+      id: 'c1',
+      type: 'function',
+      function: { name: 'check_flight', arguments: '{"flight":"AA100"}' },
+    });
+  });
+
+  it('inlines _anthropic_compaction as a marked summary block instead of stripping it', () => {
+    const messages: Message[] = [
+      {
+        role: 'assistant',
+        content: 'Continuing from the summary.',
+        _anthropic_compaction: 'Summary of the earlier conversation.',
+        pinned: true,
+      },
+      { role: 'user', content: 'next question' },
+    ];
+    const result = adapter.compile([...messages]);
+    const assistant = toPlainMessages(result).find((m) => m.role === 'assistant');
+
+    expect(assistant?.content).toContain(
+      '[Summary of earlier conversation (compacted server-side)]',
+    );
+    expect(assistant?.content).toContain('Summary of the earlier conversation.');
+    expect(assistant?.content).toContain('Continuing from the summary.');
+    expect(JSON.stringify(result)).not.toContain('_anthropic_compaction');
+  });
+
   it('degrades trailing assistant prefill to enforcement note on last user/system message', () => {
     const messages: Message[] = [
       { role: 'system', content: 'Be helpful.' },

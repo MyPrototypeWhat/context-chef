@@ -210,11 +210,14 @@ export class Memory {
 
   async getAll(): Promise<MemoryEntry[]> {
     const allKeys = await this.store.keys();
+    // Fetch entries concurrently — sequential awaits would serialize 1+N
+    // round-trips per compile() on async stores (Redis etc.).
+    const storeEntries = await Promise.all(allKeys.map((key) => this.store.get(key)));
     const entries: MemoryEntry[] = [];
-    for (const key of allKeys) {
-      const storeEntry = await this.store.get(key);
+    for (let i = 0; i < allKeys.length; i++) {
+      const storeEntry = storeEntries[i];
       if (storeEntry !== null) {
-        entries.push({ key, ...storeEntry });
+        entries.push({ key: allKeys[i], ...storeEntry });
       }
     }
     return entries;

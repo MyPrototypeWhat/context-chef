@@ -17,11 +17,12 @@ import {
   Pruner,               // Standalone pruner (rarely needed)
   Janitor,              // Standalone janitor (rarely needed)
   getAdapter,           // Standalone adapter factory
-  TokenUtils,           // Token counting utilities
-  XmlGenerator,         // XML generation utilities
+  estimate,             // Heuristic token estimate for a string (v4: replaces TokenUtils)
+  estimateObject,       // Heuristic token estimate for messages/objects
+  objectToXml,          // XML generation (v4: replaces XmlGenerator)
   Prompts,              // formatCompactSummary / getCompactSummaryWrapper
   summarizeHistory,     // Standalone summarization primitive (see History Compaction)
-} from "context-chef";
+} from "@context-chef/core";
 ```
 
 ## ChefConfig
@@ -53,7 +54,7 @@ interface JanitorConfig {
   preserveRecentMessages?: number;                     // reportTokenUsage path: messages to keep (default: 1)
   compressionModel?: (msgs: Message[]) => Promise<string>; // Summarize old messages
   onCompress?: (summary: string, count: number, details: { compressedMessages: LanguageModelV3Prompt }) => void;
-  onBudgetExceeded?: (history: Message[], info: { currentTokens: number; limit: number }) => Message[] | null;
+  onBeforeCompress?: (history: Message[], info: { currentTokens: number; limit: number }) => Message[] | null;
   logger?: ChefLogger;  // Sink for degradation warnings; defaults to console
                         // ChefLogger = { warn(message: string, ...args: unknown[]): void }
 }

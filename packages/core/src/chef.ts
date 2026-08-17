@@ -4,6 +4,7 @@ import { AnthropicAdapter } from './adapters/anthropicAdapter';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import {
+  buildToolNameMap,
   type CompressionDetails,
   Janitor,
   type JanitorConfig,
@@ -278,12 +279,27 @@ export class ContextChef {
   ) => string | null | Promise<string | null>;
   private defaultTarget?: TargetProvider | ITargetAdapter;
   private contextManagement?: ChefConfig['contextManagement'];
+  private logger?: ChefLogger;
+  /** One-time warning flag: strategy 'server' compiled for a non-server-managed target. */
+  private _serverFallbackWarned = false;
   /**
    * Serializes compile() calls on this instance (Snapshot + Serialize model):
    * concurrent callers queue instead of interleaving the mutable state a
    * compile pass holds across await points.
    */
   private _compileChain: Promise<unknown> = Promise.resolve();
+  /** True while _compileInner runs — lets re-entrant compile() calls (from
+   *  hooks/event handlers) bypass the queue instead of deadlocking on it. */
+  private _compiling = false;
+  /**
+   * Per-source-message cache for transformToolResult, keyed by the ORIGINAL
+   * history message. Keeps transformed message objects stable across
+   * compiles (same source content → same output object), which (a) avoids
+   * re-running the transform over old tool results on every compile and
+   * (b) preserves object identity for identity-sensitive consumers like the
+   * Janitor's background-compression staleness check.
+   */
+  private _toolTransformCache = new WeakMap<Message, { source: string; transformed: Message }>();
   /** Guardrail options stored by withGuardrails(); applied during compile(). */
   private _guardrailOptions?: GuardrailOptions;
   private emitter: TypedEventEmitter<ChefEvents>;
@@ -319,6 +335,7 @@ export class ContextChef {
     this.onBeforeCompile = config.onBeforeCompile;
     this.defaultTarget = config.defaultTarget;
     this.contextManagement = config.contextManagement;
+    this.logger = config.logger;
     if (config.contextManagement?.strategy === 'server' && config.janitor?.compressionModel) {
       (config.logger ?? console).warn(
         "[context-chef] contextManagement.strategy 'server' is configured together with a " +
@@ -915,6 +932,13 @@ export class ContextChef {
   public async compile(options: { target: string; signal?: AbortSignal }): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload>;
   public async compile(options?: CompileOptions): Promise<TargetPayload> {
+    // Re-entrancy: a hook or event handler running INSIDE a compile may call
+    // compile() again (e.g. compiling a sub-payload). Queueing that inner
+    // call behind the outer unfinished one would deadlock — run it inline
+    // instead; it executes within the lock the outer call already holds.
+    if (this._compiling) {
+      return this._compileInner(options);
+    }
     // Snapshot + Serialize: queue behind any in-flight compile on this
     // instance (a failed predecessor does not poison the chain).
     const run = () => this._compileInner(options);
@@ -931,6 +955,7 @@ export class ContextChef {
     // Stash signal so event-bridge closures (Janitor.onCompress, Memory.onMemoryChanged,
     // Memory.onMemoryExpired) can forward it to handlers. Cleared in finally.
     this._currentSignal = signal;
+    this._compiling = true;
     try {
       // 0. Emit compile:start (unconditional — observers may want to log even
       //    aborted compiles. throwIfAborted runs immediately after so the
@@ -945,37 +970,59 @@ export class ContextChef {
       );
       signal?.throwIfAborted();
 
+      // 0.4 Resolve the target adapter up front — the server-side context
+      //     management decision below is per-target.
+      const target = options?.target ?? this.defaultTarget ?? 'openai';
+      const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
+      const isAnthropicTarget = target === 'anthropic' || adapter instanceof AnthropicAdapter;
+      const serverManaged = this.contextManagement?.strategy === 'server' && isAnthropicTarget;
+      if (
+        this.contextManagement?.strategy === 'server' &&
+        !isAnthropicTarget &&
+        !this._serverFallbackWarned
+      ) {
+        this._serverFallbackWarned = true;
+        (this.logger ?? console).warn(
+          "[context-chef] contextManagement.strategy 'server' is configured, but the current " +
+            'compile target has no server-side context management implementation — falling back ' +
+            'to client-side compression for this target. Only the Anthropic target is server-managed.',
+        );
+      }
+
       // 0.5 transformToolResult: uniform tool-result rewrite BEFORE compression
       //     so the summarizer and all later stages see transformed content.
+      //     Cached per source message: unchanged tool results reuse the SAME
+      //     transformed object across compiles (no re-transform, stable
+      //     identity for the Janitor's background staleness check).
       let workingHistory = this.history;
       if (this.transformToolResult) {
         const transform = this.transformToolResult;
-        const nameById = new Map<string, string>();
-        for (const m of workingHistory) {
-          if (m.role === 'assistant' && m.tool_calls) {
-            for (const tc of m.tool_calls) nameById.set(tc.id, tc.function.name);
-          }
-        }
+        const nameById = buildToolNameMap(workingHistory);
         workingHistory = await Promise.all(
           workingHistory.map(async (m) => {
             if (m.role !== 'tool') return m;
+            const cached = this._toolTransformCache.get(m);
+            if (cached && cached.source === m.content) return cached.transformed;
             const content = await transform(m.content, {
               toolName: (m.tool_call_id && nameById.get(m.tool_call_id)) || null,
               toolCallId: m.tool_call_id ?? null,
             });
-            return content === m.content ? m : { ...m, content };
+            const transformed = content === m.content ? m : { ...m, content };
+            this._toolTransformCache.set(m, { source: m.content, transformed });
+            return transformed;
           }),
         );
         signal?.throwIfAborted();
       }
 
-      // 1. Janitor: Compress history if needed. Under server-side context
-      //    management the provider compacts — client compression is skipped
-      //    (mechanical compact() and all other modules remain available).
-      const compressedHistory =
-        this.contextManagement?.strategy === 'server'
-          ? workingHistory
-          : await this.janitor.compress(workingHistory);
+      // 1. Janitor: Compress history if needed. When the target is server-
+      //    managed (Anthropic + strategy 'server') the provider compacts —
+      //    client compression is skipped (mechanical compact() and every
+      //    other module remain available). Non-server-managed targets keep
+      //    client-side compression even under strategy 'server'.
+      const compressedHistory = serverManaged
+        ? workingHistory
+        : await this.janitor.compress(workingHistory);
       await this.emitter.emit(
         'compress:end',
         { compressed: compressedHistory !== workingHistory },
@@ -1105,8 +1152,6 @@ export class ContextChef {
         tailXml: tailXml || undefined,
       });
 
-      const target = options?.target ?? this.defaultTarget ?? 'openai';
-      const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
       const adapterPayload = adapter.compile([...rawPayload.messages]);
 
       const prunerTools = this._getPrunerTools();
@@ -1116,18 +1161,15 @@ export class ContextChef {
       const payload: TargetPayload = { ...adapterPayload, meta };
       if (tools.length > 0) payload.tools = tools;
 
-      // Server-side context management: on the Anthropic target, carry the
-      // edits config + required beta headers in the payload.
-      if (this.contextManagement?.strategy === 'server') {
-        const isAnthropic = target === 'anthropic' || adapter instanceof AnthropicAdapter;
-        if (isAnthropic) {
-          const server = this.contextManagement.server ?? {
-            edits: [{ type: 'compact_20260112' }],
-          };
-          const anthropicPayload = payload as AnthropicPayload;
-          anthropicPayload.context_management = server;
-          anthropicPayload.betas = computeAnthropicBetas(server);
-        }
+      // Server-side context management: on the server-managed (Anthropic)
+      // target, carry the edits config + required beta headers in the payload.
+      if (serverManaged) {
+        const server = this.contextManagement?.server ?? {
+          edits: [{ type: 'compact_20260112' }],
+        };
+        const anthropicPayload = payload as AnthropicPayload;
+        anthropicPayload.context_management = server;
+        anthropicPayload.betas = computeAnthropicBetas(server);
       }
 
       // 9. Emit compile:done

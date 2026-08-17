@@ -79,6 +79,25 @@ export interface CompressOptions {
   /** Ratio of context window to preserve for recent messages. Default: 0.8 */
   preserveRatio?: number;
   /**
+   * Fraction of `contextWindow` at which compression triggers (0–1].
+   * Default 0.7: model quality degrades well before the hard window limit
+   * ("pre-rot"), so compressing early keeps the model in its reliable range.
+   * Set to 1 to restore the pre-4.0 trigger-at-window behavior.
+   *
+   * In the tokenizer path, `preserveRatio` is applied to this effective
+   * trigger budget (`contextWindow * triggerRatio`), not to the raw window.
+   */
+  triggerRatio?: number;
+  /**
+   * A compression result must shrink the compressed span's character length
+   * by at least this ratio (0–1). Default 0.5. A summary failing the check
+   * is treated as a failed compression: history is left unchanged and the
+   * failure counts toward the circuit breaker — so a summarizer that echoes
+   * its input trips the breaker instead of looping forever. Set to 0 to
+   * disable the check.
+   */
+  minShrinkRatio?: number;
+  /**
    * Replace tool-result content longer than this many characters with a
    * one-line metadata stub (`[Tool name returned N chars; omitted before
    * summarization]`) before the to-be-summarized history is sent to the
@@ -144,7 +163,9 @@ export interface CompactConfig {
   /**
    * Whether to retain messages with no content after pruning.
    * - `'remove'` (default): Exclude messages with no text content, no tool
-   *   calls, and no attachments.
+   *   calls, and no attachments. `role: 'tool'` messages are never removed —
+   *   an empty string is a valid tool result, and dropping it would orphan
+   *   the assistant tool_call that references it.
    * - `'keep'`: Retain them.
    */
   emptyMessages?: 'keep' | 'remove';

@@ -178,27 +178,27 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       messages = await truncateToolResults(messages, options.truncate, logger);
     }
 
-    // 2. Convert to IR
-    let irMessages = fromTanStackAI(messages);
-
-    // 3. Compact (mechanical, zero LLM cost)
-    if (options.compact) {
-      irMessages = compactMessages(irMessages, options.compact);
+    // 2–5. IR pipeline: convert to IR, compact (mechanical, zero LLM cost),
+    // compress when over budget (budgeting only), then placeholder-style
+    // clearing (after compress so the summarizer saw full content), and
+    // convert back. Skipped entirely when no IR-consuming option is
+    // configured — truncate works on ModelMessages directly and the
+    // skill/dynamicState/systemPrompts paths below never need IR, so the
+    // round-trip would be pure per-call overhead (it also rebuilds every
+    // message object; the fast path passes them through by identity).
+    if (options.compact || janitor || options.clear?.length) {
+      let irMessages = fromTanStackAI(messages);
+      if (options.compact) {
+        irMessages = compactMessages(irMessages, options.compact);
+      }
+      if (janitor) {
+        irMessages = await janitor.compress(irMessages);
+      }
+      if (options.clear?.length) {
+        irMessages = clearMessages(irMessages, { clear: options.clear });
+      }
+      messages = toTanStackAI(irMessages);
     }
-
-    // 4. Compress conversation history if over token budget (budgeting only)
-    if (janitor) {
-      irMessages = await janitor.compress(irMessages);
-    }
-
-    // 4.5 Placeholder-style clearing (core semantics) — after compress so
-    // the summarizer saw full content; placeholders only hit the kept tail.
-    if (options.clear?.length) {
-      irMessages = clearMessages(irMessages, { clear: options.clear });
-    }
-
-    // 5. Convert back to TanStack AI format
-    messages = toTanStackAI(irMessages);
 
     // 6. Skill instructions injection (appended after user system prompts,
     //    before dynamicState — matches @context-chef/core compile() ordering).
@@ -295,6 +295,8 @@ function createJanitor(
   const userOnCompress = options.onCompress;
   const sharedJanitorConfig = {
     contextWindow,
+    triggerRatio: options.compress?.triggerRatio,
+    minShrinkRatio: options.compress?.minShrinkRatio,
     toolResultStubThreshold: options.compress?.toolResultStubThreshold,
     compressionModel: options.compress?.adapter
       ? createCompressionAdapter(options.compress.adapter)
