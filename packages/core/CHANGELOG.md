@@ -1,4 +1,4 @@
-# context-chef
+# @context-chef/core
 
 ## 3.9.0
 

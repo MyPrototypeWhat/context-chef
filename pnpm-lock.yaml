@@ -20,9 +20,27 @@ importers:
 
   examples:
     dependencies:
+      '@ai-sdk/openai':
+        specifier: ^4.0.42
+        version: 4.0.42(zod@4.3.6)
+      '@context-chef/ai-sdk-middleware':
+        specifier: workspace:*
+        version: link:../packages/ai-sdk-middleware
       '@context-chef/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@context-chef/tanstack-ai':
+        specifier: workspace:*
+        version: link:../packages/tanstack-ai
+      '@tanstack/ai':
+        specifier: ^0.44.1
+        version: 0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6)
+      '@tanstack/ai-openai':
+        specifier: ^0.19.0
+        version: 0.19.0(@tanstack/ai@0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6))(zod@4.3.6)
+      ai:
+        specifier: ^7.0.0
+        version: 7.0.0(zod@4.3.6)
       openai:
         specifier: ^6.22.0
         version: 6.22.0(zod@4.3.6)
@@ -30,6 +48,9 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@types/node':
+        specifier: ^25.3.0
+        version: 25.3.0
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -137,14 +158,30 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/openai@4.0.42':
+    resolution: {integrity: sha512-ZxDca6jJalYuXrIGVrw6dnkpz1Io9AWy+/b/wVWIbjigHCbd+zWLpPi8NnK0OFU+U3YCpP+KWfUvEnG5pFhltA==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider-utils@5.0.0':
     resolution: {integrity: sha512-zj66M02jc6ASYwIgWZowsooDUwaVngeNZQ3H10GwcPMZ+KR6gHMhcUuKl6tkai+JPXTKDyHY1pnszuxRtw2D4A==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@5.0.27':
+    resolution: {integrity: sha512-EzAn4pdgG5g0xXtH6lE2zyNmfjDQIDjATkfqzuidEI35g++hh4+07vnjzkT/RmGmIClPZiRj/Q2GMPV2V7mkHw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider@4.0.0':
     resolution: {integrity: sha512-fr9Gs89prDWiuox/T+kCA+i2cJkHpxU5S+tr4megjTzRC27ZsvFhwjU/+XrqqMbvBUlfmXxTOYWy8ng45dsjIg==}
+    engines: {node: '>=22'}
+
+  '@ai-sdk/provider@4.0.7':
+    resolution: {integrity: sha512-6or44XprPzKbr8zkmzosowSE0pxkvJcoojBL+mCZvPUt3kvXp3XSNqeVun9golb1acEfSo6yaEBRT18h2VU+1Q==}
     engines: {node: '>=22'}
 
   '@anthropic-ai/sdk@0.78.0':
@@ -760,6 +797,12 @@ packages:
   '@tanstack/ai-event-client@0.8.0':
     resolution: {integrity: sha512-UzhGQERwGU0yymziuGiHXNnKRZeR2JaGoPXeNzKuHwQtUmvMu1H8g0C9wpkpksj+pmTQPhdEBUOMlU6NhLDVpA==}
 
+  '@tanstack/ai-openai@0.19.0':
+    resolution: {integrity: sha512-qBPX45oDUdFjphVui9+qN62zxXZU6VgGI/MDxS5n0xhCz1X/RqLbwUmdefLSiyoHAh1gdw4lmpCdURYD/uMObQ==}
+    peerDependencies:
+      '@tanstack/ai': ^0.44.0
+      zod: ^4.0.0
+
   '@tanstack/ai-utils@0.4.0':
     resolution: {integrity: sha512-xqvAgPJkIuGk1m+jZKyb7vBTQIaBmUD9EVzlPkDWWMp80n69uwL0TnBZCVk+OwL9goTQiFy648dnBfLsiJgl6A==}
 
@@ -776,6 +819,11 @@ packages:
     resolution: {integrity: sha512-OZI6QyULw0FI0wjgmeYzCIfbgPsOEzwJtCpa69XrfLMtNXLGnz3d/dIabk7frg0TmHo+Ah49w5I4KC7Tufwsvw==}
     engines: {node: '>=18'}
     hasBin: true
+
+  '@tanstack/openai-base@0.9.12':
+    resolution: {integrity: sha512-UZwt+3O2WYQ4rWHc95EfIPFFIlWsZQncNZlyw05tpuogwWoR+9xtPot+uPbx6tGr/XX+/vPwQn0jVljBD1zppQ==}
+    peerDependencies:
+      '@tanstack/ai': ^0.44.0
 
   '@tsconfig/node10@1.0.12':
     resolution: {integrity: sha512-UCYBaeFvM11aU2y3YPZ//O5Rhj+xKyzy7mvcIoAjASbigy8mHMryP5cK7dgjlz2hWxh1g5pLw084E0a/wlUSFQ==}
@@ -1200,6 +1248,26 @@ packages:
       zod:
         optional: true
 
+  openai@6.49.0:
+    resolution: {integrity: sha512-aYCc0C6L864eR6WSYIwQGyXriw/nIyZx0ObvhzOEVuk0zoBDpynjSbrionWI7q65B5H8jJX0DXR9snEzM6bfPg==}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
+
   outdent@0.5.0:
     resolution: {integrity: sha512-/jHxFIzoMXdqPzTaCpFzAAWhpkSjZPF4Vsn6jAfNpmbH/ymsmd7Qc6VE9BGn0L6YMj6uwpQLxCECpus4ukKS9Q==}
 
@@ -1473,6 +1541,10 @@ packages:
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
+  undici@7.29.0:
+    resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
+    engines: {node: '>=20.18.1'}
+
   universalify@0.1.2:
     resolution: {integrity: sha512-rBJeI5CXAlmy1pV+617WB9J63U6XcazHHF2f2dbJix4XzpUF0RS3Zbj0FGIOCAva5P/d/GBOYaACQ1w+0azUkg==}
     engines: {node: '>= 4.0.0'}
@@ -1600,6 +1672,12 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.3.6
 
+  '@ai-sdk/openai@4.0.42(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.27(zod@4.3.6)
+      zod: 4.3.6
+
   '@ai-sdk/provider-utils@5.0.0(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.0
@@ -1608,7 +1686,20 @@ snapshots:
       eventsource-parser: 3.1.0
       zod: 4.3.6
 
+  '@ai-sdk/provider-utils@5.0.27(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      undici: 7.29.0
+      zod: 4.3.6
+
   '@ai-sdk/provider@4.0.0':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.7':
     dependencies:
       json-schema: 0.4.0
 
@@ -2147,6 +2238,19 @@ snapshots:
     dependencies:
       '@tanstack/devtools-event-client': 0.4.3
 
+  '@tanstack/ai-openai@0.19.0(@tanstack/ai@0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6))(zod@4.3.6)':
+    dependencies:
+      '@tanstack/ai': 0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6)
+      '@tanstack/ai-utils': 0.4.0
+      '@tanstack/openai-base': 0.9.12(@tanstack/ai@0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6))(zod@4.3.6)
+      openai: 6.49.0(zod@4.3.6)
+      zod: 4.3.6
+    transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
+      - ws
+
   '@tanstack/ai-utils@0.4.0': {}
 
   '@tanstack/ai@0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6)':
@@ -2162,6 +2266,18 @@ snapshots:
       - zod
 
   '@tanstack/devtools-event-client@0.4.3': {}
+
+  '@tanstack/openai-base@0.9.12(@tanstack/ai@0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6))(zod@4.3.6)':
+    dependencies:
+      '@tanstack/ai': 0.44.1(@opentelemetry/api@1.9.0)(zod@4.3.6)
+      '@tanstack/ai-utils': 0.4.0
+      openai: 6.49.0(zod@4.3.6)
+    transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
+      - ws
+      - zod
 
   '@tsconfig/node10@1.0.12': {}
 
@@ -2554,6 +2670,10 @@ snapshots:
     optionalDependencies:
       zod: 4.3.6
 
+  openai@6.49.0(zod@4.3.6):
+    optionalDependencies:
+      zod: 4.3.6
+
   outdent@0.5.0: {}
 
   p-filter@2.1.0:
@@ -2817,6 +2937,8 @@ snapshots:
       quansync: 1.0.0
 
   undici-types@7.18.2: {}
+
+  undici@7.29.0: {}
 
   universalify@0.1.2: {}
 

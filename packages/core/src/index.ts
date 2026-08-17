@@ -9,9 +9,9 @@ export {
   getAdapter,
   type ITargetAdapter,
 } from './adapters/adapterFactory';
-export { fromAnthropic } from './adapters/anthropicAdapter';
-export { fromGemini } from './adapters/geminiAdapter';
-export { fromOpenAI } from './adapters/openAIAdapter';
+export { AnthropicAdapter, fromAnthropic } from './adapters/anthropicAdapter';
+export { fromGemini, GeminiAdapter, type GeminiAdapterOptions } from './adapters/geminiAdapter';
+export { fromOpenAI, OpenAIAdapter, type OpenAIAdapterOptions } from './adapters/openAIAdapter';
 export {
   fromOpenAIResponses,
   OpenAIResponsesAdapter,

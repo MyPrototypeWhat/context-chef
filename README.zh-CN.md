@@ -1,9 +1,10 @@
 # ContextChef
 
-[![npm version](https://img.shields.io/npm/v/context-chef.svg)](https://www.npmjs.com/package/context-chef)
-[![npm downloads](https://img.shields.io/npm/dm/context-chef.svg)](https://www.npmjs.com/package/context-chef)
-[![GitHub stars](https://img.shields.io/github/stars/MyPrototypeWhat/context-chef)](https://github.com/MyPrototypeWhat/context-chef)
-[![License](https://img.shields.io/npm/l/context-chef.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
+[![npm version](https://img.shields.io/npm/v/@context-chef/core.svg)](https://www.npmjs.com/package/@context-chef/core)
+[![@context-chef/core Downloads](https://img.shields.io/npm/dm/@context-chef/core.svg?label=%40context-chef%2Fcore%20downloads)](https://www.npmjs.com/package/@context-chef/core)
+[![@context-chef/ai-sdk-middleware Downloads](https://img.shields.io/npm/dm/@context-chef/ai-sdk-middleware.svg?label=%40context-chef%2Fai-sdk-middleware%20downloads)](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
+[![@context-chef/tanstack-ai Downloads](https://img.shields.io/npm/dm/@context-chef/tanstack-ai.svg?label=%40context-chef%2Ftanstack-ai%20downloads)](https://www.npmjs.com/package/@context-chef/tanstack-ai)
+[![License](https://img.shields.io/npm/l/@context-chef/core.svg)](https://github.com/MyPrototypeWhat/context-chef/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![CI](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml/badge.svg)](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml)
 
@@ -16,6 +17,63 @@ TypeScript/JavaScript AI Agent 的上下文编译器。
 ContextChef 解决 AI Agent 开发中最常见的上下文工程问题：对话太长模型会忘事、工具太多模型会幻觉、切换模型要重写 prompt、长程任务状态丢失。它不接管你的控制流，只负责在每次 LLM 调用前把你的状态编译成最优的 payload。
 
 [English](./README.md)
+
+## Packages
+
+| 包 | 说明 |
+|---|---|
+| [`@context-chef/core`](./packages/core) | 核心上下文编译器 —— 历史压缩、工具裁剪、记忆、VFS 卸载、多 provider 适配 |
+| [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware) | [Vercel AI SDK](https://sdk.vercel.ai) 中间件 —— 即插即用的上下文工程，零代码改动 |
+| [`@context-chef/tanstack-ai`](./packages/tanstack-ai) | [TanStack AI](https://tanstack.com/ai) 中间件 —— 通过 `ChatMiddleware` 提供压缩、截断和动态状态 |
+
+### 零配置接入 AI SDK
+
+如果你在用 Vercel AI SDK，只需 2 行代码即可获得透明的历史压缩和工具结果截断：
+
+```typescript
+import { withContextChef } from '@context-chef/ai-sdk-middleware';
+import { openai } from '@ai-sdk/openai';
+import { generateText } from 'ai';
+
+const model = withContextChef(openai('gpt-4o'), {
+  contextWindow: 128_000,
+  compress: { model: openai('gpt-4o-mini') },
+  truncate: { threshold: 5000 },
+});
+
+// Everything below stays exactly the same
+const result = await generateText({ model, messages, tools });
+```
+
+完整文档见 [`@context-chef/ai-sdk-middleware` README](./packages/ai-sdk-middleware/README.md)。
+
+### TanStack AI 中间件
+
+如果你在用 TanStack AI，挂上中间件即可获得透明的上下文管理：
+
+```typescript
+import { contextChefMiddleware } from '@context-chef/tanstack-ai';
+import { chat } from '@tanstack/ai';
+import { openaiText } from '@tanstack/ai-openai';
+
+const stream = chat({
+  adapter: openaiText('gpt-4o'),
+  messages,
+  middleware: [
+    contextChefMiddleware({
+      contextWindow: 128_000,
+      compress: { adapter: openaiText('gpt-4o-mini') },
+      truncate: { threshold: 5000 },
+    }),
+  ],
+});
+```
+
+完整文档见 [`@context-chef/tanstack-ai` README](./packages/tanstack-ai/README.md)。
+
+### 用 `@context-chef/core` 获得完全控制
+
+需要直接控制编译管道 —— 动态状态注入、工具 namespace、记忆、快照/恢复 —— 请直接使用核心库：
 
 ## 博客系列
 
@@ -30,28 +88,34 @@ ContextChef 解决 AI Agent 开发中最常见的上下文工程问题：对话�
 
 ## Features
 
-- **对话太长？** — 自动压缩历史消息，保留近期记忆，老对话交给小模型摘要，不丢关键信息
+- **对话太长？** — 自动压缩历史消息，保留近期记忆，老对话交给小模型摘要
+- **压缩把约束弄丢了？** — 约束固定（v4）：`pinned: true` 的消息原文穿过压缩，且永不被 `compact()` 清除
+- **摘要丢了你想找回的细节？** — 可逆的归档 + 召回（v4）：压缩前的完整片段会被存储并在摘要中以 URI 引用；`recall_context` 工具可按需还原
+- **Provider 帮你做压缩？** — 服务端上下文管理（v4）：`contextManagement: { strategy: 'server' }` 把 LLM 压缩交给 Anthropic 服务端 compaction，裁剪/skills/记忆/VFS 仍留在客户端
+- **压缩延迟拖慢主链路？** — 后台压缩（v4）：摘要在轮次之外运行，仅在仍然有效时换入；anchored 模式把被驱逐的片段增量合并进一份持久摘要文档
+- **消息存储归你管？** — 持久化压缩：`planCompaction` / `compactHistory`（以及 AI SDK 和 TanStack 移植版）把你的存储压缩一次并持久化结果，而不是每次调用都在途重复压缩
 - **工具太多？** — 按任务动态裁剪工具列表，或用双层架构（稳定分组 + 按需加载）彻底消除工具幻觉
 - **运行时禁用工具？** — Pruner blocklist + `checkToolCall` dispatch 闸门，覆盖权限、环境、限流、沙箱等场景；默认 KV-cache 友好
 - **按阶段切人格？** — `Skill` 原语打包指令 + 工具注解，支持从 `SKILL.md` 文件加载（与 Claude Code / Mastra / OpenCode 同格式）
 - **换模型要重写？** — 同一套 prompt 编译到 OpenAI / Anthropic / Gemini，prefill、cache、tool call 格式自动适配
 - **长程任务跑偏？** — Zod schema 强类型状态注入，每次调用前强制对齐当前任务焦点
-- **终端输出太大？** — 自动截断大文本并存储到 VFS，保留错误信息 + URI 指针供模型按需读取
+- **输出格式跑偏？** — Guardrail：`withGuardrails` 强制 XML 输出契约并设置 assistant prefill，在不支持原生 prefill 的 provider 上自动降级
+- **终端输出太大？** — 自动截断并卸载到 VFS，保留错误行 + `context://` URI 指针供按需取回
 - **跨会话记不住？** — Memory 让模型通过 tool call 主动持久化关键信息（项目规范、用户偏好），下次会话自动注入
 - **想回滚怎么办？** — Snapshot & Restore 一键捕获和回滚全部上下文状态，支持分支探索
-- **需要外部上下文？** — `onBeforeCompile` 钩子让你在编译前注入 RAG 检索结果、AST 片段等
+- **需要外部上下文？** — `onBeforeCompile` 钩子让你在编译前注入 RAG 检索结果、AST 片段或 MCP 查询
 - **需要可观测性？** — 统一事件系统（`chef.on('compress', ...)`）一个入口订阅所有内部模块的日志、指标和调试信息
 
 ## 安装
 
 ```bash
-npm install context-chef zod
+npm install @context-chef/core zod
 ```
 
 ## 快速开始
 
 ```typescript
-import { ContextChef } from "context-chef";
+import { ContextChef } from "@context-chef/core";
 import { z } from "zod";
 
 const TaskSchema = z.object({
@@ -91,6 +155,8 @@ const response = await anthropic.messages.create(payload);
 ---
 
 ## API 参考
+
+> **4.0 移除项** —— 每一项都有直接替代：`TokenUtils` → `estimate` / `estimateObject`，`XmlGenerator` → `objectToXml`，`AdapterFactory` → `getAdapter` / `adapterRegistry`，`JanitorConfig.onBudgetExceeded` → `onBeforeCompress`。完整迁移指南见 [MIGRATION-4.md](./MIGRATION-4.md)。
 
 ### `new ContextChef(config?)`
 
@@ -138,8 +204,8 @@ const TaskSchema = z.object({
 });
 
 chef.setDynamicState(TaskSchema, { activeFile: "auth.ts", todo: ["Fix bug"] });
-// placement 默认为 'last_user'（注入到最后一条 user 消息中）
-// 使用 { placement: 'system' } 作为独立的 system 消息
+// placement defaults to 'last_user' (injected into the last user message)
+// use { placement: 'system' } for a standalone system message
 ```
 
 #### `chef.withGuardrails(options): this`
@@ -148,10 +214,12 @@ chef.setDynamicState(TaskSchema, { activeFile: "auth.ts", todo: ["Fix bug"] });
 
 ```typescript
 chef.withGuardrails({
-  enforceXML: { outputTag: "final_code" }, // 将输出规则包裹在 EPHEMERAL_MESSAGE 中
-  prefill: "<thinking>\n1.", // 尾部 assistant 消息（OpenAI/Gemini 自动降级）
+  enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
+  prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
 });
 ```
+
+**v4 语义。** options 现在会被*存储*并在 `compile()` 时应用，因此与 `setDynamicState` 的调用顺序不再重要（4.0 之前，在 `withGuardrails` 之后调用 `setDynamicState` 会静默丢弃护栏）。每次调用会**替换**上一次的 options（不累积）；`withGuardrails(null)` 清除。存储的 options 会随 `ChefSnapshot` 持久化（`guardrailOptions`），护栏消息作为独立消息落在三明治最末端 —— 离生成最近，不再合并进动态状态消息。
 
 #### `chef.compile(options?): Promise<TargetPayload>`
 
@@ -179,10 +247,10 @@ const chef = new ContextChef({
     contextWindow: 200000,
     tokenizer: (msgs) =>
       msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
-    preserveRatio: 0.8, // 保留 80% 的 contextWindow 给近期消息（默认值）
+    preserveRatio: 0.8, // keep 80% of contextWindow for recent messages (default)
     compressionModel: async (msgs) => callGpt4oMini(msgs),
     onCompress: async (summary, count, details) => {
-      // details.compressedMessages —— 被本次摘要替换的那段消息切片
+      // details.compressedMessages — the exact slice of history the summary replaced
       await db.saveCompression(sessionId, summary, count);
     },
   },
@@ -197,12 +265,12 @@ const chef = new ContextChef({
 const chef = new ContextChef({
   janitor: {
     contextWindow: 200000,
-    preserveRecentMessages: 1,       // 压缩时保留最后 1 条消息（默认值）
+    preserveRecentMessages: 1,       // keep last 1 message on compression (default)
     compressionModel: async (msgs) => callGpt4oMini(msgs),
   },
 });
 
-// 每次 LLM 调用后：
+// After each LLM call:
 const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
@@ -213,22 +281,118 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 | 选项                            | 类型                                        | 默认值 | 说明                                                                     |
 | ------------------------------- | ------------------------------------------- | ------ | ------------------------------------------------------------------------ |
-| `contextWindow`                 | `number`                                    | _必填_ | 模型的上下文窗口大小（token 数）。token 用量超过此值时触发压缩。         |
+| `contextWindow`                 | `number`                                    | _必填_ | 模型的上下文窗口大小（token 数）。用量超过 `contextWindow × triggerRatio` 时触发压缩。 |
+| `triggerRatio`                  | `number`                                    | `0.7`  | 触发压缩的 `contextWindow` 占比（"腐烂前"提前压缩）。设为 `1` 可恢复 4.0 之前打满窗口才触发的行为。 |
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                       |
-| `preserveRatio`                 | `number`                                    | `0.8`  | [Tokenizer 路径] `contextWindow` 中保留给近期消息的比例。                |
-| `preserveRecentMessages`        | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期轮次数量（turn-based）。         |
+| `preserveRatio`                 | `number`                                    | `0.8`  | [Tokenizer 路径] 有效预算（`contextWindow × triggerRatio`）中保留给近期消息的比例。 |
+| `preserveRecentMessages`        | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期轮次数量。                       |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`| 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。无 `tokenizer` 时取值范围收窄为 `'max' \| 'feedFirst'`，TypeScript 在编译期拒绝 `'tokenizerFirst'`。完整说明见 [core 包 README](./packages/core)。 |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —      | 异步钩子，调用低成本 LLM 对旧消息进行摘要。                              |
 | `customCompressionInstructions` | `string`                                    | —      | 追加到默认压缩 prompt 的额外聚焦指令（追加模式，不替换）。               |
+| `compressionGuidelines`         | `string[]`                                  | —      | 注入压缩 prompt 的带编号领域指南，位于 `customCompressionInstructions` 之前。 |
+| `toolResultStubThreshold`       | `number`                                    | —      | 摘要前把长于该字符数的 tool result 内容替换为一行元数据 stub（节省摘要模型 token）。 |
+| `minShrinkRatio`                | `number`                                    | `0.5`  | 质量闸门：摘要必须让被压缩片段至少缩小该比例（仅对 ≥ 2000 字符的片段生效）；否则本次压缩失败，历史保持不变。`0` 关闭。 |
+| `validateCompression`           | `(summary, { compressed, kept }) => boolean \| Promise<boolean>` | — | 摘要后闸门。返回 `false`（或抛出）即拒绝该摘要 —— 历史不变，熔断计数 +1。 |
+| `archive`                       | `CompressionArchiveConfig \| 'vfs'`         | —      | 可逆压缩：存储压缩前的完整片段，并在摘要中引用其 URI。见[压缩管道 v2](#压缩管道-v2v4)。 |
+| `compressionMode`               | `'rewrite' \| 'incremental-anchored'`       | `'rewrite'`| anchored 模式维护一份持久的 anchor 文档，每次压缩只把新驱逐的片段合并进去。 |
+| `compressionScheduling`         | `'blocking' \| 'background'`                | `'blocking'` | background 模式把摘要放到轮次之外运行；超预算的 compile 先原样返回历史，结果在仍然有效时再换入。 |
 | `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | LLM 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
 | `logger`                        | `ChefLogger`                                | —      | 降级警告的日志接收器（存储/压缩），默认使用 `console`。 |
 
-**压缩输出契约。** Janitor 默认 prompt 要求压缩模型输出两阶段响应：先在 `<analysis></analysis>` 里写草稿推理（会被剥除），再在 `<summary></summary>` 里输出 5 个领域无关的结构化章节（Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve）。Janitor 会自动用 `Prompts.formatCompactSummary` 清洗压缩模型返回值。详见 [core 包 README](./packages/core)。
+**压缩输出契约。** Janitor 默认 prompt 要求压缩模型输出两阶段响应：先在 `<analysis>` 里写草稿推理（会被剥除），再输出结构化的 `<summary>` 块，包含 5 个领域无关的章节（Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve）。原始输出在注入前会经过 `Prompts.formatCompactSummary` 清洗。完整契约与 `customCompressionInstructions` 用法见 [core 包 README](./packages/core)。
 
-**熔断器。** 如果 `compressionModel` 连续 3 次失败，`compress()` 将直接返回原始历史（不再调用压缩模型），直到下一次成功或显式调用 `janitor.reset()` / `chef.clearHistory()`。失败计数由 `chef.snapshot()` / `chef.restore()` 保存。
+**失败语义（4.0 起变更）。** 压缩模型失败 —— 抛出异常、摘要未通过 `minShrinkRatio`、或被 `validateCompression` 拒绝 —— 会让历史**保持不变**（4.0 之前会截断历史并留下占位符），并使熔断计数 +1。如果连续 3 次 `compress()` 失败，`compress()` 将变为 no-op，直到下一次成功压缩或显式调用 `janitor.reset()` / `chef.clearHistory()`。失败计数由 `chef.snapshot()` / `chef.restore()` 保存。
 
-**独立摘要。** `summarizeHistory(messages, compress, opts?): Promise<string>` 是该路径背后与具体 provider 无关的原语 —— 可直接调用它在你自己的存储中压缩一段切片（持久化压缩）。空切片返回 `''`；无状态，且 `compress` 抛出时**直接抛出**；`compress` 回调**必须扁平化** `tool` 角色。完整契约见 [core 包 README](./packages/core)。ai-sdk 用户应优先使用 [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware) 的 `summarizeMessages`，它已为你接好扁平化适配器。
+**独立摘要。** `summarizeHistory(messages, compress, opts?): Promise<string>` 是该路径背后与 provider 无关的原语 —— 可直接调用它压缩你自己存储中的一段切片。空切片返回 `''`；无状态，且 `compress` 抛出时**直接抛出**；`compress` 回调**必须扁平化** `tool` 角色。可选项包括 `customCompressionInstructions`、`toolResultStubThreshold`、`compressionGuidelines` 和 `baseInstruction`。完整契约见 [core 包 README](./packages/core)，更高层的辅助函数见下文[持久化压缩](#持久化压缩)。
+
+#### 压缩管道 v2（v4）
+
+v4 围绕一条规则重建了压缩路径：坏摘要永远不能替换好历史。
+
+- **腐烂前触发 —— `triggerRatio`（默认 `0.7`）**：压缩在 `contextWindow × 0.7` 处触发，而不是等到硬上限 —— 模型质量早在窗口占满之前就开始退化。`preserveRatio` 作用于这个有效预算。`triggerRatio: 1` 恢复 4.0 之前的行为。
+- **约束固定 —— `pinned: true`**：固定的消息原文穿过 `compress()`（按序重新插入到摘要之后），且永不被 `compact()` 清除。固定原子轮次中的任一消息即可保护整个轮次。用于策略与约束文本 —— 压缩丢掉策略文本会把违规率从 0% 拉到 30% 以上（arXiv:2606.22528）。
+- **缩减闸门 —— `minShrinkRatio`（默认 `0.5`）**：摘要若未能让被压缩片段缩小 ≥ 50%（按字符长度；仅对 ≥ 2000 字符的片段生效）即视为压缩失败 —— 历史不变，熔断计数 +1。防止压缩死循环。`0` 关闭。
+- **`validateCompression`**：摘要后闸门 `(summary, { compressed, kept }) => boolean | Promise<boolean>` —— 返回 `false` 或抛出即拒绝该结果（历史不变，熔断计数 +1）。
+- **可逆归档 —— `archive`**：被压缩片段经 `store(serialized, { messageCount }) => uri` 序列化存储，摘要中引用该 URI，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。`archive: 'vfs'` 存进 chef 的 VFS。尽力而为：存储失败只记一条警告并跳过引用。
+- **`compressionGuidelines`**：注入压缩 prompt 的带编号领域指南，位于 `customCompressionInstructions` 之前。
+- **增量 anchored 模式 —— `compressionMode: 'incremental-anchored'`**：维护一份持久的 anchor 文档；每次压缩只把新驱逐的片段合并进去，而不是重写整份摘要（Factory.ai 模式）。通过 `janitor.getAnchorDoc()` 读取；它是 `JanitorSnapshot` 的一部分，`reset()` 会清除。
+- **后台调度 —— `compressionScheduling: 'background'`**：第一次超预算的 `compile()` 原样返回历史并在后台启动摘要；之后的 `compress()` 仅在被摘要的片段仍是当前历史的前缀时才换入结果（过期结果被丢弃；`onCompress` 在换入时触发）。把压缩延迟移出主链路（arXiv:2605.08580）。后台状态不进快照。
+
+```typescript
+const chef = new ContextChef({
+  janitor: {
+    contextWindow: 200_000,
+    compressionModel: async (msgs) => callGpt4oMini(msgs),
+    triggerRatio: 0.7,       // default — compress "pre-rot"
+    minShrinkRatio: 0.5,     // default — reject summaries that barely shrink
+    archive: "vfs",          // reversible: full span stored, summary cites a context:// URI
+    compressionGuidelines: ["Preserve ticket IDs and SKUs verbatim."],
+  },
+});
+
+// Pin constraint text — survives compress() verbatim, never cleared by compact()
+history.push({
+  role: "user",
+  content: "NEVER touch prod. Deploy only from CI.",
+  pinned: true,
+});
+```
+
+**召回工具配方。** 启用 `archive`（或 VFS 卸载）后，注册内置的 `recall_context` 工具，让模型按需取回归档内容：
+
+```typescript
+import { getRecallToolDefinition } from "@context-chef/core";
+
+chef.registerTools([getRecallToolDefinition()]);
+
+// In your agent loop:
+if (call.function.name === "recall_context") {
+  const { uri } = JSON.parse(call.function.arguments);
+  const content = await chef.resolveRecall(uri); // full stored content, or null
+  history.push({
+    role: "tool",
+    tool_call_id: call.id,
+    content: content ?? "[not found]",
+  });
+}
+```
+
+#### 持久化压缩
+
+在途压缩（上文）重写每次外发的 payload，但不会碰你的消息存储 —— 对一段持续超预算的对话，摘要在每次调用时都要重新计算。当消息存储归你管时，把它压缩一次并持久化结果。三个 helper 都在原子轮次边界处切分（assistant 消息和它的 tool result 永不分离），摘要旧切片，返回 `[...system, <summary>, ...recent turns]`；no-op 时原样返回输入引用，因此可用 `result === input` 跳过持久化。
+
+Core —— 与 provider 无关，作用于 IR `Message[]`：
+
+```typescript
+import { compactHistory, planCompaction } from "@context-chef/core";
+
+// myCompressFn must role-flatten tool messages (same contract as summarizeHistory)
+history = await compactHistory(history, myCompressFn, { keepRecentTurns: 4 });
+// planCompaction(history, { keepRecentTurns }) is the synchronous split behind it
+```
+
+Vercel AI SDK —— `ModelMessage` 层，已为你接好角色扁平化：
+
+```typescript
+import { compactModelMessages } from "@context-chef/ai-sdk-middleware";
+
+messages = await compactModelMessages(messages, openai("gpt-4o-mini"), {
+  keepRecentTurns: 4,
+});
+```
+
+TanStack AI —— 接受任意 TanStack text adapter：
+
+```typescript
+import { compactTanStackMessages } from "@context-chef/tanstack-ai";
+
+messages = await compactTanStackMessages(messages, openaiText("gpt-4o-mini"), {
+  keepRecentTurns: 4,
+});
+```
+
+`keepRecentTurns: 0` 即完整的 Claude Code 式压缩 —— 整个对话坍缩为 `[...system, <summary>]`。不要在同一段对话上同时使用持久化压缩和在途压缩（双重压缩）。完整契约见 [core](./packages/core)、[ai-sdk-middleware](./packages/ai-sdk-middleware) 和 [tanstack-ai](./packages/tanstack-ai) 的 README。
 
 #### `chef.reportTokenUsage(tokenCount): this`
 
@@ -249,7 +413,7 @@ const chef = new ContextChef({
     contextWindow: 200000,
     tokenizer: (msgs) => countTokens(msgs),
     onBeforeCompress: (history, { currentTokens, limit }) => {
-      // 示例：压缩前将大型工具结果卸载到 VFS
+      // Example: offload large tool results to VFS before compression
       return history.map((msg) =>
         msg.role === "tool" && msg.content.length > 5000
           ? { ...msg, content: pointer.offload(msg.content).content }
@@ -265,32 +429,47 @@ const chef = new ContextChef({
 零 LLM 成本的内容清理。在 agent 循环中主动调用以保持上下文精简。
 
 ```typescript
-// 清除所有 tool result 和 thinking 块
-history = janitor.compact(history, { clear: ["tool-result", "thinking"] });
+// Clear all tool results and thinking blocks
+history = janitor.compact(history, { clear: ['tool-result', 'thinking'] });
 
-// 保留最近 5 个 tool result，清除其余（最少保留 1 个）
+// Keep the 5 most recent tool results, clear the rest (min: 1)
 history = janitor.compact(history, {
-  clear: [{ target: "tool-result", keepRecent: 5 }],
+  clear: [{ target: 'tool-result', keepRecent: 5 }],
 });
 
-// 组合：清除旧 tool result + 所有 thinking
+// Combine: clear old tool results + all thinking
 history = janitor.compact(history, {
-  clear: [{ target: "tool-result", keepRecent: 5 }, "thinking"],
+  clear: [{ target: 'tool-result', keepRecent: 5 }, 'thinking'],
+});
+
+// v4: strip <think>...</think> tags from assistant text (open-weight reasoning models)
+history = janitor.compact(history, { clear: ['reasoning-tags'] });
+
+// v4: per-tool granularity — clear only these tools, never those
+history = janitor.compact(history, {
+  clear: [{
+    target: 'tool-result',
+    keepRecent: 5,          // counts within the clearable set
+    toolFilter: ['run_bash'],   // only clear these tools
+    exemptTools: ['read_file'], // never clear these (wins over toolFilter)
+  }],
 });
 ```
 
+固定消息（`pinned: true`）永不被 `compact()` 清除，Gemini thought signature 对 `compact(['thinking'])` 免疫。
+
 #### `ensureValidHistory(history)`
 
-独立工具函数,修复消息历史以满足 LLM API 约束(删除孤儿 tool result、为缺失的 tool result 注入占位、确保第一条非 system 消息是 user)。适用于从数据库加载历史或手动修改后的场景。
+独立工具函数，修复消息历史以满足 LLM API 约束（删除孤儿 tool result、为缺失的 tool result 注入占位、确保第一条非 system 消息是 user）。适用于从数据库加载历史或手动修改后的场景。
 
 ```typescript
-import { ensureValidHistory } from "@context-chef/core";
+import { ensureValidHistory } from '@context-chef/core';
 
 const safeHistory = ensureValidHistory(rawHistory);
 chef.setHistory(safeHistory);
 ```
 
-> **边界契约**:所有 input adapter(`fromOpenAI` / `fromAnthropic` / `fromGemini`,以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`)都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize:IR 是内部协议,直接构造或 mutate 出来的 history 视为已满足契约。如果不确定,显式用 `ensureValidHistory(...)` 包一下。
+> **边界契约**：所有 input adapter（`fromOpenAI` / `fromAnthropic` / `fromGemini`，以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`）都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize：IR 是内部协议，直接构造或 mutate 出来的 history 视为已满足契约。如果不确定，显式用 `ensureValidHistory(...)` 包一下。
 
 #### `chef.clearHistory(): this`
 
@@ -298,26 +477,51 @@ chef.setHistory(safeHistory);
 
 ---
 
+### 服务端上下文管理（v4）
+
+Provider 现在可以在服务端执行 compaction（Anthropic `compact_20260112`、OpenAI `/responses/compact`）—— 少一次模型调用，还有精确的 token 计数。`ChefConfig.contextManagement` 让你把 LLM 压缩交给 provider；服务端不做的一切仍留在客户端：工具裁剪、skills、记忆、VFS 卸载、动态状态。
+
+```typescript
+const chef = new ContextChef({
+  contextManagement: { strategy: "server" }, // 'client' (default) keeps Janitor LLM compression
+});
+
+const payload = await chef.compile({ target: "anthropic" });
+// payload.context_management === { edits: [{ type: "compact_20260112" }] }  (default when `server` omitted)
+// payload.betas === ["compact-2026-01-12"]                                  (auto-derived per edit type)
+```
+
+- `strategy: 'server'` 完全跳过客户端的 LLM 压缩。如果同时配置了 `compressionModel`，构造时会发出警告 —— 二选一。
+- `server` 是按 provider 形状原样透传的 edits 配置，例如 `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` 或 `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`。`payload.betas` 自动推导：compaction 类 edit 对应 `'compact-2026-01-12'`，clear-tool-uses / clear-thinking 类 edit 对应 `'context-management-2025-06-27'`。
+- **compaction 块往返**：`fromAnthropic` 把 API 的 `{ type: 'compaction', content }` 块映射为标记 `pinned: true` 的透传消息，Anthropic adapter 在下次编译时把该块原文重新放在最前面 —— 服务端产出的摘要原样穿过客户端管道。
+
+这是混合定位，不是二选一：LLM 压缩可以交给 provider，同时 ContextChef 继续做服务端不做的部分 —— 裁剪、skills、记忆、VFS 和动态状态。AI SDK 用户有配套防护：middleware 检测到某次调用带 `providerOptions.anthropic.contextManagement` 时，会为该次调用跳过自己的压缩（见 [ai-sdk-middleware README](./packages/ai-sdk-middleware/README.md#anthropic-server-side-context-management)）。
+
+---
+
 ### 大文本卸载 (Offloader / VFS)
 
 ```typescript
-// 超过阈值时截断并卸载，默认保留最后 20 行
+// Offload if content exceeds threshold; preserves last 2000 chars by default
 const safeLog = chef.offload(rawTerminalOutput);
 history.push({ role: "tool", content: safeLog, tool_call_id: "call_123" });
-// safeLog: 内容较小时原样返回，否则截断并附带 context://vfs/ URI
+// safeLog: original content if small, or truncated with context://vfs/ URI
 
-// 自定义保留的尾部行数（0 = 不保留尾部，适合静态文档）
-const safeDoc = chef.offload(largeFileContent, { tailLines: 0 });
+// Preserve head (first 500 chars) + tail (last 1000 chars), snapped to line boundaries
+const safeOutput = chef.offload(content, { headChars: 500, tailChars: 1000 });
 
-// 单次调用覆盖阈值
-const safeOutput = chef.offload(content, { threshold: 2000, tailLines: 50 });
+// No preview content — just truncation notice + URI
+const safeDoc = chef.offload(largeFileContent, { headChars: 0, tailChars: 0 });
+
+// Override threshold per call
+const safeOutput2 = chef.offload(content, { threshold: 2000, tailChars: 500 });
 ```
 
 注册一个工具让 LLM 按需读取完整内容：
 
 ```typescript
-// 在你的工具处理函数中:
-import { Offloader } from "context-chef";
+// In your tool handler:
+import { Offloader } from "@context-chef/core";
 const offloader = new Offloader({ storageDir: ".context_vfs" });
 const fullContent = offloader.resolve(uri);
 ```
@@ -330,36 +534,34 @@ const fullContent = offloader.resolve(uri);
 const chef = new ContextChef({
   vfs: {
     threshold: 5000,
-    maxAge: 24 * 60 * 60 * 1000, // 距 createdAt 的毫秒数
-    maxFiles: 200, // 按 accessedAt LRU 淘汰
-    maxBytes: 50 * 1024 * 1024, // 真实 UTF-8 字节数（Buffer.byteLength）
+    maxAge: 24 * 60 * 60 * 1000, // ms since createdAt
+    maxFiles: 200,                // LRU evict by accessedAt
+    maxBytes: 50 * 1024 * 1024,   // true UTF-8 size (Buffer.byteLength)
     onVFSEvicted: (entry, reason) => {
-      // 'maxAge' | 'maxFiles' | 'maxBytes' —— 钩子内异常会被记录后吞掉
+      // 'maxAge' | 'maxFiles' | 'maxBytes' — errors logged and swallowed
       logger.debug("evicted", entry.uri, reason);
     },
   },
 });
 
-// 手动清理 —— 在 agent loop、会话结束或 compile:done 事件中触发。
+// Manual sweep — call from your agent loop, on session end, or wire to compile:done.
 const result = await chef.getOffloader().cleanupAsync();
 // { evicted, evictedBytes, evictedByAge, evictedByCount, evictedByBytes, failed }
 
-// 单次调用覆盖配置（传 Infinity 关闭某一项上限）。
-await chef.getOffloader().cleanupAsync({ maxFiles: 0 }); // 在按龄期清理后再清空全部
+// Override caps for one call (Infinity disables a single cap).
+await chef.getOffloader().cleanupAsync({ maxFiles: 0 }); // evict all over-age + all
 ```
 
 进程重启后，`reconcile()` 会扫描 adapter，把内存索引外的孤儿文件接管回来，让后续 `cleanup()` 可以看到它们：
 
 ```typescript
-const adopted = await chef
-  .getOffloader()
-  .reconcileAsync({ measureBytes: true });
-// createdAt 从旧式 vfs_<ts>_<hash>.txt 文件名解析；内容寻址文件名以领养时刻为准；measureBytes 时会读文件以填充字节数。
+const adopted = await chef.getOffloader().reconcileAsync({ measureBytes: true });
+// createdAt parsed from legacy vfs_<ts>_<hash>.txt names; content-addressed names date from adoption. bytes measured if requested.
 ```
 
 清理是**机制而非策略** —— `compile()` 不会自动触发它。如果你想按轮强制执行，绑到 `compile:done` 事件钩子；否则在 agent loop 或会话结束时主动调用。自定义的 `VFSStorageAdapter` 必须实现可选的 `list()` / `delete()` 才能开启清理；任一缺失时 `cleanup()` 会抛 `VFSCleanupNotSupportedError`（内置 `FileSystemAdapter` 两者都已实现）。
 
-> **生产实践** —— 见 [`docs/vfs-lifecycle-recipes.zh-CN.md`](./docs/vfs-lifecycle-recipes.zh-CN.md) 获取 5 个可运行的 recipe：长跑 server 定时清理、Serverless 冷启动 `reconcile()`、AI SDK middleware 接法、自定义 storage adapter（Redis 示例）、驱逐策略选择。
+> **生产实践** —— 见 [`docs/vfs-lifecycle-recipes.zh-CN.md`](./docs/vfs-lifecycle-recipes.zh-CN.md) 获取可运行的 recipe：长跑 server 定时清理、Serverless 冷启动 `reconcile()`、AI SDK middleware 接法、自定义 storage adapter（Redis 示例）、驱逐策略选择。
 
 ---
 
@@ -371,12 +573,13 @@ const adopted = await chef
 chef.registerTools([
   { name: "read_file", description: "Read a file", tags: ["file", "read"] },
   { name: "run_bash", description: "Run a command", tags: ["shell"] },
-  { name: "get_time", description: "Get timestamp" /* 无 tags = 始终保留 */ },
+  {
+    name: "get_time",
+    description: "Get timestamp" /* no tags = always kept */,
+  },
 ]);
 
-const { tools, removed } = chef
-  .getPruner()
-  .pruneByTask("Read the auth.ts file");
+const { tools, removed } = chef.getPruner().pruneByTask("Read the auth.ts file");
 // tools: [read_file, get_time]
 ```
 
@@ -387,17 +590,17 @@ const { tools, removed } = chef
 在 dispatch 时拦下指定工具，**不破坏 KV cache**。适合权限控制、环境隔离、沙箱、限流、feature flag。编译出的 `tools` 数组保持不变，强制由 agent loop 里的 `checkToolCall` 完成。
 
 ```typescript
-// 设策略（启动时、用户角色变化、生产环境等场景下设一次）
+// Set policy (rare event — startup, on user role change, prod env, etc.)
 chef.getPruner().setBlockedTools(["delete_file", "tail_logs"]);
 
-// agent loop 里每次 dispatch 前过一道：
+// In your agent loop, gate every tool call before dispatch:
 for (const call of response.tool_calls) {
   const check = chef.checkToolCall({ name: call.function.name });
   if (!check.allowed) {
     history.push({
       role: "tool",
       tool_call_id: call.id,
-      content: check.reason, // 例如 'Tool "delete_file" is currently blocked.'
+      content: check.reason, // e.g. 'Tool "delete_file" is currently blocked.'
     });
     continue;
   }
@@ -414,7 +617,7 @@ for (const call of response.tool_calls) {
 **Layer 2 — Lazy Loading**：长尾工具注册为轻量 XML 目录。LLM 通过 `load_toolkit` 按需加载完整 schema。
 
 ```typescript
-// Layer 1: 稳定的 Namespace 工具
+// Layer 1: Stable namespace tools
 chef.registerNamespaces([
   {
     name: "file_ops",
@@ -445,7 +648,7 @@ chef.registerNamespaces([
   },
 ]);
 
-// Layer 2: 按需加载的工具包
+// Layer 2: On-demand toolkits
 chef.registerToolkits([
   {
     name: "Weather",
@@ -463,9 +666,9 @@ chef.registerToolkits([
   },
 ]);
 
-// 编译 — tools: [file_ops, terminal, load_toolkit]（始终稳定）
+// Compile — tools: [file_ops, terminal, load_toolkit] (always stable)
 const { tools, directoryXml } = chef.getPruner().compile();
-// directoryXml: 注入系统提示词，让 LLM 知道可用的工具包
+// directoryXml: inject into system prompt so LLM knows available toolkits
 ```
 
 **Agent Loop 集成：**
@@ -473,17 +676,23 @@ const { tools, directoryXml } = chef.getPruner().compile();
 ```typescript
 for (const toolCall of response.tool_calls) {
   if (chef.getPruner().isNamespaceCall(toolCall)) {
-    // 路由 Namespace 调用到真实工具
+    // Route namespace call to real tool
     const { toolName, args } = chef.getPruner().resolveNamespace(toolCall);
     const result = await executeTool(toolName, args);
   } else if (chef.getPruner().isToolkitLoader(toolCall)) {
-    // LLM 请求加载工具包 — 展开并重新调用
+    // LLM requested a toolkit — expand and re-call
     const parsed = JSON.parse(toolCall.function.arguments);
     const newTools = chef.getPruner().extractToolkit(parsed.toolkit_name);
-    // 合并 newTools 到下一次 LLM 请求
+    // Merge newTools into the next LLM request
   }
 }
 ```
+
+> **一层就够了。** namespace → tools 的两层深度是工具选择上经验最优的层级 —— 更深的嵌套会损害准确率，却省不下多少上下文（arXiv:2607.17598）。不要在 namespace 里再嵌套 namespace。
+
+#### 延迟工具加载 —— `deferLoading`（v4）
+
+在 `ToolDefinition` 上设置 `deferLoading: true`，即可将其标注给 Anthropic 服务端的 Tool Search：该标志在 Anthropic target 上原样透传到 `payload.tools`，让 API 按需展示工具的完整 schema，而不是预先全部加载。它只是注解 —— 其他 target 会忽略它。
 
 ---
 
@@ -492,24 +701,22 @@ for (const toolCall of response.tool_calls) {
 跨会话持久化的键值记忆。记忆通过 tool call（`create_memory` / `modify_memory`）修改，`compile()` 时自动注入到 payload 中。
 
 ```typescript
-import { InMemoryStore, VFSMemoryStore } from "context-chef";
+import { InMemoryStore, VFSMemoryStore } from "@context-chef/core";
 
 const chef = new ContextChef({
   memory: {
-    store: new InMemoryStore(), // 临时存储（测试）
-    // store: new VFSMemoryStore(dir),   // 持久化存储（生产）
+    store: new InMemoryStore(), // ephemeral (testing)
+    // store: new VFSMemoryStore(dir),   // persistent (production)
   },
 });
 
-// 在 agent loop 中拦截 memory tool call：
+// In your agent loop, intercept memory tool calls:
 for (const toolCall of response.tool_calls) {
   if (toolCall.function.name === "create_memory") {
     const { key, value, description } = JSON.parse(toolCall.function.arguments);
     await chef.getMemory().createMemory(key, value, description);
   } else if (toolCall.function.name === "modify_memory") {
-    const { action, key, value, description } = JSON.parse(
-      toolCall.function.arguments,
-    );
+    const { action, key, value, description } = JSON.parse(toolCall.function.arguments);
     if (action === "update") {
       await chef.getMemory().updateMemory(key, value, description);
     } else {
@@ -518,15 +725,15 @@ for (const toolCall of response.tool_calls) {
   }
 }
 
-// 直接读写（开发者使用，跳过验证钩子）
+// Direct read/write (developer use, bypasses validation hooks)
 await chef.getMemory().set("persona", "You are a senior engineer", {
-  description: "Agent 的角色和人设",
+  description: "The agent's persona and role",
 });
 const value = await chef.getMemory().get("persona");
 
-// compile() 时：
-// - Memory tools（create_memory、modify_memory）自动注入到 payload.tools
-// - 已有记忆作为 <memory> XML 注入到 systemPrompt 和 history 之间
+// On compile():
+// - Memory tools (create_memory, modify_memory) are auto-injected into payload.tools
+// - Existing memories are injected as <memory> XML between systemPrompt and history
 ```
 
 #### Memory 位置 —— `memoryPlacement`
@@ -565,13 +772,13 @@ const planning: Skill = {
   description: "Plan changes before editing",
   whenToUse: "When the task is non-trivial and requires multiple steps",
   instructions: "Read code, list affected files, write plan to scratchpad.",
-  allowedTools: ["read_file", "grep"], // 仅注解 —— chef 不强制
+  allowedTools: ["read_file", "grep"], // annotation only — chef does NOT enforce
 };
 
 const chef = new ContextChef();
 chef.registerSkills([planning]);
 chef.activateSkill("planning");
-// activateSkill 也接受 Skill 对象直接激活，或传 null 取消激活。
+// activateSkill also accepts a Skill object directly, or null to deactivate.
 
 const { messages, meta } = await chef.compile({ target: "openai" });
 // messages = [...systemPrompt, { role: 'system', content: planning.instructions }, ...rest]
@@ -589,26 +796,27 @@ import {
   formatSkillListing,
 } from "@context-chef/core";
 
-// 加载单个 skill 文件
+// Load a single skill file
 const skill = await loadSkill("./skills/db-debug/SKILL.md");
 
-// 或扫描目录：每个 subdir/SKILL.md 变成一个 Skill（容忍模式 —— 坏的进 errors 数组）
+// Or scan a directory: each subdir/SKILL.md becomes a Skill (tolerant — bad files surface in `errors`)
 const { skills, errors } = await loadSkillsDir("./skills");
 chef.registerSkills(skills);
 
-// 或一次性合并多个来源（如 builtin + user + project）——同名时后面的目录胜出，
-// 目录按 realpath 去重，可选 `namespace` 回调给每个来源加前缀：
+// Or merge several sources at once (e.g. builtin + user + project) — later dirs
+// win on name collisions, dirs are realpath-deduped, and an optional `namespace`
+// callback can prefix names per source:
 const merged = await loadSkillsDirs([builtinDir, userDir, projectDir], {
   precedence: "last-wins",
 });
 
-// 渲染成 system prompt 友好的 listing（用于 LLM 自主调 `load_skill` tool 的场景）
+// Render a system-prompt-friendly listing (useful for LLM-driven `load_skill` tool)
 const listing = formatSkillListing(skills, { format: "plain" });
 ```
 
 `SKILL.md` 解析是容忍的：块标量（`>` 折叠 / `|` 字面）、`- item` 列表、kebab key（`allowed-tools`、`when-to-use`）都能加载；chef 不认识的 key 原样保留在 `skill.metadata` 上交给 host 读取——chef 从不解释，仅作注解（与 `allowedTools` 一致）。已知字段若写成畸形嵌套结构会直接抛错，而不是静默失效（打错的 `allowed-tools` 会暴露，而非悄悄关掉限制）。
 
-listing 通常作为 `load_skill` tool 的 description,让 LLM 自己挑 skill:
+listing 通常作为 `load_skill` tool 的 description，让 LLM 自己挑 skill：
 
 ```typescript
 const loadSkillTool = {
@@ -623,7 +831,7 @@ const loadSkillTool = {
   },
 };
 
-// dispatch loop 里:
+// In your dispatch loop:
 if (call.name === "load_skill") {
   chef.activateSkill(call.args.skill_name);
   /* push tool result, continue loop */
@@ -637,7 +845,7 @@ if (call.name === "load_skill") {
 ```typescript
 const triage = await loadSkill("./skills/triage/SKILL.md");
 
-// 激活前先填 $ARGUMENTS / $0.. / ${SKILL_DIR}:
+// Fill $ARGUMENTS / $0.. / ${SKILL_DIR} before activating:
 chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
 ```
 
@@ -654,9 +862,9 @@ chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
 ```typescript
 const snap = chef.snapshot("before risky tool call");
 
-// ... agent 执行工具，出了问题 ...
+// ... agent executes tool, something goes wrong ...
 
-chef.restore(snap); // 回滚所有状态：历史、动态状态、janitor 状态、记忆
+chef.restore(snap); // rolls back everything: history, dynamic state, janitor state, memory
 ```
 
 ---
@@ -666,33 +874,39 @@ chef.restore(snap); // 回滚所有状态：历史、动态状态、janitor 状�
 统一的事件系统，一个入口观测所有内部模块。通过 `chef.on()` 订阅，`chef.off()` 取消订阅。
 
 ```typescript
-// 历史压缩时记录日志
-chef.on("compress", ({ summary, truncatedCount }) => {
-  console.log(`压缩了 ${truncatedCount} 条消息`);
+// Log when history gets compressed
+chef.on('compress', ({ summary, truncatedCount }) => {
+  console.log(`Compressed ${truncatedCount} messages`);
 });
 
-// 跟踪编译指标
-chef.on("compile:done", ({ payload }) => {
-  metrics.track("compile", { messageCount: payload.messages.length });
+// Track compile metrics
+chef.on('compile:done', ({ payload }) => {
+  metrics.track('compile', { messageCount: payload.messages.length });
 });
 
-// 监控记忆变化
-chef.on("memory:changed", ({ type, key, value }) => {
+// Monitor memory changes
+chef.on('memory:changed', ({ type, key, value }) => {
   console.log(`Memory ${type}: ${key}`);
 });
 ```
 
 #### 可用事件
 
-| 事件             | Payload                          | 说明                                      |
-| ---------------- | -------------------------------- | ----------------------------------------- |
-| `compile:start`  | `{ systemPrompt, history }`      | `compile()` 开始时触发                    |
-| `compile:done`   | `{ payload }`                    | `compile()` 生成最终 payload 后触发       |
-| `compress`       | `{ summary, truncatedCount }`    | Janitor 压缩历史后触发                    |
+| 事件 | Payload | 说明 |
+|---|---|---|
+| `compile:start` | `{ systemPrompt, history }` | `compile()` 开始时触发 |
+| `compile:done` | `{ payload }` | `compile()` 生成最终 payload 后触发 |
+| `compress:start` | `{ historyLength, currentTokens, limit }` | 预算超标 —— 压缩即将运行时触发（摘要之前） |
+| `compress:end` | `{ compressed }` | 压缩阶段结束。`compressed: false` = 预算未超或结果被拒绝 |
+| `compress` | `{ summary, truncatedCount, details }` | Janitor 压缩历史后触发 |
+| `offload:created` | `{ uri }` | 内容被卸载到 VFS（经 `chef.offload` / `offloadAsync` 或压缩归档） |
+| `pruner:tool-blocked` | `{ name }` | `checkToolCall()` 依据 Pruner blocklist 拒绝了一次工具调用 |
 | `memory:changed` | `{ type, key, value, oldValue }` | 任何记忆变更（set、delete、expire）后触发 |
-| `memory:expired` | `MemoryEntry`                    | `compile()` 期间记忆条目过期时触发        |
+| `memory:expired` | `MemoryEntry` | `compile()` 期间记忆条目过期时触发 |
 
 事件是**纯观察型**的，不影响控制流。拦截型钩子（`onBeforeCompress`、`onMemoryUpdate`、`onBeforeCompile`、`transformContext`）仍然通过 config 回调配置。
+
+**Handler 错误隔离（v4）。** 某个事件 handler 抛出或 reject 时只会被记录，其余 handler 照常执行 —— 4.0 之前，一个抛出的 handler 会让整个 `compile()` 失败。
 
 事件与现有 config 回调共存：如果在 `JanitorConfig` 中配置了 `onCompress`，它会先触发，然后再 emit `compress` 事件。
 
@@ -702,19 +916,19 @@ chef.on("memory:changed", ({ type, key, value }) => {
 
 ```typescript
 const controller = new AbortController();
-setTimeout(() => controller.abort(), 5000); // 5 秒硬超时
+setTimeout(() => controller.abort(), 5000); // hard 5s budget
 
-chef.on("compile:done", async ({ payload }, signal) => {
-  // signal === controller.signal，转给慢异步操作
+chef.on('compile:done', async ({ payload }, signal) => {
+  // signal === controller.signal — forward it to slow async work
   await db.write(payload, { signal });
   await metrics.report(payload, { signal });
 });
 
 try {
-  await chef.compile({ target: "openai", signal: controller.signal });
+  await chef.compile({ target: 'openai', signal: controller.signal });
 } catch (err) {
-  if (err instanceof DOMException && err.name === "AbortError") {
-    // compile 在 Janitor / onBeforeCompile / transformContext 边界被取消
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    // compile was cancelled mid-flight (Janitor / onBeforeCompile / transformContext boundary)
   }
   throw err;
 }
@@ -722,7 +936,7 @@ try {
 
 两个作用：
 
-1. **透传给 handler** —— `chef.on(event, (payload, signal?) => ...)` 第二个参数即 signal。handler 可把它转给 `fetch`、DB 客户端、Anthropic SDK 等支持协作取消的 API。
+1. **透传给 handler** —— `chef.on(event, (payload, signal?) => ...)` 第二个参数即 signal。handler 可把它转给 `fetch`、DB 客户端或任何支持协作取消的 API。
 2. **compile() 阶段边界检查** —— Janitor 压缩后、`onBeforeCompile` 后、`transformContext` 后均会检查；命中即通过 `signal.throwIfAborted()` 抛出。
 
 `compile:start` 在第一次 abort 检查之前触发，所以观察者可能收到一个最终抛 AbortError 而没有 `compile:done` 的 compile 调用。从 `memory().set()` / `delete()` 这类**外部**调用触发的 memory 事件，signal 为 `undefined`。
@@ -732,7 +946,7 @@ try {
 **推荐模式：每个并发调用方一个 `ContextChef` 实例。** chef 在 `await` 点之间持有可变状态（in-flight signal、memory 轮次、active skill、history 引用），每请求独立实例化即可让每次调用拥有自己的状态——没有共享可变状态就没有 race。
 
 ```typescript
-// Express / Fastify / Hono —— 每请求一个 chef
+// Express / Fastify / Hono — one chef per request
 app.post('/agent', async (req, res) => {
   const chef = new ContextChef({ memory: { store: sharedMemoryStore } });
   chef.setHistory(req.body.history);
@@ -756,8 +970,8 @@ const chef = new ContextChef({
   onBeforeCompile: async (ctx) => {
     const snippets = await vectorDB.search(ctx.dynamicStateXml);
     return snippets.map((s) => s.content).join("\n");
-    // 作为 <implicit_context>...</implicit_context> 注入到 dynamic state 同一位置
-    // 返回 null 跳过注入
+    // Injected as <implicit_context>...</implicit_context> alongside dynamic state
+    // Return null to skip injection
   },
 });
 ```
@@ -766,20 +980,20 @@ const chef = new ContextChef({
 
 ### Input Adapters（Provider → IR）
 
-将 OpenAI / Anthropic / Gemini 原生消息转换为 ContextChef IR,自动分离 system 和 history。每个 adapter 都会在出口跑一次 `ensureValidHistory` 做边界 sanitize —— 删除孤儿 tool result、为缺失的 tool result 注入 `[No tool result available]` 占位、强制首条非 system 消息为 user。手动 `chef.setHistory(...)` 进来的 IR **不**做 sanitize;trust IR 或者自己显式调用 `ensureValidHistory(messages)`。
+将 OpenAI / Anthropic / Gemini 原生消息转换为 ContextChef IR，自动分离 system 和 history。每个 adapter 都会在出口跑一次 `ensureValidHistory` 做边界 sanitize —— 删除孤儿 tool result、为缺失的 tool result 注入 `[No tool result available]` 占位、强制首条非 system 消息为 user。手动 `chef.setHistory(...)` 进来的 IR **不**做 sanitize：trust IR，或者自己显式调用 `ensureValidHistory(messages)`。
 
 ```typescript
-import { fromOpenAI, fromAnthropic, fromGemini } from "context-chef";
+import { fromOpenAI, fromAnthropic, fromGemini } from "@context-chef/core";
 
 // OpenAI
 const { system, history } = fromOpenAI(openaiMessages);
 chef.setSystemPrompt(system).setHistory(history);
 
-// Anthropic（system 是独立的 top-level 参数）
+// Anthropic (system is a separate top-level parameter)
 const { system, history } = fromAnthropic(anthropicMessages, anthropicSystem);
 chef.setSystemPrompt(system).setHistory(history);
 
-// Gemini（systemInstruction 是独立的 top-level 参数）
+// Gemini (systemInstruction is a separate top-level parameter)
 const { system, history } = fromGemini(geminiContents, systemInstruction);
 chef.setSystemPrompt(system).setHistory(history);
 ```
@@ -801,35 +1015,56 @@ chef.setSystemPrompt(system).setHistory(history);
 | 特性                      | OpenAI                             | Anthropic                              | Gemini                               |
 | ------------------------- | ---------------------------------- | -------------------------------------- | ------------------------------------ |
 | 格式                      | Chat Completions                   | Messages API                           | generateContent                      |
-| 缓存断点                  | 忽略                               | `cache_control: { type: 'ephemeral' }` | 忽略（使用独立的 CachedContent API） |
+| 缓存断点                  | 移除                               | `cache_control: { type: 'ephemeral' }` | 移除（使用独立的 CachedContent API） |
 | Prefill（尾部 assistant） | 降级为 `[System Note]`             | 原生支持                               | 降级为 `[System Note]`               |
-| `thinking` 字段           | 忽略                               | 映射为 `ThinkingBlockParam`            | 忽略                                 |
+| `thinking` 字段           | 移除                               | 映射为 `ThinkingBlockParam`            | 移除                                 |
 | 工具调用                  | `tool_calls` 数组                  | `tool_use` blocks                      | `functionCall` parts                 |
 | `attachments`             | `image_url` / `file` content parts | `image` / `document` blocks            | `inlineData` / `fileData` parts      |
 
 适配器由 `compile({ target })` 自动选择。也可以独立使用：
 
 ```typescript
-import { getAdapter } from "context-chef";
+import { getAdapter } from "@context-chef/core";
 const adapter = getAdapter("gemini");
 const payload = adapter.compile(messages);
 ```
 
-#### 自定义适配器 — `adapterRegistry` 与 `defaultTarget`
+#### `openai-responses` target（v4）
 
-三个内置适配器（`'openai' | 'anthropic' | 'gemini'`）会自动注册。如果想接入第三方协议（Cohere、Mistral、自家私有协议）,实现 `ITargetAdapter` 后注册一次即可：
+面向 OpenAI Responses API 的第四个内置 target。`compile({ target: "openai-responses" })` 产出 `OpenAIResponsesPayload { instructions?, input, tools?, meta? }`，`fromOpenAIResponses(items, instructions?)` 是配套的 input adapter：
 
 ```typescript
-import { adapterRegistry, ITargetAdapter } from "context-chef";
+import { fromOpenAIResponses } from "@context-chef/core";
+
+const payload = await chef.compile({ target: "openai-responses" });
+const { system, history } = fromOpenAIResponses(response.output, instructions);
+```
+
+往返转换处理 `message` / `function_call` / `function_call_output` 条目（按 `call_id` 关联，乱序安全），逐字节保留 reasoning 条目的 `encrypted_content`，并把 `input_image` / `input_file` part 转为 IR attachments。
+
+#### Gemini thought signatures（v4）
+
+Gemini 3.x 会拒绝当前轮次里缺失 thought signature 的 function call（HTTP 400）。`fromGemini` 会捕获它们 —— `functionCall` part 存进 `ToolCall.thoughtSignature`，text part 走透传字段 —— `GeminiAdapter` 原样重新发出。它们对 `compact({ clear: ['thinking'] })` 免疫。
+
+#### `preserveThinkingAsText`（v4）
+
+`new OpenAIAdapter({ preserveThinkingAsText: true })` / `new GeminiAdapter({ preserveThinkingAsText: true })` 会把 Anthropic 风格的 `thinking` 转成 `<thinking>...</thinking>` 文本前缀而不是丢弃 —— 适合在会话中途把 Claude 对话迁到其他 provider。`redacted_thinking` 永不文本化（丢弃，并给出一次警告）。默认 `false`。
+
+#### 自定义适配器 —— `adapterRegistry` 与 `defaultTarget`
+
+三个内置适配器（`'openai' | 'anthropic' | 'gemini'`）会自动注册。如果想接入第三方协议（Cohere、Mistral、自家私有协议），实现 `ITargetAdapter` 后注册一次即可：
+
+```typescript
+import { adapterRegistry, ITargetAdapter } from "@context-chef/core";
 
 class CohereAdapter implements ITargetAdapter {
   compile(messages) {
-    /* 返回 Cohere 形状的 payload */
+    /* return Cohere-shaped payload */
   }
 }
 
 adapterRegistry.register("cohere", new CohereAdapter());
-await chef.compile({ target: "cohere" }); // 通过 registry 路由
+await chef.compile({ target: "cohere" }); // routed via the registry
 ```
 
 `compile({ target })` 接受三种形式：
@@ -855,11 +1090,11 @@ await chef.compile(); // → AnthropicPayload
 ```typescript
 adapterRegistry.register("cohere", new CohereAdapter(), "my-plugin");
 adapterRegistry.register("mistral", new MistralAdapter(), "my-plugin");
-// 后续 — 一行卸载整个插件
+// Later — unload the entire plugin in one call
 adapterRegistry.unregisterBySource("my-plugin");
 ```
 
-> **替换内置名**(如 `register('openai', myFork)`)会保留 strict overload 的 payload 返回类型 — `compile({ target: 'openai' })` 仍标注为 `Promise<OpenAIPayload>`,因此你的替换实现在运行时必须遵守该 shape。TypeScript 无法在替换层面强制这个约束。
+> **替换内置名**（如 `register('openai', myFork)`）会保留 strict overload 的 payload 返回类型 —— `compile({ target: 'openai' })` 仍标注为 `Promise<OpenAIPayload>`，因此你的替换实现在运行时必须遵守该 shape。TypeScript 无法在替换层面强制这个约束。
 
 ---
 
@@ -867,27 +1102,23 @@ adapterRegistry.unregisterBySource("my-plugin");
 
 ContextChef 提供了 [Claude Code Skills](https://docs.anthropic.com/en/docs/claude-code/skills)，帮助你交互式地将库集成到项目中。每个 Skill 会分析你现有的代码，生成定制化的集成代码。
 
-| Skill                     | 描述                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `context-chef-core`       | 集成 `@context-chef/core` — 完全控制编译流程，多供应商支持                      |
-| `context-chef-middleware` | 集成 `@context-chef/ai-sdk-middleware` — AI SDK 即插即用中间件，零代码改动      |
-| `context-chef-tanstack`   | 集成 `@context-chef/tanstack-ai` — TanStack AI ChatMiddleware，带压缩和状态注入 |
+| Skill                     | 描述                                                                       |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `context-chef-core`       | 集成 `@context-chef/core` — 完全控制编译流程，多 provider 支持             |
+| `context-chef-middleware` | 集成 `@context-chef/ai-sdk-middleware` — AI SDK 即插即用中间件，零代码改动 |
 
 ### 安装 Skill
 
 按需安装：
 
 ```bash
-# 核心库（直接使用 OpenAI / Anthropic / Gemini SDK）
+# Core library (OpenAI / Anthropic / Gemini direct SDK usage)
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-core
 
-# AI SDK 中间件（Vercel AI SDK v6+）
+# AI SDK middleware (Vercel AI SDK v7+)
 npx skills add MyPrototypeWhat/context-chef --skill context-chef-middleware
 
-# TanStack AI 中间件（TanStack AI v0.10+）
-npx skills add MyPrototypeWhat/context-chef --skill context-chef-tanstack
-
-# 全部安装
+# All
 npx skills add MyPrototypeWhat/context-chef
 ```
 
@@ -897,10 +1128,8 @@ npx skills add MyPrototypeWhat/context-chef
 
 ```
 /context-chef-core
-# 或
+# or
 /context-chef-middleware
-# 或
-/context-chef-tanstack
 ```
 
 Claude 会：

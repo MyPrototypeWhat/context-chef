@@ -15,6 +15,12 @@ import { ContextChef, flattenForCompression } from '@context-chef/core';
 import OpenAI from 'openai';
 import { z } from 'zod';
 
+// The OpenAI client requires a key at construction — exit gracefully without it.
+if (!process.env.OPENAI_API_KEY) {
+  console.log('Set OPENAI_API_KEY to run this example (see the Usage header).');
+  process.exit(0);
+}
+
 const openai = new OpenAI();
 
 const chef = new ContextChef({
