@@ -9,7 +9,7 @@
 [![CI](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml/badge.svg)](https://github.com/MyPrototypeWhat/context-chef/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="./ContextChef.gif" alt="ContextChef Demo" width="600" />
+  <img src="https://github.com/MyPrototypeWhat/context-chef/releases/download/media-assets/ContextChef.gif" alt="ContextChef Demo" width="600" />
 </p>
 
 Context compiler for TypeScript/JavaScript AI agents.
