@@ -10,6 +10,10 @@ export {
   type ITargetAdapter,
 } from './adapters/adapterFactory';
 export { AnthropicAdapter, fromAnthropic } from './adapters/anthropicAdapter';
+export {
+  auditAnthropicCachePlacement,
+  type CacheAuditIssue,
+} from './adapters/anthropicCacheAudit';
 export { fromGemini, GeminiAdapter, type GeminiAdapterOptions } from './adapters/geminiAdapter';
 export { fromOpenAI, OpenAIAdapter, type OpenAIAdapterOptions } from './adapters/openAIAdapter';
 export {
@@ -105,5 +109,6 @@ export {
   normalizeSessionKey,
   SessionPool,
 } from './utils/sessionPool';
+export { createTokenizerAdapter } from './utils/tokenizerAdapter';
 export { estimate, estimateObject } from './utils/tokenUtils';
 export { objectToXml } from './utils/xmlGenerator';

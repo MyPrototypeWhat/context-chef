@@ -6,6 +6,23 @@ export interface GuardrailOptions {
     outputTag: string;
   };
   prefill?: string;
+  /**
+   * Where the enforce-XML instruction is delivered:
+   *
+   * - `'system'` (default): a `role: 'system'` message at the sandwich tail.
+   *   NOTE — on the Anthropic target every system-role message is hoisted
+   *   into the top-level `system` parameter, so changing guardrail options
+   *   invalidates any prompt-cache breakpoints downstream of it.
+   * - `'last_user'`: injected into the last user message via the Assembler
+   *   tail (same channel as dynamic state). Cache-safe on every provider —
+   *   the tail segment is expected to change each turn anyway. The
+   *   `<EPHEMERAL_MESSAGE>` wording was originally designed for exactly this
+   *   user-stream delivery.
+   *
+   * `prefill` is unaffected: it is always a trailing assistant message
+   * (degraded by adapters without native prefill).
+   */
+  placement?: 'system' | 'last_user';
 }
 
 export class Guardrail {

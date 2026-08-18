@@ -1,5 +1,6 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { estimate } from '../../utils/tokenUtils';
 
 /**
  * A Skill is a portable bundle of `(name + description + instructions + ...)` that
@@ -41,6 +42,19 @@ export interface Skill {
 export interface SkillLoadResult {
   skills: Skill[];
   errors: Array<{ path: string; message: string }>;
+  /**
+   * Mechanical lint findings on successfully loaded skills. Warnings NEVER
+   * block loading — a skill with warnings still lands in `skills`. Rules:
+   *
+   * 1. `description` shorter than 20 chars — too thin for LLM routing.
+   * 2. `instructions` body over ~4000 estimated tokens — consider progressive
+   *    disclosure (move detail into reference files read on demand).
+   * 3. `allowedTools` containing empty strings or duplicate entries (checked
+   *    on the raw frontmatter, before load-time normalization strips them).
+   * 4. Markdown links to relative paths (`./x.md`, `references/x.md`) whose
+   *    target does not exist relative to the skill's directory.
+   */
+  warnings: Array<{ path: string; message: string }>;
 }
 
 export interface LoadSkillsDirsOptions {
@@ -68,9 +82,20 @@ export { type RenderSkillOptions, renderSkill } from './render';
  * the directory containing the file.
  */
 export async function loadSkill(filePath: string): Promise<Skill> {
+  return (await readSkillFile(filePath)).skill;
+}
+
+/**
+ * Shared load step: parse + build, keeping the raw frontmatter around so the
+ * dir-based loaders can lint fields (e.g. `allowedTools` empty entries) that
+ * `buildSkill` normalizes away.
+ */
+async function readSkillFile(
+  filePath: string,
+): Promise<{ skill: Skill; data: Record<string, unknown> }> {
   const source = await readFile(filePath, 'utf8');
   const { data, body } = parseFrontmatter(source, filePath);
-  return buildSkill(data, body, filePath, dirname(filePath));
+  return { skill: buildSkill(data, body, filePath, dirname(filePath)), data };
 }
 
 /**
@@ -80,7 +105,7 @@ export async function loadSkill(filePath: string): Promise<Skill> {
  * silently skipped.
  */
 export async function loadSkillsDir(dirPath: string): Promise<SkillLoadResult> {
-  const result: SkillLoadResult = { skills: [], errors: [] };
+  const result: SkillLoadResult = { skills: [], errors: [], warnings: [] };
 
   let entries: string[];
   try {
@@ -128,8 +153,9 @@ export async function loadSkillsDir(dirPath: string): Promise<SkillLoadResult> {
     if (!fileInfo.isFile()) continue;
 
     try {
-      const skill = await loadSkill(skillFile);
+      const { skill, data } = await readSkillFile(skillFile);
       result.skills.push(skill);
+      result.warnings.push(...(await collectSkillWarnings(skill, data, skillFile)));
     } catch (err) {
       result.errors.push({ path: skillFile, message: formatError(err) });
     }
@@ -153,6 +179,7 @@ export async function loadSkillsDirs(
 ): Promise<SkillLoadResult> {
   const precedence = opts.precedence ?? 'last-wins';
   const errors: SkillLoadResult['errors'] = [];
+  const warnings: SkillLoadResult['warnings'] = [];
   const byName = new Map<string, Skill>();
   const seenDirs = new Set<string>();
 
@@ -168,6 +195,7 @@ export async function loadSkillsDirs(
 
     const result = await loadSkillsDir(dir);
     errors.push(...result.errors);
+    warnings.push(...result.warnings);
 
     const ns = opts.namespace?.(dir);
     for (const skill of result.skills) {
@@ -177,7 +205,89 @@ export async function loadSkillsDirs(
     }
   }
 
-  return { skills: [...byName.values()], errors };
+  return { skills: [...byName.values()], errors, warnings };
+}
+
+// ─── Validation warnings (mechanical lint, never blocks loading) ────────────
+
+const MIN_DESCRIPTION_CHARS = 20;
+const MAX_INSTRUCTION_TOKENS = 4000;
+
+/**
+ * Conservative markdown-link matcher: only link parens starting with `./` or
+ * `references/`. Deliberately ignores absolute paths, URLs, and bare relative
+ * paths (`docs/x.md`) to keep false positives near zero.
+ */
+const RELATIVE_LINK_RE = /\[[^\]]*\]\((\.\/[^)\s]+|references\/[^)\s]+)\)/g;
+
+/**
+ * Collect mechanical lint warnings for a successfully loaded skill. See
+ * {@link SkillLoadResult.warnings} for the rule list. Takes the RAW frontmatter
+ * alongside the built skill because `buildSkill` normalizes `allowedTools`
+ * (trim + drop empties), which would hide exactly the entries rule 3 flags.
+ * A missing `description` is a load error (thrown), so rule 1 only ever fires
+ * on the too-short case here.
+ */
+async function collectSkillWarnings(
+  skill: Skill,
+  data: Record<string, unknown>,
+  filePath: string,
+): Promise<SkillLoadResult['warnings']> {
+  const warnings: SkillLoadResult['warnings'] = [];
+  const warn = (message: string) => warnings.push({ path: filePath, message });
+
+  // Rule 1: description too short to give an LLM router any signal.
+  if (skill.description.length < MIN_DESCRIPTION_CHARS) {
+    warn(
+      `description is under ${MIN_DESCRIPTION_CHARS} characters — too thin for routing; ` +
+        'expand it so activation decisions have signal.',
+    );
+  }
+
+  // Rule 2: oversized instructions body.
+  const instructionTokens = estimate(skill.instructions);
+  if (instructionTokens > MAX_INSTRUCTION_TOKENS) {
+    warn(
+      `instructions are ~${instructionTokens} estimated tokens (over ${MAX_INSTRUCTION_TOKENS}); ` +
+        'consider progressive disclosure — move detail into reference files read on demand.',
+    );
+  }
+
+  // Rule 3: allowedTools hygiene, checked on the raw frontmatter value.
+  const rawTools = data.allowedTools ?? data['allowed-tools'];
+  if (Array.isArray(rawTools) && rawTools.every((v): v is string => typeof v === 'string')) {
+    const trimmed = rawTools.map((t) => t.trim());
+    if (trimmed.some((t) => t === '')) {
+      warn('allowedTools contains empty entries.');
+    }
+    const nonEmpty = trimmed.filter(Boolean);
+    if (new Set(nonEmpty).size !== nonEmpty.length) {
+      warn('allowedTools contains duplicate entries.');
+    }
+  }
+
+  // Rule 4: relative markdown links whose target is missing. Only possible
+  // when a base dir is known (dir-based loads always set it).
+  if (skill.baseDir) {
+    const targets = new Set<string>();
+    for (const match of skill.instructions.matchAll(RELATIVE_LINK_RE)) {
+      targets.add(match[1]);
+    }
+    for (const target of targets) {
+      const withoutFragment = target.replace(/#.*$/, '');
+      if (!withoutFragment) continue;
+      try {
+        await stat(join(skill.baseDir, withoutFragment));
+      } catch (err) {
+        // Only ENOENT is link-rot evidence; EACCES/EIO say nothing about the link.
+        if (isENOENT(err)) {
+          warn(`relative link target not found: ${target} (resolved against the skill directory).`);
+        }
+      }
+    }
+  }
+
+  return warnings;
 }
 
 /**

@@ -482,3 +482,129 @@ describe('public exports', () => {
     expect(typeof chef.loadSkillsDirs).toBe('function');
   });
 });
+
+describe('skill validation warnings', () => {
+  const ROOT = resolve(__dirname, '__fixtures__', '__tmp_warnings__');
+  let seq = 0;
+
+  // Each case gets its own scan dir containing one skill folder, plus optional
+  // extra files (link targets) inside that skill folder.
+  const makeCase = async (skillMd: string, extraFiles: Record<string, string> = {}) => {
+    const scanDir = join(ROOT, `case-${seq++}`);
+    const skillDir = join(scanDir, 'the-skill');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), skillMd);
+    for (const [rel, content] of Object.entries(extraFiles)) {
+      const target = join(skillDir, rel);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
+    return { scanDir, skillFile: join(skillDir, 'SKILL.md') };
+  };
+
+  afterAll(async () => {
+    await rm(ROOT, { recursive: true, force: true });
+  });
+
+  it('reports zero warnings for a well-formed skill (links resolving included)', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: clean\ndescription: A description comfortably long enough for routing\nallowedTools: [Read, Bash]\n---\nSee [notes](references/notes.md) and [schema](./docs/schema.md).',
+      { 'references/notes.md': 'n', 'docs/schema.md': 's' },
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.skills).toHaveLength(1);
+  });
+
+  it('warns when the description is too short for routing', async () => {
+    const { scanDir, skillFile } = await makeCase(
+      '---\nname: thin\ndescription: tiny desc\n---\nA perfectly reasonable body.',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].path).toBe(skillFile);
+    expect(result.warnings[0].message).toMatch(/too thin for routing/);
+  });
+
+  it('warning does not prevent the skill from loading', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: thin-but-loads\ndescription: tiny desc\n---\nBody.',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.errors).toEqual([]);
+    expect(result.skills.map((s) => s.name)).toEqual(['thin-but-loads']);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('warns when instructions exceed ~4000 estimated tokens', async () => {
+    // 20000 ASCII chars -> ~6000 estimated tokens
+    const { scanDir } = await makeCase(
+      `---\nname: huge\ndescription: A description comfortably long enough for routing\n---\n${'x'.repeat(20000)}`,
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].message).toMatch(/progressive disclosure/);
+  });
+
+  it('warns when allowedTools contains empty strings', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: gaps\ndescription: A description comfortably long enough for routing\nallowedTools: [Read, "", Bash]\n---\nBody.',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].message).toMatch(/empty/);
+    // buildSkill still strips the empty entry from the loaded skill
+    expect(result.skills[0].allowedTools).toEqual(['Read', 'Bash']);
+  });
+
+  it('warns when allowedTools contains duplicates', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: dupes\ndescription: A description comfortably long enough for routing\nallowedTools: [Read, Read]\n---\nBody.',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].message).toMatch(/duplicate/);
+  });
+
+  it('warns on a ./ relative link whose target does not exist', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: rot1\ndescription: A description comfortably long enough for routing\n---\nSee [schema](./docs/missing.md).',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].message).toContain('./docs/missing.md');
+  });
+
+  it('warns on a references/ link whose target does not exist', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: rot2\ndescription: A description comfortably long enough for routing\n---\nSee [notes](references/nope.md).',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].message).toContain('references/nope.md');
+  });
+
+  it('ignores absolute and external links (conservative matcher)', async () => {
+    const { scanDir } = await makeCase(
+      '---\nname: external\ndescription: A description comfortably long enough for routing\n---\nSee [site](https://example.com/doc.md) and [abs](/etc/hosts) and [other](docs/x.md).',
+    );
+    const result = await loadSkillsDir(scanDir);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('initializes warnings even when the scan dir cannot be read', async () => {
+    const result = await loadSkillsDir(join(ROOT, '__definitely_missing__'));
+    expect(result.warnings).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+  });
+
+  it('loadSkillsDirs aggregates warnings across dirs', async () => {
+    const a = await makeCase('---\nname: warn-a\ndescription: tiny desc\n---\nBody.');
+    const b = await makeCase('---\nname: warn-b\ndescription: tiny desc\n---\nBody.');
+    const { skills, warnings } = await loadSkillsDirs([a.scanDir, b.scanDir]);
+    expect(skills.map((s) => s.name).sort()).toEqual(['warn-a', 'warn-b']);
+    expect(warnings).toHaveLength(2);
+    expect(warnings.map((w) => w.path).sort()).toEqual([a.skillFile, b.skillFile].sort());
+  });
+});
