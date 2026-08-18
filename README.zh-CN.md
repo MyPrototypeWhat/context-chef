@@ -16,7 +16,7 @@ TypeScript/JavaScript AI Agent 的上下文编译器。
 
 ContextChef 解决 AI Agent 开发中最常见的上下文工程问题：对话太长模型会忘事、工具太多模型会幻觉、切换模型要重写 prompt、长程任务状态丢失。它不接管你的控制流，只负责在每次 LLM 调用前把你的状态编译成最优的 payload。
 
-[English](./README.md)
+📖 **文档站：** <https://myprototypewhat.github.io/context-chef/zh/> · [English](./README.md)
 
 ## Packages
 

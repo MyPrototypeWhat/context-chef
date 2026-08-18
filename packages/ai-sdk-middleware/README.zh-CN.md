@@ -8,7 +8,7 @@
 
 基于 [context-chef](https://github.com/MyPrototypeWhat/context-chef) 的 [Vercel AI SDK](https://ai-sdk.dev) 中间件。透明的历史压缩、工具结果截断和 token 预算管理 — 无需修改任何代码。
 
-[English](./README.md)
+📖 **文档站：** <https://myprototypewhat.github.io/context-chef/zh/packages/ai-sdk-middleware> · [English](./README.md)
 
 ![Quick Start](https://github.com/MyPrototypeWhat/context-chef/releases/download/media-assets/%40context-chef_ai-sdk-middleware.png)
 

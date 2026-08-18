@@ -39,7 +39,7 @@
     "url": "https://github.com/MyPrototypeWhat/context-chef.git",
     "directory": "packages/ai-sdk-middleware"
   },
-  "homepage": "https://github.com/MyPrototypeWhat/context-chef#readme",
+  "homepage": "https://myprototypewhat.github.io/context-chef/packages/ai-sdk-middleware",
   "bugs": {
     "url": "https://github.com/MyPrototypeWhat/context-chef/issues"
   },

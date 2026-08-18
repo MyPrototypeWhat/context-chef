@@ -8,6 +8,8 @@
 
 [Vercel AI SDK](https://ai-sdk.dev) middleware powered by [context-chef](https://github.com/MyPrototypeWhat/context-chef). Transparent history compression, tool result truncation, and token budget management — zero code changes required.
 
+📖 **Docs:** <https://myprototypewhat.github.io/context-chef/packages/ai-sdk-middleware>
+
 ![Quick Start](https://github.com/MyPrototypeWhat/context-chef/releases/download/media-assets/%40context-chef_ai-sdk-middleware.png)
 
 ## Installation

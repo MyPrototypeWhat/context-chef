@@ -13,6 +13,8 @@
 
 Context compiler for TypeScript/JavaScript AI agents.
 
+📖 **Docs:** <https://myprototypewhat.github.io/context-chef/>
+
 ContextChef solves the most common context engineering problems in AI agent development: conversations too long for the model to remember, too many tools causing hallucinations, having to rewrite prompts when switching providers, and state drift in long-running tasks. It doesn't take over your control flow — it just compiles your state into an optimal payload before each LLM call.
 
 [中文文档](https://github.com/MyPrototypeWhat/context-chef/blob/main/README.zh-CN.md) | [GitHub](https://github.com/MyPrototypeWhat/context-chef)

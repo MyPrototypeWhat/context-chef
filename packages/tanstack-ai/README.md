@@ -8,6 +8,8 @@
 
 [TanStack AI](https://tanstack.com/ai) `ChatMiddleware` powered by [context-chef](https://github.com/MyPrototypeWhat/context-chef). Transparent history compression, tool result truncation, and token budget management — drop in as a single middleware.
 
+📖 **Docs:** <https://myprototypewhat.github.io/context-chef/packages/tanstack-ai>
+
 Requires `@tanstack/ai` **^0.44** (the 2026-03 middleware rework). For the pre-rework `^0.10` API, use `@context-chef/tanstack-ai@0.x`.
 
 ## Installation
