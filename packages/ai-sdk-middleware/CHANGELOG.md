@@ -1,5 +1,21 @@
 # @context-chef/ai-sdk-middleware
 
+## 3.0.0
+
+### Major Changes
+
+- [#47](https://github.com/MyPrototypeWhat/context-chef/pull/47) [`1e4f074`](https://github.com/MyPrototypeWhat/context-chef/commit/1e4f07487da32143441143ec25032a2f5c040b47) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - v3: anti-double-compression guard + core v4 compression pipeline.
+
+  - When `providerOptions.anthropic.contextManagement` is present on a call and middleware compression is configured, middleware compression is skipped for that call with a one-time warning (the provider's server-side context management wins). Opt out with `allowDoubleCompression: true`.
+  - Inherits `@context-chef/core` v4 compression behavior — most notably the new default `triggerRatio: 0.7` (compression triggers at 70% of `contextWindow`; set `triggerRatio: 1` in the janitor options passed through for the old behavior) and the no-placeholder failure semantics.
+
+  See MIGRATION-4.md for details.
+
+### Patch Changes
+
+- Updated dependencies [[`1e4f074`](https://github.com/MyPrototypeWhat/context-chef/commit/1e4f07487da32143441143ec25032a2f5c040b47)]:
+  - @context-chef/core@4.0.0
+
 ## 2.1.0
 
 ### Minor Changes
