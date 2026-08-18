@@ -35,8 +35,8 @@ jobs:
       - name: Test
         run: pnpm -r run test
 
-      - name: Update npm for trusted publishing (OIDC needs npm >= 11.5)
-        run: npm install -g npm@latest && npm --version
+      - name: Update npm for trusted publishing (OIDC needs npm >= 11.5; pinned to 11 — npm 12 output breaks changesets publish detection)
+        run: npm install -g npm@11 && npm --version
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets
