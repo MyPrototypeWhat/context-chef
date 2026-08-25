@@ -1248,7 +1248,11 @@ describe('Memory selector', () => {
     expect(memMsg).toBeDefined();
     expect(memMsg?.content).toContain('key="important"');
     expect(memMsg?.content).toContain('keep');
-    expect(memMsg?.content).not.toContain('trivial');
+    // Deselected VALUE stays out; the KEY still appears in the "Existing
+    // memory keys" guidance so the static modify_memory schema stays usable.
+    expect(memMsg?.content).not.toContain('<entry key="trivial">');
+    expect(memMsg?.content).not.toContain('drop');
+    expect(memMsg?.content).toContain('Existing memory keys: important, trivial');
   });
 });
 

@@ -782,13 +782,19 @@ export class ContextChef {
    */
   private _shapeMemorySandwichParts(
     dataXml: string,
-    injectedMemoryKeys: string[],
+    liveKeys: string[],
   ): { topMessages: Message[]; tailDataXml: string } {
     if (!this.memory) return { topMessages: [], tailDataXml: '' };
 
-    const dataBlock = dataXml
-      ? Prompts.getMemoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
-      : '';
+    // `liveKeys` is the FULL post-sweep key list, not just the selected
+    // entries: the static tool schemas (4.1) rely on this block to surface
+    // every modifiable key, so a narrowing selector must not hide the rest.
+    // A block is emitted even when the selector left nothing to inject —
+    // the key guidance is what keeps modify_memory usable.
+    const dataBlock =
+      dataXml || liveKeys.length > 0
+        ? Prompts.getMemoryBlock(dataXml, liveKeys, this.memory.allowedKeys)
+        : '';
 
     if (this.memory.placement === 'after_system') {
       const content = dataBlock
@@ -1093,7 +1099,7 @@ export class ContextChef {
         memoryExpiredKeys = artifacts.expiredKeys;
         injectedMemoryKeys = artifacts.selected.map((e) => e.key);
         memoryTools = artifacts.toolDefinitions;
-        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, injectedMemoryKeys);
+        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, artifacts.liveKeys);
         memoryMessages = parts.topMessages;
         memoryTailDataXml = parts.tailDataXml;
       }
@@ -1207,11 +1213,15 @@ export class ContextChef {
         anthropicPayload.betas = computeAnthropicBetas(server);
       }
 
-      // 8.5 Optional cache audit (Anthropic target only; each distinct issue
-      //     warned once per instance).
+      // 8.5 Optional cache audit (Anthropic target only). Dedupe on the
+      //     semantic issue kind, NOT the position: as history grows the same
+      //     misconfiguration drifts through message indices, and a positional
+      //     key would re-warn every compile and grow the seen-set unboundedly.
+      //     The kind space is fixed (markers × placements), so the set is
+      //     bounded too.
       if (this.cacheAudit && isAnthropicTarget) {
         for (const issue of auditAnthropicCachePlacement(payload as AnthropicPayload)) {
-          const key = `${issue.location}:${issue.message}`;
+          const key = issue.dedupeKey;
           if (!this._cacheAuditWarned.has(key)) {
             this._cacheAuditWarned.add(key);
             (this.logger ?? console).warn(

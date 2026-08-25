@@ -38,6 +38,12 @@ export interface Skill {
   metadata?: Record<string, unknown>;
 }
 
+/** One mechanical lint finding on a successfully loaded skill. */
+export interface SkillWarning {
+  path: string;
+  message: string;
+}
+
 /** Result of `loadSkillsDir`: tolerant — successful skills + per-file errors. */
 export interface SkillLoadResult {
   skills: Skill[];
@@ -53,8 +59,12 @@ export interface SkillLoadResult {
    *    on the raw frontmatter, before load-time normalization strips them).
    * 4. Markdown links to relative paths (`./x.md`, `references/x.md`) whose
    *    target does not exist relative to the skill's directory.
+   *
+   * Optional in the TYPE only so pre-4.1 code constructing `SkillLoadResult`
+   * literals keeps compiling — the loaders in this module always populate it
+   * (their return type is `Required<SkillLoadResult>`).
    */
-  warnings: Array<{ path: string; message: string }>;
+  warnings?: SkillWarning[];
 }
 
 export interface LoadSkillsDirsOptions {
@@ -104,8 +114,8 @@ async function readSkillFile(
  * aborting on the first bad skill. Sub-directories without a `SKILL.md` are
  * silently skipped.
  */
-export async function loadSkillsDir(dirPath: string): Promise<SkillLoadResult> {
-  const result: SkillLoadResult = { skills: [], errors: [], warnings: [] };
+export async function loadSkillsDir(dirPath: string): Promise<Required<SkillLoadResult>> {
+  const result: Required<SkillLoadResult> = { skills: [], errors: [], warnings: [] };
 
   let entries: string[];
   try {
@@ -172,15 +182,21 @@ export async function loadSkillsDir(dirPath: string): Promise<SkillLoadResult> {
  * per-dir errors are aggregated, never thrown. No auto-discovery — the caller
  * passes the directory list. Merged skill order follows each name's first-seen
  * position (a last-wins overwrite updates the value in place, not the order).
+ *
+ * Warnings follow precedence: only the skills that survive collision
+ * resolution report their lint findings — a shadowed skill's warnings would
+ * point at content that is not in `skills` and cannot be acted on from this
+ * result. Per-file `errors` are NOT filtered the same way: a failed file
+ * never enters the collision namespace, so every error is surfaced.
  */
 export async function loadSkillsDirs(
   dirs: string[],
   opts: LoadSkillsDirsOptions = {},
-): Promise<SkillLoadResult> {
+): Promise<Required<SkillLoadResult>> {
   const precedence = opts.precedence ?? 'last-wins';
   const errors: SkillLoadResult['errors'] = [];
-  const warnings: SkillLoadResult['warnings'] = [];
   const byName = new Map<string, Skill>();
+  const warningsByName = new Map<string, SkillWarning[]>();
   const seenDirs = new Set<string>();
 
   for (const dir of dirs) {
@@ -195,17 +211,31 @@ export async function loadSkillsDirs(
 
     const result = await loadSkillsDir(dir);
     errors.push(...result.errors);
-    warnings.push(...result.warnings);
+
+    const warningsByPath = new Map<string, SkillWarning[]>();
+    for (const warning of result.warnings) {
+      const list = warningsByPath.get(warning.path);
+      if (list) list.push(warning);
+      else warningsByPath.set(warning.path, [warning]);
+    }
 
     const ns = opts.namespace?.(dir);
     for (const skill of result.skills) {
       const named = ns ? { ...skill, name: `${ns}:${skill.name}` } : skill;
       if (precedence === 'first-wins' && byName.has(named.name)) continue;
       byName.set(named.name, named);
+      // Loader-set baseDir is always present here; the fallback only guards
+      // hypothetical Skill values constructed without it.
+      const skillFile = skill.baseDir ? join(skill.baseDir, 'SKILL.md') : '';
+      warningsByName.set(named.name, warningsByPath.get(skillFile) ?? []);
     }
   }
 
-  return { skills: [...byName.values()], errors, warnings };
+  return {
+    skills: [...byName.values()],
+    errors,
+    warnings: [...byName.keys()].flatMap((name) => warningsByName.get(name) ?? []),
+  };
 }
 
 // ─── Validation warnings (mechanical lint, never blocks loading) ────────────
@@ -232,8 +262,8 @@ async function collectSkillWarnings(
   skill: Skill,
   data: Record<string, unknown>,
   filePath: string,
-): Promise<SkillLoadResult['warnings']> {
-  const warnings: SkillLoadResult['warnings'] = [];
+): Promise<SkillWarning[]> {
+  const warnings: SkillWarning[] = [];
   const warn = (message: string) => warnings.push({ path: filePath, message });
 
   // Rule 1: description too short to give an LLM router any signal.

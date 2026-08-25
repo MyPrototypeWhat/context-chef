@@ -834,14 +834,11 @@ import {
 // Load a single skill file
 const skill = await loadSkill("./skills/db-debug/SKILL.md");
 
-// Directory loads also report mechanical quality warnings (4.1) — thin
-// descriptions, oversized instructions, malformed allowedTools, dangling
-// relative resource links. Warnings never block a load.
+// 扫描目录：每个 subdir/SKILL.md 变成一个 Skill。容错——坏文件进 `errors`，
+// `warnings`（4.1）报告机械性质量问题（描述过短、instructions 过长、
+// allowedTools 畸形、悬空的相对资源链接），但绝不阻断加载。
 const { skills, errors, warnings } = await loadSkillsDir("./skills");
 for (const w of warnings) console.warn(`${w.path}: ${w.message}`);
-
-// Or scan a directory: each subdir/SKILL.md becomes a Skill (tolerant — bad files surface in `errors`)
-const { skills, errors } = await loadSkillsDir("./skills");
 chef.registerSkills(skills);
 
 // Or merge several sources at once (e.g. builtin + user + project) — later dirs

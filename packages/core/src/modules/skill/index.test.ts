@@ -474,6 +474,33 @@ describe('loadSkillsDirs', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].message).toMatch(/Failed to read skills directory/);
   });
+
+  // Every fixture description above is under 20 chars, so each loaded skill
+  // carries a rule-1 warning — which makes precedence filtering observable.
+  it('reports warnings only for skills that survive precedence (last-wins)', async () => {
+    const { warnings } = await loadSkillsDirs([A, B]);
+    const warnedPaths = warnings.map((w) => w.path);
+    expect(warnedPaths).toContain(join(B, 'shared', 'SKILL.md'));
+    // The shadowed A copy of `shared` is not in `skills`; its warnings would
+    // point at content the caller cannot act on from this result.
+    expect(warnedPaths).not.toContain(join(A, 'shared', 'SKILL.md'));
+    expect(warnedPaths).toContain(join(A, 'alpha', 'SKILL.md'));
+  });
+
+  it('reports warnings only for skills that survive precedence (first-wins)', async () => {
+    const { warnings } = await loadSkillsDirs([A, B], { precedence: 'first-wins' });
+    const warnedPaths = warnings.map((w) => w.path);
+    expect(warnedPaths).toContain(join(A, 'shared', 'SKILL.md'));
+    expect(warnedPaths).not.toContain(join(B, 'shared', 'SKILL.md'));
+  });
+
+  it('SkillLoadResult literals without warnings keep compiling (pre-4.1 compat)', () => {
+    // Type-level regression: `warnings` is optional in SkillLoadResult so 4.0
+    // code constructing result literals stays source-compatible, while the
+    // loaders return Required<SkillLoadResult> and always populate it.
+    const legacy: import('.').SkillLoadResult = { skills: [], errors: [] };
+    expect(legacy.warnings).toBeUndefined();
+  });
 });
 
 describe('public exports', () => {

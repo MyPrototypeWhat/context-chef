@@ -23,16 +23,14 @@ export type TTLValue = number | { ms: number } | { turns: number };
  *   enters the top-level system parameter, so cache breakpoints earlier in
  *   the message stream survive memory mutations on every provider.
  *
- *   Caveat: when `compile()` is invoked mid-agent-loop (history tail is a
- *   `tool` turn awaiting interpretation), "most recent user" walks back past
- *   the tool result(s) to the user turn that kicked off the current tool
- *   sequence — the injection lands mid-conversation rather than at the
- *   absolute tail. Cache breakpoints placed AFTER that user turn (typical:
- *   end-of-history assistant) will see the modified user content and miss.
- *   To preserve cache in tool-ending tails, place breakpoints BEFORE the
- *   user turn that started the active tool sequence, or restrict
- *   `'before_history_tail'` to user-ending compiles. This is the same
- *   placement convention as `setDynamicState({ placement: 'last_user' })`.
+ *   When `compile()` is invoked mid-agent-loop (history tail is a `tool`
+ *   turn awaiting interpretation), the data block is appended as a NEW user
+ *   message immediately after the tool result(s), so every earlier message
+ *   stays byte-identical and cache breakpoints anywhere in the prior
+ *   history survive. (Changed in 4.1: previously the injection walked back
+ *   to the most recent user message, which sat mid-conversation and
+ *   invalidated any breakpoint placed after it.) This is the same placement
+ *   convention as `setDynamicState({ placement: 'last_user' })`.
  */
 export type MemoryPlacement = 'after_system' | 'before_history_tail';
 
@@ -78,9 +76,10 @@ function deepFreeze<T>(obj: T): T {
  *
  * `key` is deliberately a plain string, NOT an enum of live keys: the current
  * keys are already surfaced to the model in the injected memory block
- * ("Existing memory keys: ..."), and dispatch-time validation is enforced by
- * {@link Memory.updateMemory} / {@link Memory.deleteMemory}, which return
- * null / false for unknown keys.
+ * ("Existing memory keys: ..." — always the FULL live key list, even when a
+ * `selector` narrows which entries get injected), and dispatch-time
+ * validation is enforced by {@link Memory.updateMemory} /
+ * {@link Memory.deleteMemory}, which return null / false for unknown keys.
  */
 const MODIFY_MEMORY_TOOL: ToolDefinition = deepFreeze({
   name: 'modify_memory',
@@ -97,7 +96,9 @@ const MODIFY_MEMORY_TOOL: ToolDefinition = deepFreeze({
       key: {
         type: 'string',
         description:
-          'The key of the existing memory entry to modify — see the memory block for current keys.',
+          'The key of the existing memory entry to modify. When any entries exist, the memory ' +
+          'block in context lists the valid keys; if no keys are listed, nothing has been ' +
+          'remembered yet and there is nothing to modify.',
       },
       value: {
         type: 'string',
@@ -182,11 +183,12 @@ export class Memory {
   /**
    * Static tool definitions, built once at construction. `create_memory` is
    * per-instance (its `key` enum comes from `allowedKeys`, static constructor
-   * config), `modify_memory` is the shared module-level constant. The same
-   * frozen objects are returned on every call so `payload.tools` is deep-equal
-   * AND reference-stable across compiles.
+   * config), `modify_memory` is the shared module-level constant. The frozen
+   * definition OBJECTS are reference-stable across calls so `payload.tools`
+   * stays deep-equal between compiles; the containing array is copied on the
+   * way out so callers can append/reorder without a TypeError.
    */
-  private readonly _toolDefinitions: ToolDefinition[];
+  private readonly _toolDefinitions: readonly ToolDefinition[];
 
   constructor(config: MemoryConfig) {
     this.store = config.store;
@@ -321,6 +323,14 @@ export class Memory {
     expiredKeys: string[];
     /** Post-sweep entries with the selector applied exactly once. */
     selected: MemoryEntry[];
+    /**
+     * ALL post-sweep live keys, BEFORE the selector. The "Existing memory
+     * keys" guidance must enumerate these, not `selected` — the static tool
+     * schemas rely on the memory block to surface every modifiable key, and a
+     * selector that narrows the injected entries must not hide the rest from
+     * the model.
+     */
+    liveKeys: string[];
     /** `<memory>` XML for the selected entries, or '' when none. */
     dataXml: string;
     /** Static tool definitions (schema never varies with live keys — see {@link getToolDefinitions}). */
@@ -343,8 +353,9 @@ export class Memory {
     return {
       expiredKeys,
       selected,
+      liveKeys: live.map((e) => e.key),
       dataXml: this._renderXml(selected),
-      toolDefinitions: this._toolDefinitions,
+      toolDefinitions: [...this._toolDefinitions],
     };
   }
 
@@ -489,20 +500,25 @@ export class Memory {
    * prompt prefix, so any dynamic content in them (e.g. an enum of live memory
    * keys) would rewrite the schema on every memory mutation and invalidate the
    * ENTIRE prompt cache downstream. The current key list is instead conveyed
-   * through the injected memory block ("Existing memory keys: ..."), which
-   * lives further down the prompt where a change is far cheaper. The same
-   * frozen objects are returned on every call.
+   * through the injected memory block ("Existing memory keys: ..." — always
+   * the full live key list, even under a narrowing `selector`), which lives
+   * further down the prompt where a change is far cheaper.
+   *
+   * The returned ARRAY is a fresh copy on every call — append or reorder it
+   * freely. The definition OBJECTS inside are frozen and reference-stable
+   * across calls (that identity is what keeps `payload.tools` deep-equal
+   * between compiles); clone one before editing it.
    *
    * @param existingKeys @deprecated Ignored — the schema is static since 4.1.
    *   Still accepted for backward compatibility.
    */
   async getToolDefinitions(existingKeys?: string[]): Promise<ToolDefinition[]> {
     void existingKeys;
-    return this._toolDefinitions;
+    return [...this._toolDefinitions];
   }
 
   /** Build the per-instance frozen tool definitions. Called once from the constructor. */
-  private _buildStaticToolDefinitions(): ToolDefinition[] {
+  private _buildStaticToolDefinitions(): readonly ToolDefinition[] {
     const createKeyParam: Record<string, unknown> = {
       type: 'string',
       description:
@@ -536,7 +552,7 @@ export class Memory {
       },
     });
 
-    return Object.freeze([createTool, MODIFY_MEMORY_TOOL]) as ToolDefinition[];
+    return Object.freeze([createTool, MODIFY_MEMORY_TOOL]);
   }
 
   // ─── Snapshot / Restore ─────────────────────────────────────────────────

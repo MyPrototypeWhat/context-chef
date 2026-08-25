@@ -6,6 +6,15 @@ export interface CacheAuditIssue {
   location: string;
   /** Human-readable explanation with the suggested fix. */
   message: string;
+  /**
+   * Stable identity of the issue KIND, independent of where in the payload it
+   * currently sits: `"<source>@<placement>"`, e.g. `"dynamic state@prefix"` or
+   * `"guardrail enforce-XML@breakpoint-tail"`. As history grows, the same
+   * misconfiguration drifts through positions (`messages[3]` → `messages[5]`
+   * → …); dedupe on this key — not on `location` — to warn once per root
+   * cause instead of once per position.
+   */
+  dedupeKey: string;
 }
 
 /**
@@ -112,12 +121,31 @@ export function auditAnthropicCachePlacement(payload: AnthropicPayload): CacheAu
   const issues: CacheAuditIssue[] = [];
   for (let i = 0; i <= lastBreakpoint; i++) {
     for (const { marker, source, fix } of VOLATILE_MARKERS) {
-      if (segments[i].text.includes(marker)) {
+      if (!segments[i].text.includes(marker)) continue;
+
+      if (i === lastBreakpoint) {
+        // The volatile content shares the segment that CARRIES the final
+        // breakpoint. Re-suggesting a tail placement would be circular — the
+        // content already sits at the tail; it is the breakpoint that must
+        // move. Typical trigger: `_cache_breakpoint: true` on the last user
+        // message while tail-placed content ('last_user' /
+        // 'before_history_tail') is merged into that same message.
         issues.push({
           location: segments[i].location,
+          dedupeKey: `${source}@breakpoint-tail`,
+          message:
+            `volatile ${source} sits in the segment that carries the FINAL cache_control ` +
+            `breakpoint, so the breakpoint hashes the volatile text and this cache entry is ` +
+            `rewritten on every change. Fix: move the breakpoint to an earlier, stable ` +
+            `message — volatile tail content must stay AFTER the last breakpoint.`,
+        });
+      } else {
+        issues.push({
+          location: segments[i].location,
+          dedupeKey: `${source}@prefix`,
           message:
             `volatile ${source} sits inside the cached prefix (a cache_control breakpoint ` +
-            `exists at or after this position) — every change to it invalidates the cache. Fix: ${fix}.`,
+            `exists after this position) — every change to it invalidates the cache. Fix: ${fix}.`,
         });
       }
     }

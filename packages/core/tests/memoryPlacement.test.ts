@@ -419,10 +419,41 @@ describe('memoryPlacement — selector + onMemoryExpired integration', () => {
     const lastUser = plain(payload).at(-1) as PlainMessage;
     expect(lastUser.content).toContain('shown');
     expect(lastUser.content).toContain('visible');
-    expect(lastUser.content).not.toContain('hidden');
+    // The deselected entry's VALUE stays out of the payload, but its KEY is
+    // still enumerated in the "Existing memory keys" guidance — the static
+    // memory tool schemas (4.1) rely on that line to surface every
+    // modifiable key, selector or not.
+    expect(lastUser.content).not.toContain('<entry key="hidden">');
     expect(lastUser.content).not.toContain('invisible');
+    expect(lastUser.content).toContain('Existing memory keys: shown, hidden');
 
     expect(payload.meta?.injectedMemoryKeys).toEqual(['shown']);
+  });
+
+  it('"before_history_tail" + selector that injects nothing still surfaces the live keys', async () => {
+    const chef = new ContextChef({
+      memory: {
+        store: new InMemoryStore(),
+        memoryPlacement: 'before_history_tail',
+        selector: () => [],
+      },
+    });
+    await chef.getMemory().set('a', '1');
+    await chef.getMemory().set('b', '2');
+
+    chef
+      .setSystemPrompt([{ role: 'system', content: 'sys' }])
+      .setHistory([{ role: 'user', content: 'hi' }]);
+
+    const payload = await chef.compile({ target: 'openai' });
+    const lastUser = plain(payload).at(-1) as PlainMessage;
+    // No <memory> XML and no recall header (nothing was injected), but the
+    // key guidance must still reach the model — modify_memory's static
+    // schema points at it as the only key discovery channel.
+    expect(lastUser.content).not.toContain('<memory>');
+    expect(lastUser.content).not.toContain('You recall the following');
+    expect(lastUser.content).toContain('Existing memory keys: a, b');
+    expect(payload.meta?.injectedMemoryKeys).toEqual([]);
   });
 });
 
