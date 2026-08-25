@@ -23,6 +23,31 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
+## Skill placement — `skillPlacement` <Badge type="tip" text="4.2" />
+
+Where the active skill's instructions are delivered. The default `'after_system'` is the behavior above, bit-for-bit: a dedicated `role: 'system'` message right after your system prompt. Those tokens live in the cacheable prefix — free to re-send — but every activation, switch, or deactivation rewrites that prefix and costs one full cache invalidation.
+
+Under `'tail'` the instructions leave the prefix entirely and lead the tail stitch, wrapped in `<skill_instructions skill="NAME">`:
+
+```typescript
+const chef = new ContextChef({ skillPlacement: "tail" });
+chef.registerSkills([planning, editing]); // two Skill objects, shaped like the one above
+chef.setSystemPrompt([{ role: "system", content: basePrompt }]).setHistory(history);
+
+chef.activateSkill("planning");
+const a = await chef.compile({ target: "anthropic" });
+chef.activateSkill("editing");
+const b = await chef.compile({ target: "anthropic" });
+
+// `a` and `b` are byte-identical up to the last user message — activating,
+// switching, and deactivating never touch the cached prefix. Only the tail moved:
+//   <skill_instructions skill="editing">…</skill_instructions>
+```
+
+The trade-off is real in both directions: `'tail'` re-sends the full instruction text uncached on **every** request; `'after_system'` re-sends nothing but pays a cache miss on **every switch**. Pick `'tail'` when the agent switches modes often relative to how long each mode stays active, `'after_system'` for a mode that is set once and lives for the session.
+
+Placement changes delivery only — `meta.activeSkillName`, `getActiveSkill()`, and snapshot/restore behave identically. In the tail, the skill block leads the fixed stitch order (`<skill_instructions>` → `<memory>` → `<dynamic_state>` → `<implicit_context>` → `<announcements>` → anchor) so the model reads "who you are right now" before the state it applies to, and it does **not** trigger the anchor line on its own — it is self-describing inside its own tag. If `cacheAudit` catches a `<skill_instructions` block at or before your last `cache_control` breakpoint, the breakpoint is too late, not the placement.
+
 ## Loading from `SKILL.md`
 
 ```typescript
@@ -107,7 +132,7 @@ const skill = await loadSkill('skills/triage/SKILL.md');
 chef.activateSkill(renderSkill(skill, { args: 'p0 incidents' }));
 ```
 
-`activateSkill` injects the instructions as a dedicated system message in the sandwich (after your system prompt, before history). Exactly one is active at a time. Switching re-caches the slot and everything after it — fine for a mode you rarely switch.
+`activateSkill` injects the instructions as a dedicated system message in the sandwich (after your system prompt, before history). Exactly one is active at a time. Switching re-caches the slot and everything after it — fine for a mode you rarely switch, and `skillPlacement: 'tail'` covers the case where you switch often.
 
 ### 2. Progressive disclosure — host-appended messages
 
