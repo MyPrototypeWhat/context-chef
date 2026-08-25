@@ -60,15 +60,30 @@ export function fromAnthropic(
   }
 
   for (const msg of messages) {
-    // Mid-conversation `role: "system"` messages (this adapter's own
-    // positional-system output, or hand-written ones) are deliberately
-    // SKIPPED: `history` is typed user/assistant/tool only, and feeding a
-    // volatile channel — announcements are re-rendered every compile until
-    // retracted — back in as durable history would bake it into the cached
-    // prefix and defeat retraction. Ownership of that content stays with the
-    // chef state that injected it. (The SDK role union predates the feature,
-    // hence the string comparison through a widened view.)
-    if ((msg as { role: string }).role === 'system') continue;
+    // `role: "system"` entries inside `messages` split by position. LEADING
+    // ones (before any conversation message) are the prompt's system layer —
+    // callers who put their system prompt in messages[0] instead of the
+    // `system` param — and are routed into `system` so the text survives
+    // (pre-4.1 they landed in `history`, violating HistoryMessage's role
+    // union). MID-STREAM ones are positional channel output — announcements
+    // re-rendered every compile until retracted — and are SKIPPED: feeding
+    // them back as durable history would bake volatile text into the cached
+    // prefix and defeat retractAnnouncement(). Ownership stays with the chef
+    // state that injected it. (The SDK role union predates mid-conversation
+    // system messages, hence the widened view.)
+    if ((msg as { role: string }).role === 'system') {
+      if (history.length === 0) {
+        const text =
+          typeof msg.content === 'string'
+            ? msg.content
+            : msg.content
+                .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+                .map((b) => b.text)
+                .join('\n');
+        systemMsgs.push({ role: 'system', content: text });
+      }
+      continue;
+    }
 
     // String content shorthand
     if (typeof msg.content === 'string') {

@@ -84,7 +84,14 @@ export class Assembler {
    *    behind history (dynamic state / guardrail in `'system'` placement) —
    *    stays behind the injection point.
    * 2. Tail is a `user` message → the stitch is appended to it, separated by
-   *    a blank line.
+   *    a blank line. This includes histories ending `[.., user, assistant]`:
+   *    at compile time a trailing plain assistant is BY DEFINITION treated
+   *    as prefill (a completed answer would not be compiled against), so the
+   *    stitch merges into the user turn before it. Callers compiling a
+   *    "continue"-style request after a finished assistant answer should
+   *    append their next user message first — and should not place a cache
+   *    breakpoint on the user message that receives the stitch (the cache
+   *    audit's breakpoint-tail diagnosis flags exactly that).
    * 3. Tail is a `tool` result awaiting interpretation → a NEW user message
    *    carrying just the stitch is inserted immediately after it. This is
    *    valid on every target: the Anthropic API auto-merges the consecutive

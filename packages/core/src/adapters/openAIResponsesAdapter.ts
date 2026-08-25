@@ -256,14 +256,16 @@ export function fromOpenAIResponses(items: unknown[], instructions?: string): Pa
     if (type === 'message') {
       const { text, attachments } = flattenContent(raw.content);
       if (raw.role === 'system' || raw.role === 'developer') {
-        // Leading system/developer items are the prompt's system layer.
-        // A system item appearing mid-stream (after any user/assistant/tool
-        // item) is positional channel output — announcements re-rendered
-        // every compile until retracted. Folding it into the top-level
-        // system layer would bake volatile text into the cacheable prefix
-        // and defeat retraction, so it is skipped: ownership stays with the
-        // chef state that injected it.
-        if (history.length > 0) {
+        // Leading system/developer items are the prompt's system layer. A
+        // `system` item appearing MID-STREAM is positional channel output —
+        // announcements re-rendered every compile until retracted. Folding
+        // it into the top-level system layer would bake volatile text into
+        // the cacheable prefix and defeat retraction, so it is skipped:
+        // ownership stays with the chef state that injected it. `developer`
+        // items are exempt from the skip — chef only ever emits
+        // `role: 'system'` for positional output, while a mid-stream
+        // developer item is a hand-written durable steering instruction.
+        if (raw.role === 'system' && history.length > 0) {
           openAssistant = null;
           continue;
         }

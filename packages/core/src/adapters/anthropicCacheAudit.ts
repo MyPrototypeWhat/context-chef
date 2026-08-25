@@ -12,7 +12,10 @@ export interface CacheAuditIssue {
    * `"guardrail enforce-XML@breakpoint-tail"`. As history grows, the same
    * misconfiguration drifts through positions (`messages[3]` → `messages[5]`
    * → …); dedupe on this key — not on `location` — to warn once per root
-   * cause instead of once per position.
+   * cause instead of once per position. The key is intentionally
+   * many-to-one: a single audit call can return several issues sharing one
+   * key (the same marker at multiple positions); when you need every
+   * occurrence, iterate the returned array instead of deduping.
    */
   dedupeKey: string;
 }
@@ -21,7 +24,18 @@ export interface CacheAuditIssue {
  * Markers of content that changes across compiles. Each maps to the module
  * that emits it, so the audit message can point at the right knob.
  */
-const VOLATILE_MARKERS: Array<{ marker: string; source: string; fix: string }> = [
+const VOLATILE_MARKERS: Array<{
+  marker: string;
+  source: string;
+  fix: string;
+  /**
+   * Optional alternative remedy for the breakpoint-tail case (breakpoint ON
+   * the segment carrying the volatile text). The generic advice there is
+   * "move the breakpoint"; a marker sets this only when a genuinely
+   * different, non-circular option exists.
+   */
+  breakpointTailAlt?: string;
+}> = [
   {
     marker: 'You recall the following',
     source: 'memory data block',
@@ -46,6 +60,7 @@ const VOLATILE_MARKERS: Array<{ marker: string; source: string; fix: string }> =
     marker: '<skill_instructions',
     source: 'skill tail instructions',
     fix: 'skill tail content always renders at the conversational tail — move the cache breakpoint to an earlier, stable message (or use skillPlacement "after_system" for a long-lived skill)',
+    breakpointTailAlt: 'or use skillPlacement "after_system" for a long-lived skill',
   },
   {
     marker: '<announcements>',
@@ -130,7 +145,7 @@ export function auditAnthropicCachePlacement(payload: AnthropicPayload): CacheAu
 
   const issues: CacheAuditIssue[] = [];
   for (let i = 0; i <= lastBreakpoint; i++) {
-    for (const { marker, source, fix } of VOLATILE_MARKERS) {
+    for (const { marker, source, fix, breakpointTailAlt } of VOLATILE_MARKERS) {
       if (!segments[i].text.includes(marker)) continue;
 
       if (i === lastBreakpoint) {
@@ -147,7 +162,8 @@ export function auditAnthropicCachePlacement(payload: AnthropicPayload): CacheAu
             `volatile ${source} sits in the segment that carries the FINAL cache_control ` +
             `breakpoint, so the breakpoint hashes the volatile text and this cache entry is ` +
             `rewritten on every change. Fix: move the breakpoint to an earlier, stable ` +
-            `message — volatile tail content must stay AFTER the last breakpoint.`,
+            `message — volatile tail content must stay AFTER the last breakpoint` +
+            `${breakpointTailAlt ? ` (${breakpointTailAlt})` : ''}.`,
         });
       } else {
         issues.push({

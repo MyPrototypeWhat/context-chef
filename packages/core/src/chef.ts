@@ -1148,13 +1148,23 @@ export class ContextChef {
   private async _compileInner(options?: CompileOptions): Promise<TargetPayload> {
     const signal = options?.signal;
     // Stash signal so event-bridge closures (Janitor.onCompress, Memory.onMemoryChanged,
-    // Memory.onMemoryExpired) can forward it to handlers. Cleared in finally.
+    // Memory.onMemoryExpired) can forward it to handlers. The PREVIOUS value
+    // is restored in finally rather than cleared: a re-entrant inner compile
+    // must not leave the remainder of the outer compile signal-less (for the
+    // outermost call the previous value is undefined, so restore == clear).
+    const prevSignal = this._currentSignal;
     this._currentSignal = signal;
     // Only the OUTERMOST call clears the flag: a re-entrant inner compile
     // (hook calling compile() — the bypass in compile()) must leave it set,
     // or a second inner call after the first would queue and deadlock.
     // Without any reset (the pre-4.1 bug), every compile after the first
     // took the bypass and the Snapshot + Serialize queue was dead.
+    //
+    // Known limit of the boolean: while the outermost compile is awaiting, a
+    // genuinely CONCURRENT external compile() call also sees the flag and
+    // runs inline instead of queueing. The queue is defensive hardening —
+    // the canonical concurrency model remains one chef per concurrent caller
+    // (see the Concurrency section in the README).
     const isOutermostCompile = !this._compiling;
     this._compiling = true;
     try {
@@ -1425,31 +1435,45 @@ export class ContextChef {
             }),
           );
         } else {
-          // No conversational tail at all: a positional system message here
-          // would precede every user turn — invalid on the Anthropic API, and
-          // the adapter's hoist fallback would land the volatile text back in
+          // No conversational tail at all. The degrade below is an
+          // ANTHROPIC-only constraint: a positional system message that
+          // precedes every user turn is invalid on that API, and the
+          // adapter's hoist fallback would land the volatile text back in
           // the cacheable prefix (the exact failure this channel exists to
-          // avoid). Degrade to a plain user message before any trailing
-          // prefill instead (the Assembler's rule-4 position), and say so
-          // once per instance.
-          if (!this._announcementNoTailWarned) {
-            this._announcementNoTailWarned = true;
-            (this.logger ?? console).warn(
-              '[context-chef] system-channel announcements need a conversational tail ' +
-                '(a user or tool message) to attach after — none exists, so the ' +
-                'announcements were delivered as a user message instead (warned once).',
-            );
-          }
+          // avoid). Other targets accept a leading inline system message
+          // (OpenAI natively; Gemini via the adapter's user degrade), so
+          // they keep the positional shape.
           let insertAt = assembled.length;
           while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
-          assembled.splice(
-            insertAt,
-            0,
-            Assembler.orderKeysDeterministically<Message>({
-              role: 'user',
-              content: announcementXml.systemXml,
-            }),
-          );
+          if (isAnthropicTarget) {
+            if (!this._announcementNoTailWarned) {
+              this._announcementNoTailWarned = true;
+              (this.logger ?? console).warn(
+                '[context-chef] system-channel announcements need a conversational tail ' +
+                  '(a user or tool message) to attach after — none exists, and the Anthropic ' +
+                  'API rejects a leading mid-conversation system message, so the announcements ' +
+                  'were delivered as a user message instead (warned once).',
+              );
+            }
+            assembled.splice(
+              insertAt,
+              0,
+              Assembler.orderKeysDeterministically<Message>({
+                role: 'user',
+                content: announcementXml.systemXml,
+              }),
+            );
+          } else {
+            assembled.splice(
+              insertAt,
+              0,
+              Assembler.orderKeysDeterministically<Message>({
+                role: 'system',
+                content: announcementXml.systemXml,
+                _positional: true,
+              }),
+            );
+          }
         }
       }
 
@@ -1465,10 +1489,13 @@ export class ContextChef {
         for (let i = 0; i < assembled.length; i++) {
           const msg = assembled[i];
           if (msg.role !== 'system' || !msg._positional) continue;
-          // Consecutive positional system messages form one section — walk
-          // back over them to the message the section actually follows.
+          // Walk back over ALL system messages, not just positional ones —
+          // this mirrors the adapter, which never resets its user-turn
+          // tracking on a system message (a hoisted non-positional system
+          // leaves the wire stream, so adjacency to the user turn survives;
+          // consecutive positional messages form one API section).
           let j = i - 1;
-          while (j >= 0 && assembled[j].role === 'system' && assembled[j]._positional) j--;
+          while (j >= 0 && assembled[j].role === 'system') j--;
           const prev = assembled[j];
           if (prev && (prev.role === 'user' || prev.role === 'tool')) continue;
           this._positionalHoistWarned = true;
@@ -1525,7 +1552,7 @@ export class ContextChef {
 
       return payload;
     } finally {
-      this._currentSignal = undefined;
+      this._currentSignal = prevSignal;
       if (isOutermostCompile) this._compiling = false;
     }
   }

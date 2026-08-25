@@ -244,6 +244,32 @@ describe('auditAnthropicCachePlacement', () => {
     ]);
     expect(issues.every((i) => i.message.includes('move the cache breakpoint'))).toBe(true);
   });
+
+  it("breakpoint-tail diagnosis keeps the skill marker's alternative remedy", () => {
+    const payload = {
+      system: [sys('stable')],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'q\n\n<skill_instructions skill="triage">rules</skill_instructions>',
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+      ],
+    } as unknown as AnthropicPayload;
+
+    const issues = auditAnthropicCachePlacement(payload);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].dedupeKey).toBe('skill tail instructions@breakpoint-tail');
+    expect(issues[0].message).toContain('move the breakpoint');
+    // "Move the breakpoint" is not the only remedy for a skill — the
+    // long-lived-mode alternative must survive into this branch.
+    expect(issues[0].message).toContain('skillPlacement "after_system"');
+  });
 });
 
 // ═══════════════════════════════════════════════════════

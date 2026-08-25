@@ -600,6 +600,19 @@ describe('AnthropicAdapter — positional system messages', () => {
     expect(JSON.stringify(back.history)).not.toContain('announcements');
   });
 
+  it('fromAnthropic routes a LEADING system message in `messages` into system (no data loss)', () => {
+    // Callers who put their system prompt in messages[0] instead of the
+    // `system` param must not lose the text — it is the prompt's system
+    // layer, not positional channel output.
+    const back = fromAnthropic([
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'hi' },
+    ] as unknown as Parameters<typeof fromAnthropic>[0]);
+
+    expect(back.system.map((m) => m.content)).toEqual(['You are helpful.']);
+    expect(back.history).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
   it('maps _cache_breakpoint on a positional system message to cache_control', () => {
     const messages: Message[] = [
       { role: 'user', content: 'Hello' },

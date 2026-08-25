@@ -634,4 +634,17 @@ describe('OpenAIResponsesAdapter — positional system messages', () => {
     expect(JSON.stringify(history)).not.toContain('announcements');
     expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
   });
+
+  it('fromOpenAIResponses preserves mid-stream DEVELOPER items (hand-written durable steering)', () => {
+    // Chef only ever emits role:'system' for positional output — a mid-stream
+    // developer item is a caller's own instruction and must not vanish.
+    const items: OpenAIResponsesInputItem[] = [
+      { type: 'message', role: 'user', content: 'hi' },
+      { type: 'message', role: 'developer', content: 'From here on, be concise.' },
+      { type: 'message', role: 'assistant', content: 'ok' },
+    ];
+    const { system } = fromOpenAIResponses(items);
+
+    expect(system.map((m) => m.content)).toContain('From here on, be concise.');
+  });
 });

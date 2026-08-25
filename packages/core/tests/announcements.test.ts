@@ -192,27 +192,66 @@ describe("announcements — 'system' channel", () => {
     expect(messages[4].content).toContain('<thinking>');
   });
 
-  it('degrades to a user message (with a warn-once) when no conversational tail exists', async () => {
+  it('no conversational tail + Anthropic target: degrades to a user message with a warn-once', async () => {
     const warn = vi.fn();
-    const adapter = new CaptureAdapter();
     const chef = new ContextChef({ logger: { warn } });
     chef.setSystemPrompt([{ role: 'system', content: 'sys' }]); // no history at all
     chef.announce('a', 'Tools newly available: grep', { channel: 'system' });
 
-    const messages = plain(await chef.compile({ target: adapter }));
+    const payload = await chef.compile({ target: 'anthropic' });
 
-    // A positional system message here would precede every user turn — the
-    // Anthropic adapter would hoist it back into the cacheable prefix, the
-    // exact failure the channel exists to avoid. Delivered as user instead.
-    const announcement = messages.find((m) => m.content.includes('<announcements>'));
-    expect(announcement?.role).toBe('user');
-    expect(announcement?._positional).toBeUndefined();
+    // A leading positional system message is invalid on the Anthropic API and
+    // the adapter's hoist fallback would land the volatile text back in the
+    // cacheable prefix — the exact failure the channel exists to avoid.
+    expect(JSON.stringify(payload.system ?? [])).not.toContain('announcements');
+    const messages = payload.messages as Array<{ role: string }>;
+    expect(messages[0].role).toBe('user');
+    expect(JSON.stringify(messages[0])).toContain('announcements');
 
-    await chef.compile({ target: adapter });
+    await chef.compile({ target: 'anthropic' });
     const announceWarns = warn.mock.calls.filter((c: unknown[]) =>
       String(c[0]).includes('conversational tail'),
     );
     expect(announceWarns).toHaveLength(1); // warn-once across compiles
+  });
+
+  it('no conversational tail + non-Anthropic target: keeps the positional system shape, no warning', async () => {
+    const warn = vi.fn();
+    const adapter = new CaptureAdapter();
+    const chef = new ContextChef({ logger: { warn } });
+    chef.setSystemPrompt([{ role: 'system', content: 'sys' }]);
+    chef.announce('a', 'Tools newly available: grep', { channel: 'system' });
+
+    const messages = plain(await chef.compile({ target: adapter }));
+
+    // A leading inline system message is perfectly valid on OpenAI (and the
+    // Gemini adapter degrades it itself) — the Anthropic-only constraint must
+    // not rewrite the shape or warn on other targets.
+    const announcement = messages.find((m) => m.content.includes('<announcements>'));
+    expect(announcement?.role).toBe('system');
+    expect(announcement?._positional).toBe(true);
+    expect(
+      warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('conversational tail')),
+    ).toHaveLength(0);
+  });
+
+  it('does not warn when a hand-written positional message is adjacent across a plain system message', async () => {
+    const warn = vi.fn();
+    const chef = new ContextChef({ logger: { warn } });
+    chef.setHistory([
+      { role: 'user', content: 'q' },
+      // A non-positional system message gets HOISTED out of the wire stream,
+      // so the positional one still sits immediately after the user turn on
+      // the wire — the adapter keeps it inline and no warning is warranted.
+      { role: 'system', content: 'plain note' },
+      { role: 'system', content: 'positional note', _positional: true },
+    ]);
+
+    await chef.compile({ target: 'anthropic' });
+
+    expect(
+      warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('positional system message')),
+    ).toHaveLength(0);
   });
 
   it('warns through ChefConfig.logger when a hand-written positional system message would be hoisted on Anthropic', async () => {

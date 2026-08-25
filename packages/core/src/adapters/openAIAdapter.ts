@@ -45,6 +45,15 @@ export function fromOpenAI(messages: SDKMessageParam[]): ParsedMessages {
 
   for (const msg of messages) {
     if (msg.role === 'system') {
+      // Leading system messages are the prompt's system layer. A system
+      // message appearing MID-STREAM (after any conversation message) is
+      // positional channel output — announcements re-rendered every compile
+      // until retracted. Folding it into the system layer would bake
+      // volatile text into the cacheable prefix and defeat
+      // retractAnnouncement(), so it is skipped: ownership stays with the
+      // chef state that injected it. Same contract as fromAnthropic /
+      // fromOpenAIResponses.
+      if (history.length > 0) continue;
       const content =
         typeof msg.content === 'string'
           ? msg.content

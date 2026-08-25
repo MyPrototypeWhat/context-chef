@@ -53,4 +53,29 @@ describe('compile() re-entrancy flag lifecycle', () => {
     expect(flagDuringOuter).toBe(true); // inner completion must NOT clear the outer's flag
     expect(flag(chef)).toBe(false); // outer completion does
   });
+
+  it("restores the outer compile's signal after a nested compile finishes", async () => {
+    const chef = new ContextChef();
+    chef.setHistory([{ role: 'user', content: 'q' }]);
+    const outerSignal = new AbortController().signal;
+    const currentSignal = () =>
+      (chef as unknown as { _currentSignal?: AbortSignal })._currentSignal;
+
+    let signalAfterInner: AbortSignal | undefined;
+    let nested = false;
+    const onStart = async () => {
+      if (nested) return;
+      nested = true;
+      chef.off('compile:start', onStart);
+      await chef.compile({ target: 'openai' }); // inner compile, no signal of its own
+      // The rest of the OUTER compile still forwards the caller's signal to
+      // event-bridge handlers — the inner finally must restore, not clear.
+      signalAfterInner = currentSignal();
+    };
+    chef.on('compile:start', onStart);
+
+    await chef.compile({ target: 'openai', signal: outerSignal });
+    expect(signalAfterInner).toBe(outerSignal);
+    expect(currentSignal()).toBeUndefined(); // outer completion clears
+  });
 });

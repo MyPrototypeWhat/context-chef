@@ -239,6 +239,24 @@ describe('fromOpenAI', () => {
     expect(history).toHaveLength(1);
   });
 
+  it('skips MID-STREAM system messages instead of folding them into the system layer', () => {
+    // Chat Completions is a positional-system target: chef's announcements
+    // are emitted inline. Folding one back into the system layer on re-ingest
+    // would bake volatile text into the cacheable prefix and defeat
+    // retractAnnouncement(). Leading system messages stay the system layer.
+    const messages: ChatCompletionMessageParam[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'hi' },
+      { role: 'system', content: '<announcements>x</announcements>' },
+      { role: 'assistant', content: 'ok' },
+    ];
+    const { system, history } = fromOpenAI(messages);
+
+    expect(system).toEqual([{ role: 'system', content: 'You are helpful.' }]);
+    expect(JSON.stringify(history)).not.toContain('announcements');
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
   it('converts image_url content parts to attachments', () => {
     const messages: ChatCompletionMessageParam[] = [
       {
