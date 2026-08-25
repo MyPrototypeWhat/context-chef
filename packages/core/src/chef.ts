@@ -942,19 +942,20 @@ export class ContextChef {
    */
   private _shapeMemorySandwichParts(
     dataXml: string,
-    liveKeys: string[],
+    injectedMemoryKeys: string[],
   ): { topMessages: Message[]; tailDataXml: string } {
     if (!this.memory) return { topMessages: [], tailDataXml: '' };
 
-    // `liveKeys` is the FULL post-sweep key list, not just the selected
-    // entries: the static tool schemas (4.1) rely on this block to surface
-    // every modifiable key, so a narrowing selector must not hide the rest.
-    // A block is emitted even when the selector left nothing to inject —
-    // the key guidance is what keeps modify_memory usable.
-    const dataBlock =
-      dataXml || liveKeys.length > 0
-        ? Prompts.getMemoryBlock(dataXml, liveKeys, this.memory.allowedKeys)
-        : '';
+    // The key guidance lists the SELECTED (visible) keys only. A selector is
+    // the caller's visibility policy: enumerating every live key here would
+    // defeat its token control (hundreds of key names per compile) and —
+    // under 'after_system' — rewrite the top system block on mutations the
+    // selector deliberately never injects, re-introducing the cache
+    // invalidation this placement exists to avoid. Keys a selector hides
+    // stay modifiable anyway: modify_memory validates at dispatch time.
+    const dataBlock = dataXml
+      ? Prompts.getMemoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
+      : '';
 
     if (this.memory.placement === 'after_system') {
       const content = dataBlock
@@ -1278,7 +1279,7 @@ export class ContextChef {
         memoryExpiredKeys = artifacts.expiredKeys;
         injectedMemoryKeys = artifacts.selected.map((e) => e.key);
         memoryTools = artifacts.toolDefinitions;
-        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, artifacts.liveKeys);
+        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, injectedMemoryKeys);
         memoryMessages = parts.topMessages;
         memoryTailDataXml = parts.tailDataXml;
       }

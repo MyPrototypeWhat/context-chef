@@ -1248,11 +1248,12 @@ describe('Memory selector', () => {
     expect(memMsg).toBeDefined();
     expect(memMsg?.content).toContain('key="important"');
     expect(memMsg?.content).toContain('keep');
-    // Deselected VALUE stays out; the KEY still appears in the "Existing
-    // memory keys" guidance so the static modify_memory schema stays usable.
-    expect(memMsg?.content).not.toContain('<entry key="trivial">');
+    // Deselected entries are fully invisible — key and value. Listing hidden
+    // keys would rewrite this system block on mutations the selector never
+    // injects (a cache buster under 'after_system'); hidden keys stay
+    // modifiable through modify_memory's dispatch-time validation.
+    expect(memMsg?.content).not.toContain('trivial');
     expect(memMsg?.content).not.toContain('drop');
-    expect(memMsg?.content).toContain('Existing memory keys: important, trivial');
   });
 });
 
