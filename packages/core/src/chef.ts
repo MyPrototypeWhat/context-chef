@@ -59,6 +59,43 @@ function computeAnthropicBetas(server: unknown): string[] {
   return [...betas];
 }
 
+/** Escapes a string for use inside an XML attribute value. */
+function escapeXmlAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Delivery channel for an announcement (see {@link ContextChef.announce}).
+ *
+ * - `'system'` — one `_positional` system message at the conversational tail.
+ * - `'user_tail'` — folded into the tail stitch of the last user message.
+ * - `'auto'` — resolved per compile target: `'system'` on the Anthropic target,
+ *   `'user_tail'` everywhere else.
+ */
+export type AnnouncementChannel = 'auto' | 'system' | 'user_tail';
+
+/** A standing capability announcement, as returned by {@link ContextChef.getAnnouncements}. */
+export interface Announcement {
+  readonly id: string;
+  readonly content: string;
+  readonly channel: AnnouncementChannel;
+}
+
+/**
+ * Where the active skill's instructions are delivered.
+ *
+ * - `'after_system'` (default): a dedicated `role: 'system'` message right
+ *   after the user system prompt. The instructions live in the cacheable
+ *   prefix, but every activation / switch / deactivation rewrites that prefix
+ *   and costs one full cache invalidation.
+ * - `'tail'`: the instructions become the first element of the tail stitch,
+ *   wrapped in `<skill_instructions skill="NAME">`. The cacheable prefix is
+ *   never touched — the right trade for agents that switch modes frequently —
+ *   at the cost of re-sending the instruction tokens in the uncacheable tail
+ *   on every single request.
+ */
+export type SkillPlacement = 'after_system' | 'tail';
+
 /**
  * Read-only snapshot of the current context, passed to the onBeforeCompile hook.
  */
@@ -107,6 +144,12 @@ export interface ChefSnapshot {
   readonly skillInstructions?: string;
   /** Guardrail options active at snapshot time (withGuardrails). */
   readonly guardrailOptions?: GuardrailOptions;
+  /**
+   * Standing announcements at snapshot time, in insertion order. Optional for
+   * backward compatibility: restoring a pre-announcement snapshot yields an
+   * empty announcement set.
+   */
+  readonly announcements?: Announcement[];
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -121,6 +164,18 @@ export interface ChefConfig {
   logger?: ChefLogger;
   pruner?: PrunerConfig;
   memory?: MemoryConfig;
+  /**
+   * Where the active skill's instructions land. Defaults to `'after_system'`,
+   * which is bit-for-bit compatible with pre-hot-plug behavior.
+   *
+   * `'after_system'` puts the instructions in the cacheable prefix — cheap to
+   * re-send, but each activation or mode switch invalidates the whole cached
+   * prefix. `'tail'` puts them at the head of the tail stitch instead: the
+   * prefix survives every switch untouched, and in exchange the instruction
+   * tokens are re-sent uncached on every request. Pick `'tail'` when the agent
+   * switches skills often relative to how long each skill stays active.
+   */
+  skillPlacement?: SkillPlacement;
   /**
    * Lifecycle hook applied to the message array right before it's handed to the
    * Assembler. Use this to apply broad transformations like filtering, reordering,
@@ -337,6 +392,14 @@ export class ContextChef {
   private _registeredSkills: Skill[] = [];
   private _activeSkill: Skill | undefined;
   private _skillInstructions: string = '';
+  private skillPlacement: SkillPlacement = 'after_system';
+
+  /**
+   * Standing announcements, keyed by id. A Map because rendering order is the
+   * insertion order and re-setting an existing key keeps its position, which
+   * is exactly the upsert semantics announce() promises.
+   */
+  private _announcements = new Map<string, Announcement>();
 
   constructor(config: ChefConfig = {}) {
     this.emitter = new TypedEventEmitter<ChefEvents>(config.logger);
@@ -351,6 +414,7 @@ export class ContextChef {
     this.contextManagement = config.contextManagement;
     this.logger = config.logger;
     this.cacheAudit = config.cacheAudit ?? false;
+    this.skillPlacement = config.skillPlacement ?? 'after_system';
     if (config.contextManagement?.strategy === 'server' && config.janitor?.compressionModel) {
       (config.logger ?? console).warn(
         "[context-chef] contextManagement.strategy 'server' is configured together with a " +
@@ -665,7 +729,8 @@ export class ContextChef {
    *
    * On activation the skill's `instructions` are placed into the message
    * sandwich on the next `compile()` as a dedicated `{ role: 'system' }`
-   * message. Pruner state is NOT touched (Skill ⊥ Pruner).
+   * message — or, under `ChefConfig.skillPlacement: 'tail'`, at the head of
+   * the tail stitch instead. Pruner state is NOT touched (Skill ⊥ Pruner).
    */
   public activateSkill(skill: Skill | string | null): this {
     if (skill === null) {
@@ -699,6 +764,95 @@ export class ContextChef {
    */
   public getActiveSkill(): Skill | undefined {
     return this._activeSkill ? structuredClone(this._activeSkill) : undefined;
+  }
+
+  // ─── Announcements ─────────────────────────────────────────────────────
+
+  /**
+   * Announce a mid-session capability change (tools or skills added, withdrawn,
+   * re-scoped) to the model.
+   *
+   * An announcement is a statement of CURRENT state, not a one-shot event: it
+   * is re-rendered into EVERY compile until {@link retractAnnouncement} removes
+   * it. That is the point — ContextChef's injections never persist into the
+   * caller's history, so a retracted announcement disappears completely from
+   * subsequent payloads instead of lingering as an obsolete turn the model
+   * keeps re-reading.
+   *
+   * Upsert by `id`: re-announcing the same id replaces the content and channel
+   * while keeping the original insertion position, so the rendered block stays
+   * stable as announcements are updated.
+   *
+   * Wording: state facts, do not command. "Tools newly available: read_file,
+   * grep" and "web_search has been withdrawn; calls to it will be rejected"
+   * read as system state; "You must now use read_file" reads as an instruction
+   * competing with the system prompt.
+   *
+   * Detecting the delta is userland policy, not chef mechanism:
+   *
+   * @example
+   * const added = next.filter((t) => !prev.has(t));
+   * const removed = [...prev].filter((t) => !next.includes(t));
+   * if (added.length) chef.announce('tools:added', `Tools newly available: ${added.join(', ')}`);
+   * else chef.retractAnnouncement('tools:added');
+   * if (removed.length) {
+   *   chef.announce('tools:removed', `Withdrawn; calls will be rejected: ${removed.join(', ')}`);
+   * }
+   */
+  public announce(id: string, content: string, options?: { channel?: AnnouncementChannel }): this {
+    // Map.set on an existing key overwrites in place, keeping insertion order.
+    this._announcements.set(id, { id, content, channel: options?.channel ?? 'auto' });
+    return this;
+  }
+
+  /**
+   * Removes a standing announcement. Returns true when one was removed.
+   * The next compile() carries no trace of it.
+   */
+  public retractAnnouncement(id: string): boolean {
+    return this._announcements.delete(id);
+  }
+
+  /** Current standing announcements, in insertion order. */
+  public getAnnouncements(): ReadonlyArray<Announcement> {
+    return [...this._announcements.values()].map((a) => ({ ...a }));
+  }
+
+  /**
+   * Wraps announcements in the shared `<announcements>` block. Returns '' for
+   * an empty list so callers can treat the result as a presence check.
+   */
+  private _renderAnnouncements(list: Announcement[]): string {
+    if (list.length === 0) return '';
+    const items = list.map(
+      (a) => `<announcement id="${escapeXmlAttribute(a.id)}">\n${a.content}\n</announcement>`,
+    );
+    return `<announcements>\n${items.join('\n\n')}\n</announcements>`;
+  }
+
+  /**
+   * Splits standing announcements by their effective channel for one compile.
+   *
+   * `'auto'` routes by TARGET only — chef does not know the model id. The
+   * Anthropic target gets `'system'` because mid-conversation system messages
+   * leave the cached prefix intact and carry operator precedence; every other
+   * target gets `'user_tail'`. Anthropic models WITHOUT mid-conversation system
+   * support (Sonnet 5) must therefore pass `channel: 'user_tail'` explicitly —
+   * mechanism, not policy.
+   */
+  private _resolveAnnouncementChannels(isAnthropicTarget: boolean): {
+    systemXml: string;
+    tailXml: string;
+  } {
+    const all = [...this._announcements.values()];
+    const autoChannel: Exclude<AnnouncementChannel, 'auto'> = isAnthropicTarget
+      ? 'system'
+      : 'user_tail';
+    const resolved = all.map((a) => (a.channel === 'auto' ? autoChannel : a.channel));
+    return {
+      systemXml: this._renderAnnouncements(all.filter((_, i) => resolved[i] === 'system')),
+      tailXml: this._renderAnnouncements(all.filter((_, i) => resolved[i] === 'user_tail')),
+    };
   }
 
   /**
@@ -825,6 +979,10 @@ export class ContextChef {
    * Use when the developer knows it's time to "start fresh" — e.g., user requests a new topic,
    * or an Agent completes an independent sub-task phase.
    * This provides more direct control than waiting for Janitor's automatic token-based compression.
+   *
+   * Announcements survive: they describe the CURRENT capability set, which a
+   * fresh conversation still needs. Retract them explicitly via
+   * {@link retractAnnouncement} when the capability change no longer holds.
    */
   public clearHistory(): this {
     this.history = [];
@@ -861,6 +1019,7 @@ export class ContextChef {
       guardrailOptions: this._guardrailOptions
         ? structuredClone(this._guardrailOptions)
         : undefined,
+      announcements: [...this._announcements.values()].map((a) => ({ ...a })),
       label,
       createdAt: Date.now(),
     };
@@ -885,6 +1044,14 @@ export class ContextChef {
     this._guardrailOptions = snapshot.guardrailOptions
       ? structuredClone(snapshot.guardrailOptions)
       : undefined;
+    // Pre-announcement snapshots have no `announcements` field — restoring one
+    // clears the set rather than leaving the previous chef's announcements live.
+    this._announcements = new Map(
+      (Array.isArray(snapshot.announcements) ? snapshot.announcements : []).map((a) => [
+        a.id,
+        { ...a },
+      ]),
+    );
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);
@@ -1109,13 +1276,20 @@ export class ContextChef {
       // diverges from payload state. Documented in CompileOptions.signal.
       signal?.throwIfAborted();
 
-      // 5b. Skill instructions slot — single dedicated system message between
-      //     userSystemPrompt and memoryMessages. NOT appended to user system
-      //     so the cache breakpoint stays clean and LLM attribution is direct.
+      // 5b. Skill instructions slot. Under 'after_system' (default) they are a
+      //     single dedicated system message between userSystemPrompt and
+      //     memoryMessages — NOT appended to user system, so the cache
+      //     breakpoint stays clean and LLM attribution is direct. Under 'tail'
+      //     they leave the prefix entirely and ride the tail stitch instead.
+      const skillActive = this._skillInstructions.length > 0;
       const skillMessages: Message[] =
-        this._skillInstructions.length > 0
+        skillActive && this.skillPlacement === 'after_system'
           ? [{ role: 'system', content: this._skillInstructions }]
           : [];
+      const skillTailXml =
+        skillActive && this.skillPlacement === 'tail'
+          ? `<skill_instructions skill="${escapeXmlAttribute(this._activeSkill?.name ?? '')}">\n${this._skillInstructions}\n</skill_instructions>`
+          : '';
 
       // 5c. Guardrail messages (enforce-XML instruction + prefill) — applied
       //     from the stored options at compile time, closest to generation.
@@ -1156,28 +1330,44 @@ export class ContextChef {
 
       // 8. Assembler: tail injection (volatile content closest to LLM generation
       //    point) + deterministic key ordering. The stitch is composed in a fixed
-      //    inner order — memory data, dynamic state, implicit context, anchor —
-      //    so callers reading the final user message can rely on the layout.
+      //    inner order — skill instructions, memory data, dynamic state,
+      //    implicit context, announcements, anchor — so callers reading the
+      //    final user message can rely on the layout.
+      const announcementXml = this._resolveAnnouncementChannels(isAnthropicTarget);
       const tailParts: string[] = [];
+      // skillPlacement 'tail': standing mode instructions lead the stitch, so
+      // the model reads "who you are right now" before the state it applies to.
+      if (skillTailXml) {
+        tailParts.push(skillTailXml);
+      }
       if (memoryTailDataXml) {
         tailParts.push(memoryTailDataXml);
       }
-      if (this.dynamicStatePlacement === 'last_user') {
+      {
         let dynamicTailAdded = false;
-        if (this.dynamicStateXml) {
-          tailParts.push(this.dynamicStateXml);
+        if (this.dynamicStatePlacement === 'last_user') {
+          if (this.dynamicStateXml) {
+            tailParts.push(this.dynamicStateXml);
+            dynamicTailAdded = true;
+          }
+          if (implicitContextXml) {
+            tailParts.push(implicitContextXml);
+            dynamicTailAdded = true;
+          }
+        }
+        // Announcements are system-state statements too, so they do trigger the
+        // anchor — unlike skill instructions and memory data.
+        if (announcementXml.tailXml) {
+          tailParts.push(announcementXml.tailXml);
           dynamicTailAdded = true;
         }
-        if (implicitContextXml) {
-          tailParts.push(implicitContextXml);
-          dynamicTailAdded = true;
-        }
-        // The anchor refers specifically to dynamic state / implicit context.
-        // Memory data already self-introduces via `Prompts.MEMORY_BLOCK_HEADER`
-        // ("You recall the following from previous conversations:"), so a second
-        // anchor for memory-only tail injections is redundant and reads as noise
-        // to the model. If `MEMORY_BLOCK_HEADER` is ever changed or removed in
-        // `prompts.ts`, this suppression rule needs to be re-evaluated.
+        // The anchor refers specifically to dynamic state / implicit context /
+        // announcements. Memory data already self-introduces via
+        // `Prompts.MEMORY_BLOCK_HEADER` ("You recall the following from previous
+        // conversations:"), and skill instructions are self-describing inside
+        // their own tag, so an anchor for those alone is redundant and reads as
+        // noise to the model. If `MEMORY_BLOCK_HEADER` is ever changed or
+        // removed in `prompts.ts`, this suppression rule needs re-evaluating.
         if (dynamicTailAdded) {
           tailParts.push('Above is the current system state. Use it to guide your next action.');
         }
@@ -1193,7 +1383,46 @@ export class ContextChef {
         tailXml: tailXml || undefined,
       });
 
-      const adapterPayload = adapter.compile([...rawPayload.messages]);
+      // 8b. System-channel announcements: ONE positional system message placed
+      //     after the conversational tail of the ASSEMBLED result — deliberately
+      //     after the assembler ran, because the tail stitch either merged into
+      //     the last user message or added a new user message for a tool-result
+      //     tail. Scanning the result puts the announcement after that user
+      //     content (a system message following the user turn is the shape
+      //     Anthropic documents) and still before any trailing assistant
+      //     prefill. Same last-user/tool scan the Assembler uses; kept inline
+      //     rather than widening the Assembler's internal API.
+      const assembled = [...rawPayload.messages];
+      if (announcementXml.systemXml) {
+        let tail = -1;
+        for (let i = assembled.length - 1; i >= 0; i--) {
+          if (assembled[i].role === 'user' || assembled[i].role === 'tool') {
+            tail = i;
+            break;
+          }
+        }
+        let insertAt: number;
+        if (tail !== -1) {
+          insertAt = tail + 1;
+        } else {
+          // No conversational tail at all: sit before any trailing prefill. The
+          // adapter falls back to hoisting a positional system message that
+          // precedes every user/tool message (documented on Message._positional).
+          insertAt = assembled.length;
+          while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
+        }
+        assembled.splice(
+          insertAt,
+          0,
+          Assembler.orderKeysDeterministically<Message>({
+            role: 'system',
+            content: announcementXml.systemXml,
+            _positional: true,
+          }),
+        );
+      }
+
+      const adapterPayload = adapter.compile(assembled);
 
       const prunerTools = this._getPrunerTools();
       const tools = [...prunerTools, ...memoryTools];

@@ -459,3 +459,34 @@ describe('OpenAIAdapter — attachments output', () => {
     expect(cloned.meta.at).toBe('2026-01-02T03:04:05.000Z');
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// OpenAIAdapter.compile — positional system messages
+// ═══════════════════════════════════════════════════════
+
+describe('OpenAIAdapter — positional system messages', () => {
+  it('keeps a positional system message inline, stripping the flag', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+      { role: 'user', content: 'Use it' },
+    ];
+    const result = adapter.compile([...messages]);
+    const msgs = toPlainMessages(result);
+
+    expect(msgs).toHaveLength(5);
+    expect(msgs[3]).toEqual({ role: 'system', content: 'A new tool is available.' });
+  });
+
+  it('never leaks _positional into the wire payload', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'Note.', _positional: true },
+      { role: 'user', content: 'Hello' },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('_positional');
+  });
+});

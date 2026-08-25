@@ -42,6 +42,16 @@ const VOLATILE_MARKERS: Array<{ marker: string; source: string; fix: string }> =
     source: 'guardrail enforce-XML',
     fix: "set `withGuardrails({ ..., placement: 'last_user' })` so guardrail changes stop rewriting the cached prefix",
   },
+  {
+    marker: '<skill_instructions',
+    source: 'skill tail instructions',
+    fix: 'skill tail content always renders at the conversational tail — move the cache breakpoint to an earlier, stable message (or use skillPlacement "after_system" for a long-lived skill)',
+  },
+  {
+    marker: '<announcements>',
+    source: 'announcements',
+    fix: 'announcements always render at the conversational tail — move the cache breakpoint to an earlier, stable message',
+  },
 ];
 
 /** Structural view of one position in the Anthropic prompt prefix. */

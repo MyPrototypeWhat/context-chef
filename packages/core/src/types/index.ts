@@ -148,10 +148,12 @@ export interface Message {
    * Fable 5 / Mythos 5 / Opus 4.8 / Opus 5 (NOT Sonnet 5): the cached prefix
    * stays intact and the text carries operator precedence — the intended
    * channel for announcing mid-session capability changes (tools/skills
-   * added or withdrawn). OpenAI keeps system messages inline anyway, so the
-   * flag is a no-op there. Gemini has no system role in `contents`; the
-   * adapter degrades a positional system message to a `user` content entry
-   * verbatim.
+   * added or withdrawn). OpenAI Chat Completions keeps system messages
+   * inline anyway, so the flag is a no-op there; the Responses adapter emits
+   * a positional system message as an inline `message` item instead of
+   * folding it into the top-level `instructions` parameter. Gemini has no
+   * system role in `contents`; the adapter degrades a positional system
+   * message to a `user` content entry verbatim.
    *
    * Placement contract (Anthropic API constraint, NOT validated by chef): a
    * positional system message must not be the first message and must not sit

@@ -12,6 +12,7 @@ import type {
 import type {
   AnthropicPayload,
   Attachment,
+  ChefLogger,
   HistoryMessage,
   Message,
   ParsedMessages,
@@ -233,10 +234,22 @@ function attachmentsToBlocks(attachments: Attachment[]): SDKContentBlockParam[] 
   return blocks;
 }
 
+export interface AnthropicAdapterOptions {
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+}
+
 export class AnthropicAdapter implements ITargetAdapter {
+  private _positionalHoistWarned = false;
+
+  constructor(private readonly options: AnthropicAdapterOptions = {}) {}
+
   compile(messages: Message[]): AnthropicPayload {
     const systemMessages: SDKTextBlockParam[] = [];
     const chatMessages: SDKMessageParam[] = [];
+    // A positional system message may not lead the stream (API constraint) —
+    // one that does is hoisted instead.
+    let seenUserOrTool = false;
 
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -244,8 +257,24 @@ export class AnthropicAdapter implements ITargetAdapter {
         if (msg._cache_breakpoint) {
           sysObj.cache_control = { type: 'ephemeral' };
         }
+        if (msg._positional && seenUserOrTool) {
+          // Mid-conversation `role: "system"` messages are an API feature newer
+          // than the SDK's MessageParam role union — cast at this one emission
+          // point rather than widening the type everywhere.
+          chatMessages.push({ role: 'system', content: [sysObj] } as unknown as SDKMessageParam);
+          continue;
+        }
+        if (msg._positional && !this._positionalHoistWarned) {
+          this._positionalHoistWarned = true;
+          (this.options.logger ?? console).warn(
+            '[context-chef] a positional system message appeared before any user/tool message — ' +
+              'the Anthropic API rejects a leading mid-conversation system message, so it was ' +
+              'hoisted into the top-level system prompt (warned once).',
+          );
+        }
         systemMessages.push(sysObj);
       } else {
+        if (msg.role === 'user' || msg.role === 'tool') seenUserOrTool = true;
         const role: 'user' | 'assistant' =
           msg.role === 'tool' ? 'user' : (msg.role as 'user' | 'assistant');
         const content: SDKContentBlockParam[] = [];

@@ -583,3 +583,38 @@ describe('round-trip fidelity', () => {
     expect(payload.input).toEqual(items);
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// OpenAIResponsesAdapter.compile — positional system messages
+// ═══════════════════════════════════════════════════════
+
+describe('OpenAIResponsesAdapter — positional system messages', () => {
+  it('keeps a positional system message inline instead of hoisting to instructions', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+      { role: 'user', content: 'Use it' },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(result.instructions).toBe('You are helpful.');
+    expect(result.input).toHaveLength(4);
+    expect(result.input[2]).toEqual({
+      type: 'message',
+      role: 'system',
+      content: [{ type: 'input_text', text: 'A new tool is available.' }],
+    });
+  });
+
+  it('never leaks _positional into the wire payload', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Note.', _positional: true },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('_positional');
+  });
+});

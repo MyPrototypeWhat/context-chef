@@ -207,6 +207,9 @@ export class OpenAIAdapter implements ITargetAdapter {
       // the wire).
       const {
         _cache_breakpoint,
+        // Chat Completions keeps system messages inline, so positional is the
+        // only behavior here — the flag itself must not reach the wire.
+        _positional,
         thinking,
         redacted_thinking,
         attachments,

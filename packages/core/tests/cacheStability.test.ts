@@ -213,6 +213,37 @@ describe('auditAnthropicCachePlacement', () => {
     expect(issues[0].message).toContain('move the breakpoint');
     expect(issues[0].message).not.toContain("placement: 'last_user'");
   });
+
+  it('flags skill tail instructions and announcements caught inside the cached prefix', () => {
+    // Both channels always render at the conversational tail, so the only way
+    // they end up hashed is a breakpoint placed at or after them.
+    const payload = {
+      system: [sys('stable')],
+      messages: [
+        {
+          role: 'user',
+          content: 'q1\n\n<skill_instructions skill="triage">rules</skill_instructions>',
+        },
+        { role: 'assistant', content: 'a1' },
+        {
+          role: 'user',
+          content: '<announcements><announcement id="t">x</announcement></announcements>',
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }],
+        },
+      ],
+    } as unknown as AnthropicPayload;
+
+    const issues = auditAnthropicCachePlacement(payload);
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.dedupeKey).sort()).toEqual([
+      'announcements@prefix',
+      'skill tail instructions@prefix',
+    ]);
+    expect(issues.every((i) => i.message.includes('move the cache breakpoint'))).toBe(true);
+  });
 });
 
 // ═══════════════════════════════════════════════════════

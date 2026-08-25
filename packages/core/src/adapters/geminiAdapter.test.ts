@@ -920,3 +920,57 @@ describe('GeminiAdapter — compaction degradation', () => {
     expect(JSON.stringify(result)).not.toContain('_anthropic_compaction');
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// GeminiAdapter.compile — positional system messages
+// ═══════════════════════════════════════════════════════
+
+describe('GeminiAdapter — positional system messages', () => {
+  const adapter = new GeminiAdapter();
+
+  it('degrades a positional system message to a user content entry, verbatim', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'You are an expert.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+      { role: 'user', content: 'Use it' },
+    ];
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.systemInstruction?.parts).toHaveLength(1);
+    expect(result.systemInstruction?.parts[0].text).toBe('You are an expert.');
+
+    // The degraded entry merges with the following user turn (alternation).
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[2].role).toBe('user');
+    expect(result.messages[2].parts.map((p) => p.text)).toEqual([
+      'A new tool is available.',
+      'Use it',
+    ]);
+  });
+
+  it('keeps the degraded entry standalone when the next turn is a model turn', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Tool withdrawn.', _positional: true },
+      { role: 'assistant', content: 'Understood.' },
+      { role: 'user', content: 'Go on' },
+    ];
+    const result = toPlain(adapter.compile([...messages]));
+
+    expect(result.systemInstruction).toBeUndefined();
+    expect(result.messages.map((m) => m.role)).toEqual(['user', 'model', 'user']);
+    expect(result.messages[0].parts.map((p) => p.text)).toEqual(['Hello', 'Tool withdrawn.']);
+  });
+
+  it('never leaks _positional into the payload', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Note.', _positional: true },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('_positional');
+  });
+});
