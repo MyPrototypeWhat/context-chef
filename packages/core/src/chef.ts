@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { adapterRegistry } from './adapters/adapterRegistry';
 import { AnthropicAdapter } from './adapters/anthropicAdapter';
+import { auditAnthropicCachePlacement } from './adapters/anthropicCacheAudit';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import {
@@ -201,6 +202,16 @@ export interface ChefConfig {
    * and exact token accounting. What stays client-side is everything servers
    * don't do: tool pruning, skills, memory, VFS, dynamic state.
    */
+  /**
+   * When true, every compile targeting Anthropic runs
+   * {@link auditAnthropicCachePlacement} on the produced payload and logs each
+   * distinct issue ONCE per chef instance — volatile content (memory data,
+   * dynamic state, guardrail instructions) sitting inside the cached prefix
+   * silently invalidates prompt caching on every change. Anthropic-only:
+   * it is the one provider with explicit breakpoints to audit against.
+   * Zero cost on other targets. Default false.
+   */
+  cacheAudit?: boolean;
   contextManagement?: {
     strategy: 'client' | 'server';
     /**
@@ -282,6 +293,9 @@ export class ContextChef {
   private logger?: ChefLogger;
   /** One-time warning flag: strategy 'server' compiled for a non-server-managed target. */
   private _serverFallbackWarned = false;
+  private cacheAudit = false;
+  /** Distinct cache-audit issues already warned (once per instance each). */
+  private _cacheAuditWarned = new Set<string>();
   /**
    * Serializes compile() calls on this instance (Snapshot + Serialize model):
    * concurrent callers queue instead of interleaving the mutable state a
@@ -336,6 +350,7 @@ export class ContextChef {
     this.defaultTarget = config.defaultTarget;
     this.contextManagement = config.contextManagement;
     this.logger = config.logger;
+    this.cacheAudit = config.cacheAudit ?? false;
     if (config.contextManagement?.strategy === 'server' && config.janitor?.compressionModel) {
       (config.logger ?? console).warn(
         "[context-chef] contextManagement.strategy 'server' is configured together with a " +
@@ -771,6 +786,13 @@ export class ContextChef {
   ): { topMessages: Message[]; tailDataXml: string } {
     if (!this.memory) return { topMessages: [], tailDataXml: '' };
 
+    // The key guidance lists the SELECTED (visible) keys only. A selector is
+    // the caller's visibility policy: enumerating every live key here would
+    // defeat its token control (hundreds of key names per compile) and —
+    // under 'after_system' — rewrite the top system block on mutations the
+    // selector deliberately never injects, re-introducing the cache
+    // invalidation this placement exists to avoid. Keys a selector hides
+    // stay modifiable anyway: modify_memory validates at dispatch time.
     const dataBlock = dataXml
       ? Prompts.getMemoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
       : '';
@@ -1099,9 +1121,23 @@ export class ContextChef {
       // 5c. Guardrail messages (enforce-XML instruction + prefill) — applied
       //     from the stored options at compile time, closest to generation.
       //     Independent of setDynamicState call order by design.
+      //     placement 'last_user' routes the enforce-XML text through the
+      //     Assembler tail instead (cache-safe on Anthropic, where system-role
+      //     messages are hoisted into the top-level prefix); only the prefill
+      //     remains as a trailing assistant message in that mode.
+      const guardrailTailMode = this._guardrailOptions?.placement === 'last_user';
       const guardrailMessages: Message[] = this._guardrailOptions
-        ? this.guardrail.apply([], this._guardrailOptions)
+        ? this.guardrail.apply(
+            [],
+            guardrailTailMode
+              ? { ...this._guardrailOptions, enforceXML: undefined }
+              : this._guardrailOptions,
+          )
         : [];
+      const guardrailTailXml =
+        guardrailTailMode && this._guardrailOptions?.enforceXML
+          ? Prompts.getXMLGuardrail(this._guardrailOptions.enforceXML.outputTag)
+          : '';
 
       // 6. Sandwich assembly
       let messages = [
@@ -1147,6 +1183,12 @@ export class ContextChef {
           tailParts.push('Above is the current system state. Use it to guide your next action.');
         }
       }
+      // Guardrail enforce-XML in 'last_user' placement: appended as the FINAL
+      // tail element (after the anchor) — a standing output-format instruction,
+      // not system state, so it sits closest to generation.
+      if (guardrailTailXml) {
+        tailParts.push(guardrailTailXml);
+      }
       const tailXml = tailParts.join('\n\n');
       const rawPayload = this.assembler.compile(messages, {
         tailXml: tailXml || undefined,
@@ -1170,6 +1212,24 @@ export class ContextChef {
         const anthropicPayload = payload as AnthropicPayload;
         anthropicPayload.context_management = server;
         anthropicPayload.betas = computeAnthropicBetas(server);
+      }
+
+      // 8.5 Optional cache audit (Anthropic target only). Dedupe on the
+      //     semantic issue kind, NOT the position: as history grows the same
+      //     misconfiguration drifts through message indices, and a positional
+      //     key would re-warn every compile and grow the seen-set unboundedly.
+      //     The kind space is fixed (markers × placements), so the set is
+      //     bounded too.
+      if (this.cacheAudit && isAnthropicTarget) {
+        for (const issue of auditAnthropicCachePlacement(payload as AnthropicPayload)) {
+          const key = issue.dedupeKey;
+          if (!this._cacheAuditWarned.has(key)) {
+            this._cacheAuditWarned.add(key);
+            (this.logger ?? console).warn(
+              `[context-chef] cache audit — ${issue.location}: ${issue.message}`,
+            );
+          }
+        }
       }
 
       // 9. Emit compile:done

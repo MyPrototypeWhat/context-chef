@@ -536,39 +536,52 @@ while (running) {
 
 ### 7.4 LLM-Driven Skill Loading (lazy-load recipe)
 
-```typescript
-// 1. Expose a skill loader as a tool the LLM can call
-const skillListingDescription =
-  'Load a skill to specialize for a task. Available skills:\n' +
-  formatSkillListing(chef.getRegisteredSkills(), { format: 'plain' });
+Keep the `load_skill` tool definition **static**. Tool schemas sit at the top
+of every provider's prompt prefix, so a listing-bearing description or an
+enum of registered names rewrites the schema whenever the skill set changes
+and invalidates the entire prompt cache. The listing goes in the system
+prompt; unknown names are caught at dispatch time (`activateSkill` throws
+with the available names).
 
+```typescript
+// 1. Expose a STATIC skill loader tool (no listing, no name enum)
 const loadSkillTool = {
   name: 'load_skill',
-  description: skillListingDescription,
+  description:
+    'Load a skill to specialize for a task. ' +
+    'The available skills are listed in the system prompt.',
   parameters: {
     type: 'object',
     properties: {
       skill_name: {
         type: 'string',
-        enum: chef.getRegisteredSkills().map(s => s.name),
+        description: 'A skill name from the system-prompt listing.',
       },
     },
     required: ['skill_name'],
   },
 };
 
-// 2. Add load_skill to your tools array
+// 2. The listing lives in the (stable) system prompt
+const listing = formatSkillListing(chef.getRegisteredSkills(), { format: 'plain' });
+chef.setSystemPrompt([
+  { role: 'system', content: `${basePrompt}\n\nAvailable skills:\n${listing}` },
+]);
+
+// 3. Add load_skill to your tools array
 const allTools = [...myTools, loadSkillTool];
 
-// 3. Handle it in the dispatch loop
+// 4. Handle it in the dispatch loop — dispatch-gate, like the memory tools
 for (const call of response.tool_calls) {
   if (call.name === 'load_skill') {
-    chef.activateSkill(call.args.skill_name);
-    history.push({
-      role: 'tool',
-      tool_call_id: call.id,
-      content: `Skill "${call.args.skill_name}" activated. Follow its instructions.`,
-    });
+    let content: string;
+    try {
+      chef.activateSkill(call.args.skill_name);
+      content = `Skill "${call.args.skill_name}" activated. Follow its instructions.`;
+    } catch (err) {
+      content = String(err); // lists the available names — the model self-corrects
+    }
+    history.push({ role: 'tool', tool_call_id: call.id, content });
     continue;
   }
   // normal dispatch

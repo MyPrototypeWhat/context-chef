@@ -221,6 +221,8 @@ chef.withGuardrails({
 
 **v4 semantics.** Options are now *stored* and applied at `compile()`, so call order relative to `setDynamicState` no longer matters (pre-4.0, calling `setDynamicState` after `withGuardrails` silently discarded the guardrail). Each call **replaces** the previous options (no accumulation); `withGuardrails(null)` clears them. The stored options are persisted in `ChefSnapshot` (`guardrailOptions`), and the guardrail message lands at the very end of the sandwich as its own message — closest to generation, no longer merged into the dynamic-state message.
 
+**Cache-safe placement (4.1).** `placement: 'last_user'` delivers the enforce-XML instruction through the last-user-message tail injection (same channel as dynamic state) instead of a system message. This matters on Anthropic: every `role: 'system'` message is hoisted into the top-level `system` prefix, so under the default `placement: 'system'` any guardrail change invalidates cache breakpoints downstream of it. `prefill` is unaffected either way.
+
 #### `chef.compile(options?): Promise<TargetPayload>`
 
 Compiles everything into a provider-ready payload. Triggers Janitor compression. Registered tools are auto-included.
@@ -256,6 +258,19 @@ const chef = new ContextChef({
   },
 });
 ```
+
+Don't hand-roll the counting function — `createTokenizerAdapter` (4.1) wraps any `(text) => tokens` encoder and encodes the fields-counted convention once (content + thinking + redacted data + **tool-call names/arguments** — the field hand-rolled adapters most often miss, and where write/edit tools carry the bulk of a coding-agent span):
+
+```typescript
+import { createTokenizerAdapter } from "@context-chef/core";
+import { encode } from "gpt-tokenizer"; // or js-tiktoken, etc. — your dependency, not ours
+
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer: createTokenizerAdapter(encode) },
+});
+```
+
+Cross-provider counts are approximate (o200k is exact only for OpenAI), which is safe under the default `triggerRatio: 0.7` headroom; for exact accounting use `reportTokenUsage()` with provider-reported usage.
 
 #### Path 2: reportTokenUsage (simple, no tokenizer needed)
 
@@ -700,6 +715,8 @@ Set `deferLoading: true` on a `ToolDefinition` to annotate it for Anthropic's se
 
 Persistent key-value memory that survives across sessions. Memory is modified via tool calls (`create_memory` / `modify_memory`), which are auto-injected into the payload on `compile()`.
 
+Since 4.1 the two tool definitions are **static** — same schema, same object references on every compile, regardless of what keys exist. (Previously `modify_memory` embedded an enum of live keys and appeared only when keys existed; tools sit at the top of every provider's prompt prefix, so each key mutation invalidated the entire prompt cache.) Current keys are surfaced to the model through the injected memory block instead, and unknown-key dispatches still fail safely at `updateMemory` / `deleteMemory`.
+
 ```typescript
 import { InMemoryStore, VFSMemoryStore } from "@context-chef/core";
 
@@ -758,6 +775,24 @@ The split keeps the stable usage instruction at the top of the sandwich where it
 
 When dynamic state is also injected at the tail (`dynamicStatePlacement: 'last_user'`), the order inside the last user message is: original content → `<memory>` → `<dynamic_state>` → `<implicit_context>` → anchor line. When dynamic state goes to its own system message (`dynamicStatePlacement: 'system'`), memory still injects at the user tail with no anchor.
 
+#### Anthropic cache audit (4.1)
+
+Volatile content sitting inside the cached prompt prefix silently invalidates prompt caching on every change. The audit checks a compiled Anthropic payload for exactly that — memory data, dynamic state, implicit context, or guardrail instructions placed at or before the last `cache_control` breakpoint — and names the fix per issue:
+
+```typescript
+import { auditAnthropicCachePlacement } from "@context-chef/core";
+
+const payload = await chef.compile({ target: "anthropic" });
+for (const issue of auditAnthropicCachePlacement(payload)) {
+  console.warn(`${issue.location}: ${issue.message}`);
+}
+
+// Or let the chef warn automatically (each distinct issue once per instance):
+const chef = new ContextChef({ cacheAudit: true /* Anthropic targets only */ });
+```
+
+**Anthropic-only by design**: it is the one provider with explicit, client-visible breakpoints, so the check is fully deterministic — a structural property of the payload, zero heuristics. OpenAI's automatic prefix cache and Gemini's implicit cache expose no marks to audit against, so no equivalent is offered for them.
+
 ---
 
 ### Skill (Behavior Bundle)
@@ -799,8 +834,12 @@ import {
 // Load a single skill file
 const skill = await loadSkill("./skills/db-debug/SKILL.md");
 
-// Or scan a directory: each subdir/SKILL.md becomes a Skill (tolerant — bad files surface in `errors`)
-const { skills, errors } = await loadSkillsDir("./skills");
+// Scan a directory: each subdir/SKILL.md becomes a Skill. Tolerant — bad
+// files surface in `errors`, and `warnings` (4.1) reports mechanical quality
+// findings (thin descriptions, oversized instructions, malformed
+// allowedTools, dangling relative resource links) without blocking the load.
+const { skills, errors, warnings } = await loadSkillsDir("./skills");
+for (const w of warnings) console.warn(`${w.path}: ${w.message}`);
 chef.registerSkills(skills);
 
 // Or merge several sources at once (e.g. builtin + user + project) — later dirs
@@ -816,25 +855,32 @@ const listing = formatSkillListing(skills, { format: "plain" });
 
 `SKILL.md` parsing is tolerant: block scalars (`>` folded / `|` literal), `- item` lists, and kebab-case keys (`allowed-tools`, `when-to-use`) all load. Any frontmatter key chef doesn't recognize is preserved verbatim on `skill.metadata` for your host to read — chef never interprets it (the same annotation-only stance as `allowedTools`). A *known* field written in a malformed nested shape throws, so a typo'd `allowed-tools` surfaces instead of silently disabling restrictions.
 
-The listing is typically used as the description of a `load_skill` tool, letting the LLM pick a skill itself:
+The listing lets the LLM pick a skill itself via a `load_skill` tool. Keep the tool definition **static** — the listing goes in your system prompt, not the tool description, and `skill_name` is a plain string, not an enum of registered names. Tool schemas sit at the very top of every provider's prompt prefix, so a listing-bearing description or a live-name enum rewrites the schema whenever the skill set changes and invalidates the entire prompt cache (the same reasoning as the static memory tool schemas, 4.1). Unknown names are caught at dispatch time instead — `activateSkill` throws with the available names:
 
 ```typescript
 const loadSkillTool = {
   name: "load_skill",
   description:
-    "Load a skill to specialize for the current task. Available:\n" + listing,
+    "Load a skill to specialize for the current task. " +
+    "The available skills are listed in the system prompt.",
   parameters: {
-    skill_name: {
-      type: "string",
-      enum: chef.getRegisteredSkills().map((s) => s.name),
-    },
+    skill_name: { type: "string", description: "A skill name from the listing." },
   },
 };
 
-// In your dispatch loop:
+// The listing lives in the (stable) system prompt:
+chef.setSystemPrompt([
+  { role: "system", content: `${basePrompt}\n\nAvailable skills:\n${listing}` },
+]);
+
+// In your dispatch loop — dispatch-gate, like the memory tools:
 if (call.name === "load_skill") {
-  chef.activateSkill(call.args.skill_name);
-  /* push tool result, continue loop */
+  try {
+    chef.activateSkill(call.args.skill_name);
+    /* push success tool result, continue loop */
+  } catch (err) {
+    /* push String(err) as the tool result — the model self-corrects */
+  }
 }
 ```
 

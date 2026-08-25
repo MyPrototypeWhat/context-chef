@@ -708,3 +708,13 @@ The 8-angle review confirmed 41 findings; the correctness ones were fixed pre-me
 - **Altitude**: move `computeAnthropicBetas` + the default server edits config from the facade into the Anthropic adapter layer; promote `_anthropic_compaction` / `_gemini_thought_signature` / `_openai_reasoning` from index-signature passthroughs to typed optional Message fields (like `ToolCall.thoughtSignature`); give `resolveRecall` a formatted rendering option instead of raw archive JSON.
 - **Docs**: `.agents/skills/integrate/` got a targeted stale-API patch only — needs the same full v4 refresh `skills/context-chef-core/` received.
 - **Events**: `offload:resolved` and the `memory:changed` split (planned in T2.5) did not land in v4 — revisit with real demand.
+
+---
+
+# Cache-Stability Follow-ups (PR #49, 2026-08-25)
+
+Deferred behavioral items surfaced by the 4.1 review + the dynamic tool/skill hot-plug research. Both belong in the hot-plug PR (or its immediate neighborhood), not in 4.1:
+
+- **Skill activation tail delivery**: `activateSkill` injects the skill's instructions as a system message between the system prompt and the memory block — near the TOP of the sandwich, so activating or switching a skill invalidates every provider cache breakpoint downstream. Claude Code appends skill instructions at the invocation point instead (append-only, cache-safe). Add a placement option (e.g. `skillPlacement: 'after_system' | 'tail'`) that delivers instructions through the assembler tail-injection path fixed in 4.1. Default stays `'after_system'` for compatibility.
+- **Positional system messages in the Anthropic adapter**: the adapter hoists ALL `role: 'system'` messages into the top-level `system` parameter. Anthropic's mid-conversation system messages (no beta needed on Fable 5 / Mythos 5 / Opus 4.8 / Opus 5; NOT Sonnet 5) keep the cached prefix intact and carry operator precedence — the natural channel for tool/skill availability announcements. Supporting them needs an adapter-level exception (e.g. a `_positional` message flag, or capability detection per target model) so a mid-stream system message stays in place instead of being hoisted to the top. Other targets keep rendering announcements into the existing user-tail channel.
+- **Hot-plug catalog + announcement channel**: full design conclusions from the 2026-08-25 research (Anthropic `tool_addition`/`tool_removal` + `defer_loading`; OpenAI native tool search; Gemini bust-once; three-tier announcement degradation; delta + dedup set with `isInitial`; dispatch-gate over true removal for history coherence) are recorded in the session memory `context-chef-research-findings-2026-08`.

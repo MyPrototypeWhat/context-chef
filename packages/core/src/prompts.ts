@@ -339,6 +339,13 @@ Only remember things genuinely worth persisting.
   /**
    * Dynamic wrapper used by compile() to inject recalled core memory alongside key guidance.
    * Enumerates existing keys (soft guidance) or allowed keys (strict mode) to stabilize LLM key creation.
+   *
+   * `existingKeys` is the SELECTED (visible) key list — a `selector` is the
+   * caller's visibility policy and may hide entries; hidden keys stay
+   * modifiable through dispatch-time validation. The header is unconditional:
+   * every emitted block self-introduces via {@link Prompts.MEMORY_BLOCK_HEADER},
+   * which the anchor-suppression rule in `compile()` relies on. Callers must
+   * not invoke this with empty `coreMemoryXml`.
    */
   getMemoryBlock: (coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]) => {
     let block = `${Prompts.MEMORY_BLOCK_HEADER}\n${coreMemoryXml}`;

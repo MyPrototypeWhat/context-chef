@@ -419,10 +419,39 @@ describe('memoryPlacement — selector + onMemoryExpired integration', () => {
     const lastUser = plain(payload).at(-1) as PlainMessage;
     expect(lastUser.content).toContain('shown');
     expect(lastUser.content).toContain('visible');
+    // The selector is the caller's visibility policy: a deselected entry's
+    // key and value BOTH stay out of the payload (listing hidden keys would
+    // rewrite the block on mutations the selector never injects — a cache
+    // buster — and defeat its token control). Hidden keys stay modifiable
+    // through modify_memory's dispatch-time validation.
     expect(lastUser.content).not.toContain('hidden');
     expect(lastUser.content).not.toContain('invisible');
 
     expect(payload.meta?.injectedMemoryKeys).toEqual(['shown']);
+  });
+
+  it('"before_history_tail" + selector that injects nothing emits no tail block at all', async () => {
+    const chef = new ContextChef({
+      memory: {
+        store: new InMemoryStore(),
+        memoryPlacement: 'before_history_tail',
+        selector: () => [],
+      },
+    });
+    await chef.getMemory().set('a', '1');
+    await chef.getMemory().set('b', '2');
+
+    chef
+      .setSystemPrompt([{ role: 'system', content: 'sys' }])
+      .setHistory([{ role: 'user', content: 'hi' }]);
+
+    const payload = await chef.compile({ target: 'openai' });
+    const lastUser = plain(payload).at(-1) as PlainMessage;
+    // Nothing selected → nothing injected. No bare key sentence may reach
+    // the user turn: an unattributed imperative with no <memory> tag, no
+    // header, and no anchor would be indistinguishable from human input.
+    expect(lastUser.content).toBe('hi');
+    expect(payload.meta?.injectedMemoryKeys).toEqual([]);
   });
 });
 

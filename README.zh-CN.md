@@ -221,6 +221,8 @@ chef.withGuardrails({
 
 **v4 语义。** options 现在会被*存储*并在 `compile()` 时应用，因此与 `setDynamicState` 的调用顺序不再重要（4.0 之前，在 `withGuardrails` 之后调用 `setDynamicState` 会静默丢弃护栏）。每次调用会**替换**上一次的 options（不累积）；`withGuardrails(null)` 清除。存储的 options 会随 `ChefSnapshot` 持久化（`guardrailOptions`），护栏消息作为独立消息落在三明治最末端 —— 离生成最近，不再合并进动态状态消息。
 
+**缓存安全落点（4.1）。** `placement: 'last_user'` 会把 enforce-XML 指令通过最后一条 user 消息的尾部注入送达（与动态状态同一通道），而不是走 system message。这在 Anthropic 上很关键：每条 `role: 'system'` 消息都会被提取进 top-level `system` 前缀，因此在默认的 `placement: 'system'` 下，护栏一有改动就会击穿其下游的所有 cache breakpoint。`prefill` 在两种落点下均不受影响。
+
 #### `chef.compile(options?): Promise<TargetPayload>`
 
 将所有内容编译为 provider 就绪的 payload。触发 Janitor 压缩。注册的工具自动包含。
@@ -256,6 +258,19 @@ const chef = new ContextChef({
   },
 });
 ```
+
+不要手写这个计数函数 —— `createTokenizerAdapter`（4.1）可以包装任何 `(text) => tokens` 编码器，并把计入哪些字段的约定一次性固化下来（content + thinking + redacted 数据 + **tool call 的名称/参数** —— 手写 adapter 最常漏掉的正是这个字段，而 coding agent 的一段轨迹里，write/edit 类工具的 token 大头恰恰落在这里）：
+
+```typescript
+import { createTokenizerAdapter } from "@context-chef/core";
+import { encode } from "gpt-tokenizer"; // or js-tiktoken, etc. — your dependency, not ours
+
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer: createTokenizerAdapter(encode) },
+});
+```
+
+跨 provider 的计数是近似值（o200k 只对 OpenAI 精确），在默认 `triggerRatio: 0.7` 的余量下这是安全的；需要精确记账时，请用 `reportTokenUsage()` 配合 provider 返回的用量。
 
 #### 路径 2：reportTokenUsage（简单，无需 tokenizer）
 
@@ -700,6 +715,8 @@ for (const toolCall of response.tool_calls) {
 
 跨会话持久化的键值记忆。记忆通过 tool call（`create_memory` / `modify_memory`）修改，`compile()` 时自动注入到 payload 中。
 
+自 4.1 起，这两个工具定义是**静态**的 —— 无论当前存在哪些 key，每次 compile 都是同一份 schema、同一批对象引用。（此前 `modify_memory` 内嵌一份实时 key 的枚举，且只在存在 key 时出现；而工具位于每个 provider prompt 前缀的最顶部，每次 key 变动都会击穿整个 prompt cache。）现在改由注入的 memory 块向模型呈现当前有哪些 key，未知 key 的调用依然会在 `updateMemory` / `deleteMemory` 处安全失败。
+
 ```typescript
 import { InMemoryStore, VFSMemoryStore } from "@context-chef/core";
 
@@ -758,6 +775,24 @@ const chef = new ContextChef({
 
 如果动态状态也注入到末尾（`dynamicStatePlacement: 'last_user'`），最后一条 user 消息内部顺序是：原内容 → `<memory>` → `<dynamic_state>` → `<implicit_context>` → 锚定句。如果动态状态走独立 system message（`dynamicStatePlacement: 'system'`），memory 仍然注入到 user 末尾，但不会带锚定句。
 
+#### Anthropic 缓存审计（4.1）
+
+易变内容一旦落在被缓存的 prompt 前缀里，每次变化都会悄无声息地让 prompt caching 失效。这项审计检查的正是编译后的 Anthropic payload 里有没有这类问题 —— memory 数据、动态状态、隐式上下文或护栏指令被放在了最后一个 `cache_control` breakpoint 处或其之前 —— 并针对每个问题给出对应的修复方式：
+
+```typescript
+import { auditAnthropicCachePlacement } from "@context-chef/core";
+
+const payload = await chef.compile({ target: "anthropic" });
+for (const issue of auditAnthropicCachePlacement(payload)) {
+  console.warn(`${issue.location}: ${issue.message}`);
+}
+
+// Or let the chef warn automatically (each distinct issue once per instance):
+const chef = new ContextChef({ cacheAudit: true /* Anthropic targets only */ });
+```
+
+**只做 Anthropic 是有意为之**：它是唯一提供显式、客户端可见 breakpoint 的 provider，因此这项检查完全确定 —— 检查的是 payload 的结构属性，零启发式。OpenAI 的自动前缀缓存和 Gemini 的隐式缓存都没有暴露可供审计的标记，所以不为它们提供等价功能。
+
 ---
 
 ### Skill（行为打包）
@@ -799,8 +834,11 @@ import {
 // Load a single skill file
 const skill = await loadSkill("./skills/db-debug/SKILL.md");
 
-// Or scan a directory: each subdir/SKILL.md becomes a Skill (tolerant — bad files surface in `errors`)
-const { skills, errors } = await loadSkillsDir("./skills");
+// 扫描目录：每个 subdir/SKILL.md 变成一个 Skill。容错——坏文件进 `errors`，
+// `warnings`（4.1）报告机械性质量问题（描述过短、instructions 过长、
+// allowedTools 畸形、悬空的相对资源链接），但绝不阻断加载。
+const { skills, errors, warnings } = await loadSkillsDir("./skills");
+for (const w of warnings) console.warn(`${w.path}: ${w.message}`);
 chef.registerSkills(skills);
 
 // Or merge several sources at once (e.g. builtin + user + project) — later dirs
@@ -816,25 +854,32 @@ const listing = formatSkillListing(skills, { format: "plain" });
 
 `SKILL.md` 解析是容忍的：块标量（`>` 折叠 / `|` 字面）、`- item` 列表、kebab key（`allowed-tools`、`when-to-use`）都能加载；chef 不认识的 key 原样保留在 `skill.metadata` 上交给 host 读取——chef 从不解释，仅作注解（与 `allowedTools` 一致）。已知字段若写成畸形嵌套结构会直接抛错，而不是静默失效（打错的 `allowed-tools` 会暴露，而非悄悄关掉限制）。
 
-listing 通常作为 `load_skill` tool 的 description，让 LLM 自己挑 skill：
+listing 让 LLM 通过 `load_skill` tool 自己挑 skill。tool 定义要保持**静态**——listing 放进 system prompt 而不是 tool description，`skill_name` 用普通 string 而不是注册名的 enum。tool schema 位于所有 provider prompt 前缀的最顶端，带 listing 的 description 或 live-name enum 会在 skill 集合变化时改写 schema、让整个 prompt cache 失效（与 4.1 的 memory 工具静态 schema 同一套推理）。未知名字改在 dispatch 时拦截——`activateSkill` 会抛错并列出可用名字：
 
 ```typescript
 const loadSkillTool = {
   name: "load_skill",
   description:
-    "Load a skill to specialize for the current task. Available:\n" + listing,
+    "Load a skill to specialize for the current task. " +
+    "The available skills are listed in the system prompt.",
   parameters: {
-    skill_name: {
-      type: "string",
-      enum: chef.getRegisteredSkills().map((s) => s.name),
-    },
+    skill_name: { type: "string", description: "A skill name from the listing." },
   },
 };
 
-// In your dispatch loop:
+// listing 放在（稳定的）system prompt 里：
+chef.setSystemPrompt([
+  { role: "system", content: `${basePrompt}\n\nAvailable skills:\n${listing}` },
+]);
+
+// dispatch 循环 —— dispatch-gate，与 memory 工具同一姿势：
 if (call.name === "load_skill") {
-  chef.activateSkill(call.args.skill_name);
-  /* push tool result, continue loop */
+  try {
+    chef.activateSkill(call.args.skill_name);
+    /* push 成功的 tool result，继续循环 */
+  } catch (err) {
+    /* 把 String(err) 作为 tool result 推回 —— 模型会自我纠正 */
+  }
 }
 ```
 

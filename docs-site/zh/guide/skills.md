@@ -54,25 +54,32 @@ const listing = formatSkillListing(skills, { format: "plain" });
 
 `SKILL.md` 解析是容忍的：块标量（`>` 折叠 / `|` 字面）、`- item` 列表、kebab key（`allowed-tools`、`when-to-use`）都能加载；chef 不认识的 key 原样保留在 `skill.metadata` 上交给 host 读取 —— chef 从不解释，仅作注解（与 `allowedTools` 一致）。已知字段若写成畸形嵌套结构会直接抛错，而不是静默失效（打错的 `allowed-tools` 会暴露，而非悄悄关掉限制）。
 
-listing 通常作为 `load_skill` tool 的 description，让 LLM 自己挑 skill：
+listing 让 LLM 通过 `load_skill` tool 自己挑 skill。tool 定义要保持**静态**——listing 放进 system prompt 而不是 tool description，`skill_name` 用普通 string 而不是注册名的 enum。tool schema 位于所有 provider prompt 前缀的最顶端，带 listing 的 description 或 live-name enum 会在 skill 集合变化时改写 schema、让整个 prompt cache 失效（与 4.1 的 memory 工具静态 schema 同一套推理）。未知名字改在 dispatch 时拦截——`activateSkill` 会抛错并列出可用名字：
 
 ```typescript
 const loadSkillTool = {
   name: "load_skill",
   description:
-    "Load a skill to specialize for the current task. Available:\n" + listing,
+    "Load a skill to specialize for the current task. " +
+    "The available skills are listed in the system prompt.",
   parameters: {
-    skill_name: {
-      type: "string",
-      enum: chef.getRegisteredSkills().map((s) => s.name),
-    },
+    skill_name: { type: "string", description: "A skill name from the listing." },
   },
 };
 
-// In your dispatch loop:
+// listing 放在（稳定的）system prompt 里：
+chef.setSystemPrompt([
+  { role: "system", content: `${basePrompt}\n\nAvailable skills:\n${listing}` },
+]);
+
+// dispatch 循环 —— dispatch-gate，与 memory 工具同一姿势：
 if (call.name === "load_skill") {
-  chef.activateSkill(call.args.skill_name);
-  /* push tool result, continue loop */
+  try {
+    chef.activateSkill(call.args.skill_name);
+    /* push 成功的 tool result，继续循环 */
+  } catch (err) {
+    /* 把 String(err) 作为 tool result 推回 —— 模型会自我纠正 */
+  }
 }
 ```
 

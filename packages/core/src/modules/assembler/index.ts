@@ -12,11 +12,12 @@ export type DynamicStatePlacement = 'system' | 'last_user';
  *
  * The Assembler does not know which parts went into the stitch and does not
  * append any wrapper, separator, or anchor text — callers control the full
- * payload. If no last user message exists, a new one is created carrying
- * just the stitch.
+ * payload. When the effective tail is not a user message (tool-result tail,
+ * empty history), a new user message is created carrying just the stitch —
+ * see {@link Assembler} for the placement rules.
  */
 export interface AssembleOptions {
-  /** XML stitch to append to the last user message at the tail of the conversation. */
+  /** XML stitch to place at the effective tail of the conversation. */
   tailXml?: string;
 }
 
@@ -37,9 +38,11 @@ export interface AssembleOptions {
  * Responsibilities:
  * 1. **Deterministic Serialization**: Guarantees identical byte-level output for identical
  *    logical inputs by sorting JSON keys lexicographically. This maximizes KV-Cache hits.
- * 2. **Tail injection**: Appends a caller-built XML stitch to the last user message so
- *    volatile content (dynamic state, memory data, implicit context) benefits from the
- *    model's recency bias while keeping the cacheable prefix stable.
+ * 2. **Tail injection**: Places a caller-built XML stitch at the effective tail of the
+ *    conversation (merged into a trailing user message, or inserted as a new user
+ *    message after tool results / before assistant prefill) so volatile content
+ *    (dynamic state, memory data, implicit context) benefits from the model's recency
+ *    bias while keeping the cacheable prefix stable.
  */
 export class Assembler {
   /**
@@ -68,39 +71,66 @@ export class Assembler {
   }
 
   /**
-   * Appends `tailXml` to the last user message in the array, separated by a
-   * blank line. If no user message exists, a new one is created carrying just
-   * the stitch.
+   * Places `tailXml` at the effective tail of the conversation.
    *
    * This leverages the LLM's Recency Bias: the model pays the most attention
    * to content closest to its generation point (the end of the message array).
    * By placing volatile state here instead of in a system message at the top,
    * we prevent "Lost in the Middle" state drift in long conversations.
+   *
+   * Placement rules (in order):
+   * 1. The conversational tail is the LAST `user` or `tool` message. Anything
+   *    after it — assistant prefill, or system messages the sandwich appended
+   *    behind history (dynamic state / guardrail in `'system'` placement) —
+   *    stays behind the injection point.
+   * 2. Tail is a `user` message → the stitch is appended to it, separated by
+   *    a blank line.
+   * 3. Tail is a `tool` result awaiting interpretation → a NEW user message
+   *    carrying just the stitch is inserted immediately after it. This is
+   *    valid on every target: the Anthropic API auto-merges the consecutive
+   *    user-role messages its adapter produces, the Gemini adapter merges
+   *    consecutive same-role contents client-side, and OpenAI accepts a user
+   *    message after tool results as-is.
+   * 4. No user/tool message exists at all → the new user message goes before
+   *    any trailing assistant prefill, after the system top layer.
+   *
+   * Rule 3 previously walked BACK to the most recent user message, which in
+   * mid-agent-loop compiles (history ending in tool results) landed the stitch
+   * mid-conversation — rewriting a message that cache breakpoints downstream
+   * had already hashed, and burying the freshest state away from the
+   * generation point. Inserting after the tool results keeps every earlier
+   * message byte-identical across compiles. Rule 4 previously pushed the new
+   * user message to the absolute end, which put it AFTER an assistant prefill
+   * — an [assistant, user] ending that Anthropic rejects and that silently
+   * disabled the prefill everywhere else.
    */
   private injectIntoLastUser(messages: Message[], tailXml: string): Message[] {
-    const block = `\n\n${tailXml}`;
-
     const result = [...messages];
-    let lastUserIndex = -1;
+
+    let tail = -1;
     for (let i = result.length - 1; i >= 0; i--) {
-      if (result[i].role === 'user') {
-        lastUserIndex = i;
+      if (result[i].role === 'user' || result[i].role === 'tool') {
+        tail = i;
         break;
       }
     }
 
-    if (lastUserIndex !== -1) {
-      result[lastUserIndex] = {
-        ...result[lastUserIndex],
-        content: result[lastUserIndex].content + block,
+    if (tail !== -1 && result[tail].role === 'user') {
+      result[tail] = {
+        ...result[tail],
+        content: `${result[tail].content}\n\n${tailXml}`,
       };
-    } else {
-      result.push({
-        role: 'user',
-        content: block.trim(),
-      });
+      return result;
     }
 
+    let insertAt: number;
+    if (tail !== -1) {
+      insertAt = tail + 1;
+    } else {
+      insertAt = result.length;
+      while (insertAt > 0 && result[insertAt - 1].role === 'assistant') insertAt--;
+    }
+    result.splice(insertAt, 0, { role: 'user', content: tailXml });
     return result;
   }
 

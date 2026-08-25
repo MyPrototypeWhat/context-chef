@@ -402,12 +402,13 @@ describe('Memory validated methods', () => {
 // ─── getToolDefinitions ──────────────────────────────────────────────────────
 
 describe('Memory getToolDefinitions', () => {
-  it('returns only create_memory when no entries exist', async () => {
+  it('returns create_memory and modify_memory even when no entries exist', async () => {
     const mem = new Memory({ store: new InMemoryStore() });
     const tools = await mem.getToolDefinitions();
 
-    expect(tools).toHaveLength(1);
+    expect(tools).toHaveLength(2);
     expect(tools[0].name).toBe('create_memory');
+    expect(tools[1].name).toBe('modify_memory');
   });
 
   it('returns create_memory and modify_memory when entries exist', async () => {
@@ -422,7 +423,7 @@ describe('Memory getToolDefinitions', () => {
     expect(tools[1].name).toBe('modify_memory');
   });
 
-  it('modify_memory key has enum of existing keys', async () => {
+  it('modify_memory key is a plain string — never an enum of live keys', async () => {
     const mem = new Memory({ store: new InMemoryStore() });
     await mem.set('lang', 'TS');
     await mem.set('style', 'functional');
@@ -430,7 +431,41 @@ describe('Memory getToolDefinitions', () => {
     const tools = await mem.getToolDefinitions();
     const props = getSchemaProperties(tools.find((t) => t.name === 'modify_memory'));
 
-    expect(props.key?.enum).toEqual(['lang', 'style']);
+    expect(props.key?.enum).toBeUndefined();
+    expect(props.key?.type).toBe('string');
+    // Live keys must never leak into the schema — that's what broke caching.
+    expect(JSON.stringify(props)).not.toContain('lang');
+    expect(JSON.stringify(props)).not.toContain('style');
+  });
+
+  it('tool definitions are deep-equal AND reference-stable across set()/delete()', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    const before = await mem.getToolDefinitions();
+
+    await mem.set('lang', 'TS');
+    const afterSet = await mem.getToolDefinitions();
+
+    await mem.delete('lang');
+    const afterDelete = await mem.getToolDefinitions();
+
+    expect(afterSet).toEqual(before);
+    expect(afterDelete).toEqual(before);
+    // Same object references — payload.tools stays byte-identical across compiles.
+    expect(afterSet[0]).toBe(before[0]);
+    expect(afterSet[1]).toBe(before[1]);
+    expect(afterDelete[0]).toBe(before[0]);
+    expect(afterDelete[1]).toBe(before[1]);
+  });
+
+  it('modify_memory is offered on an empty store; dispatch on unknown key stays safe', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+
+    const tools = await mem.getToolDefinitions();
+    expect(tools.map((t) => t.name)).toContain('modify_memory');
+
+    // Dispatch-time validation is the guardrail now that the schema has no enum.
+    expect(await mem.updateMemory('ghost', 'value')).toBeNull();
+    expect(await mem.deleteMemory('ghost')).toBe(false);
   });
 
   it('modify_memory action has update/delete enum', async () => {
@@ -962,7 +997,7 @@ describe('ContextChef + Memory', () => {
     expect(toolNames).toContain('modify_memory');
   });
 
-  it('compile() includes only create_memory when no entries exist', async () => {
+  it('compile() includes both memory tools even when no entries exist', async () => {
     const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
 
     chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
@@ -973,7 +1008,25 @@ describe('ContextChef + Memory', () => {
     expect(payload.tools).toBeDefined();
     const toolNames = payload.tools?.map((t) => t.name);
     expect(toolNames).toContain('create_memory');
-    expect(toolNames).not.toContain('modify_memory');
+    expect(toolNames).toContain('modify_memory');
+  });
+
+  it('payload.tools is JSON-identical across compiles with a memory mutation in between', async () => {
+    const chef = new ContextChef({ memory: { store: new InMemoryStore() } });
+
+    chef.setSystemPrompt([{ role: 'system', content: 'system' }]);
+    chef.setHistory([{ role: 'user', content: 'hi' }]);
+
+    const first = await chef.compile({ target: 'openai' });
+    await chef.getMemory().set('lang', 'TS');
+    const second = await chef.compile({ target: 'openai' });
+    await chef.getMemory().delete('lang');
+    const third = await chef.compile({ target: 'openai' });
+
+    // Tools sit at the top of the provider prompt prefix — any drift here
+    // invalidates the entire prompt cache.
+    expect(JSON.stringify(second.tools)).toBe(JSON.stringify(first.tools));
+    expect(JSON.stringify(third.tools)).toBe(JSON.stringify(first.tools));
   });
 
   it('snapshot/restore includes memory state', async () => {
@@ -1195,7 +1248,12 @@ describe('Memory selector', () => {
     expect(memMsg).toBeDefined();
     expect(memMsg?.content).toContain('key="important"');
     expect(memMsg?.content).toContain('keep');
+    // Deselected entries are fully invisible — key and value. Listing hidden
+    // keys would rewrite this system block on mutations the selector never
+    // injects (a cache buster under 'after_system'); hidden keys stay
+    // modifiable through modify_memory's dispatch-time validation.
     expect(memMsg?.content).not.toContain('trivial');
+    expect(memMsg?.content).not.toContain('drop');
   });
 });
 
@@ -1266,9 +1324,10 @@ describe('Memory compileArtifacts (single-scan)', () => {
     expect(artifacts.expiredKeys).toEqual(['stale']);
     expect(artifacts.selected.map((e) => e.key)).toEqual(['fresh']);
     expect(artifacts.dataXml).not.toContain('stale');
-    // modify_memory enum only carries live keys
+    // The tool schema is static — live keys never appear in it (cache stability).
     const modify = artifacts.toolDefinitions.find((t) => t.name === 'modify_memory');
-    expect(JSON.stringify(modify?.parameters)).toContain('fresh');
+    expect(modify).toBeDefined();
+    expect(JSON.stringify(modify?.parameters)).not.toContain('fresh');
     expect(JSON.stringify(modify?.parameters)).not.toContain('stale');
     expect(expired).toHaveBeenCalledTimes(1);
     expect(changed).toHaveBeenCalledWith(expect.objectContaining({ type: 'expire', key: 'stale' }));
@@ -1309,7 +1368,7 @@ describe('Memory compileArtifacts (single-scan)', () => {
     expect(xml).toContain('key="x"');
   });
 
-  it('getToolDefinitions(existingKeys) skips the store read', async () => {
+  it('getToolDefinitions() never reads the store; deprecated existingKeys param is ignored', async () => {
     const { store, getKeysCalls } = countingStore();
     const mem = new Memory({ store });
     const before = getKeysCalls();
@@ -1318,6 +1377,8 @@ describe('Memory compileArtifacts (single-scan)', () => {
 
     expect(getKeysCalls() - before).toBe(0);
     const modify = tools.find((t) => t.name === 'modify_memory');
-    expect(JSON.stringify(modify?.parameters)).toContain('pre');
+    expect(modify).toBeDefined();
+    // The schema is static since 4.1 — passed-in keys must not leak into it.
+    expect(JSON.stringify(modify?.parameters)).not.toContain('pre');
   });
 });
