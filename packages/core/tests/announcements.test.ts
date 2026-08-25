@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { ChefSnapshot } from '../src/chef';
 import { ContextChef, type ITargetAdapter } from '../src/index';
@@ -190,6 +190,51 @@ describe("announcements — 'system' channel", () => {
       'assistant',
     ]);
     expect(messages[4].content).toContain('<thinking>');
+  });
+
+  it('degrades to a user message (with a warn-once) when no conversational tail exists', async () => {
+    const warn = vi.fn();
+    const adapter = new CaptureAdapter();
+    const chef = new ContextChef({ logger: { warn } });
+    chef.setSystemPrompt([{ role: 'system', content: 'sys' }]); // no history at all
+    chef.announce('a', 'Tools newly available: grep', { channel: 'system' });
+
+    const messages = plain(await chef.compile({ target: adapter }));
+
+    // A positional system message here would precede every user turn — the
+    // Anthropic adapter would hoist it back into the cacheable prefix, the
+    // exact failure the channel exists to avoid. Delivered as user instead.
+    const announcement = messages.find((m) => m.content.includes('<announcements>'));
+    expect(announcement?.role).toBe('user');
+    expect(announcement?._positional).toBeUndefined();
+
+    await chef.compile({ target: adapter });
+    const announceWarns = warn.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes('conversational tail'),
+    );
+    expect(announceWarns).toHaveLength(1); // warn-once across compiles
+  });
+
+  it('warns through ChefConfig.logger when a hand-written positional system message would be hoisted on Anthropic', async () => {
+    const warn = vi.fn();
+    const chef = new ContextChef({ logger: { warn } });
+    chef.setHistory([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+      // After a plain assistant turn — the API rejects it there, the adapter
+      // hoists it, and the chef pre-flight surfaces the diagnostic on THIS
+      // instance's logger (the registry adapter singleton's own warn-once
+      // may have been consumed by another chef in the process).
+      { role: 'system', content: 'hand-written note', _positional: true },
+    ]);
+
+    await chef.compile({ target: 'anthropic' });
+    await chef.compile({ target: 'anthropic' });
+
+    const hoistWarns = warn.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes('positional system message'),
+    );
+    expect(hoistWarns).toHaveLength(1); // once per chef instance
   });
 });
 

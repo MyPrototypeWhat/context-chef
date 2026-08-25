@@ -155,10 +155,21 @@ export interface Message {
    * system role in `contents`; the adapter degrades a positional system
    * message to a `user` content entry verbatim.
    *
-   * Placement contract (Anthropic API constraint, NOT validated by chef): a
-   * positional system message must not be the first message and must not sit
-   * between a `tool_use` and its `tool_result`. When one appears before any
-   * user/tool message, the adapter falls back to hoisting it (warn-once).
+   * Placement contract (Anthropic API constraint): a positional system
+   * message is valid only IMMEDIATELY AFTER a user turn — in IR terms, the
+   * preceding message must be a `user` or `tool` message (tool results map
+   * to user-role `tool_result` content on the wire). Leading the stream,
+   * following a plain assistant turn, or sitting between a `tool_use` and
+   * its `tool_result` are all rejected by the API, so the Anthropic adapter
+   * hoists a positional message in any of those positions into the
+   * top-level system prompt instead (warn-once per adapter instance).
+   * Consecutive positional system messages after one user turn are fine.
+   *
+   * Round-trip note: the `from*` input parsers SKIP mid-stream system
+   * entries rather than parsing them into history — they are volatile
+   * channel content (announcements are re-rendered every compile until
+   * retracted), and baking them into durable history would put the text in
+   * the cached prefix and defeat retraction.
    */
   _positional?: boolean;
   /** Allow provider-specific or user-defined fields to pass through without loss */

@@ -617,4 +617,21 @@ describe('OpenAIResponsesAdapter — positional system messages', () => {
 
     expect(JSON.stringify(result)).not.toContain('_positional');
   });
+
+  it('fromOpenAIResponses skips mid-stream system items instead of folding them into system', () => {
+    const items: OpenAIResponsesInputItem[] = [
+      { type: 'message', role: 'system', content: 'Root instructions' },
+      { type: 'message', role: 'user', content: 'Hello' },
+      { type: 'message', role: 'system', content: '<announcements>x</announcements>' },
+      { type: 'message', role: 'assistant', content: 'Hi!' },
+    ];
+    const { system, history } = fromOpenAIResponses(items);
+
+    // Leading system items are the prompt's system layer; a mid-stream one is
+    // positional channel output — folding it back would bake volatile text
+    // into the cacheable prefix and defeat retractAnnouncement().
+    expect(system).toEqual([{ role: 'system', content: 'Root instructions' }]);
+    expect(JSON.stringify(history)).not.toContain('announcements');
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
 });

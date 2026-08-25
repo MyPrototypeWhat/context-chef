@@ -360,6 +360,12 @@ export class ContextChef {
   /** True while _compileInner runs — lets re-entrant compile() calls (from
    *  hooks/event handlers) bypass the queue instead of deadlocking on it. */
   private _compiling = false;
+  /** Warn-once: system-channel announcements degraded to a user message
+   *  because the assembled payload had no conversational tail. */
+  private _announcementNoTailWarned = false;
+  /** Warn-once: a positional system message sat where the Anthropic API
+   *  rejects it, so the adapter will hoist it into the cached prefix. */
+  private _positionalHoistWarned = false;
   /**
    * Per-source-message cache for transformToolResult, keyed by the ORIGINAL
    * history message. Keeps transformed message objects stable across
@@ -1143,6 +1149,12 @@ export class ContextChef {
     // Stash signal so event-bridge closures (Janitor.onCompress, Memory.onMemoryChanged,
     // Memory.onMemoryExpired) can forward it to handlers. Cleared in finally.
     this._currentSignal = signal;
+    // Only the OUTERMOST call clears the flag: a re-entrant inner compile
+    // (hook calling compile() — the bypass in compile()) must leave it set,
+    // or a second inner call after the first would queue and deadlock.
+    // Without any reset (the pre-4.2 bug), every compile after the first
+    // took the bypass and the Snapshot + Serialize queue was dead.
+    const isOutermostCompile = !this._compiling;
     this._compiling = true;
     try {
       // 0. Emit compile:start (unconditional — observers may want to log even
@@ -1401,25 +1413,72 @@ export class ContextChef {
             break;
           }
         }
-        let insertAt: number;
         if (tail !== -1) {
-          insertAt = tail + 1;
+          assembled.splice(
+            tail + 1,
+            0,
+            Assembler.orderKeysDeterministically<Message>({
+              role: 'system',
+              content: announcementXml.systemXml,
+              _positional: true,
+            }),
+          );
         } else {
-          // No conversational tail at all: sit before any trailing prefill. The
-          // adapter falls back to hoisting a positional system message that
-          // precedes every user/tool message (documented on Message._positional).
-          insertAt = assembled.length;
+          // No conversational tail at all: a positional system message here
+          // would precede every user turn — invalid on the Anthropic API, and
+          // the adapter's hoist fallback would land the volatile text back in
+          // the cacheable prefix (the exact failure this channel exists to
+          // avoid). Degrade to a plain user message before any trailing
+          // prefill instead (the Assembler's rule-4 position), and say so
+          // once per instance.
+          if (!this._announcementNoTailWarned) {
+            this._announcementNoTailWarned = true;
+            (this.logger ?? console).warn(
+              '[context-chef] system-channel announcements need a conversational tail ' +
+                '(a user or tool message) to attach after — none exists, so the ' +
+                'announcements were delivered as a user message instead (warned once).',
+            );
+          }
+          let insertAt = assembled.length;
           while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
+          assembled.splice(
+            insertAt,
+            0,
+            Assembler.orderKeysDeterministically<Message>({
+              role: 'user',
+              content: announcementXml.systemXml,
+            }),
+          );
         }
-        assembled.splice(
-          insertAt,
-          0,
-          Assembler.orderKeysDeterministically<Message>({
-            role: 'system',
-            content: announcementXml.systemXml,
-            _positional: true,
-          }),
-        );
+      }
+
+      // Pre-flight the positional-system placement contract on the Anthropic
+      // target so the diagnostic reaches THIS chef's logger, once per
+      // instance. The adapter has its own console fallback warning, but the
+      // built-in adapters are process-wide registry singletons — their
+      // warn-once fires for the first chef in the process only, and
+      // ChefConfig.logger never reaches them. Chef-injected announcements
+      // can't trip this (their insertion point is always after a user/tool
+      // message); it catches hand-written `_positional` messages in history.
+      if (isAnthropicTarget && !this._positionalHoistWarned) {
+        for (let i = 0; i < assembled.length; i++) {
+          const msg = assembled[i];
+          if (msg.role !== 'system' || !msg._positional) continue;
+          // Consecutive positional system messages form one section — walk
+          // back over them to the message the section actually follows.
+          let j = i - 1;
+          while (j >= 0 && assembled[j].role === 'system' && assembled[j]._positional) j--;
+          const prev = assembled[j];
+          if (prev && (prev.role === 'user' || prev.role === 'tool')) continue;
+          this._positionalHoistWarned = true;
+          (this.logger ?? console).warn(
+            '[context-chef] a positional system message is not immediately after a user turn — ' +
+              'the Anthropic API rejects it there, so the adapter will hoist it into the ' +
+              'top-level system prompt (its text then sits in the cacheable prefix; ' +
+              'warned once).',
+          );
+          break;
+        }
       }
 
       const adapterPayload = adapter.compile(assembled);
@@ -1466,6 +1525,7 @@ export class ContextChef {
       return payload;
     } finally {
       this._currentSignal = undefined;
+      if (isOutermostCompile) this._compiling = false;
     }
   }
 }

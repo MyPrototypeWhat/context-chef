@@ -32,6 +32,12 @@ import type { ITargetAdapter } from './targetAdapter';
  * non-system message is a user message. This is a system boundary — IR
  * downstream of `setHistory` is trusted to satisfy invariants.
  *
+ * Mid-conversation `role: "system"` entries in `messages` (positional system
+ * output — announcements and the like) are SKIPPED, not parsed into history:
+ * they are volatile channel content whose ownership stays with the chef state
+ * that injected it; round-tripping them as durable history would bake them
+ * into the cached prefix and defeat `retractAnnouncement()`.
+ *
  * @param messages - Anthropic chat messages (user/assistant with content blocks)
  * @param system - Optional top-level system text blocks
  *
@@ -54,6 +60,16 @@ export function fromAnthropic(
   }
 
   for (const msg of messages) {
+    // Mid-conversation `role: "system"` messages (this adapter's own
+    // positional-system output, or hand-written ones) are deliberately
+    // SKIPPED: `history` is typed user/assistant/tool only, and feeding a
+    // volatile channel — announcements are re-rendered every compile until
+    // retracted — back in as durable history would bake it into the cached
+    // prefix and defeat retraction. Ownership of that content stays with the
+    // chef state that injected it. (The SDK role union predates the feature,
+    // hence the string comparison through a widened view.)
+    if ((msg as { role: string }).role === 'system') continue;
+
     // String content shorthand
     if (typeof msg.content === 'string') {
       history.push({ role: msg.role, content: msg.content });
@@ -247,9 +263,14 @@ export class AnthropicAdapter implements ITargetAdapter {
   compile(messages: Message[]): AnthropicPayload {
     const systemMessages: SDKTextBlockParam[] = [];
     const chatMessages: SDKMessageParam[] = [];
-    // A positional system message may not lead the stream (API constraint) —
-    // one that does is hoisted instead.
-    let seenUserOrTool = false;
+    // The API accepts a mid-conversation system message only immediately
+    // after a user turn (IR: a user or tool message — tool results map to
+    // user-role tool_result content). Anywhere else — leading the stream,
+    // after a plain assistant turn, or between a tool_use and its
+    // tool_result — the payload 400s, so those positions hoist instead.
+    // Consecutive positional system messages after a user turn are fine
+    // (the API treats them as one section).
+    let afterUserTurn = false;
 
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -257,7 +278,7 @@ export class AnthropicAdapter implements ITargetAdapter {
         if (msg._cache_breakpoint) {
           sysObj.cache_control = { type: 'ephemeral' };
         }
-        if (msg._positional && seenUserOrTool) {
+        if (msg._positional && afterUserTurn) {
           // Mid-conversation `role: "system"` messages are an API feature newer
           // than the SDK's MessageParam role union — cast at this one emission
           // point rather than widening the type everywhere.
@@ -267,14 +288,14 @@ export class AnthropicAdapter implements ITargetAdapter {
         if (msg._positional && !this._positionalHoistWarned) {
           this._positionalHoistWarned = true;
           (this.options.logger ?? console).warn(
-            '[context-chef] a positional system message appeared before any user/tool message — ' +
-              'the Anthropic API rejects a leading mid-conversation system message, so it was ' +
+            '[context-chef] a positional system message was not immediately after a user turn ' +
+              '(user message or tool result) — the Anthropic API rejects it there, so it was ' +
               'hoisted into the top-level system prompt (warned once).',
           );
         }
         systemMessages.push(sysObj);
       } else {
-        if (msg.role === 'user' || msg.role === 'tool') seenUserOrTool = true;
+        afterUserTurn = msg.role === 'user' || msg.role === 'tool';
         const role: 'user' | 'assistant' =
           msg.role === 'tool' ? 'user' : (msg.role as 'user' | 'assistant');
         const content: SDKContentBlockParam[] = [];
