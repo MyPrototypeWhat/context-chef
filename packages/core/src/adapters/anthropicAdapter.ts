@@ -12,6 +12,7 @@ import type {
 import type {
   AnthropicPayload,
   Attachment,
+  ChefLogger,
   HistoryMessage,
   Message,
   ParsedMessages,
@@ -30,6 +31,12 @@ import type { ITargetAdapter } from './targetAdapter';
  * to fix orphan tool results, missing tool results, and ensure the first
  * non-system message is a user message. This is a system boundary — IR
  * downstream of `setHistory` is trusted to satisfy invariants.
+ *
+ * Mid-conversation `role: "system"` entries in `messages` (positional system
+ * output — announcements and the like) are SKIPPED, not parsed into history:
+ * they are volatile channel content whose ownership stays with the chef state
+ * that injected it; round-tripping them as durable history would bake them
+ * into the cached prefix and defeat `retractAnnouncement()`.
  *
  * @param messages - Anthropic chat messages (user/assistant with content blocks)
  * @param system - Optional top-level system text blocks
@@ -53,6 +60,31 @@ export function fromAnthropic(
   }
 
   for (const msg of messages) {
+    // `role: "system"` entries inside `messages` split by position. LEADING
+    // ones (before any conversation message) are the prompt's system layer —
+    // callers who put their system prompt in messages[0] instead of the
+    // `system` param — and are routed into `system` so the text survives
+    // (pre-4.1 they landed in `history`, violating HistoryMessage's role
+    // union). MID-STREAM ones are positional channel output — announcements
+    // re-rendered every compile until retracted — and are SKIPPED: feeding
+    // them back as durable history would bake volatile text into the cached
+    // prefix and defeat retractAnnouncement(). Ownership stays with the chef
+    // state that injected it. (The SDK role union predates mid-conversation
+    // system messages, hence the widened view.)
+    if ((msg as { role: string }).role === 'system') {
+      if (history.length === 0) {
+        const text =
+          typeof msg.content === 'string'
+            ? msg.content
+            : msg.content
+                .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+                .map((b) => b.text)
+                .join('\n');
+        systemMsgs.push({ role: 'system', content: text });
+      }
+      continue;
+    }
+
     // String content shorthand
     if (typeof msg.content === 'string') {
       history.push({ role: msg.role, content: msg.content });
@@ -233,10 +265,27 @@ function attachmentsToBlocks(attachments: Attachment[]): SDKContentBlockParam[] 
   return blocks;
 }
 
+export interface AnthropicAdapterOptions {
+  /** Sink for degradation warnings. Defaults to `console`. */
+  logger?: ChefLogger;
+}
+
 export class AnthropicAdapter implements ITargetAdapter {
+  private _positionalHoistWarned = false;
+
+  constructor(private readonly options: AnthropicAdapterOptions = {}) {}
+
   compile(messages: Message[]): AnthropicPayload {
     const systemMessages: SDKTextBlockParam[] = [];
     const chatMessages: SDKMessageParam[] = [];
+    // The API accepts a mid-conversation system message only immediately
+    // after a user turn (IR: a user or tool message — tool results map to
+    // user-role tool_result content). Anywhere else — leading the stream,
+    // after a plain assistant turn, or between a tool_use and its
+    // tool_result — the payload 400s, so those positions hoist instead.
+    // Consecutive positional system messages after a user turn are fine
+    // (the API treats them as one section).
+    let afterUserTurn = false;
 
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -244,8 +293,24 @@ export class AnthropicAdapter implements ITargetAdapter {
         if (msg._cache_breakpoint) {
           sysObj.cache_control = { type: 'ephemeral' };
         }
+        if (msg._positional && afterUserTurn) {
+          // Mid-conversation `role: "system"` messages are an API feature newer
+          // than the SDK's MessageParam role union — cast at this one emission
+          // point rather than widening the type everywhere.
+          chatMessages.push({ role: 'system', content: [sysObj] } as unknown as SDKMessageParam);
+          continue;
+        }
+        if (msg._positional && !this._positionalHoistWarned) {
+          this._positionalHoistWarned = true;
+          (this.options.logger ?? console).warn(
+            '[context-chef] a positional system message was not immediately after a user turn ' +
+              '(user message or tool result) — the Anthropic API rejects it there, so it was ' +
+              'hoisted into the top-level system prompt (warned once).',
+          );
+        }
         systemMessages.push(sysObj);
       } else {
+        afterUserTurn = msg.role === 'user' || msg.role === 'tool';
         const role: 'user' | 'assistant' =
           msg.role === 'tool' ? 'user' : (msg.role as 'user' | 'assistant');
         const content: SDKContentBlockParam[] = [];

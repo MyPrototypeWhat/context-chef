@@ -97,6 +97,7 @@ For direct control over the compilation pipeline — dynamic state injection, to
 - **Too many tools?** — Dynamically prune the tool list per task, or use a two-layer architecture (stable namespaces + on-demand loading) to eliminate tool hallucinations
 - **Need to block tools at runtime?** — Pruner blocklist + `checkToolCall` gate for permission, environment safety, rate limits, and sandboxing — KV-cache preserving by default
 - **Mode-based behavior?** — `Skill` primitive bundles instructions and tool annotations per phase; loadable from `SKILL.md` files (compatible with Claude Code / Mastra / OpenCode formats)
+- **Capabilities change mid-session?** — Announcements (4.1): `announce()` states what tools/skills came or went and re-renders it into every compile until retracted; `skillPlacement: 'tail'` moves skill instructions out of the cached prefix so switching modes never invalidates it
 - **Switching providers?** — Same prompt architecture compiles to OpenAI / Anthropic / Gemini with automatic prefill, cache, and tool call format adaptation
 - **Long tasks drifting?** — Zod schema-based state injection forces the model to stay aligned with the current task on every call
 - **Output format drifting?** — Guardrail: `withGuardrails` enforces an XML output contract and sets an assistant prefill, auto-degraded on providers without native prefill
@@ -820,6 +821,31 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
+#### Skill placement — `skillPlacement` (4.1)
+
+Where the active skill's instructions are delivered. The default `'after_system'` is the behavior above, bit-for-bit: a dedicated `role: 'system'` message right after your system prompt. Those tokens live in the cacheable prefix — free to re-send — but every activation, switch, or deactivation rewrites that prefix and costs one full cache invalidation.
+
+Under `'tail'` the instructions leave the prefix entirely and lead the tail stitch, wrapped in `<skill_instructions skill="NAME">`:
+
+```typescript
+const chef = new ContextChef({ skillPlacement: "tail" });
+chef.registerSkills([planning, editing]); // two Skill objects, shaped like the one above
+chef.setSystemPrompt([{ role: "system", content: basePrompt }]).setHistory(history);
+
+chef.activateSkill("planning");
+const a = await chef.compile({ target: "anthropic" });
+chef.activateSkill("editing");
+const b = await chef.compile({ target: "anthropic" });
+
+// `a` and `b` are byte-identical up to the last user message — activating,
+// switching, and deactivating never touch the cached prefix. Only the tail moved:
+//   <skill_instructions skill="editing">…</skill_instructions>
+```
+
+The trade-off is real in both directions: `'tail'` re-sends the full instruction text uncached on **every** request; `'after_system'` re-sends nothing but pays a cache miss on **every switch**. Pick `'tail'` when the agent switches modes often relative to how long each mode stays active, `'after_system'` for a mode that is set once and lives for the session.
+
+Placement changes delivery only — `meta.activeSkillName`, `getActiveSkill()`, and snapshot/restore behave identically. In the tail, the skill block leads the fixed stitch order (`<skill_instructions>` → `<memory>` → `<dynamic_state>` → `<implicit_context>` → `<announcements>` → anchor) so the model reads "who you are right now" before the state it applies to, and it does **not** trigger the anchor line on its own — it is self-describing inside its own tag. If `cacheAudit` catches a `<skill_instructions` block at or before your last `cache_control` breakpoint, the breakpoint is too late, not the placement.
+
 #### Loading from `SKILL.md`
 
 ```typescript
@@ -898,6 +924,103 @@ chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
 Referenced files (`@./schema.json`, …) are **not** inlined by chef — pass `renderSkill(skill, { includeBaseDir: true })` and let your agent read them on demand via its own file tool.
 
 For the design rationale (Skill ⊥ Pruner decoupling, SKILL.md frontmatter shape, mode-wiring recipes, LLM-driven skill loading, reference files) see [`SKILL_SPEC.md`](./SKILL_SPEC.md). For argument rendering, multi-source loading, and the two delivery models, see [`docs/skill-interop-design.md`](./docs/skill-interop-design.md) and the usage recipes in [`docs/skill-recipes.md`](./docs/skill-recipes.md).
+
+---
+
+### Announcements (4.1)
+
+Capabilities change mid-session: a permission is granted, a toolkit is loaded, a rate limit withdraws `web_search`. The payload changes shape, but nothing tells the model *what* changed — it keeps calling the tool that vanished, or ignores the one that just appeared. `announce()` states the change and keeps stating it until you retract it.
+
+```typescript
+chef.announce("tools:added", "Tools newly available: read_file, grep");
+chef.announce(
+  "tools:removed",
+  "web_search has been withdrawn; calls to it will be rejected",
+);
+
+chef.getAnnouncements();
+// [{ id: 'tools:added', content: '…', channel: 'auto' }, { id: 'tools:removed', … }]
+
+chef.retractAnnouncement("tools:added"); // → true; the next compile carries no trace of it
+```
+
+Every standing announcement renders into one block, in insertion order:
+
+```xml
+<announcements>
+<announcement id="tools:added">
+Tools newly available: read_file, grep
+</announcement>
+
+<announcement id="tools:removed">
+web_search has been withdrawn; calls to it will be rejected
+</announcement>
+</announcements>
+```
+
+**State, not event.** An announcement is a statement of the *current* capability set, re-rendered into every `compile()` — not a one-shot message appended to history. That is the point: chef's injections never persist into your history, so a retracted announcement disappears completely from subsequent payloads instead of lingering as an obsolete turn the model keeps re-reading. `announce()` upserts by `id` — re-announcing the same id replaces content and channel while keeping the original insertion position, so the block stays stable as it is updated. `retractAnnouncement(id)` returns whether anything was removed.
+
+#### Channels
+
+| Channel | Where it renders | Notes |
+|---|---|---|
+| `'user_tail'` | joins the tail stitch of the last user message — after `<dynamic_state>` / `<implicit_context>`, before the anchor line | Works on every provider. Unlike skill instructions and memory data, announcements *do* trigger the "Above is the current system state" anchor — they are system state |
+| `'system'` | one combined `_positional` system message placed right after the conversational tail (and still in front of any assistant prefill) | Operator precedence, and the cached prefix stays intact |
+| `'auto'` (default) | routes by **target**: `'system'` on the Anthropic target, `'user_tail'` everywhere else | See the caveat below |
+
+Channels are per-announcement, so a mixed set splits across both delivery paths within a single compile.
+
+**The auto-routing caveat.** `'auto'` routes by *target*, not by model — chef never sees your model id. Mid-conversation `role: "system"` messages are native on Fable 5 / Mythos 5 / Opus 4.8 / Opus 5, but **not on Sonnet 5**. If you compile for the Anthropic target and call Sonnet 5, pass the channel explicitly:
+
+```typescript
+chef.announce("tools:added", "Tools newly available: grep", { channel: "user_tail" });
+```
+
+Mechanism, not policy — chef will not guess your model for you.
+
+The `'system'` channel rides `Message._positional`: a `role: 'system'` message flagged positional stays *at its position* in the stream instead of being hoisted into the provider's top-level system parameter. Per adapter: Anthropic emits a mid-conversation system message (falling back to hoisting, with a one-time warning, if it would precede every user/tool message); OpenAI Chat Completions keeps system messages inline anyway, so the flag is a no-op; the Responses adapter emits an inline `message` item instead of folding the text into `instructions`; Gemini has no system role in `contents` and degrades it to a `user` entry verbatim.
+
+**Wording matters.** State facts, do not command. "Tools newly available: read_file, grep" and "web_search has been withdrawn; calls to it will be rejected" read as system state. "You must now use read_file" reads as an instruction competing with your system prompt — and the model will weigh it against everything else you told it.
+
+**Lifecycle.** Announcements survive `clearHistory()` — they describe the current capability set, which a fresh conversation still needs; retract them explicitly when the change no longer holds. They ride `ChefSnapshot` and round-trip through `snapshot()` / `restore()`; restoring a snapshot taken before 4.1 (no `announcements` field) yields an empty set rather than leaving the previous ones live. With `cacheAudit: true`, an `<announcements>` block caught at or before your last `cache_control` breakpoint is flagged — announcements always render at the conversational tail, so move the breakpoint earlier.
+
+#### Detecting the delta (userland)
+
+There is no automatic tool-delta detection. Chef renders what you announce; deciding *what changed* is policy and stays in your loop:
+
+```typescript
+let previousTools = new Set<string>();
+
+function syncToolAnnouncements(next: string[]) {
+  const added = next.filter((name) => !previousTools.has(name));
+  const removed = [...previousTools].filter((name) => !next.includes(name));
+
+  if (added.length) {
+    chef.announce("tools:added", `Tools newly available: ${added.join(", ")}`);
+  } else {
+    chef.retractAnnouncement("tools:added"); // no longer new — stop repeating it
+  }
+
+  if (removed.length) {
+    chef.announce(
+      "tools:removed",
+      `Withdrawn; calls to these will be rejected: ${removed.join(", ")}`,
+    );
+  } else {
+    chef.retractAnnouncement("tools:removed");
+  }
+
+  previousTools = new Set(next);
+}
+
+// Pairs with the Pruner blocklist — the gate rejects, the announcement explains:
+chef.getPruner().setBlockedTools(["delete_file"]);
+chef.announce("tools:blocked", "delete_file is disabled in this environment");
+```
+
+Call it wherever your tool list is decided — right before you build the request, or from a `compile:done` handler if the Pruner owns the list (`payload.tools`), remembering that an announcement made there lands on the *next* compile, not the one that just finished.
+
+Related: `ToolDefinition.deferLoading` annotates a tool as withheld from the initial context (Anthropic tool search, and the `mid-conversation-tool-changes` beta's `tool_addition` mechanism); deferred definitions are stripped before the cache key is computed, so adding them never invalidates an existing cache entry. Announcements are the text-side counterpart — chef's IR is text-content based, so `tool_addition` / `tool_removal` content blocks are not passed through.
 
 ---
 

@@ -583,3 +583,68 @@ describe('round-trip fidelity', () => {
     expect(payload.input).toEqual(items);
   });
 });
+
+// ═══════════════════════════════════════════════════════
+// OpenAIResponsesAdapter.compile — positional system messages
+// ═══════════════════════════════════════════════════════
+
+describe('OpenAIResponsesAdapter — positional system messages', () => {
+  it('keeps a positional system message inline instead of hoisting to instructions', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+      { role: 'user', content: 'Use it' },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(result.instructions).toBe('You are helpful.');
+    expect(result.input).toHaveLength(4);
+    expect(result.input[2]).toEqual({
+      type: 'message',
+      role: 'system',
+      content: [{ type: 'input_text', text: 'A new tool is available.' }],
+    });
+  });
+
+  it('never leaks _positional into the wire payload', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Note.', _positional: true },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('_positional');
+  });
+
+  it('fromOpenAIResponses skips mid-stream system items instead of folding them into system', () => {
+    const items: OpenAIResponsesInputItem[] = [
+      { type: 'message', role: 'system', content: 'Root instructions' },
+      { type: 'message', role: 'user', content: 'Hello' },
+      { type: 'message', role: 'system', content: '<announcements>x</announcements>' },
+      { type: 'message', role: 'assistant', content: 'Hi!' },
+    ];
+    const { system, history } = fromOpenAIResponses(items);
+
+    // Leading system items are the prompt's system layer; a mid-stream one is
+    // positional channel output — folding it back would bake volatile text
+    // into the cacheable prefix and defeat retractAnnouncement().
+    expect(system).toEqual([{ role: 'system', content: 'Root instructions' }]);
+    expect(JSON.stringify(history)).not.toContain('announcements');
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('fromOpenAIResponses preserves mid-stream DEVELOPER items (hand-written durable steering)', () => {
+    // Chef only ever emits role:'system' for positional output — a mid-stream
+    // developer item is a caller's own instruction and must not vanish.
+    const items: OpenAIResponsesInputItem[] = [
+      { type: 'message', role: 'user', content: 'hi' },
+      { type: 'message', role: 'developer', content: 'From here on, be concise.' },
+      { type: 'message', role: 'assistant', content: 'ok' },
+    ];
+    const { system } = fromOpenAIResponses(items);
+
+    expect(system.map((m) => m.content)).toContain('From here on, be concise.');
+  });
+});

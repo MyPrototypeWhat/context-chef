@@ -239,6 +239,24 @@ describe('fromOpenAI', () => {
     expect(history).toHaveLength(1);
   });
 
+  it('skips MID-STREAM system messages instead of folding them into the system layer', () => {
+    // Chat Completions is a positional-system target: chef's announcements
+    // are emitted inline. Folding one back into the system layer on re-ingest
+    // would bake volatile text into the cacheable prefix and defeat
+    // retractAnnouncement(). Leading system messages stay the system layer.
+    const messages: ChatCompletionMessageParam[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'hi' },
+      { role: 'system', content: '<announcements>x</announcements>' },
+      { role: 'assistant', content: 'ok' },
+    ];
+    const { system, history } = fromOpenAI(messages);
+
+    expect(system).toEqual([{ role: 'system', content: 'You are helpful.' }]);
+    expect(JSON.stringify(history)).not.toContain('announcements');
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
   it('converts image_url content parts to attachments', () => {
     const messages: ChatCompletionMessageParam[] = [
       {
@@ -457,5 +475,36 @@ describe('OpenAIAdapter — attachments output', () => {
 
     const cloned = result.messages[0] as unknown as { meta: { at: unknown } };
     expect(cloned.meta.at).toBe('2026-01-02T03:04:05.000Z');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// OpenAIAdapter.compile — positional system messages
+// ═══════════════════════════════════════════════════════
+
+describe('OpenAIAdapter — positional system messages', () => {
+  it('keeps a positional system message inline, stripping the flag', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+      { role: 'user', content: 'Use it' },
+    ];
+    const result = adapter.compile([...messages]);
+    const msgs = toPlainMessages(result);
+
+    expect(msgs).toHaveLength(5);
+    expect(msgs[3]).toEqual({ role: 'system', content: 'A new tool is available.' });
+  });
+
+  it('never leaks _positional into the wire payload', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'Note.', _positional: true },
+      { role: 'user', content: 'Hello' },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('_positional');
   });
 });

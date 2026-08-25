@@ -256,6 +256,19 @@ export function fromOpenAIResponses(items: unknown[], instructions?: string): Pa
     if (type === 'message') {
       const { text, attachments } = flattenContent(raw.content);
       if (raw.role === 'system' || raw.role === 'developer') {
+        // Leading system/developer items are the prompt's system layer. A
+        // `system` item appearing MID-STREAM is positional channel output —
+        // announcements re-rendered every compile until retracted. Folding
+        // it into the top-level system layer would bake volatile text into
+        // the cacheable prefix and defeat retraction, so it is skipped:
+        // ownership stays with the chef state that injected it. `developer`
+        // items are exempt from the skip — chef only ever emits
+        // `role: 'system'` for positional output, while a mid-stream
+        // developer item is a hand-written durable steering instruction.
+        if (raw.role === 'system' && history.length > 0) {
+          openAssistant = null;
+          continue;
+        }
         system.push({ role: 'system', content: text });
         openAssistant = null;
         continue;
@@ -339,7 +352,8 @@ function readReasoningPassthrough(msg: Message): OpenAIResponsesReasoningItem[] 
 /**
  * Target adapter for the OpenAI Responses API.
  *
- * - system messages → joined `instructions` string
+ * - system messages → joined `instructions` string, except `_positional` ones,
+ *   which stay in `input` as inline system items
  * - user/assistant text → `message` items with `input_text` / `output_text` parts
  * - assistant `tool_calls` → `function_call` items (`call_id` = ToolCall.id)
  * - tool messages → `function_call_output` items
@@ -383,7 +397,17 @@ export class OpenAIResponsesAdapter {
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        instructionParts.push(msg.content);
+        if (msg._positional) {
+          // `instructions` is this API's top-level system slot, so honoring the
+          // flag means emitting an inline system item at this position instead.
+          input.push({
+            type: 'message',
+            role: 'system',
+            content: [{ type: 'input_text', text: msg.content }],
+          });
+        } else {
+          instructionParts.push(msg.content);
+        }
         continue;
       }
 

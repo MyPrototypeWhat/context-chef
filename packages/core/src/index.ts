@@ -9,7 +9,11 @@ export {
   getAdapter,
   type ITargetAdapter,
 } from './adapters/adapterFactory';
-export { AnthropicAdapter, fromAnthropic } from './adapters/anthropicAdapter';
+export {
+  AnthropicAdapter,
+  type AnthropicAdapterOptions,
+  fromAnthropic,
+} from './adapters/anthropicAdapter';
 export {
   auditAnthropicCachePlacement,
   type CacheAuditIssue,
@@ -22,11 +26,14 @@ export {
   type OpenAIResponsesPayload,
 } from './adapters/openAIResponsesAdapter';
 export {
+  type Announcement,
+  type AnnouncementChannel,
   type BeforeCompileContext,
   type ChefConfig,
   type ChefEvents,
   type ChefSnapshot,
   ContextChef,
+  type SkillPlacement,
   type ToolCallCheckResult,
 } from './chef';
 export { Assembler } from './modules/assembler';

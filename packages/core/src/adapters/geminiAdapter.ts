@@ -163,7 +163,8 @@ const COMPACTION_SUMMARY_HEADER = '[Summary of earlier conversation (compacted s
  * Adapts ContextChef IR to Google Gemini's generateContent format.
  *
  * Key differences from OpenAI/Anthropic:
- * - System messages go into a top-level `systemInstruction` field, not in `contents`.
+ * - System messages go into a top-level `systemInstruction` field, not in `contents` —
+ *   except `_positional` ones, which degrade to a `user` content entry.
  * - Roles are `user` and `model` (not `assistant`).
  * - Tool calls use `functionCall` parts with `name` + `args`.
  * - Tool results use `functionResponse` parts with `name` + `response`, sent as `role: "user"`.
@@ -195,7 +196,14 @@ export class GeminiAdapter implements ITargetAdapter {
     for (const msg of messages) {
       if (msg.role === 'system') {
         const textPart: SDKTextPart = { text: msg.content };
-        systemParts.push(textPart);
+        if (msg._positional) {
+          // Gemini `contents` has no system role — degrade to a user entry
+          // carrying the text verbatim, merged with adjacent user content by
+          // _mergeConsecutiveSameRole below.
+          contents.push({ role: 'user', parts: [textPart] });
+        } else {
+          systemParts.push(textPart);
+        }
         continue;
       }
 

@@ -23,6 +23,31 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
+## Skill 位置 —— `skillPlacement` <Badge type="tip" text="4.1" />
+
+控制激活的 skill instructions 投递到哪里。默认 `'after_system'` 就是上面这套行为，逐字节兼容：紧跟 system prompt 的一条独立 `role: 'system'` 消息。这些 token 位于可缓存前缀里 —— 重发不要钱 —— 但每一次激活、切换、停用都会改写前缀，代价是一次完整的缓存失效。
+
+改成 `'tail'` 后，instructions 彻底离开前缀，改为领衔 tail 拼接段，用 `<skill_instructions skill="NAME">` 包裹：
+
+```typescript
+const chef = new ContextChef({ skillPlacement: "tail" });
+chef.registerSkills([planning, editing]); // two Skill objects, shaped like the one above
+chef.setSystemPrompt([{ role: "system", content: basePrompt }]).setHistory(history);
+
+chef.activateSkill("planning");
+const a = await chef.compile({ target: "anthropic" });
+chef.activateSkill("editing");
+const b = await chef.compile({ target: "anthropic" });
+
+// `a` 和 `b` 在最后一条 user message 之前逐字节相同 —— 激活、切换、停用都不碰
+// 缓存前缀，变的只有 tail：
+//   <skill_instructions skill="editing">…</skill_instructions>
+```
+
+两个方向的代价都是真实的：`'tail'` 会在**每一次请求**里不走缓存地重发完整 instructions；`'after_system'` 什么都不用重发，但**每次切换**都要吃一次缓存 miss。切换模式的频率相对于每个模式的存活时长更高，就选 `'tail'`；一次设定、整个会话都不换的模式，留在默认值。
+
+位置只影响投递方式 —— `meta.activeSkillName`、`getActiveSkill()`、snapshot/restore 的行为完全不变。在 tail 里，skill 块位于固定拼接顺序的最前面（`<skill_instructions>` → `<memory>` → `<dynamic_state>` → `<implicit_context>` → `<announcements>` → anchor），让模型先读"你现在是谁"，再读它要作用的状态；它**不会**单独触发 anchor 那行文案 —— 它在自己的标签里已经自说明了。如果 `cacheAudit` 在你最后一个 `cache_control` 断点处或之前抓到 `<skill_instructions` 块，说明断点放晚了，不是 placement 的问题。
+
 ## 从 `SKILL.md` 加载
 
 ```typescript
@@ -107,7 +132,7 @@ const skill = await loadSkill('skills/triage/SKILL.md');
 chef.activateSkill(renderSkill(skill, { args: 'p0 incidents' }));
 ```
 
-`activateSkill` 把 instructions 作为专属 system message 注入三明治（在你的 system prompt 之后、history 之前）。同一时间只有一个激活。切换会让该槽及其后的所有内容重新缓存 —— 对很少切换的模式来说没问题。
+`activateSkill` 把 instructions 作为专属 system message 注入三明治（在你的 system prompt 之后、history 之前）。同一时间只有一个激活。切换会让该槽及其后的所有内容重新缓存 —— 对很少切换的模式来说没问题；切换很频繁时用 `skillPlacement: 'tail'`。
 
 ### 2. 渐进式披露 —— host 追加消息
 

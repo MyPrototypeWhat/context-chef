@@ -1,5 +1,5 @@
 import type { MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AnthropicPayload, Message } from '../types';
 import { AnthropicAdapter, fromAnthropic } from './anthropicAdapter';
 
@@ -512,5 +512,180 @@ describe('AnthropicAdapter — attachments output', () => {
 
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({ type: 'text', text: 'Plain text' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// AnthropicAdapter.compile — positional system messages
+// ═══════════════════════════════════════════════════════
+
+describe('AnthropicAdapter — positional system messages', () => {
+  it('keeps a positional system message at its place immediately after a user turn', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'user', content: 'Use it' },
+    ];
+    const result = new AnthropicAdapter().compile([...messages]);
+
+    expect(result.system).toHaveLength(1);
+    expect(result.system?.[0]).toMatchObject({ type: 'text', text: 'You are helpful.' });
+    expect(result.messages).toHaveLength(4);
+    expect(result.messages[1].role).toBe('system');
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'text', text: 'A new tool is available.' },
+    ]);
+  });
+
+  it('hoists a positional system message that follows a plain assistant turn (API rejects it there)', () => {
+    const warn = vi.fn();
+    const adapter = new AnthropicAdapter({ logger: { warn } });
+    const result = adapter.compile([
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi!' },
+      { role: 'system', content: 'A new tool is available.', _positional: true },
+    ]);
+
+    expect(result.messages.every((m) => (m as { role: string }).role !== 'system')).toBe(true);
+    expect(result.system?.map((b) => b.text)).toContain('A new tool is available.');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('hoists a positional system message sitting between a tool_use and its tool_result', () => {
+    const adapter = new AnthropicAdapter({ logger: { warn: vi.fn() } });
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }],
+      },
+      { role: 'system', content: 'mid-gap note', _positional: true },
+      { role: 'tool', content: 'result', tool_call_id: 'c1' },
+    ]);
+
+    // The gap between tool_use and tool_result must stay unbroken.
+    expect(result.messages.every((m) => (m as { role: string }).role !== 'system')).toBe(true);
+    expect(result.system?.map((b) => b.text)).toContain('mid-gap note');
+  });
+
+  it('keeps a positional system message directly after a tool result', () => {
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'c1' },
+      { role: 'system', content: 'after tools', _positional: true },
+    ]);
+
+    const last = result.messages[result.messages.length - 1] as { role: string };
+    expect(last.role).toBe('system');
+  });
+
+  it('fromAnthropic skips mid-stream system messages instead of parsing them into history', () => {
+    const out = new AnthropicAdapter().compile([
+      { role: 'system', content: 'base' },
+      { role: 'user', content: 'q' },
+      { role: 'system', content: '<announcements>x</announcements>', _positional: true },
+    ]);
+    const back = fromAnthropic(out.messages, out.system);
+
+    expect(back.system.map((m) => m.content)).toEqual(['base']);
+    expect(back.history.every((m) => (m as { role: string }).role !== 'system')).toBe(true);
+    expect(JSON.stringify(back.history)).not.toContain('announcements');
+  });
+
+  it('fromAnthropic routes a LEADING system message in `messages` into system (no data loss)', () => {
+    // Callers who put their system prompt in messages[0] instead of the
+    // `system` param must not lose the text — it is the prompt's system
+    // layer, not positional channel output.
+    const back = fromAnthropic([
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'hi' },
+    ] as unknown as Parameters<typeof fromAnthropic>[0]);
+
+    expect(back.system.map((m) => m.content)).toEqual(['You are helpful.']);
+    expect(back.history).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('maps _cache_breakpoint on a positional system message to cache_control', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Tool withdrawn.', _positional: true, _cache_breakpoint: true },
+    ];
+    const result = new AnthropicAdapter().compile([...messages]);
+
+    expect(getContentBlocks(result, 1)[0]).toMatchObject({
+      type: 'text',
+      text: 'Tool withdrawn.',
+      cache_control: { type: 'ephemeral' },
+    });
+  });
+
+  it('never leaks _positional into the emitted message', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Note.', _positional: true },
+    ];
+    const result = new AnthropicAdapter().compile([...messages]);
+
+    expect(JSON.stringify(result)).not.toContain('_positional');
+    expect(Object.keys(result.messages[1])).toEqual(['role', 'content']);
+  });
+
+  it('hoists a positional system message that precedes any user/tool message, warning once', () => {
+    const warn = vi.fn();
+    const adapterWithLogger = new AnthropicAdapter({ logger: { warn } });
+    const messages: Message[] = [
+      { role: 'system', content: 'Leading note.', _positional: true },
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Second leading note.', _positional: true },
+    ];
+    const result = adapterWithLogger.compile([...messages]);
+
+    expect(result.system).toHaveLength(1);
+    expect(result.system?.[0]).toMatchObject({ type: 'text', text: 'Leading note.' });
+    // The second one follows a user message, so it stays positional.
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].role).toBe('system');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('positional system message');
+  });
+
+  it('warns only once across compile() calls', () => {
+    const warn = vi.fn();
+    const adapterWithLogger = new AnthropicAdapter({ logger: { warn } });
+    const messages: Message[] = [
+      { role: 'system', content: 'Leading note.', _positional: true },
+      { role: 'user', content: 'Hello' },
+    ];
+    adapterWithLogger.compile([...messages]);
+    adapterWithLogger.compile([...messages]);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a tool message as opening the stream for positional placement', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'c1' },
+      { role: 'system', content: 'Tool set changed.', _positional: true },
+    ];
+    const warn = vi.fn();
+    const result = new AnthropicAdapter({ logger: { warn } }).compile([...messages]);
+
+    expect(result.system).toBeUndefined();
+    expect(result.messages[3].role).toBe('system');
+    expect(warn).not.toHaveBeenCalled();
   });
 });

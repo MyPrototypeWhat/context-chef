@@ -97,6 +97,7 @@ const stream = chat({
 - **工具太多？** — 按任务动态裁剪工具列表，或用双层架构（稳定分组 + 按需加载）彻底消除工具幻觉
 - **运行时禁用工具？** — Pruner blocklist + `checkToolCall` dispatch 闸门，覆盖权限、环境、限流、沙箱等场景；默认 KV-cache 友好
 - **按阶段切人格？** — `Skill` 原语打包指令 + 工具注解，支持从 `SKILL.md` 文件加载（与 Claude Code / Mastra / OpenCode 同格式）
+- **会话中途能力变了？** — Announcements（4.1）：`announce()` 声明哪些工具/skill 上线或下线，并在每次 compile 时重新渲染，直到你撤回；`skillPlacement: 'tail'` 把 skill instructions 移出可缓存前缀，切换模式再也不会让前缀失效
 - **换模型要重写？** — 同一套 prompt 编译到 OpenAI / Anthropic / Gemini，prefill、cache、tool call 格式自动适配
 - **长程任务跑偏？** — Zod schema 强类型状态注入，每次调用前强制对齐当前任务焦点
 - **输出格式跑偏？** — Guardrail：`withGuardrails` 强制 XML 输出契约并设置 assistant prefill，在不支持原生 prefill 的 provider 上自动降级
@@ -820,6 +821,31 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
+#### Skill 位置 —— `skillPlacement`（4.1）
+
+控制激活的 skill instructions 投递到哪里。默认 `'after_system'` 就是上面这套行为，逐字节兼容：紧跟 system prompt 的一条独立 `role: 'system'` 消息。这些 token 位于可缓存前缀里——重发不要钱——但每一次激活、切换、停用都会改写前缀，代价是一次完整的缓存失效。
+
+改成 `'tail'` 后，instructions 彻底离开前缀，改为领衔 tail 拼接段，用 `<skill_instructions skill="NAME">` 包裹：
+
+```typescript
+const chef = new ContextChef({ skillPlacement: "tail" });
+chef.registerSkills([planning, editing]); // two Skill objects, shaped like the one above
+chef.setSystemPrompt([{ role: "system", content: basePrompt }]).setHistory(history);
+
+chef.activateSkill("planning");
+const a = await chef.compile({ target: "anthropic" });
+chef.activateSkill("editing");
+const b = await chef.compile({ target: "anthropic" });
+
+// `a` 和 `b` 在最后一条 user message 之前逐字节相同——激活、切换、停用都不碰
+// 缓存前缀，变的只有 tail：
+//   <skill_instructions skill="editing">…</skill_instructions>
+```
+
+两个方向的代价都是真实的：`'tail'` 会在**每一次请求**里不走缓存地重发完整 instructions；`'after_system'` 什么都不用重发，但**每次切换**都要吃一次缓存 miss。切换模式的频率相对于每个模式的存活时长更高，就选 `'tail'`；一次设定、整个会话都不换的模式，留在默认值。
+
+位置只影响投递方式——`meta.activeSkillName`、`getActiveSkill()`、snapshot/restore 的行为完全不变。在 tail 里，skill 块位于固定拼接顺序的最前面（`<skill_instructions>` → `<memory>` → `<dynamic_state>` → `<implicit_context>` → `<announcements>` → anchor），让模型先读"你现在是谁"，再读它要作用的状态；它**不会**单独触发 anchor 那行文案——它在自己的标签里已经自说明了。如果 `cacheAudit` 在你最后一个 `cache_control` 断点处或之前抓到 `<skill_instructions` 块，说明断点放晚了，不是 placement 的问题。
+
 #### 从 `SKILL.md` 加载
 
 ```typescript
@@ -897,6 +923,103 @@ chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
 引用文件（`@./schema.json` 等）chef **不会**内联——传 `renderSkill(skill, { includeBaseDir: true })`，让你的 agent 用自己的文件工具按需读取。
 
 设计动机（Skill ⊥ Pruner 解耦、SKILL.md frontmatter 格式、mode 接线配方、LLM 自主加载 skill、reference 文件）见 [`SKILL_SPEC.md`](./SKILL_SPEC.md)。参数渲染、多源加载、两种交付模型见 [`docs/skill-interop-design.md`](./docs/skill-interop-design.md) 和使用配方 [`docs/skill-recipes.md`](./docs/skill-recipes.md)。
+
+---
+
+### Announcements（4.1）
+
+会话中途能力会变：权限被授予、toolkit 被加载、限流把 `web_search` 撤下。payload 的形状变了，却没有任何东西告诉模型*到底变了什么*——于是它继续调用已经消失的工具，或者对刚上线的工具视而不见。`announce()` 把这个变化说出来，并且一直说下去，直到你撤回。
+
+```typescript
+chef.announce("tools:added", "Tools newly available: read_file, grep");
+chef.announce(
+  "tools:removed",
+  "web_search has been withdrawn; calls to it will be rejected",
+);
+
+chef.getAnnouncements();
+// [{ id: 'tools:added', content: '…', channel: 'auto' }, { id: 'tools:removed', … }]
+
+chef.retractAnnouncement("tools:added"); // → true；下一次 compile 不留任何痕迹
+```
+
+所有常驻 announcement 渲染进同一个块，按插入顺序排列：
+
+```xml
+<announcements>
+<announcement id="tools:added">
+Tools newly available: read_file, grep
+</announcement>
+
+<announcement id="tools:removed">
+web_search has been withdrawn; calls to it will be rejected
+</announcement>
+</announcements>
+```
+
+**它是状态，不是事件。** announcement 陈述的是*当前*能力集合，每次 `compile()` 都会重新渲染——而不是往 history 里追加一条一次性消息。这正是关键：chef 的注入从不写进你的 history，所以撤回之后它会从后续 payload 里彻底消失，而不是变成一条过期的对话轮次让模型反复重读。`announce()` 按 `id` upsert——用同一个 id 重新声明会替换内容和 channel，但保留原来的插入位置，所以更新内容时整个块保持稳定。`retractAnnouncement(id)` 返回是否真的删掉了东西。
+
+#### 三个 channel
+
+| Channel | 渲染位置 | 说明 |
+|---|---|---|
+| `'user_tail'` | 并入最后一条 user message 的 tail 拼接段——在 `<dynamic_state>` / `<implicit_context>` 之后，anchor 那行之前 | 所有 provider 都能用。与 skill instructions、memory data 不同，announcement **会**触发 "Above is the current system state" 那行 anchor——它本来就是系统状态 |
+| `'system'` | 合并成一条 `_positional` system message，放在对话尾部之后（仍然排在任何 assistant prefill 之前） | 具备 operator 优先级，且缓存前缀完好无损 |
+| `'auto'`（默认） | 按 **target** 路由：Anthropic target 走 `'system'`，其余一律 `'user_tail'` | 见下面的坑 |
+
+channel 是逐条设置的，所以混合设置的一组 announcement 会在同一次 compile 里分走两条投递路径。
+
+**auto 路由的坑。** `'auto'` 按 *target* 路由，不按模型——chef 根本看不到你的 model id。对话中途的 `role: "system"` 消息在 Fable 5 / Mythos 5 / Opus 4.8 / Opus 5 上是原生支持的，但 **Sonnet 5 不支持**。如果你编译到 Anthropic target 而实际调用 Sonnet 5，必须显式指定 channel：
+
+```typescript
+chef.announce("tools:added", "Tools newly available: grep", { channel: "user_tail" });
+```
+
+机制而非策略——chef 不会替你猜模型。
+
+`'system'` channel 依托 `Message._positional`：被标记为 positional 的 `role: 'system'` 消息会*留在它所在的位置*，而不是被提升进 provider 的顶层 system 参数。各适配器的行为：Anthropic 发出一条对话中途的 system message（若它会排在所有 user/tool 消息之前，则降级为提升到顶层，并只警告一次）；OpenAI Chat Completions 本来就把 system 消息留在原地，该标记是 no-op；Responses 适配器把它作为内联 `message` item 发出，而不是折进 `instructions`；Gemini 的 `contents` 没有 system role，会原样降级成一条 `user` entry。
+
+**措辞很重要。** 陈述事实，不要下命令。"Tools newly available: read_file, grep" 和 "web_search has been withdrawn; calls to it will be rejected" 读起来是系统状态；"You must now use read_file" 读起来是一条和你的 system prompt 抢话语权的指令——模型会拿它去和你说过的所有话做权衡。
+
+**生命周期。** announcement 能挺过 `clearHistory()`——它描述的是当前能力集合，新开的对话同样需要；变化不再成立时请显式撤回。它随 `ChefSnapshot` 一起走，`snapshot()` / `restore()` 可以完整往返；恢复 4.1 之前的快照（没有 `announcements` 字段）会得到一个空集合，而不是让上一批 announcement 继续生效。开启 `cacheAudit: true` 后，若 `<announcements>` 块出现在最后一个 `cache_control` 断点处或之前，会被标记出来——announcement 永远渲染在对话尾部，所以要把断点往前挪。
+
+#### 自己检测 delta
+
+chef 不做任何自动的工具 delta 检测。它只渲染你声明的内容，判断*到底变了什么*属于策略，留在你的 loop 里：
+
+```typescript
+let previousTools = new Set<string>();
+
+function syncToolAnnouncements(next: string[]) {
+  const added = next.filter((name) => !previousTools.has(name));
+  const removed = [...previousTools].filter((name) => !next.includes(name));
+
+  if (added.length) {
+    chef.announce("tools:added", `Tools newly available: ${added.join(", ")}`);
+  } else {
+    chef.retractAnnouncement("tools:added"); // 已经不"新"了——别再重复
+  }
+
+  if (removed.length) {
+    chef.announce(
+      "tools:removed",
+      `Withdrawn; calls to these will be rejected: ${removed.join(", ")}`,
+    );
+  } else {
+    chef.retractAnnouncement("tools:removed");
+  }
+
+  previousTools = new Set(next);
+}
+
+// 和 Pruner blocklist 天然配套——闸门负责拒绝，announcement 负责解释：
+chef.getPruner().setBlockedTools(["delete_file"]);
+chef.announce("tools:blocked", "delete_file is disabled in this environment");
+```
+
+在你决定工具列表的地方调用它：构造请求之前，或者当工具集合由 Pruner 掌管时（`payload.tools`）放在 `compile:done` 处理器里——注意此时声明的 announcement 落在*下一次* compile，而不是刚刚完成的这次。
+
+相关：`ToolDefinition.deferLoading` 用来标注一个工具不进入初始上下文（Anthropic 的 tool search，以及 `mid-conversation-tool-changes` beta 里的 `tool_addition` 机制）；deferred 定义会在计算 cache key 之前被剥离，所以新增它们永远不会让已有的缓存条目失效。announcement 是它在文本侧的对应物——chef 的 IR 以文本内容为基础，因此 `tool_addition` / `tool_removal` 内容块不做透传。
 
 ---
 
