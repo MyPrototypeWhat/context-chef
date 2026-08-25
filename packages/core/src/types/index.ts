@@ -49,12 +49,17 @@ export interface ToolDefinition {
   parameters?: Record<string, unknown>;
   tags?: string[];
   /**
-   * Anthropic Tool Search annotation: a tool marked `defer_loading: true` is
-   * not loaded into the initial context — Claude discovers it on demand via a
-   * tool search tool, without breaking prompt caching. ContextChef passes the
-   * flag through `payload.tools` verbatim; converting to the provider's wire
-   * field (`defer_loading`) is the caller's tool-conversion step, same as the
-   * rest of the definition. Ignored by providers without deferred loading.
+   * Deferred-loading annotation: a tool marked `defer_loading: true` is not
+   * loaded into the initial context. Two provider mechanisms consume it:
+   * Claude discovers deferred tools on demand via tool search, and (under the
+   * `mid-conversation-tool-changes` beta) a deferred tool stays withheld
+   * until a `tool_addition` block surfaces it mid-conversation. Deferred
+   * definitions are stripped before the cache key is computed, so adding them
+   * never invalidates an existing cache entry. OpenAI has an equivalent
+   * native tool-search mechanism. ContextChef passes the flag through
+   * `payload.tools` verbatim; converting to the provider's wire field
+   * (`defer_loading`) is the caller's tool-conversion step, same as the rest
+   * of the definition. Ignored by providers without deferred loading.
    */
   deferLoading?: boolean;
 }
@@ -134,6 +139,26 @@ export interface Message {
    * (arXiv:2606.22528); pinning restores 0%.
    */
   pinned?: boolean;
+  /**
+   * Positional system message: only meaningful on `role: 'system'`. A marked
+   * message stays AT ITS POSITION in the message stream instead of being
+   * hoisted into the provider's top-level system parameter.
+   *
+   * Anthropic supports mid-conversation `role: "system"` messages natively on
+   * Fable 5 / Mythos 5 / Opus 4.8 / Opus 5 (NOT Sonnet 5): the cached prefix
+   * stays intact and the text carries operator precedence — the intended
+   * channel for announcing mid-session capability changes (tools/skills
+   * added or withdrawn). OpenAI keeps system messages inline anyway, so the
+   * flag is a no-op there. Gemini has no system role in `contents`; the
+   * adapter degrades a positional system message to a `user` content entry
+   * verbatim.
+   *
+   * Placement contract (Anthropic API constraint, NOT validated by chef): a
+   * positional system message must not be the first message and must not sit
+   * between a `tool_use` and its `tool_result`. When one appears before any
+   * user/tool message, the adapter falls back to hoisting it (warn-once).
+   */
+  _positional?: boolean;
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }
