@@ -23,7 +23,7 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
-## Skill 位置 —— `skillPlacement` <Badge type="tip" text="4.2" />
+## Skill 位置 —— `skillPlacement` <Badge type="tip" text="4.1" />
 
 控制激活的 skill instructions 投递到哪里。默认 `'after_system'` 就是上面这套行为，逐字节兼容：紧跟 system prompt 的一条独立 `role: 'system'` 消息。这些 token 位于可缓存前缀里 —— 重发不要钱 —— 但每一次激活、切换、停用都会改写前缀，代价是一次完整的缓存失效。
 

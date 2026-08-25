@@ -23,7 +23,7 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
-## Skill placement — `skillPlacement` <Badge type="tip" text="4.2" />
+## Skill placement — `skillPlacement` <Badge type="tip" text="4.1" />
 
 Where the active skill's instructions are delivered. The default `'after_system'` is the behavior above, bit-for-bit: a dedicated `role: 'system'` message right after your system prompt. Those tokens live in the cacheable prefix — free to re-send — but every activation, switch, or deactivation rewrites that prefix and costs one full cache invalidation.
 

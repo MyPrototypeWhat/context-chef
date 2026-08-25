@@ -131,7 +131,7 @@ for (const toolCall of response.tool_calls) {
 
 一个标志，两个消费方。Claude 通过 tool search 按需发现 deferred 工具；在 `mid-conversation-tool-changes` beta 下，deferred 工具还会一直被扣住，直到对话中途出现 `tool_addition` 块把它放出来。deferred 定义会在计算 cache key 之前被剥离，所以新增它们永远不会让已有的缓存条目失效。chef 只原样透传该标志 —— 转换成 provider 的线上字段（`defer_loading`）和定义的其余部分一样，属于你的工具转换步骤；`tool_addition` / `tool_removal` 内容块不做透传（chef 的 IR 以文本内容为基础）。想用*文字*告诉模型工具集合变了，用下面的 announcements。
 
-## Announcements —— 告诉模型发生了什么变化 <Badge type="tip" text="4.2" />
+## Announcements —— 告诉模型发生了什么变化 <Badge type="tip" text="4.1" />
 
 会话中途能力会变：权限被授予、toolkit 被加载、限流把 `web_search` 撤下。payload 的形状变了，却没有任何东西告诉模型*到底变了什么* —— 于是它继续调用已经消失的工具，或者对刚上线的工具视而不见。`announce()` 把这个变化说出来，并且一直说下去，直到你撤回。
 
@@ -186,7 +186,7 @@ chef.announce("tools:added", "Tools newly available: grep", { channel: "user_tai
 
 **措辞很重要。** 陈述事实，不要下命令。"Tools newly available: read_file, grep" 和 "web_search has been withdrawn; calls to it will be rejected" 读起来是系统状态；"You must now use read_file" 读起来是一条和你的 system prompt 抢话语权的指令 —— 模型会拿它去和你说过的所有话做权衡。
 
-**生命周期。** announcement 能挺过 `clearHistory()` —— 它描述的是当前能力集合，新开的对话同样需要；变化不再成立时请显式撤回。它随 `ChefSnapshot` 一起走，`snapshot()` / `restore()` 可以完整往返；恢复 4.2 之前的快照（没有 `announcements` 字段）会得到一个空集合，而不是让上一批 announcement 继续生效。开启 `cacheAudit: true` 后，若 `<announcements>` 块出现在最后一个 `cache_control` 断点处或之前，会被标记出来 —— announcement 永远渲染在对话尾部，所以要把断点往前挪。
+**生命周期。** announcement 能挺过 `clearHistory()` —— 它描述的是当前能力集合，新开的对话同样需要；变化不再成立时请显式撤回。它随 `ChefSnapshot` 一起走，`snapshot()` / `restore()` 可以完整往返；恢复 4.1 之前的快照（没有 `announcements` 字段）会得到一个空集合，而不是让上一批 announcement 继续生效。开启 `cacheAudit: true` 后，若 `<announcements>` 块出现在最后一个 `cache_control` 断点处或之前，会被标记出来 —— announcement 永远渲染在对话尾部，所以要把断点往前挪。
 
 ### 自己检测 delta
 

@@ -1152,7 +1152,7 @@ export class ContextChef {
     // Only the OUTERMOST call clears the flag: a re-entrant inner compile
     // (hook calling compile() — the bypass in compile()) must leave it set,
     // or a second inner call after the first would queue and deadlock.
-    // Without any reset (the pre-4.2 bug), every compile after the first
+    // Without any reset (the pre-4.1 bug), every compile after the first
     // took the bypass and the Snapshot + Serialize queue was dead.
     const isOutermostCompile = !this._compiling;
     this._compiling = true;

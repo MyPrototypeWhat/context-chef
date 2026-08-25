@@ -97,7 +97,7 @@ const stream = chat({
 - **工具太多？** — 按任务动态裁剪工具列表，或用双层架构（稳定分组 + 按需加载）彻底消除工具幻觉
 - **运行时禁用工具？** — Pruner blocklist + `checkToolCall` dispatch 闸门，覆盖权限、环境、限流、沙箱等场景；默认 KV-cache 友好
 - **按阶段切人格？** — `Skill` 原语打包指令 + 工具注解，支持从 `SKILL.md` 文件加载（与 Claude Code / Mastra / OpenCode 同格式）
-- **会话中途能力变了？** — Announcements（4.2）：`announce()` 声明哪些工具/skill 上线或下线，并在每次 compile 时重新渲染，直到你撤回；`skillPlacement: 'tail'` 把 skill instructions 移出可缓存前缀，切换模式再也不会让前缀失效
+- **会话中途能力变了？** — Announcements（4.1）：`announce()` 声明哪些工具/skill 上线或下线，并在每次 compile 时重新渲染，直到你撤回；`skillPlacement: 'tail'` 把 skill instructions 移出可缓存前缀，切换模式再也不会让前缀失效
 - **换模型要重写？** — 同一套 prompt 编译到 OpenAI / Anthropic / Gemini，prefill、cache、tool call 格式自动适配
 - **长程任务跑偏？** — Zod schema 强类型状态注入，每次调用前强制对齐当前任务焦点
 - **输出格式跑偏？** — Guardrail：`withGuardrails` 强制 XML 输出契约并设置 assistant prefill，在不支持原生 prefill 的 provider 上自动降级
@@ -821,7 +821,7 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
-#### Skill 位置 —— `skillPlacement`（4.2）
+#### Skill 位置 —— `skillPlacement`（4.1）
 
 控制激活的 skill instructions 投递到哪里。默认 `'after_system'` 就是上面这套行为，逐字节兼容：紧跟 system prompt 的一条独立 `role: 'system'` 消息。这些 token 位于可缓存前缀里——重发不要钱——但每一次激活、切换、停用都会改写前缀，代价是一次完整的缓存失效。
 
@@ -926,7 +926,7 @@ chef.activateSkill(renderSkill(triage, { args: "p0 incidents" }));
 
 ---
 
-### Announcements（4.2）
+### Announcements（4.1）
 
 会话中途能力会变：权限被授予、toolkit 被加载、限流把 `web_search` 撤下。payload 的形状变了，却没有任何东西告诉模型*到底变了什么*——于是它继续调用已经消失的工具，或者对刚上线的工具视而不见。`announce()` 把这个变化说出来，并且一直说下去，直到你撤回。
 
@@ -981,7 +981,7 @@ chef.announce("tools:added", "Tools newly available: grep", { channel: "user_tai
 
 **措辞很重要。** 陈述事实，不要下命令。"Tools newly available: read_file, grep" 和 "web_search has been withdrawn; calls to it will be rejected" 读起来是系统状态；"You must now use read_file" 读起来是一条和你的 system prompt 抢话语权的指令——模型会拿它去和你说过的所有话做权衡。
 
-**生命周期。** announcement 能挺过 `clearHistory()`——它描述的是当前能力集合，新开的对话同样需要；变化不再成立时请显式撤回。它随 `ChefSnapshot` 一起走，`snapshot()` / `restore()` 可以完整往返；恢复 4.2 之前的快照（没有 `announcements` 字段）会得到一个空集合，而不是让上一批 announcement 继续生效。开启 `cacheAudit: true` 后，若 `<announcements>` 块出现在最后一个 `cache_control` 断点处或之前，会被标记出来——announcement 永远渲染在对话尾部，所以要把断点往前挪。
+**生命周期。** announcement 能挺过 `clearHistory()`——它描述的是当前能力集合，新开的对话同样需要；变化不再成立时请显式撤回。它随 `ChefSnapshot` 一起走，`snapshot()` / `restore()` 可以完整往返；恢复 4.1 之前的快照（没有 `announcements` 字段）会得到一个空集合，而不是让上一批 announcement 继续生效。开启 `cacheAudit: true` 后，若 `<announcements>` 块出现在最后一个 `cache_control` 断点处或之前，会被标记出来——announcement 永远渲染在对话尾部，所以要把断点往前挪。
 
 #### 自己检测 delta
 

@@ -131,7 +131,7 @@ Set `deferLoading: true` on a `ToolDefinition` to annotate it for Anthropic's se
 
 Two consumers, one flag. Claude discovers deferred tools on demand via tool search; under the `mid-conversation-tool-changes` beta a deferred tool additionally stays withheld until a `tool_addition` block surfaces it mid-conversation. Deferred definitions are stripped before the cache key is computed, so adding them never invalidates an existing cache entry. Chef passes the flag through verbatim — converting it to the provider's wire field (`defer_loading`) is your tool-conversion step, same as the rest of the definition, and `tool_addition` / `tool_removal` content blocks are not passed through (chef's IR is text-content based). To tell the model *in words* that the tool set moved, use announcements below.
 
-## Announcements — telling the model what changed <Badge type="tip" text="4.2" />
+## Announcements — telling the model what changed <Badge type="tip" text="4.1" />
 
 Capabilities change mid-session: a permission is granted, a toolkit is loaded, a rate limit withdraws `web_search`. The payload changes shape, but nothing tells the model *what* changed — it keeps calling the tool that vanished, or ignores the one that just appeared. `announce()` states the change and keeps stating it until you retract it.
 
@@ -186,7 +186,7 @@ The `'system'` channel rides `Message._positional`: a `role: 'system'` message f
 
 **Wording matters.** State facts, do not command. "Tools newly available: read_file, grep" and "web_search has been withdrawn; calls to it will be rejected" read as system state. "You must now use read_file" reads as an instruction competing with your system prompt — and the model will weigh it against everything else you told it.
 
-**Lifecycle.** Announcements survive `clearHistory()` — they describe the current capability set, which a fresh conversation still needs; retract them explicitly when the change no longer holds. They ride `ChefSnapshot` and round-trip through `snapshot()` / `restore()`; restoring a snapshot taken before 4.2 (no `announcements` field) yields an empty set rather than leaving the previous ones live. With `cacheAudit: true`, an `<announcements>` block caught at or before your last `cache_control` breakpoint is flagged — announcements always render at the conversational tail, so move the breakpoint earlier.
+**Lifecycle.** Announcements survive `clearHistory()` — they describe the current capability set, which a fresh conversation still needs; retract them explicitly when the change no longer holds. They ride `ChefSnapshot` and round-trip through `snapshot()` / `restore()`; restoring a snapshot taken before 4.1 (no `announcements` field) yields an empty set rather than leaving the previous ones live. With `cacheAudit: true`, an `<announcements>` block caught at or before your last `cache_control` breakpoint is flagged — announcements always render at the conversational tail, so move the breakpoint earlier.
 
 ### Detecting the delta (userland)
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ContextChef } from '../src/index';
 
-// Regression for the pre-4.2 bug where `_compiling` was set on the first
+// Regression for the pre-4.1 bug where `_compiling` was set on the first
 // compile and never reset: every later compile() took the re-entrancy bypass,
 // permanently disabling the Snapshot + Serialize queue.
 describe('compile() re-entrancy flag lifecycle', () => {

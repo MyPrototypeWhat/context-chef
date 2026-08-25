@@ -97,7 +97,7 @@ For direct control over the compilation pipeline — dynamic state injection, to
 - **Too many tools?** — Dynamically prune the tool list per task, or use a two-layer architecture (stable namespaces + on-demand loading) to eliminate tool hallucinations
 - **Need to block tools at runtime?** — Pruner blocklist + `checkToolCall` gate for permission, environment safety, rate limits, and sandboxing — KV-cache preserving by default
 - **Mode-based behavior?** — `Skill` primitive bundles instructions and tool annotations per phase; loadable from `SKILL.md` files (compatible with Claude Code / Mastra / OpenCode formats)
-- **Capabilities change mid-session?** — Announcements (4.2): `announce()` states what tools/skills came or went and re-renders it into every compile until retracted; `skillPlacement: 'tail'` moves skill instructions out of the cached prefix so switching modes never invalidates it
+- **Capabilities change mid-session?** — Announcements (4.1): `announce()` states what tools/skills came or went and re-renders it into every compile until retracted; `skillPlacement: 'tail'` moves skill instructions out of the cached prefix so switching modes never invalidates it
 - **Switching providers?** — Same prompt architecture compiles to OpenAI / Anthropic / Gemini with automatic prefill, cache, and tool call format adaptation
 - **Long tasks drifting?** — Zod schema-based state injection forces the model to stay aligned with the current task on every call
 - **Output format drifting?** — Guardrail: `withGuardrails` enforces an XML output contract and sets an assistant prefill, auto-degraded on providers without native prefill
@@ -821,7 +821,7 @@ const { messages, meta } = await chef.compile({ target: "openai" });
 // meta.activeSkillName === 'planning'
 ```
 
-#### Skill placement — `skillPlacement` (4.2)
+#### Skill placement — `skillPlacement` (4.1)
 
 Where the active skill's instructions are delivered. The default `'after_system'` is the behavior above, bit-for-bit: a dedicated `role: 'system'` message right after your system prompt. Those tokens live in the cacheable prefix — free to re-send — but every activation, switch, or deactivation rewrites that prefix and costs one full cache invalidation.
 
@@ -927,7 +927,7 @@ For the design rationale (Skill ⊥ Pruner decoupling, SKILL.md frontmatter shap
 
 ---
 
-### Announcements (4.2)
+### Announcements (4.1)
 
 Capabilities change mid-session: a permission is granted, a toolkit is loaded, a rate limit withdraws `web_search`. The payload changes shape, but nothing tells the model *what* changed — it keeps calling the tool that vanished, or ignores the one that just appeared. `announce()` states the change and keeps stating it until you retract it.
 
@@ -982,7 +982,7 @@ The `'system'` channel rides `Message._positional`: a `role: 'system'` message f
 
 **Wording matters.** State facts, do not command. "Tools newly available: read_file, grep" and "web_search has been withdrawn; calls to it will be rejected" read as system state. "You must now use read_file" reads as an instruction competing with your system prompt — and the model will weigh it against everything else you told it.
 
-**Lifecycle.** Announcements survive `clearHistory()` — they describe the current capability set, which a fresh conversation still needs; retract them explicitly when the change no longer holds. They ride `ChefSnapshot` and round-trip through `snapshot()` / `restore()`; restoring a snapshot taken before 4.2 (no `announcements` field) yields an empty set rather than leaving the previous ones live. With `cacheAudit: true`, an `<announcements>` block caught at or before your last `cache_control` breakpoint is flagged — announcements always render at the conversational tail, so move the breakpoint earlier.
+**Lifecycle.** Announcements survive `clearHistory()` — they describe the current capability set, which a fresh conversation still needs; retract them explicitly when the change no longer holds. They ride `ChefSnapshot` and round-trip through `snapshot()` / `restore()`; restoring a snapshot taken before 4.1 (no `announcements` field) yields an empty set rather than leaving the previous ones live. With `cacheAudit: true`, an `<announcements>` block caught at or before your last `cache_control` breakpoint is flagged — announcements always render at the conversational tail, so move the breakpoint earlier.
 
 #### Detecting the delta (userland)
 
