@@ -54,25 +54,32 @@ const listing = formatSkillListing(skills, { format: "plain" });
 
 `SKILL.md` parsing is tolerant: block scalars (`>` folded / `|` literal), `- item` lists, and kebab-case keys (`allowed-tools`, `when-to-use`) all load. Any frontmatter key chef doesn't recognize is preserved verbatim on `skill.metadata` for your host to read — chef never interprets it (the same annotation-only stance as `allowedTools`). A *known* field written in a malformed nested shape throws, so a typo'd `allowed-tools` surfaces instead of silently disabling restrictions.
 
-The listing is typically used as the description of a `load_skill` tool, letting the LLM pick a skill itself:
+The listing lets the LLM pick a skill itself via a `load_skill` tool. Keep the tool definition **static** — the listing goes in your system prompt, not the tool description, and `skill_name` is a plain string, not an enum of registered names. Tool schemas sit at the very top of every provider's prompt prefix, so a listing-bearing description or a live-name enum rewrites the schema whenever the skill set changes and invalidates the entire prompt cache (the same reasoning as the static memory tool schemas, 4.1). Unknown names are caught at dispatch time instead — `activateSkill` throws with the available names:
 
 ```typescript
 const loadSkillTool = {
   name: "load_skill",
   description:
-    "Load a skill to specialize for the current task. Available:\n" + listing,
+    "Load a skill to specialize for the current task. " +
+    "The available skills are listed in the system prompt.",
   parameters: {
-    skill_name: {
-      type: "string",
-      enum: chef.getRegisteredSkills().map((s) => s.name),
-    },
+    skill_name: { type: "string", description: "A skill name from the listing." },
   },
 };
 
-// In your dispatch loop:
+// The listing lives in the (stable) system prompt:
+chef.setSystemPrompt([
+  { role: "system", content: `${basePrompt}\n\nAvailable skills:\n${listing}` },
+]);
+
+// In your dispatch loop — dispatch-gate, like the memory tools:
 if (call.name === "load_skill") {
-  chef.activateSkill(call.args.skill_name);
-  /* push tool result, continue loop */
+  try {
+    chef.activateSkill(call.args.skill_name);
+    /* push success tool result, continue loop */
+  } catch (err) {
+    /* push String(err) as the tool result — the model self-corrects */
+  }
 }
 ```
 
