@@ -419,18 +419,18 @@ describe('memoryPlacement — selector + onMemoryExpired integration', () => {
     const lastUser = plain(payload).at(-1) as PlainMessage;
     expect(lastUser.content).toContain('shown');
     expect(lastUser.content).toContain('visible');
-    // The deselected entry's VALUE stays out of the payload, but its KEY is
-    // still enumerated in the "Existing memory keys" guidance — the static
-    // memory tool schemas (4.1) rely on that line to surface every
-    // modifiable key, selector or not.
-    expect(lastUser.content).not.toContain('<entry key="hidden">');
+    // The selector is the caller's visibility policy: a deselected entry's
+    // key and value BOTH stay out of the payload (listing hidden keys would
+    // rewrite the block on mutations the selector never injects — a cache
+    // buster — and defeat its token control). Hidden keys stay modifiable
+    // through modify_memory's dispatch-time validation.
+    expect(lastUser.content).not.toContain('hidden');
     expect(lastUser.content).not.toContain('invisible');
-    expect(lastUser.content).toContain('Existing memory keys: shown, hidden');
 
     expect(payload.meta?.injectedMemoryKeys).toEqual(['shown']);
   });
 
-  it('"before_history_tail" + selector that injects nothing still surfaces the live keys', async () => {
+  it('"before_history_tail" + selector that injects nothing emits no tail block at all', async () => {
     const chef = new ContextChef({
       memory: {
         store: new InMemoryStore(),
@@ -447,12 +447,10 @@ describe('memoryPlacement — selector + onMemoryExpired integration', () => {
 
     const payload = await chef.compile({ target: 'openai' });
     const lastUser = plain(payload).at(-1) as PlainMessage;
-    // No <memory> XML and no recall header (nothing was injected), but the
-    // key guidance must still reach the model — modify_memory's static
-    // schema points at it as the only key discovery channel.
-    expect(lastUser.content).not.toContain('<memory>');
-    expect(lastUser.content).not.toContain('You recall the following');
-    expect(lastUser.content).toContain('Existing memory keys: a, b');
+    // Nothing selected → nothing injected. No bare key sentence may reach
+    // the user turn: an unattributed imperative with no <memory> tag, no
+    // header, and no anchor would be indistinguishable from human input.
+    expect(lastUser.content).toBe('hi');
     expect(payload.meta?.injectedMemoryKeys).toEqual([]);
   });
 });

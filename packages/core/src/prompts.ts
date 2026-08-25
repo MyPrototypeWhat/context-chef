@@ -340,29 +340,23 @@ Only remember things genuinely worth persisting.
    * Dynamic wrapper used by compile() to inject recalled core memory alongside key guidance.
    * Enumerates existing keys (soft guidance) or allowed keys (strict mode) to stabilize LLM key creation.
    *
-   * `existingKeys` must be the FULL live key list, not just the injected
-   * entries — the static memory tool schemas point the model here to discover
-   * modifiable keys, including ones a `selector` chose not to inject. When
-   * `coreMemoryXml` is empty (selector injected nothing) the recall header is
-   * omitted and only the key guidance is emitted.
+   * `existingKeys` is the SELECTED (visible) key list — a `selector` is the
+   * caller's visibility policy and may hide entries; hidden keys stay
+   * modifiable through dispatch-time validation. The header is unconditional:
+   * every emitted block self-introduces via {@link Prompts.MEMORY_BLOCK_HEADER},
+   * which the anchor-suppression rule in `compile()` relies on. Callers must
+   * not invoke this with empty `coreMemoryXml`.
    */
   getMemoryBlock: (coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]) => {
-    const parts: string[] = [];
-    if (coreMemoryXml) {
-      parts.push(`${Prompts.MEMORY_BLOCK_HEADER}\n${coreMemoryXml}`);
-    }
+    let block = `${Prompts.MEMORY_BLOCK_HEADER}\n${coreMemoryXml}`;
 
     if (allowedKeys && allowedKeys.length > 0) {
-      parts.push(
-        `Allowed memory keys: ${allowedKeys.join(', ')}. You may ONLY update or delete these keys. Any other key will be rejected.`,
-      );
+      block += `\n\nAllowed memory keys: ${allowedKeys.join(', ')}. You may ONLY update or delete these keys. Any other key will be rejected.`;
     } else if (existingKeys.length > 0) {
-      parts.push(
-        `Existing memory keys: ${existingKeys.join(', ')}. Prefer updating these keys over creating new ones to maintain consistency.`,
-      );
+      block += `\n\nExisting memory keys: ${existingKeys.join(', ')}. Prefer updating these keys over creating new ones to maintain consistency.`;
     }
 
-    return parts.join('\n\n');
+    return block;
   },
 
   /**
