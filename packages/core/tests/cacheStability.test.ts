@@ -160,7 +160,10 @@ describe('auditAnthropicCachePlacement', () => {
       system: [sys('stable')],
       messages: [
         { role: 'user', content: '<dynamic_state>v1</dynamic_state>' },
-        { role: 'assistant', content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }],
+        },
       ],
     } as unknown as AnthropicPayload);
     const late = auditAnthropicCachePlacement({
@@ -169,7 +172,10 @@ describe('auditAnthropicCachePlacement', () => {
         { role: 'user', content: 'q1' },
         { role: 'assistant', content: 'a1' },
         { role: 'user', content: '<dynamic_state>v2</dynamic_state>' },
-        { role: 'assistant', content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }],
+        },
       ],
     } as unknown as AnthropicPayload);
 
