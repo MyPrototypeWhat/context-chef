@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://github.com/MyPrototypeWhat/context-chef/raw/main/docs-site/public/logo.svg" width="88" alt="ContextChef" />
+</p>
+
 # @context-chef/ai-sdk-middleware
 
 [![npm version](https://img.shields.io/npm/v/@context-chef/ai-sdk-middleware.svg)](https://www.npmjs.com/package/@context-chef/ai-sdk-middleware)
