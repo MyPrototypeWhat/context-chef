@@ -1,0 +1,46 @@
+{
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "How do I read a file in Node?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Use node:fs/promises readFile.",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "text": "And write one?\n\n<skill_instructions skill=\"planning\">\nRead the code, list affected files, then write a plan.\n</skill_instructions>",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "<announcements>\n<announcement id=\"tools:added\">\nThe `write_file` tool is now available.\n</announcement>\n</announcements>",
+          "type": "text"
+        }
+      ],
+      "role": "system"
+    }
+  ],
+  "system": [
+    {
+      "text": "You are a careful engineering assistant.",
+      "type": "text"
+    }
+  ]
+}

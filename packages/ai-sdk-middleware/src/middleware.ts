@@ -5,18 +5,15 @@ import type {
   LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import {
-  type ChefLogger,
-  type CompressionDetails,
   compactMessages,
+  createJanitorPool,
   DEFAULT_SESSION_KEY,
-  dedupeConstructionWarnings,
   flattenForCompression,
-  Janitor,
+  type Janitor,
   type Message,
   normalizeSessionKey,
   objectToXml,
   Prompts,
-  SessionPool,
   type SummarizeHistoryOptions,
   summarizeHistory,
 } from '@context-chef/core';
@@ -34,16 +31,6 @@ import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
 
 /**
- * After this many compressions fire without an `onCompress` persistence hook,
- * warn once. The middleware compresses in-flight only — it never mutates the
- * caller's message store — so without write-back the history re-expands every
- * call and the outgoing payload grows unbounded. A couple of fires is a
- * transient spike (fine); repeated fires signal a sustained over-budget
- * conversation that needs durable persistence.
- */
-const COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD = 3;
-
-/**
  * Creates a LanguageModelMiddleware that transparently applies
  * context-chef compression and truncation to AI SDK model calls.
  *
@@ -54,68 +41,38 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   const logger = options.logger ?? console;
   let usageWarned = false;
 
-  // Budget-dependent features: compression and its hooks. Any of them
-  // signals compression intent and needs a Janitor — and therefore a
-  // `contextWindow`. Truncate/compact/skill/dynamicState-only
-  // configurations get no Janitor at all: no budget checks, no token-usage
-  // capture, and none of the Janitor's missing-tokenizer warnings.
-  const budgeting = Boolean(options.compress || options.onCompress || options.onBeforeCompress);
-
-  if (budgeting && options.contextWindow == null) {
-    throw new Error(
-      '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
-        '`onCompress`, `onBeforeCompress`) is configured — the budget ' +
-        'check has nothing to compare against without it.',
-    );
-  }
-
-  // Surface the in-flight-without-persistence footgun: if compression keeps
-  // firing but no `onCompress` is configured, the summary is discarded each
-  // call and history re-expands, so the payload grows unbounded (and
-  // compression effectively skips every other call via E10 suppression).
-  let compressionsFired = 0;
-  let persistenceWarned = false;
-  const onCompressionFired = () => {
-    compressionsFired++;
-    if (
-      persistenceWarned ||
-      options.onCompress ||
-      compressionsFired < COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD
-    ) {
-      return;
-    }
-    persistenceWarned = true;
-    logger.warn(
-      `[context-chef] compress has fired ${compressionsFired}× but no \`onCompress\` is ` +
-        'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
-        'not persisted, so your message history re-expands on the next call and the payload grows ' +
-        'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
-        'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
-        '`compactModelMessages` for durable compaction.',
-    );
-  };
-
   // One Janitor per session. A middleware instance is usually created once at
   // module scope (`const model = withContextChef(...)`) but serves many
   // conversations — sharing one Janitor would leak token-usage feeds,
   // compression suppression, and circuit-breaker counts across them. Callers
   // opt in per call via `providerOptions: { contextChef: { sessionId } }`;
   // calls without a sessionId share the default session (prior behavior).
-  // Construction-time config nags are deduped across sessions — the config
-  // is identical for every pooled Janitor, so once is enough.
-  const janitors = budgeting
-    ? new SessionPool(
-        dedupeConstructionWarnings(logger, (constructionLogger) =>
-          createJanitor(
-            options,
-            options.contextWindow as number,
-            constructionLogger,
-            onCompressionFired,
-          ),
-        ),
-        { maxSize: options.maxSessions },
-      )
-    : null;
+  // Null for truncate/compact/skill/dynamicState-only configurations: no
+  // budget checks, no token-usage capture, and none of the Janitor's
+  // missing-tokenizer warnings.
+  const janitors = createJanitorPool({
+    contextWindow: options.contextWindow,
+    compress: options.compress,
+    compressionModel: options.compress?.model
+      ? createCompressionAdapter(options.compress.model)
+      : undefined,
+    tokenizer: options.tokenizer,
+    onCompress: options.onCompress,
+    onBeforeCompress: options.onBeforeCompress,
+    toHostMessages: toAISDK,
+    // In-flight-without-persistence footgun: the summary is discarded each
+    // call and history re-expands, so the payload grows unbounded (and
+    // compression effectively skips every other call via E10 suppression).
+    persistenceWarning: (firedCount) =>
+      `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
+      'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
+      'not persisted, so your message history re-expands on the next call and the payload grows ' +
+      'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
+      'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
+      '`compactModelMessages` for durable compaction.',
+    logger,
+    maxSessions: options.maxSessions,
+  });
 
   let invalidSessionKeyWarned = false;
   const flagInvalidSessionKey = (raw: unknown) => {
@@ -145,22 +102,10 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   // once per middleware instance; `allowDoubleCompression: true` disables
   // the guard entirely.
   let doubleCompressionWarned = false;
-  const warnServerManagedOnce = (clearOnly: boolean) => {
+  const warnServerManagedOnce = (warning: string) => {
     if (doubleCompressionWarned) return;
     doubleCompressionWarned = true;
-    logger.warn(
-      clearOnly
-        ? '[context-chef] Anthropic server-side context management detected ' +
-            '(providerOptions.anthropic.contextManagement with only clear_* edits). The server ' +
-            'is already managing context by clearing old tool uses/thinking, so middleware ' +
-            'compression is skipped for these calls to avoid managing the same history twice. ' +
-            'Set `allowDoubleCompression: true` to compress anyway.'
-        : '[context-chef] Anthropic server-side context management detected ' +
-            '(providerOptions.anthropic.contextManagement). The server manages the context ' +
-            'window (including compaction), so middleware compression is skipped for these ' +
-            'calls to avoid compressing the same history twice. Set ' +
-            '`allowDoubleCompression: true` to compress anyway.',
-    );
+    logger.warn(warning);
   };
 
   const clearsToolResults = !!options.clear?.some(
@@ -208,11 +153,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       //    the call declares it (see warnServerManagedOnce above) — every
       //    other step still runs; only this one is skipped.
       if (janitor) {
-        const serverManagement = options.allowDoubleCompression
+        const serverManagedWarning = options.allowDoubleCompression
           ? null
-          : detectServerContextManagement(params.providerOptions);
-        if (serverManagement) {
-          warnServerManagedOnce(serverManagement.clearOnly);
+          : serverContextManagementWarning(params.providerOptions);
+        if (serverManagedWarning) {
+          warnServerManagedOnce(serverManagedWarning);
         } else {
           conversation = await janitor.compress(conversation);
         }
@@ -304,18 +249,19 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
 }
 
 /**
- * Detects Anthropic server-side context management on a call's
- * providerOptions (`providerOptions.anthropic.contextManagement`, per
- * `@ai-sdk/anthropic`). Returns null when absent or malformed.
+ * The warning to log when a call opts into Anthropic server-side context
+ * management (`providerOptions.anthropic.contextManagement`, per
+ * `@ai-sdk/anthropic`) — the signal that middleware compression must yield
+ * for that call. Returns null when the option is absent or malformed.
  *
- * `clearOnly` is true when the edits array holds exclusively `clear_*`
- * edits (e.g. `clear_tool_uses_20250919`, `clear_thinking_20251015`) and
- * no `compact_20260112` — the server clears rather than compacts, which
- * only changes the warning wording, not the skip decision.
+ * The wording splits on whether the edits array holds exclusively `clear_*`
+ * edits (e.g. `clear_tool_uses_20250919`, `clear_thinking_20251015`) instead
+ * of a `compact_20260112`: the server clears rather than compacts, which
+ * changes only the explanation, never the skip decision.
  */
-function detectServerContextManagement(
+function serverContextManagementWarning(
   providerOptions: Record<string, unknown> | undefined,
-): { clearOnly: boolean } | null {
+): string | null {
   const anthropic = providerOptions?.anthropic;
   if (anthropic == null || typeof anthropic !== 'object') return null;
   const contextManagement = (anthropic as Record<string, unknown>).contextManagement;
@@ -331,66 +277,18 @@ function detectServerContextManagement(
         typeof (edit as Record<string, unknown>).type === 'string' &&
         ((edit as Record<string, unknown>).type as string).startsWith('clear_'),
     );
-  return { clearOnly };
-}
 
-/**
- * Builds the stateful Janitor for budget-dependent configurations.
- *
- * The Janitor config is a discriminated union on `tokenizer`. Build the
- * two branches separately so the literal type matches one of the union
- * members exactly — a single literal carrying `tokenizer: Fn | undefined`
- * would not narrow to either branch.
- */
-function createJanitor(
-  options: ContextChefOptions,
-  contextWindow: number,
-  logger: ChefLogger,
-  onCompressionFired: () => void,
-): Janitor {
-  const userOnCompress = options.onCompress;
-  const sharedJanitorConfig = {
-    contextWindow,
-    triggerRatio: options.compress?.triggerRatio,
-    minShrinkRatio: options.compress?.minShrinkRatio,
-    toolResultStubThreshold: options.compress?.toolResultStubThreshold,
-    compressionModel: options.compress?.model
-      ? createCompressionAdapter(options.compress.model)
-      : undefined,
-    // Always installed so every compression is counted for the
-    // persistence warning; the user's hook is forwarded when configured.
-    onCompress: (summary: Message, count: number, details: CompressionDetails) => {
-      onCompressionFired();
-      userOnCompress?.(summary.content, count, {
-        compressedMessages: toAISDK(details.compressedMessages),
-      });
-    },
-    onBeforeCompress: options.onBeforeCompress,
-    logger,
-  };
-
-  let usagePreference = options.compress?.usagePreference;
-  if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    logger.warn(
-      "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
-        "Falling back to 'max'.",
-    );
-    usagePreference = 'max';
-  }
-
-  return options.tokenizer
-    ? new Janitor({
-        ...sharedJanitorConfig,
-        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
-        preserveRatio: options.compress?.preserveRatio ?? 0.8,
-        usagePreference,
-      })
-    : new Janitor({
-        ...sharedJanitorConfig,
-        // 'tokenizerFirst' has been sanitized above; the cast narrows the
-        // remaining values to the no-tokenizer branch.
-        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
-      });
+  return clearOnly
+    ? '[context-chef] Anthropic server-side context management detected ' +
+        '(providerOptions.anthropic.contextManagement with only clear_* edits). The server ' +
+        'is already managing context by clearing old tool uses/thinking, so middleware ' +
+        'compression is skipped for these calls to avoid managing the same history twice. ' +
+        'Set `allowDoubleCompression: true` to compress anyway.'
+    : '[context-chef] Anthropic server-side context management detected ' +
+        '(providerOptions.anthropic.contextManagement). The server manages the context ' +
+        'window (including compaction), so middleware compression is skipped for these ' +
+        'calls to avoid compressing the same history twice. Set ' +
+        '`allowDoubleCompression: true` to compress anyway.';
 }
 
 /**

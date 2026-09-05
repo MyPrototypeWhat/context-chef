@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ContextChef } from '../../index';
 import {
   FileSystemAdapter,
   Offloader,
@@ -9,6 +10,7 @@ import {
   type VFSEvictionReason,
   type VFSStorageAdapter,
 } from '.';
+import { renderRecalledContent } from './recallTool';
 
 describe('Offloader', () => {
   const TEST_DIR = path.join(process.cwd(), '.test_vfs');
@@ -1332,5 +1334,147 @@ describe('Offloader — content-addressed filenames', () => {
     };
     const o = new Offloader({ threshold: 10, adapter, storageDir: '' });
     expect(() => o.offload(BIG, { tailChars: 20 })).toThrow(/asynchronous|offloadAsync/);
+  });
+});
+
+describe('recall rendering', () => {
+  const span = (messages: unknown[]) => JSON.stringify({ version: 1, messages });
+
+  it('renders an archived span as a transcript', () => {
+    const text = renderRecalledContent(
+      span([
+        { role: 'user', content: 'What is the weather in Oslo?' },
+        {
+          role: 'assistant',
+          content: 'Checking.',
+          thinking: { thinking: 'call the tool' },
+          tool_calls: [
+            {
+              id: 'c1',
+              type: 'function',
+              function: { name: 'weather', arguments: '{"city":"Oslo"}' },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: '{"tempC":-3}' },
+      ]),
+    );
+
+    expect(text).toBe(
+      [
+        '[archived span — 3 messages]',
+        '',
+        'user:',
+        'What is the weather in Oslo?',
+        '',
+        'assistant:',
+        '[thinking] call the tool',
+        'Checking.',
+        '[tool call] weather({"city":"Oslo"})',
+        '',
+        'tool result (weather):',
+        '{"tempC":-3}',
+      ].join('\n'),
+    );
+  });
+
+  it('labels a tool result whose call is not in the span', () => {
+    const text = renderRecalledContent(
+      span([{ role: 'tool', tool_call_id: 'gone', content: 'x' }]),
+    );
+    expect(text).toContain('tool result:\nx');
+  });
+
+  it('lists attachments by filename, falling back to media type', () => {
+    const text = renderRecalledContent(
+      span([
+        {
+          role: 'user',
+          content: 'see these',
+          attachments: [
+            { mediaType: 'image/png', data: 'AAA', filename: 'shot.png' },
+            { mediaType: 'application/pdf', data: 'BBB' },
+          ],
+        },
+      ]),
+    );
+    expect(text).toContain('[attachment] shot.png');
+    expect(text).toContain('[attachment] application/pdf');
+  });
+
+  it('singularizes the header for a one-message span', () => {
+    expect(renderRecalledContent(span([{ role: 'user', content: 'hi' }]))).toContain(
+      '[archived span — 1 message]',
+    );
+  });
+
+  it('passes non-archive payloads through untouched', () => {
+    expect(renderRecalledContent('a plain offloaded tool output')).toBe(
+      'a plain offloaded tool output',
+    );
+    expect(renderRecalledContent('{"version":1}')).toBe('{"version":1}');
+    expect(renderRecalledContent('{"messages":[]}')).toBe('{"messages":[]}');
+    expect(renderRecalledContent('{ not json')).toBe('{ not json');
+  });
+});
+
+describe('chef.resolveRecall formatting', () => {
+  const buildChef = () => {
+    const files = new Map<string, string>();
+    const chef = new ContextChef({
+      logger: { warn: () => {} },
+      vfs: {
+        threshold: 999_999,
+        adapter: {
+          write: async (filename: string, content: string) => {
+            files.set(filename, content);
+          },
+          read: async (filename: string) => files.get(filename) ?? null,
+          exists: async (filename: string) => files.has(filename),
+        },
+      },
+      janitor: {
+        contextWindow: 60,
+        triggerRatio: 1,
+        tokenizer: (messages) => messages.length * 10,
+        preserveRatio: 0.3,
+        archive: 'vfs',
+        compressionModel: async () => '<summary>S</summary>',
+      },
+    });
+    chef.setHistory(
+      Array.from({ length: 9 }, (_, i) => ({
+        role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: `turn-${i + 1}: ${'context '.repeat(200)}`,
+      })),
+    );
+    return chef;
+  };
+
+  const archivedUri = async (chef: ContextChef): Promise<string> => {
+    const payload = await chef.compile({ target: 'openai' });
+    const match = JSON.stringify(payload.messages).match(/context:\/\/vfs\/[a-z0-9_.-]+/i);
+    if (!match) throw new Error('no archive URI was cited in the summary');
+    return match[0];
+  };
+
+  it('defaults to the raw archive JSON', async () => {
+    const chef = buildChef();
+    const raw = await chef.resolveRecall(await archivedUri(chef));
+    expect(JSON.parse(raw ?? '').messages[0].content).toContain('turn-1');
+  });
+
+  it("format: 'text' renders the span as a transcript", async () => {
+    const chef = buildChef();
+    const text = await chef.resolveRecall(await archivedUri(chef), { format: 'text' });
+    expect(text).toContain('[archived span — 8 messages]');
+    expect(text).toContain('user:\nturn-1:');
+    expect(text).not.toContain('"version"');
+  });
+
+  it('returns null for an unknown URI in both modes', async () => {
+    const chef = buildChef();
+    expect(await chef.resolveRecall('context://vfs/nope.txt')).toBeNull();
+    expect(await chef.resolveRecall('context://vfs/nope.txt', { format: 'text' })).toBeNull();
   });
 });

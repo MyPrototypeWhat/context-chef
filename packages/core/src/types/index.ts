@@ -172,6 +172,32 @@ export interface Message {
    * the cached prefix and defeat retraction.
    */
   _positional?: boolean;
+  /**
+   * Anthropic server-side compaction block (`compact_20260112`), carried
+   * verbatim. `fromAnthropic` lifts it off the message that owns it and marks
+   * that message `pinned` — the API discards everything before a compaction
+   * block, so losing it would lose the whole compacted history. The Anthropic
+   * target adapter re-emits it as the first content block of the message;
+   * OpenAI and Gemini have no equivalent wire block and inline the text under
+   * a summary header instead.
+   */
+  _anthropic_compaction?: string;
+  /**
+   * Gemini thought signature riding on this message's TEXT part (the
+   * signature attached to a `functionCall` part lives on
+   * {@link ToolCall.thoughtSignature} instead). Gemini 3.x rejects turns that
+   * do not echo their signatures verbatim. Round-trips through `fromGemini`
+   * and the Gemini target adapter; other adapters drop it.
+   */
+  _gemini_thought_signature?: string;
+  /**
+   * OpenAI Responses API reasoning items belonging to this assistant message,
+   * carried verbatim (including `encrypted_content`) so the round-trip is
+   * byte-identical. Typed as `unknown[]` to keep the provider-neutral IR free
+   * of a provider item type; the Responses adapter narrows on read and is the
+   * only consumer.
+   */
+  _openai_reasoning?: unknown[];
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }

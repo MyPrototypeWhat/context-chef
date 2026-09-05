@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { adapterRegistry } from './adapters/adapterRegistry';
-import { AnthropicAdapter } from './adapters/anthropicAdapter';
+import { AnthropicAdapter, anthropicServerContextManagement } from './adapters/anthropicAdapter';
 import { auditAnthropicCachePlacement } from './adapters/anthropicCacheAudit';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
@@ -19,6 +19,7 @@ import {
   type MemorySnapshot,
 } from './modules/memory';
 import { Offloader, type OffloadOptions, type VFSConfig } from './modules/offloader';
+import { type ResolveRecallOptions, renderRecalledContent } from './modules/offloader/recallTool';
 import {
   type CompiledTools,
   Pruner,
@@ -44,20 +45,6 @@ import type {
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 import { objectToXml } from './utils/xmlGenerator';
-
-/**
- * Maps the edit types of a server-side context-management config to the
- * `anthropic-beta` header values they require.
- */
-function computeAnthropicBetas(server: unknown): string[] {
-  const betas = new Set<string>();
-  const edits = (server as { edits?: Array<{ type?: string }> } | undefined)?.edits ?? [];
-  for (const edit of edits) {
-    if (edit?.type === 'compact_20260112') betas.add('compact-2026-01-12');
-    else if (edit?.type) betas.add('context-management-2025-06-27');
-  }
-  return [...betas];
-}
 
 /** Escapes a string for use inside an XML attribute value. */
 function escapeXmlAttribute(value: string): string {
@@ -107,16 +94,16 @@ export interface BeforeCompileContext {
 }
 
 /**
- * An immutable snapshot of ContextChef's full internal state.
- * Created by chef.snapshot() and consumed by chef.restore().
- */
-/**
  * Result of {@link ContextChef.checkToolCall}. Discriminated by `allowed`:
  * `reason` is mandatory exactly when the call was rejected, so consumers cannot
  * accidentally read it on an allowed call (or omit it on a rejection).
  */
 export type ToolCallCheckResult = { allowed: true } | { allowed: false; reason: string };
 
+/**
+ * An immutable snapshot of ContextChef's full internal state.
+ * Created by chef.snapshot() and consumed by chef.restore().
+ */
 export interface ChefSnapshot {
   readonly systemPrompt: Message[];
   readonly history: Message[];
@@ -241,6 +228,16 @@ export interface ChefConfig {
   defaultTarget?: TargetProvider | ITargetAdapter;
 
   /**
+   * When true, every compile targeting Anthropic runs
+   * {@link auditAnthropicCachePlacement} on the produced payload and logs each
+   * distinct issue ONCE per chef instance — volatile content (memory data,
+   * dynamic state, guardrail instructions) sitting inside the cached prefix
+   * silently invalidates prompt caching on every change. Anthropic-only:
+   * it is the one provider with explicit breakpoints to audit against.
+   * Zero cost on other targets. Default false.
+   */
+  cacheAudit?: boolean;
+  /**
    * Where history compression happens:
    *
    * - `'client'` (default): ContextChef's Janitor compresses locally (today's
@@ -257,16 +254,6 @@ export interface ChefConfig {
    * and exact token accounting. What stays client-side is everything servers
    * don't do: tool pruning, skills, memory, VFS, dynamic state.
    */
-  /**
-   * When true, every compile targeting Anthropic runs
-   * {@link auditAnthropicCachePlacement} on the produced payload and logs each
-   * distinct issue ONCE per chef instance — volatile content (memory data,
-   * dynamic state, guardrail instructions) sitting inside the cached prefix
-   * silently invalidates prompt caching on every change. Anthropic-only:
-   * it is the one provider with explicit breakpoints to audit against.
-   * Zero cost on other targets. Default false.
-   */
-  cacheAudit?: boolean;
   contextManagement?: {
     strategy: 'client' | 'server';
     /**
@@ -920,9 +907,17 @@ export class ContextChef {
    * tool output or an archived compressed span (see `JanitorConfig.archive`).
    * Returns null when the URI is unknown. Pair with
    * {@link getRecallToolDefinition} to let the model request retrieval.
+   *
+   * `format: 'text'` renders an archived span as a readable transcript instead
+   * of the `{ version, messages }` JSON the archive stores — worth the swap
+   * when the result goes straight back to the model as a tool result. Any
+   * other payload (an offloaded tool output, a caller-written archive entry)
+   * is returned unchanged in both modes. Defaults to `'raw'`.
    */
-  public async resolveRecall(uri: string): Promise<string | null> {
-    return this.offloader.resolveAsync(uri);
+  public async resolveRecall(uri: string, options?: ResolveRecallOptions): Promise<string | null> {
+    const stored = await this.offloader.resolveAsync(uri);
+    if (stored === null || (options?.format ?? 'raw') === 'raw') return stored;
+    return renderRecalledContent(stored);
   }
 
   /**
@@ -1520,13 +1515,14 @@ export class ContextChef {
 
       // Server-side context management: on the server-managed (Anthropic)
       // target, carry the edits config + required beta headers in the payload.
+      // What those two fields contain is the adapter layer's business.
       if (serverManaged) {
-        const server = this.contextManagement?.server ?? {
-          edits: [{ type: 'compact_20260112' }],
-        };
         const anthropicPayload = payload as AnthropicPayload;
-        anthropicPayload.context_management = server;
-        anthropicPayload.betas = computeAnthropicBetas(server);
+        const { context_management, betas } = anthropicServerContextManagement(
+          this.contextManagement?.server,
+        );
+        anthropicPayload.context_management = context_management;
+        anthropicPayload.betas = betas;
       }
 
       // 8.5 Optional cache audit (Anthropic target only). Dedupe on the

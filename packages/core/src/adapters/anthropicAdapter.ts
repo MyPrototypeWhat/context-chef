@@ -270,6 +270,45 @@ export interface AnthropicAdapterOptions {
   logger?: ChefLogger;
 }
 
+// ─── Server-side context management ───
+
+/**
+ * The two Anthropic request fields a server-managed compile emits.
+ * `context_management` is spread into the Messages API request verbatim;
+ * `betas` goes into the `anthropic-beta` header / SDK `betas` option.
+ */
+export interface AnthropicServerContextManagement {
+  context_management: unknown;
+  betas: string[];
+}
+
+/** Maps an edits config to the `anthropic-beta` values its edit types require. */
+function computeAnthropicBetas(config: unknown): string[] {
+  const betas = new Set<string>();
+  const edits = (config as { edits?: Array<{ type?: string }> } | undefined)?.edits ?? [];
+  for (const edit of edits) {
+    if (edit?.type === 'compact_20260112') betas.add('compact-2026-01-12');
+    else if (edit?.type) betas.add('context-management-2025-06-27');
+  }
+  return [...betas];
+}
+
+/**
+ * Resolves `ChefConfig.contextManagement.server` into the payload fields the
+ * Anthropic Messages API expects under server-side context management.
+ *
+ * Passing `undefined` (strategy `'server'` with no explicit edits config)
+ * yields a single `compact_20260112` edit on the server's default trigger.
+ * The provider-shaped config is otherwise passed through untouched — only the
+ * beta headers it implies are derived from it.
+ */
+export function anthropicServerContextManagement(
+  config?: unknown,
+): AnthropicServerContextManagement {
+  const context_management = config ?? { edits: [{ type: 'compact_20260112' }] };
+  return { context_management, betas: computeAnthropicBetas(context_management) };
+}
+
 export class AnthropicAdapter implements ITargetAdapter {
   private _positionalHoistWarned = false;
 

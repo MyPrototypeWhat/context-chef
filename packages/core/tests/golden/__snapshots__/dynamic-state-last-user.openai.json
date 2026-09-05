@@ -1,0 +1,20 @@
+{
+  "messages": [
+    {
+      "content": "You are a careful engineering assistant.",
+      "role": "system"
+    },
+    {
+      "content": "How do I read a file in Node?",
+      "role": "user"
+    },
+    {
+      "content": "Use node:fs/promises readFile.",
+      "role": "assistant"
+    },
+    {
+      "content": "And write one?\n\n<dynamic_state>\n  <step>3</step>\n  <file>src/index.ts</file>\n  <dirty>true</dirty>\n</dynamic_state>\n\nAbove is the current system state. Use it to guide your next action.",
+      "role": "user"
+    }
+  ]
+}

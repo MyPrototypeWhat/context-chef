@@ -1,0 +1,52 @@
+{
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "How do I read a file in Node?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Use node:fs/promises readFile.",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "text": "And write one?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "system": [
+    {
+      "text": "You are a careful engineering assistant.",
+      "type": "text"
+    }
+  ],
+  "tools": [
+    {
+      "description": "Read a file from disk.",
+      "name": "read_file",
+      "parameters": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"],
+        "type": "object"
+      }
+    }
+  ]
+}

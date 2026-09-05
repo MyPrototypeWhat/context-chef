@@ -1,0 +1,38 @@
+{
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "How do I read a file in Node?"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "Use node:fs/promises readFile."
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "And write one?\n\n<ephemeral_message type=\"prefill_enforcement\">\nSYSTEM INSTRUCTION: Your response MUST start verbatim with the following text:\n\"<answer>\"\n\nDo not output any introductory text or acknowledgement. Start directly with the text above.\n</ephemeral_message>"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a careful engineering assistant."
+      },
+      {
+        "text": "The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>"
+      }
+    ]
+  }
+}

@@ -12,6 +12,8 @@ export {
 export {
   AnthropicAdapter,
   type AnthropicAdapterOptions,
+  type AnthropicServerContextManagement,
+  anthropicServerContextManagement,
   fromAnthropic,
 } from './adapters/anthropicAdapter';
 export {
@@ -36,6 +38,11 @@ export {
   type SkillPlacement,
   type ToolCallCheckResult,
 } from './chef';
+export {
+  createJanitorPool,
+  type IntegrationCompressOptions,
+  type JanitorPoolConfig,
+} from './integrations/janitorPool';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
@@ -87,7 +94,12 @@ export {
   type VFSResult,
   type VFSStorageAdapter,
 } from './modules/offloader';
-export { getRecallToolDefinition } from './modules/offloader/recallTool';
+export {
+  getRecallToolDefinition,
+  type RecallFormat,
+  type ResolveRecallOptions,
+  renderRecalledContent,
+} from './modules/offloader/recallTool';
 export {
   Pruner,
   type PrunerConfig,

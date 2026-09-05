@@ -1,0 +1,90 @@
+{
+  "messages": [
+    {
+      "content": "You are a careful engineering assistant.",
+      "role": "system"
+    },
+    {
+      "content": "You have access to memory tools that let you remember and forget facts across conversations.\nUse them to store important information like user preferences, project conventions, and key decisions.\nOnly remember things genuinely worth persisting.",
+      "role": "system"
+    },
+    {
+      "content": "What is the weather in Oslo?",
+      "role": "user"
+    },
+    {
+      "content": "Checking.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"city\":\"Oslo\"}",
+            "name": "weather"
+          },
+          "id": "call_1",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "content": "{\"tempC\":-3,\"sky\":\"clear\"}",
+      "role": "tool",
+      "tool_call_id": "call_1"
+    },
+    {
+      "content": "You recall the following from previous conversations:\n<memory>\n<entry key=\"editor\">\n<metadata>\n- updated_at=2026-03-01T12:00:00.000Z\n- update_count=1\n</metadata>\n<value>\nNeovim\n</value>\n</entry>\n\n<entry key=\"language\">\n<description>\nPrimary project language\n</description>\n<metadata>\n- updated_at=2026-03-01T12:00:00.000Z\n- update_count=1\n</metadata>\n<value>\nTypeScript\n</value>\n</entry>\n</memory>\n\nExisting memory keys: editor, language. Prefer updating these keys over creating new ones to maintain consistency.",
+      "role": "user"
+    }
+  ],
+  "tools": [
+    {
+      "description": "Remember a new fact across conversations. Use this to store important information like user preferences, project conventions, and key decisions.",
+      "name": "create_memory",
+      "parameters": {
+        "properties": {
+          "description": {
+            "description": "A brief description of what this memory entry is for and when it should be referenced.",
+            "type": "string"
+          },
+          "key": {
+            "description": "A clear, descriptive key name for the memory (e.g. \"project_language\", \"user_preference_style\").",
+            "type": "string"
+          },
+          "value": {
+            "description": "The value to remember. Keep it concise but informative.",
+            "type": "string"
+          }
+        },
+        "required": ["key", "value"],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Update or delete an existing memory entry. Use \"update\" to change a remembered value, or \"delete\" to forget it.",
+      "name": "modify_memory",
+      "parameters": {
+        "properties": {
+          "action": {
+            "description": "The operation to perform on the memory entry.",
+            "enum": ["update", "delete"],
+            "type": "string"
+          },
+          "description": {
+            "description": "Update the description of this memory entry. Optional.",
+            "type": "string"
+          },
+          "key": {
+            "description": "The key of the existing memory entry to modify. The memory block in context lists the visible keys when entries exist. Modifying an unknown key is safely rejected.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The new value for the memory entry. Required for \"update\", ignored for \"delete\".",
+            "type": "string"
+          }
+        },
+        "required": ["action", "key"],
+        "type": "object"
+      }
+    }
+  ]
+}

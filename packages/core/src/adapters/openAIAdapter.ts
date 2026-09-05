@@ -13,6 +13,7 @@ import type {
 } from '../types';
 import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
+import { createThinkingTextifier, type ThinkingTextifier } from './thinkingText';
 
 // ─── Input: OpenAI → IR ───
 
@@ -205,9 +206,11 @@ export interface OpenAIAdapterOptions {
 }
 
 export class OpenAIAdapter implements ITargetAdapter {
-  private _redactedWarned = false;
+  private readonly textifyThinking: ThinkingTextifier;
 
-  constructor(private readonly options: OpenAIAdapterOptions = {}) {}
+  constructor(private readonly options: OpenAIAdapterOptions = {}) {
+    this.textifyThinking = createThinkingTextifier('OpenAI', options.logger);
+  }
 
   compile(messages: Message[]): OpenAIPayload {
     const formattedMessages: SDKMessageParam[] = messages.map((msg) => {
@@ -240,16 +243,7 @@ export class OpenAIAdapter implements ITargetAdapter {
       }
 
       if (msg.role === 'assistant' && this.options.preserveThinkingAsText) {
-        if (thinking?.thinking) {
-          cleanMsg.content = `<thinking>\n${thinking.thinking}\n</thinking>\n\n${cleanMsg.content ?? ''}`;
-        }
-        if (redacted_thinking && !this._redactedWarned) {
-          this._redactedWarned = true;
-          (this.options.logger ?? console).warn(
-            '[context-chef] redacted_thinking is an opaque encrypted blob and cannot be ' +
-              'preserved as text — dropped on the OpenAI target (warned once).',
-          );
-        }
+        cleanMsg.content = this.textifyThinking(cleanMsg.content, { thinking, redacted_thinking });
       }
 
       // Degrade an Anthropic server-side compaction to a marked summary block

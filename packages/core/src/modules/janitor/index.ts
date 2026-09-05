@@ -705,16 +705,19 @@ export async function summarizeHistory(
   return Prompts.formatCompactSummary(raw);
 }
 
-/** In-flight background compression job (compressionScheduling: 'background'). */
+/**
+ * In-flight background compression job (compressionScheduling: 'background').
+ *
+ * `toCompress` is the compressed span — always `history.slice(0, splitIndex)`
+ * and never empty — so the staleness check derives its split index and its
+ * boundary messages from it rather than storing them a second time.
+ */
 interface BackgroundCompressionJob {
   settled: boolean;
   /** Head to splice in ([summaryMessage, ...pinned]) or null on failure. */
   head: Message[] | null;
   /** Anchor update to apply at swap time ('incremental-anchored' mode). */
   anchorUpdate: string | null;
-  splitIndex: number;
-  firstMessage: Message | undefined;
-  lastCompressedMessage: Message;
   toCompress: Message[];
 }
 
@@ -865,7 +868,7 @@ export class Janitor {
     // 2b. Background scheduling: kick the summarization off and return
     //     history unchanged; a later compress() call swaps the result in.
     if ((this.config.compressionScheduling ?? 'blocking') === 'background') {
-      this._startBackgroundJob(history, toCompress, splitIndex, pinned);
+      this._startBackgroundJob(toCompress, toKeep, pinned);
       return history;
     }
 
@@ -1101,13 +1104,7 @@ export class Janitor {
           : undefined,
       });
     } catch (error) {
-      this._consecutiveFailures++;
-      logger.warn(
-        '[context-chef] compression model failed — history left unchanged (failure ' +
-          `${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
-        error,
-      );
-      return null;
+      return this._compressionFailed('compression model failed', error);
     }
 
     // ── Shrink guard: a summary that doesn't shrink the span is a failure.
@@ -1135,13 +1132,10 @@ export class Janitor {
         ? summaryText.length - (this._anchorDoc?.length ?? 0)
         : summaryText.length;
       if (spanChars >= MIN_SHRINK_GUARD_SPAN_CHARS && effectiveSize > allowance) {
-        this._consecutiveFailures++;
-        logger.warn(
-          `[context-chef] compression result failed the shrink guard (${anchored ? 'anchor growth' : 'summary'} ` +
-            `${effectiveSize} chars vs span ${spanChars} chars, minShrinkRatio ${minShrink}) — history left ` +
-            `unchanged (failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
+        return this._compressionFailed(
+          `compression result failed the shrink guard (${anchored ? 'anchor growth' : 'summary'} ` +
+            `${effectiveSize} chars vs span ${spanChars} chars, minShrinkRatio ${minShrink})`,
         );
-        return null;
       }
     }
 
@@ -1161,12 +1155,7 @@ export class Janitor {
         valid = false;
       }
       if (!valid) {
-        this._consecutiveFailures++;
-        logger.warn(
-          '[context-chef] compression summary rejected by validateCompression — history left ' +
-            `unchanged (failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
-        );
-        return null;
+        return this._compressionFailed('compression summary rejected by validateCompression');
       }
     }
 
@@ -1201,6 +1190,21 @@ export class Janitor {
     };
   }
 
+  /**
+   * Records a compression failure: counts it toward the circuit breaker and
+   * warns with the shared "history left unchanged" wording. Returns null so
+   * every failure path in {@link _summarize} can `return` it directly.
+   */
+  private _compressionFailed(reason: string, ...details: unknown[]): null {
+    this._consecutiveFailures++;
+    (this.config.logger ?? console).warn(
+      `[context-chef] ${reason} — history left unchanged ` +
+        `(failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
+      ...details,
+    );
+    return null;
+  }
+
   /** Applies a successful summarization's anchor update ('incremental-anchored'). */
   private _applyAnchorUpdate(anchorUpdate: string | null): void {
     if (anchorUpdate !== null) {
@@ -1209,23 +1213,14 @@ export class Janitor {
   }
 
   /** Kicks off a background summarization job ('background' scheduling). */
-  private _startBackgroundJob(
-    history: Message[],
-    toCompress: Message[],
-    splitIndex: number,
-    pinned: Message[],
-  ): void {
+  private _startBackgroundJob(toCompress: Message[], toKeep: Message[], pinned: Message[]): void {
     const job: BackgroundCompressionJob = {
       settled: false,
       head: null,
       anchorUpdate: null,
-      splitIndex,
-      firstMessage: history[0],
-      lastCompressedMessage: toCompress[toCompress.length - 1],
       toCompress,
     };
     this._pendingBackground = job;
-    const toKeep = history.slice(splitIndex);
     void this._summarize(toCompress, toKeep)
       .then((result) => {
         if (result !== null) {
@@ -1258,10 +1253,11 @@ export class Janitor {
     this._pendingBackground = undefined;
     if (!job.head) return null; // failed job — breaker already counted it
 
+    const splitIndex = job.toCompress.length;
     const stillPrefix =
-      history.length >= job.splitIndex &&
-      messagesEquivalent(history[0], job.firstMessage) &&
-      messagesEquivalent(history[job.splitIndex - 1], job.lastCompressedMessage);
+      history.length >= splitIndex &&
+      messagesEquivalent(history[0], job.toCompress[0]) &&
+      messagesEquivalent(history[splitIndex - 1], job.toCompress[splitIndex - 1]);
     if (!stillPrefix) return null; // stale — discard, fall through to fresh evaluation
 
     // Finalize at application time (not at computation time): the anchor and
@@ -1272,7 +1268,7 @@ export class Janitor {
       compressedMessages: job.toCompress,
     });
     this._suppressNextCompression = true;
-    return [...job.head, ...history.slice(job.splitIndex)];
+    return [...job.head, ...history.slice(splitIndex)];
   }
 
   /**

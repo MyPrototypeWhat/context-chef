@@ -1,0 +1,38 @@
+{
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "How do I read a file in Node?"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "Use node:fs/promises readFile."
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "And write one?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a careful engineering assistant."
+      },
+      {
+        "text": "CURRENT TASK STATE:\n<dynamic_state>\n  <step>3</step>\n  <file>src/index.ts</file>\n  <dirty>true</dirty>\n</dynamic_state>"
+      }
+    ]
+  }
+}

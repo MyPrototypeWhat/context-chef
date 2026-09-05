@@ -1,0 +1,24 @@
+{
+  "messages": [
+    {
+      "content": "You are a careful engineering assistant.",
+      "role": "system"
+    },
+    {
+      "content": "How do I read a file in Node?",
+      "role": "user"
+    },
+    {
+      "content": "Use node:fs/promises readFile.",
+      "role": "assistant"
+    },
+    {
+      "content": "And write one?\n\n<skill_instructions skill=\"planning\">\nRead the code, list affected files, then write a plan.\n</skill_instructions>",
+      "role": "user"
+    },
+    {
+      "content": "<announcements>\n<announcement id=\"tools:added\">\nThe `write_file` tool is now available.\n</announcement>\n</announcements>",
+      "role": "system"
+    }
+  ]
+}

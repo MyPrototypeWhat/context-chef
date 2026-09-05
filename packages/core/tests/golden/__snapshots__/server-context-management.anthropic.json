@@ -1,0 +1,45 @@
+{
+  "betas": ["compact-2026-01-12"],
+  "context_management": {
+    "edits": [
+      {
+        "type": "compact_20260112"
+      }
+    ]
+  },
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "How do I read a file in Node?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Use node:fs/promises readFile.",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "text": "And write one?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "system": [
+    {
+      "text": "You are a careful engineering assistant.",
+      "type": "text"
+    }
+  ]
+}
