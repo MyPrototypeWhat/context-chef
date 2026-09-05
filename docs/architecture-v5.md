@@ -174,6 +174,8 @@ interface OverflowResult {
 interface OverflowStrategy {
   readonly name: string;
   apply(input: OverflowInput): Promise<OverflowResult>;
+  snapshot?(): unknown;               // stateful strategies (anchored, background)
+  restore?(state: unknown): void;
 }
 ```
 
@@ -183,13 +185,15 @@ Built-ins (each a factory in `src/overflow/`):
 |---|---|---|
 | `summarize(opts)` | `compressionMode: 'rewrite'` | current LLM summary path; `opts` = compressionModel, guidelines, customCompressionInstructions, minShrinkRatio, validateCompression, preserveRecentMessages, preserveRatio, toolResultStubThreshold |
 | `anchored(opts)` | `compressionMode: 'incremental-anchored'` | same opts + anchor document; anchor keyed by window id (Phase 3) |
-| `server(config)` | `contextManagement.strategy: 'server'` | Anthropic-only pass-through; non-Anthropic targets → `changed: false, reason` |
+| `server(config, { fallback? })` | `contextManagement.strategy: 'server'` | Anthropic target → server-managed (`changed: false`, adapt attaches `context_management` + betas); other targets → `fallback` if given, else `changed: false, reason`. The alias builds `server(cfg, { fallback: <default client strategy> })` to preserve v4 behavior |
 | `reset(opts)` | new | keeps `pinned` + nothing else from history; everything else → `evicted`; `summary` = window-lineage stub. Safe only with `archive` — documented, not enforced |
 | `chain(...s)` | new | runs the next strategy when the previous returned `changed: false` or is still over budget |
 | `background(s)` | `compressionScheduling: 'background'` | wraps a strategy in the existing BackgroundCompressionJob semantics (content-equivalence staleness) |
 
-`archive` becomes strategy-agnostic: after any strategy, `evicted` is archived under
-`archive/` when `overflow.archive` is set. It is no longer a summarize-internal concern.
+`archive` becomes strategy-agnostic: after any strategy, `evicted` is archived when
+`overflow.archive` is set. It is no longer a summarize-internal concern. In 4.x the
+archive keeps writing into the `vfs` namespace so `context://vfs/...` URIs stay
+byte-identical (golden fixture); the dedicated `archive/` namespace is a 5.0 switch.
 
 Janitor stays as the **runner**: budget evaluation, tokenizer/usage, circuit breaker,
 `compress:*` events, durable `planCompaction`/`compactHistory` — it calls
