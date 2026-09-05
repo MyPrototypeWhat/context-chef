@@ -136,7 +136,7 @@ Legacy hooks become registrations at construction — same code path, no second 
 | Legacy (kept, deprecated JSDoc) | Registers as |
 |---|---|
 | `ChefConfig.transformToolResult` | phase `transform-tool-results` (per-message; not a slot) |
-| `JanitorConfig.onBeforeCompress` | `before-overflow` |
+| `JanitorConfig.onBeforeCompress` | `before-overflow` — the slot itself ships in Phase 1; the Janitor-side alias migrates in Phase 2 (Janitor is Phase 2's file) |
 | `ChefConfig.onBeforeCompile` | `before-assemble` (`inject` = the returned string) |
 | `ChefConfig.transformContext` | `after-assemble` |
 | events `compile:*`, `compress:*`, `offload:*`, `pruner:*` | unchanged (read-only) |
@@ -290,7 +290,8 @@ policies (maxAge / maxFiles / maxBytes, today on `VFSConfig`) become per-namespa
 options on `Store`.
 
 `ChefConfig.store?: StorageBackend | Store` routes memory/vfs/archive through one
-backend. Legacy `memory.store` and `vfs.storage` are still accepted and wrapped with the
+backend (this `ChefConfig` wiring lands in Phase 4b — `chef.ts` is contended in 4a's
+time slot; 4a delivers module-level acceptance on `Memory` / `Offloader`). Legacy `memory.store` and `vfs.storage` are still accepted and wrapped with the
 `from*` adapters. `VFSMemoryStore` becomes a deprecated alias (it *is* `memory/` on the
 VFS backend). Public APIs of `Memory` and `Offloader` do not change.
 
