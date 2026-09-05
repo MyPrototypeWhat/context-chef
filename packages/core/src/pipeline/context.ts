@@ -2,6 +2,7 @@ import type { ChefConfig, ChefEvents, SkillPlacement } from '../chef';
 import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
 import type { Memory } from '../modules/memory';
+import type { BudgetInfo, OverflowResult, OverflowWindow } from '../overflow/types';
 import type {
   CompileMeta,
   CompileOptions,
@@ -10,7 +11,7 @@ import type {
   TargetPayload,
   ToolDefinition,
 } from '../types';
-import type { BudgetInfo, SlotRegistry } from './slots';
+import type { SlotRegistry } from './slots';
 
 /**
  * Ordered stages of `ContextChef.compile()`. The orchestrator runs them in
@@ -44,21 +45,16 @@ export interface ResolvedTarget {
   serverManaged: boolean;
 }
 
-/** Opaque, sortable-enough id for one context window. */
-export function createWindowId(): string {
-  return `w_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-}
+export { createWindowId } from '../overflow/types';
 
 /**
  * Window lineage stub. Phase 3 turns this into the full `WindowLineage`
  * (`previous` + a fresh id per overflow); Phase 1 allocates one id per chef
  * instance so slot handlers and `OverflowResult.meta` already have a stable
- * key to hang on to.
+ * key to hang on to. The overflow axis owns the shape — strategies key their
+ * state by it.
  */
-export interface CompileWindow {
-  readonly first: string;
-  current: string;
-}
+export type CompileWindow = OverflowWindow;
 
 /**
  * @internal
@@ -176,10 +172,14 @@ export interface PipelineHost {
     payload: ChefEvents[K],
     signal?: AbortSignal,
   ): Promise<void>;
-  /** Janitor compression (client-side overflow). */
-  compress(history: Message[]): Promise<Message[]>;
-  /** Best-effort budget reading for the `before-overflow` slot. */
-  estimateBudget(history: Message[]): BudgetInfo;
+  /** One overflow pass through the Janitor runner (client-side overflow). */
+  overflow(
+    history: Message[],
+    window: CompileWindow,
+    signal?: AbortSignal,
+  ): Promise<OverflowResult>;
+  /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
+  readBudget(history: Message[]): BudgetInfo;
   shapeMemoryParts(
     dataXml: string,
     injectedMemoryKeys: string[],

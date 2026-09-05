@@ -26,8 +26,15 @@ import {
 } from './modules/pruner';
 import type { Skill } from './modules/skill';
 import {
+  type CompressionArchiveConfig,
+  type HandoffConfig,
+  isServerStrategy,
+  type OverflowStrategy,
+  resolveOverflowStrategy,
+  server,
+} from './overflow';
+import {
   ABORT_AFTER_PHASE,
-  type BudgetInfo,
   COMPILE_PHASES,
   CompileContext,
   type CompileWindow,
@@ -53,15 +60,7 @@ import type {
   ToolDefinition,
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
-import { estimateObject } from './utils/tokenUtils';
 import { objectToXml } from './utils/xmlGenerator';
-
-/**
- * Mirrors the Janitor's own (unexported) default. Used only for the budget
- * reading handed to `before-overflow` handlers; Phase 2 moves budget
- * evaluation into the overflow runner and this copy goes away with it.
- */
-const DEFAULT_TRIGGER_RATIO = 0.7;
 
 /**
  * Delivery channel for an announcement (see {@link ContextChef.announce}).
@@ -289,14 +288,51 @@ export interface ChefConfig {
    * don't do: tool pruning, skills, memory, VFS, dynamic state.
    */
   contextManagement?: {
+    /**
+     * @deprecated Use `overflow.strategy` — `'server'` is
+     * `server(config, { fallback })`, `'client'` is the default. This field
+     * builds exactly that and keeps working; it is removed in 5.0.
+     */
     strategy: 'client' | 'server';
     /**
      * Provider-shaped edits config passed through verbatim, e.g. Anthropic
      * `{ edits: [{ type: 'compact_20260112', trigger: {...} }] }`. When
      * omitted under `'server'`, a default single `compact_20260112` edit is
      * emitted (server-side default trigger).
+     *
+     * @deprecated The first argument of `server()`.
      */
     server?: unknown;
+  };
+  /**
+   * The overflow axis: what leaves the context window when it fills up, and
+   * where it goes.
+   *
+   * `strategy` is the policy — `summarize()` (the default), `anchored()`,
+   * `server()`, `reset()`, composed with `chain()` / `background()`, or your
+   * own object. It REPLACES the deprecated `janitor.compression*` and
+   * `contextManagement` fields, which describe the same thing in the old
+   * vocabulary; setting both logs a warning and the strategy wins.
+   *
+   * `archive` is strategy-agnostic: whatever a strategy evicts is stored, and
+   * the URI is cited in the summary that replaced it, so exact details stay
+   * retrievable (pair with `getRecallToolDefinition()` + `chef.resolveRecall()`).
+   * Pass `'vfs'` to store spans in this chef's VFS.
+   *
+   * @example
+   * new ContextChef({
+   *   janitor: { contextWindow: 128_000, tokenizer },
+   *   overflow: {
+   *     strategy: chain(summarize({ compressionModel }), reset()),
+   *     archive: 'vfs',
+   *   },
+   * });
+   */
+  overflow?: {
+    strategy?: OverflowStrategy;
+    archive?: 'vfs' | CompressionArchiveConfig;
+    /** Reserved — accepted and ignored until the handoff phase ships. */
+    handoff?: HandoffConfig;
   };
 }
 
@@ -361,6 +397,38 @@ export interface ChefEvents {
   'memory:expired': MemoryEntry;
 }
 
+/**
+ * Whether any deprecated overflow alias is set — the fields an explicit
+ * `overflow.strategy` supersedes. `janitor.archive` is deliberately absent:
+ * it maps to `overflow.archive`, which applies to every strategy.
+ */
+function usesOverflowAliases(config: ChefConfig, janitor: JanitorConfig): boolean {
+  return Boolean(
+    config.contextManagement?.strategy === 'server' ||
+      janitor.compressionMode ||
+      janitor.compressionScheduling ||
+      janitor.compressionModel ||
+      janitor.compressionGuidelines ||
+      janitor.customCompressionInstructions ||
+      janitor.minShrinkRatio !== undefined ||
+      janitor.validateCompression ||
+      janitor.preserveRatio !== undefined ||
+      janitor.preserveRecentMessages !== undefined ||
+      janitor.toolResultStubThreshold !== undefined,
+  );
+}
+
+/**
+ * The `contextManagement` block the pipeline reads. An explicit
+ * `overflow.strategy` is the single source of truth for how overflow is
+ * handled, so it also decides whether the target is server-managed.
+ */
+function resolveContextManagement(config: ChefConfig): ChefConfig['contextManagement'] {
+  const strategy = config.overflow?.strategy;
+  if (!strategy) return config.contextManagement;
+  return isServerStrategy(strategy) ? { strategy: 'server', server: strategy.config } : undefined;
+}
+
 export class ContextChef {
   private assembler: Assembler;
   private offloader: Offloader;
@@ -383,12 +451,6 @@ export class ContextChef {
   private _warnedOnce = new Set<string>();
   /** Slot handlers, including the ones the legacy config hooks register. */
   private readonly _slots = new SlotRegistry();
-  /** Budget inputs for the `before-overflow` reading (Janitor config mirror). */
-  private readonly _budget: {
-    contextWindow: number;
-    triggerRatio?: number;
-    tokenizer?: (messages: Message[]) => number;
-  };
   /**
    * Window lineage stub — one id per chef instance. Phase 3 allocates a fresh
    * id per overflow and records the previous one; nothing depends on it yet.
@@ -454,7 +516,6 @@ export class ContextChef {
     this.pruner = new Pruner(config.pruner);
     this.transformToolResult = config.transformToolResult;
     this.defaultTarget = config.defaultTarget;
-    this.contextManagement = config.contextManagement;
     this.logger = config.logger;
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
@@ -488,10 +549,17 @@ export class ContextChef {
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
     const userOnCompress = janitorConfig.onCompress;
     const userOnBeforeCompress = janitorConfig.onBeforeCompress;
-    // The 'vfs' archive shorthand stores compressed spans in this chef's VFS.
+    const strategy = this._resolveOverflowStrategy(config, janitorConfig);
+    // `server()` as the overflow strategy says the same thing to the pipeline
+    // as `contextManagement: { strategy: 'server' }`: the start phase resolves
+    // the server-managed target from it, the adapt phase reads the edits
+    // config out of it. One source, whichever way it was configured.
+    this.contextManagement = resolveContextManagement(config);
+    // The 'vfs' archive shorthand stores evicted spans in this chef's VFS.
     // Substituted here because only the facade holds the Offloader.
+    const configuredArchive = config.overflow?.archive ?? janitorConfig.archive;
     const archive =
-      janitorConfig.archive === 'vfs'
+      configuredArchive === 'vfs'
         ? {
             store: async (serialized: string): Promise<string> => {
               // threshold 0 forces storage regardless of size; head/tail 0
@@ -508,11 +576,12 @@ export class ContextChef {
               return result.uri;
             },
           }
-        : janitorConfig.archive;
+        : configuredArchive;
     this.janitor = new Janitor({
       logger: config.logger,
       ...janitorConfig,
       archive,
+      strategy,
       onCompress: async (summary, truncatedCount, details) => {
         if (userOnCompress) await userOnCompress(summary, truncatedCount, details);
         await this.emitter.emit(
@@ -534,11 +603,6 @@ export class ContextChef {
         return userOnBeforeCompress ? userOnBeforeCompress(history, tokenInfo) : null;
       },
     });
-    this._budget = {
-      contextWindow: janitorConfig.contextWindow,
-      triggerRatio: janitorConfig.triggerRatio,
-      tokenizer: janitorConfig.tokenizer,
-    };
 
     // Bridge Memory's notification callbacks to the unified event system
     if (config.memory) {
@@ -560,6 +624,47 @@ export class ContextChef {
     }
 
     this._host = this._createPipelineHost();
+  }
+
+  /**
+   * The installed overflow policy.
+   *
+   * `overflow.strategy` wins outright: the deprecated `janitor.compression*`
+   * and `contextManagement` fields describe a strategy in the old vocabulary,
+   * and two descriptions of one thing would silently disagree. With none of
+   * them set this is `summarize()` built from the janitor options — the 4.x
+   * default, unchanged.
+   */
+  private _resolveOverflowStrategy(
+    config: ChefConfig,
+    janitorConfig: JanitorConfig,
+  ): OverflowStrategy {
+    const explicit = config.overflow?.strategy ?? janitorConfig.strategy;
+    if (explicit) {
+      if (usesOverflowAliases(config, janitorConfig)) {
+        this._warnOnce(
+          'overflow-alias-conflict',
+          '[context-chef] overflow.strategy is configured together with the deprecated ' +
+            'janitor.compression* / contextManagement options. The strategy wins — those ' +
+            'options are ignored. Move them into the strategy factory (summarize({ ... })).',
+        );
+      }
+      return explicit;
+    }
+
+    const client = resolveOverflowStrategy(janitorConfig);
+    // Strategy 'server' keeps its v4 meaning: the provider compacts where it
+    // can, the client-side policy runs everywhere else.
+    return config.contextManagement?.strategy === 'server'
+      ? server(config.contextManagement.server, { fallback: client })
+      : client;
+  }
+
+  /** Logs `message` the first time `kind` is seen on this instance. */
+  private _warnOnce(kind: string, message: string): void {
+    if (this._warnedOnce.has(kind)) return;
+    this._warnedOnce.add(kind);
+    (this.logger ?? console).warn(message);
   }
 
   /**
@@ -630,16 +735,11 @@ export class ContextChef {
       emit(event, payload, signal) {
         return chef.emitter.emit(event, payload, signal);
       },
-      compress(history) {
-        return chef.janitor.compress(history);
+      overflow(history, window, signal) {
+        return chef.janitor.overflow(history, window, signal);
       },
-      estimateBudget(history): BudgetInfo {
-        const limit = chef._budget.contextWindow;
-        const trigger = limit * (chef._budget.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
-        const current = chef._budget.tokenizer
-          ? chef._budget.tokenizer(history)
-          : estimateObject(history);
-        return { limit, current, trigger, remaining: trigger - current };
+      readBudget(history) {
+        return chef.janitor.readBudget(history);
       },
       shapeMemoryParts(dataXml, injectedMemoryKeys) {
         return chef._shapeMemorySandwichParts(dataXml, injectedMemoryKeys);
@@ -651,9 +751,7 @@ export class ContextChef {
         return chef._getPrunerTools();
       },
       warnOnce(kind, message) {
-        if (chef._warnedOnce.has(kind)) return;
-        chef._warnedOnce.add(kind);
-        (chef.logger ?? console).warn(message);
+        chef._warnOnce(kind, message);
       },
       hasWarned(kind) {
         return chef._warnedOnce.has(kind);

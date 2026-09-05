@@ -1,47 +1,13 @@
 import type { BeforeCompileContext } from '../chef';
+import type { BudgetInfo, OverflowResult } from '../overflow/types';
 import type { Message, TargetPayload } from '../types';
 
 /**
- * Token budget as seen by the `before-overflow` slot.
- *
- * `current` is the pipeline's own reading (the configured Janitor tokenizer
- * when there is one, the built-in heuristic otherwise) — the Janitor's
- * internal evaluation is stateful and is NOT re-run here. Treat these numbers
- * as an observation, not as the exact figure the overflow decision uses.
+ * `BudgetInfo` and `OverflowResult` describe the overflow axis, not the slots
+ * that observe it — they live in `src/overflow/types.ts` since 4.2. Re-exported
+ * here so the 4.x import paths keep resolving.
  */
-export interface BudgetInfo {
-  /** Raw context window in tokens (`janitor.contextWindow`). */
-  limit: number;
-  /** Estimated tokens the current history occupies. */
-  current: number;
-  /** Effective trigger threshold: `limit * triggerRatio`. */
-  trigger: number;
-  /** Headroom before the trigger. Negative once history is over budget. */
-  remaining: number;
-}
-
-/**
- * Outcome of the overflow phase, handed to `after-overflow` handlers.
- *
- * Phase 1 fills this from the Janitor's before/after history; Phase 2 replaces
- * the source with an `OverflowStrategy` result and moves the type to
- * `src/overflow/`. `null` means the phase did not run at all (server-managed
- * target, or a `before-overflow` handler skipped it).
- */
-export interface OverflowResult {
-  /** The new in-window history. */
-  history: Message[];
-  /** Messages that left the window (identity comparison against the input). */
-  evicted: Message[];
-  /** Rendered summary text, when the overflow produced one. */
-  summary?: string;
-  meta: {
-    strategy: string;
-    windowId: string;
-    changed: boolean;
-    reason?: string;
-  };
-}
+export type { BudgetInfo, OverflowResult } from '../overflow/types';
 
 /** Context handed to `before-assemble` handlers. */
 export interface BeforeAssembleContext extends BeforeCompileContext {

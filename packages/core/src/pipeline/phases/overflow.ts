@@ -1,34 +1,19 @@
-import type { Message } from '../../types';
+import type { OverflowResult } from '../../overflow/types';
 import type { Phase } from '../context';
-import type { OverflowResult } from '../slots';
 
 /**
- * Describes what the Janitor did, in the shape Phase 2's `OverflowStrategy`
- * will produce natively. `evicted` and `summary` are derived by identity: the
- * Janitor returns `[summary, ...pinned, ...kept]`, so everything from the
- * input that is absent from the output left the window, and a lone new message
- * is the summary it wrote.
- */
-function describeOverflow(before: Message[], after: Message[], windowId: string): OverflowResult {
-  const afterRefs = new Set(after);
-  const evicted = before.filter((m) => !afterRefs.has(m));
-  const beforeRefs = new Set(before);
-  const added = after.filter((m) => !beforeRefs.has(m));
-  return {
-    history: after,
-    evicted,
-    summary: added.length === 1 ? added[0].content : undefined,
-    meta: { strategy: 'janitor', windowId, changed: after !== before },
-  };
-}
-
-/**
- * Budget check + history compression.
+ * Budget check + the installed overflow strategy.
  *
- * When the target is server-managed (Anthropic + strategy 'server') the
- * provider compacts — client compression is skipped (mechanical `compact()`
- * and every other module remain available). Non-server-managed targets keep
- * client-side compression even under strategy 'server'.
+ * The Janitor runner owns everything inside: evaluating the budget, applying
+ * the strategy, archiving what left the window, reporting it. This phase is
+ * the boundary — it fires the slots around that call and decides whether it
+ * runs at all.
+ *
+ * When the target is server-managed (Anthropic + a `server()` strategy, in
+ * either its explicit or its `contextManagement` spelling) the provider
+ * compacts — client-side overflow is skipped entirely (mechanical `compact()`
+ * and every other module remain available). Non-server-managed targets fall
+ * back to the strategy's own client-side policy.
  */
 export const overflowPhase: Phase = {
   name: 'overflow',
@@ -40,21 +25,21 @@ export const overflowPhase: Phase = {
     if (beforeHandlers.length > 0) {
       // Budget is read only when someone is listening — the tokenizer path
       // walks the whole history.
-      const budget = host.estimateBudget(before);
+      const budget = host.readBudget(before);
       for (const handler of beforeHandlers) {
         if ((await handler({ history: before, budget })) === false) skipped = true;
       }
     }
 
-    ctx.history = skipped ? before : await host.compress(before);
+    let result: OverflowResult | null = null;
+    if (!skipped) {
+      result = await host.overflow(before, ctx.window, ctx.signal);
+      ctx.history = result.history;
+    }
     await host.emit('compress:end', { compressed: ctx.history !== before }, ctx.signal);
 
-    const afterHandlers = host.slots.get('after-overflow');
-    if (afterHandlers.length > 0) {
-      const result = skipped ? null : describeOverflow(before, ctx.history, ctx.window.current);
-      for (const handler of afterHandlers) {
-        await handler({ history: ctx.history, result });
-      }
+    for (const handler of host.slots.get('after-overflow')) {
+      await handler({ history: ctx.history, result });
     }
   },
 };
