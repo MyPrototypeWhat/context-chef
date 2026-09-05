@@ -1,9 +1,23 @@
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Prompts } from '../../prompts';
+import { FileSystemBackend, type FileSystemNamespaceLayout } from '../../store/backends/fileSystem';
+import { fromVfsAdapter } from '../../store/legacy';
+import { type NamespaceView, Store } from '../../store/store';
+import {
+  ARCHIVE_NAMESPACE,
+  type StorageBackend,
+  type StoreCleanupOptions,
+  type StoreCleanupResult,
+  type StoreEntryMeta,
+  VFS_NAMESPACE,
+} from '../../store/types';
 import type { ChefLogger } from '../../types';
 
+/**
+ * @deprecated Implement {@link StorageBackend} and pass it as `vfs.store`.
+ *   Legacy adapters keep working — they are wrapped with `Store.fromVfsAdapter`.
+ */
 export interface VFSStorageAdapter {
   write(filename: string, content: string): void | Promise<void>;
   read(filename: string): string | null | Promise<string | null>;
@@ -35,6 +49,10 @@ export interface VFSStorageAdapter {
   getPhysicalPath?(filename: string): string | null | Promise<string | null>;
 }
 
+/**
+ * @deprecated Use {@link FileSystemBackend}, which serves every namespace from
+ *   one root directory. This adapter remains for `vfs.adapter` callers.
+ */
 export class FileSystemAdapter implements VFSStorageAdapter {
   private storageDir: string;
 
@@ -141,7 +159,19 @@ export interface VFSConfig {
   storageDir?: string;
   /** Custom URI prefix scheme, e.g. 'context://' */
   uriScheme?: string;
-  /** Custom storage adapter. If provided, overrides storageDir and filesystem operations. */
+  /**
+   * The context store backing the `vfs` namespace. Pass a {@link Store} to share
+   * one backend with Memory and the archive, or a bare {@link StorageBackend}.
+   * Takes precedence over `adapter` and `storageDir`.
+   */
+  store?: Store | StorageBackend;
+  /**
+   * Custom storage adapter. If provided, overrides storageDir and filesystem operations.
+   *
+   * @deprecated Pass `store` instead. A legacy adapter is wrapped with
+   *   `Store.fromVfsAdapter`, which serves the `vfs` and `archive` namespaces
+   *   from its single flat keyspace.
+   */
   adapter?: VFSStorageAdapter;
   /** Max age in ms (since createdAt) before an entry is eligible for cleanup. Undefined = no age cap. */
   maxAge?: number;
@@ -183,11 +213,33 @@ export interface OffloadOptions {
 // they fall back to Date.now() at adoption in _buildOrphanMeta.
 const ORPHAN_FILENAME_RE = /^vfs_(\d+)_[a-f0-9]+\.txt$/;
 
+/** Wording kept verbatim from 4.1 — callers match on it. */
+const asyncMessage = (sync: string, async: string): string =>
+  `Offloader.${sync}() was called synchronously, but the VFSStorageAdapter is asynchronous. Use ${async}() instead.`;
+const ASYNC_OFFLOAD_MESSAGE = asyncMessage('offload', 'offloadAsync');
+const ASYNC_RESOLVE_MESSAGE = asyncMessage('resolve', 'resolveAsync');
+const ASYNC_CLEANUP_MESSAGE = asyncMessage('cleanup', 'cleanupAsync');
+const ASYNC_RECONCILE_MESSAGE = asyncMessage('reconcile', 'reconcileAsync');
+
+/**
+ * Physical layout that keeps `vfs_…` and `archive_…` files side by side in one
+ * directory, each holding its content verbatim — so the physical path handed to
+ * the model in the truncation marker opens as plain text.
+ */
+function flatLayouts(storageDir: string): Record<string, FileSystemNamespaceLayout> {
+  const owned = (ns: string) => (file: string) => (file.startsWith(`${ns}_`) ? file : null);
+  return {
+    [VFS_NAMESPACE]: { dir: storageDir, format: 'raw', decode: owned(VFS_NAMESPACE) },
+    [ARCHIVE_NAMESPACE]: { dir: storageDir, format: 'raw', decode: owned(ARCHIVE_NAMESPACE) },
+  };
+}
+
 export class Offloader {
   private config: VFSConfig;
-  private adapter: VFSStorageAdapter;
+  /** The context store backing this Offloader. Shared with Memory when one was passed in. */
+  readonly store: Store;
+  private readonly vfs: NamespaceView;
   private readonly logger: ChefLogger;
-  private _index = new Map<string, VFSEntryMeta>();
   private _cleanupInFlight: Promise<VFSCleanupResult> | null = null;
 
   constructor(config: Partial<VFSConfig> = {}) {
@@ -213,7 +265,27 @@ export class Offloader {
     };
 
     this.logger = config.logger ?? console;
-    this.adapter = config.adapter ?? new FileSystemAdapter(storageDir);
+
+    const eviction = {
+      [VFS_NAMESPACE]: {
+        maxAge: config.maxAge,
+        maxFiles: config.maxFiles,
+        maxBytes: config.maxBytes,
+      },
+    };
+    if (config.store) {
+      // A Store the caller already built keeps its own namespace policy; the
+      // caps above still apply, because cleanup() passes them per call.
+      this.store = Store.from(config.store, { eviction });
+    } else if (config.adapter) {
+      this.store = new Store(fromVfsAdapter(config.adapter), { eviction });
+    } else {
+      const backend = new FileSystemBackend(storageDir, { layouts: flatLayouts(storageDir) });
+      // Match the legacy FileSystemAdapter, which created its directory eagerly.
+      backend.ensureDir(VFS_NAMESPACE);
+      this.store = new Store(backend, { eviction });
+    }
+    this.vfs = this.store.namespace(VFS_NAMESPACE, { uriScheme: this.config.uriScheme });
   }
 
   /**
@@ -241,11 +313,8 @@ export class Offloader {
     // Content-addressed: identical content always maps to the same file, so
     // re-offloading in an agent loop is idempotent and the truncation marker
     // (URI + physical path) is byte-stable — provider prefix caches survive.
-    // 16 hex chars (64 bits) because the hash alone is now the identity.
-    const hash = crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
-    const filename = `vfs_${hash}.txt`;
-    const uri = `${this.config.uriScheme}${filename}`;
-    return { filename, uri };
+    const filename = this.vfs.autoPath(content);
+    return { filename, uri: this.vfs.uri(filename) };
   }
 
   private _buildTruncatedMarker(
@@ -278,31 +347,22 @@ export class Offloader {
   }
 
   /**
-   * Resolves the adapter's physical path for `filename` synchronously.
-   * Returns null when the adapter doesn't expose paths or returns a Promise
+   * Resolves the backend's physical path for `filename` synchronously.
+   * Returns null when the backend doesn't expose paths or returns a Promise
    * (degrading to URI-only marker on the sync code path).
    */
   private _resolvePhysicalPathSync(filename: string): string | null {
-    if (!this.adapter.getPhysicalPath) return null;
-    const result = this.adapter.getPhysicalPath(filename);
+    const result = this.vfs.getPhysicalPath(filename);
     return typeof result === 'string' ? result : null;
   }
 
-  /** Async variant — awaits Promise-returning adapters. */
+  /** Async variant — awaits Promise-returning backends. */
   private async _resolvePhysicalPathAsync(filename: string): Promise<string | null> {
-    if (!this.adapter.getPhysicalPath) return null;
-    return await this.adapter.getPhysicalPath(filename);
+    return await this.vfs.getPhysicalPath(filename);
   }
 
-  private _registerEntry(filename: string, uri: string, content: string): void {
-    const now = Date.now();
-    this._index.set(filename, {
-      filename,
-      uri,
-      createdAt: now,
-      accessedAt: now,
-      bytes: Buffer.byteLength(content, 'utf8'),
-    });
+  private _registerEntry(filename: string, content: string): void {
+    this.vfs.register(filename, Buffer.byteLength(content, 'utf8'));
   }
 
   /**
@@ -327,33 +387,22 @@ export class Offloader {
     const physicalPath = this._resolvePhysicalPathSync(filename);
     const truncated = this._buildTruncatedMarker(content, uri, headChars, tailChars, physicalPath);
 
-    const indexed = this._index.get(filename);
-    if (indexed) {
+    if (this.vfs.indexEntry(filename)) {
       // Same content already offloaded by this instance — refresh LRU recency.
-      indexed.accessedAt = Date.now();
+      this.vfs.touch(filename);
       return { isOffloaded: true, content: truncated, uri };
     }
 
-    if (this.adapter.exists) {
-      const exists = this.adapter.exists(filename);
-      // Strict `=== true` (not truthiness): a Promise means exists() is async,
-      // so we fall through rather than treat a pending Promise as "exists".
-      // If write() is also async it throws the established async-adapter error;
-      // a mixed sync-write adapter just proceeds with a harmless redundant write.
-      if (exists === true) {
-        this._registerEntry(filename, uri, content);
-        return { isOffloaded: true, content: truncated, uri };
-      }
+    // Strict `=== true` (not truthiness): a Promise means exists() is async,
+    // so we fall through rather than treat a pending Promise as "exists".
+    // If write() is also async it throws the established async-backend error;
+    // a mixed sync-write backend just proceeds with a harmless redundant write.
+    if (this.vfs.exists(filename) === true) {
+      this._registerEntry(filename, content);
+      return { isOffloaded: true, content: truncated, uri };
     }
 
-    const writeResult = this.adapter.write(filename, content);
-    if (writeResult instanceof Promise) {
-      throw new Error(
-        'Offloader.offload() was called synchronously, but the VFSStorageAdapter is asynchronous. Use offloadAsync() instead.',
-      );
-    }
-
-    this._registerEntry(filename, uri, content);
+    this.vfs.putSync(filename, content, undefined, ASYNC_OFFLOAD_MESSAGE);
 
     return {
       isOffloaded: true,
@@ -384,20 +433,17 @@ export class Offloader {
     const physicalPath = await this._resolvePhysicalPathAsync(filename);
     const truncated = this._buildTruncatedMarker(content, uri, headChars, tailChars, physicalPath);
 
-    const indexed = this._index.get(filename);
-    if (indexed) {
-      indexed.accessedAt = Date.now();
+    if (this.vfs.indexEntry(filename)) {
+      this.vfs.touch(filename);
       return { isOffloaded: true, content: truncated, uri };
     }
 
-    if (this.adapter.exists && (await this.adapter.exists(filename))) {
-      this._registerEntry(filename, uri, content);
+    if (await this.vfs.exists(filename)) {
+      this._registerEntry(filename, content);
       return { isOffloaded: true, content: truncated, uri };
     }
 
-    await this.adapter.write(filename, content);
-
-    this._registerEntry(filename, uri, content);
+    await this.vfs.put(filename, content);
 
     return {
       isOffloaded: true,
@@ -413,25 +459,14 @@ export class Offloader {
    * Throws an error if the adapter is asynchronous.
    */
   public resolve(uri: string): string | null {
-    const scheme = this.config.uriScheme;
-    if (!scheme || !uri.startsWith(scheme)) {
-      return null;
-    }
+    const filename = this.vfs.parseUri(uri);
+    if (filename == null) return null;
 
-    const filename = uri.slice(scheme.length);
-    const readResult = this.adapter.read(filename);
+    const entry = this.vfs.getSync(filename, ASYNC_RESOLVE_MESSAGE);
+    if (entry == null) return null;
 
-    if (readResult instanceof Promise) {
-      throw new Error(
-        'Offloader.resolve() was called synchronously, but the VFSStorageAdapter is asynchronous. Use resolveAsync() instead.',
-      );
-    }
-
-    if (readResult != null) {
-      this._touchOrAdopt(filename, uri, readResult);
-    }
-
-    return readResult;
+    this._touchOrAdopt(filename, uri, entry.content);
+    return entry.content;
   }
 
   /**
@@ -439,32 +474,30 @@ export class Offloader {
    * Safely supports both synchronous and asynchronous adapters.
    */
   public async resolveAsync(uri: string): Promise<string | null> {
-    const scheme = this.config.uriScheme;
-    if (!scheme || !uri.startsWith(scheme)) {
-      return null;
-    }
+    const filename = this.vfs.parseUri(uri);
+    if (filename == null) return null;
 
-    const filename = uri.slice(scheme.length);
-    const readResult = await this.adapter.read(filename);
+    const entry = await this.vfs.get(filename);
+    if (entry == null) return null;
 
-    if (readResult != null) {
-      this._touchOrAdopt(filename, uri, readResult);
-    }
-
-    return readResult;
+    this._touchOrAdopt(filename, uri, entry.content);
+    return entry.content;
   }
 
+  /**
+   * `NamespaceView.get` already refreshed recency for entries the store knows
+   * about; anything else is a file written outside this instance and is adopted
+   * with a filename-derived createdAt.
+   */
   private _touchOrAdopt(filename: string, uri: string, content: string): void {
-    const existing = this._index.get(filename);
-    const now = Date.now();
-    if (existing) {
-      existing.accessedAt = now;
-      return;
-    }
+    if (this.vfs.indexEntry(filename)) return;
     const meta = this._buildOrphanMeta(filename, uri);
-    meta.accessedAt = now;
-    meta.bytes = Buffer.byteLength(content, 'utf8');
-    this._index.set(filename, meta);
+    this.vfs.adopt(filename, {
+      uri: meta.uri,
+      createdAt: meta.createdAt,
+      accessedAt: Date.now(),
+      bytes: Buffer.byteLength(content, 'utf8'),
+    });
   }
 
   /**
@@ -476,7 +509,7 @@ export class Offloader {
    * evict early; at worst a just-adopted orphan lingers one maxAge window).
    */
   private _buildOrphanMeta(filename: string, uri?: string): VFSEntryMeta {
-    const resolvedUri = uri ?? `${this.config.uriScheme}${filename}`;
+    const resolvedUri = uri ?? this.vfs.uri(filename);
     const match = filename.match(ORPHAN_FILENAME_RE);
     const createdAt = match ? Number(match[1]) : Date.now();
     return {
@@ -488,149 +521,49 @@ export class Offloader {
     };
   }
 
-  /** Returns a deep-cloned array of all entries currently tracked in the in-memory index. For tests/debugging. */
+  /** Returns a deep-cloned array of all entries currently tracked in the store's index. For tests/debugging. */
   public getEntries(): VFSEntryMeta[] {
-    return Array.from(this._index.values()).map((e) => ({ ...e }));
+    return this.vfs.index().map(toVFSEntryMeta);
   }
 
-  private _missingCleanupCapabilities(): ('list' | 'delete')[] {
-    const missing: ('list' | 'delete')[] = [];
-    if (!this.adapter.list) missing.push('list');
-    if (!this.adapter.delete) missing.push('delete');
-    return missing;
-  }
-
-  private _planEvictions(
-    now: number,
-    overrides?: CleanupOptions,
-  ): { entry: VFSEntryMeta; reason: VFSEvictionReason }[] {
-    const maxAge = overrides?.maxAge ?? this.config.maxAge;
-    const maxFiles = overrides?.maxFiles ?? this.config.maxFiles;
-    const maxBytes = overrides?.maxBytes ?? this.config.maxBytes;
-
-    const allEntries = Array.from(this._index.values()).map((e) => ({ ...e }));
-    const plan: { entry: VFSEntryMeta; reason: VFSEvictionReason }[] = [];
-    const remaining = new Map<string, VFSEntryMeta>();
-
-    // Phase A — maxAge sweep (relative to createdAt).
-    for (const entry of allEntries) {
-      if (maxAge != null && now - entry.createdAt > maxAge) {
-        plan.push({ entry, reason: 'maxAge' });
-      } else {
-        remaining.set(entry.filename, entry);
-      }
-    }
-
-    if (maxFiles == null && maxBytes == null) return plan;
-
-    // Phase B — single-pass LRU until both count and byte caps are satisfied.
-    let totalBytes = 0;
-    for (const e of remaining.values()) totalBytes += e.bytes;
-
-    while (true) {
-      const overCount = maxFiles != null && remaining.size > maxFiles;
-      const overBytes = maxBytes != null && totalBytes > maxBytes;
-      if (!overCount && !overBytes) break;
-      if (remaining.size === 0) break;
-
-      let victim: VFSEntryMeta | null = null;
-      for (const e of remaining.values()) {
-        if (!victim || e.accessedAt < victim.accessedAt) victim = e;
-      }
-      if (!victim) break;
-
-      const reason: VFSEvictionReason = overCount ? 'maxFiles' : 'maxBytes';
-      plan.push({ entry: victim, reason });
-      remaining.delete(victim.filename);
-      totalBytes -= victim.bytes;
-    }
-
-    return plan;
-  }
-
-  private _accumulateResult(
-    result: VFSCleanupResult,
-    entry: VFSEntryMeta,
-    reason: VFSEvictionReason,
-  ): void {
-    result.evicted.push(entry);
-    result.evictedBytes += entry.bytes;
-    if (reason === 'maxAge') result.evictedByAge++;
-    else if (reason === 'maxFiles') result.evictedByCount++;
-    else result.evictedByBytes++;
-  }
-
-  private _emptyResult(): VFSCleanupResult {
+  /**
+   * Translates this Offloader's config and hooks into the store's cleanup
+   * contract. The caps are merged here so an explicit `vfs` config always beats
+   * the namespace policy the Store was constructed with.
+   */
+  private _cleanupOptions(overrides?: CleanupOptions, sync = false): StoreCleanupOptions {
     return {
-      evicted: [],
-      evictedBytes: 0,
-      evictedByAge: 0,
-      evictedByCount: 0,
-      evictedByBytes: 0,
-      failed: [],
+      maxAge: overrides?.maxAge ?? this.config.maxAge,
+      maxFiles: overrides?.maxFiles ?? this.config.maxFiles,
+      maxBytes: overrides?.maxBytes ?? this.config.maxBytes,
+      asyncBackendMessage: ASYNC_CLEANUP_MESSAGE,
+      onEvicted: this.config.onVFSEvicted
+        ? (entry, reason) => this.config.onVFSEvicted?.(toVFSEntryMeta(entry), reason)
+        : undefined,
+      onEvictedIgnoredPromise: sync
+        ? () =>
+            this.logger.warn(
+              '[Offloader] onVFSEvicted returned a Promise during sync cleanup(); call cleanupAsync() to await async hooks.',
+            )
+        : undefined,
+      onEvictedError: (error) => this.logger.warn('[Offloader] onVFSEvicted threw:', error),
     };
   }
 
   /**
-   * Sweeps expired and over-cap entries from the adapter and the index.
-   * Throws VFSCleanupNotSupportedError if the adapter lacks list() or delete().
-   * Throws if the adapter is asynchronous (use cleanupAsync() instead).
+   * Sweeps expired and over-cap entries from the store and its index.
+   * Throws VFSCleanupNotSupportedError if the backend cannot list or delete.
+   * Throws if the backend is asynchronous (use cleanupAsync() instead).
    */
   public cleanup(overrides?: CleanupOptions): VFSCleanupResult {
-    const adapter = this.adapter;
-    if (!adapter.list || !adapter.delete) {
-      throw new VFSCleanupNotSupportedError(this._missingCleanupCapabilities());
-    }
-
-    // Sync-ness probe: if adapter.list() returns a Promise, we cannot proceed synchronously.
-    const probedList = adapter.list();
-    if (probedList instanceof Promise) {
-      throw new Error(
-        'Offloader.cleanup() was called synchronously, but the VFSStorageAdapter is asynchronous. Use cleanupAsync() instead.',
-      );
-    }
-
-    const plan = this._planEvictions(Date.now(), overrides);
-    const result = this._emptyResult();
-
-    for (const { entry, reason } of plan) {
-      try {
-        const deleteResult = adapter.delete(entry.filename);
-        if (deleteResult instanceof Promise) {
-          throw new Error(
-            'Offloader.cleanup() was called synchronously, but the VFSStorageAdapter is asynchronous. Use cleanupAsync() instead.',
-          );
-        }
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        result.failed.push({ entry, error: err });
-        continue;
-      }
-
-      this._index.delete(entry.filename);
-
-      if (this.config.onVFSEvicted) {
-        try {
-          const hookResult = this.config.onVFSEvicted(entry, reason);
-          if (hookResult instanceof Promise) {
-            this.logger.warn(
-              '[Offloader] onVFSEvicted returned a Promise during sync cleanup(); call cleanupAsync() to await async hooks.',
-            );
-          }
-        } catch (error) {
-          this.logger.warn('[Offloader] onVFSEvicted threw:', error);
-        }
-      }
-
-      this._accumulateResult(result, entry, reason);
-    }
-
-    return result;
+    this._assertCleanupSupported();
+    return toVFSCleanupResult(this.vfs.cleanup(this._cleanupOptions(overrides, true)));
   }
 
   /**
-   * Async variant of cleanup(). Awaits each adapter.delete() and onVFSEvicted call.
-   * Concurrent cleanupAsync() calls are coalesced into a single in-flight promise.
+   * Async variant of cleanup(). Awaits each delete and onVFSEvicted call.
+   * Concurrent cleanupAsync() calls are coalesced into a single in-flight promise —
+   * callers compare promise identity, so the coalescing wraps the mapped result.
    */
   public cleanupAsync(overrides?: CleanupOptions): Promise<VFSCleanupResult> {
     if (this._cleanupInFlight) return this._cleanupInFlight;
@@ -641,72 +574,38 @@ export class Offloader {
   }
 
   private async _cleanupAsyncImpl(overrides?: CleanupOptions): Promise<VFSCleanupResult> {
-    const adapter = this.adapter;
-    if (!adapter.list || !adapter.delete) {
-      throw new VFSCleanupNotSupportedError(this._missingCleanupCapabilities());
-    }
+    this._assertCleanupSupported();
+    return toVFSCleanupResult(await this.vfs.cleanupAsync(this._cleanupOptions(overrides)));
+  }
 
-    const plan = this._planEvictions(Date.now(), overrides);
-    const result = this._emptyResult();
-
-    for (const { entry, reason } of plan) {
-      try {
-        await adapter.delete(entry.filename);
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        result.failed.push({ entry, error: err });
-        continue;
-      }
-
-      this._index.delete(entry.filename);
-
-      if (this.config.onVFSEvicted) {
-        try {
-          await this.config.onVFSEvicted(entry, reason);
-        } catch (error) {
-          this.logger.warn('[Offloader] onVFSEvicted threw:', error);
-        }
-      }
-
-      this._accumulateResult(result, entry, reason);
-    }
-
-    return result;
+  /** Raises the Offloader-flavoured capability error, which names the legacy adapter. */
+  private _assertCleanupSupported(): void {
+    const missing = this.store.missingEvictionCapabilities(VFS_NAMESPACE);
+    if (missing.length > 0) throw new VFSCleanupNotSupportedError(missing);
   }
 
   /**
-   * Walks adapter.list() and adopts orphan files (files on the adapter not in the index).
-   * Required after process restart for cleanup() to see pre-restart files.
-   * Legacy vfs_<ts>_<hash>.txt names yield createdAt from the embedded timestamp;
-   * content-addressed vfs_<hash16>.txt (and malformed) names fall back to Date.now().
-   * Returns count of orphans adopted. With measureBytes, reads each orphan to populate accurate bytes.
+   * Walks the `vfs` namespace and adopts orphan entries (present on the backend,
+   * absent from the index). Required after process restart for cleanup() to see
+   * pre-restart files. Legacy vfs_<ts>_<hash>.txt names yield createdAt from the
+   * embedded timestamp; content-addressed vfs_<hash16>.txt (and malformed) names
+   * fall back to Date.now(). Returns the count of orphans adopted. With
+   * measureBytes, reads each orphan to populate accurate bytes.
    */
   public reconcile(options?: { measureBytes?: boolean }): number {
-    if (!this.adapter.list) throw new VFSCleanupNotSupportedError(['list']);
-
-    const filenames = this.adapter.list();
-    if (filenames instanceof Promise) {
-      throw new Error(
-        'Offloader.reconcile() was called synchronously, but the VFSStorageAdapter is asynchronous. Use reconcileAsync() instead.',
-      );
-    }
+    if (!this.vfs.supports('list')) throw new VFSCleanupNotSupportedError(['list']);
 
     let adopted = 0;
-    for (const filename of filenames) {
-      if (this._index.has(filename)) continue;
+    for (const listed of this.vfs.listSync(undefined, ASYNC_RECONCILE_MESSAGE)) {
+      if (this.vfs.indexEntry(listed.path)) continue;
 
-      const meta = this._buildOrphanMeta(filename);
+      const meta = this._buildOrphanMeta(listed.path);
       if (options?.measureBytes) {
-        const content = this.adapter.read(filename);
-        if (content instanceof Promise) {
-          throw new Error(
-            'Offloader.reconcile() was called synchronously, but the VFSStorageAdapter is asynchronous. Use reconcileAsync() instead.',
-          );
-        }
-        if (content != null) meta.bytes = Buffer.byteLength(content, 'utf8');
+        const entry = this.vfs.getSync(listed.path, ASYNC_RECONCILE_MESSAGE);
+        if (entry != null) meta.bytes = Buffer.byteLength(entry.content, 'utf8');
       }
 
-      this._index.set(filename, meta);
+      this._adoptOrphan(meta);
       adopted++;
     }
     return adopted;
@@ -714,23 +613,54 @@ export class Offloader {
 
   /** Async variant of reconcile(). */
   public async reconcileAsync(options?: { measureBytes?: boolean }): Promise<number> {
-    if (!this.adapter.list) throw new VFSCleanupNotSupportedError(['list']);
+    if (!this.vfs.supports('list')) throw new VFSCleanupNotSupportedError(['list']);
 
-    const filenames = await this.adapter.list();
+    const listed = await this.vfs.list();
 
     let adopted = 0;
-    for (const filename of filenames) {
-      if (this._index.has(filename)) continue;
+    for (const item of listed) {
+      if (this.vfs.indexEntry(item.path)) continue;
 
-      const meta = this._buildOrphanMeta(filename);
+      const meta = this._buildOrphanMeta(item.path);
       if (options?.measureBytes) {
-        const content = await this.adapter.read(filename);
-        if (content != null) meta.bytes = Buffer.byteLength(content, 'utf8');
+        const entry = await this.vfs.get(item.path);
+        if (entry != null) meta.bytes = Buffer.byteLength(entry.content, 'utf8');
       }
 
-      this._index.set(filename, meta);
+      this._adoptOrphan(meta);
       adopted++;
     }
     return adopted;
   }
+
+  private _adoptOrphan(meta: VFSEntryMeta): void {
+    this.vfs.adopt(meta.filename, {
+      uri: meta.uri,
+      createdAt: meta.createdAt,
+      accessedAt: meta.accessedAt,
+      bytes: meta.bytes,
+    });
+  }
+}
+
+/** Store index entry → the Offloader's public `VFSEntryMeta` shape. */
+function toVFSEntryMeta(entry: StoreEntryMeta): VFSEntryMeta {
+  return {
+    filename: entry.path,
+    uri: entry.uri,
+    createdAt: entry.createdAt,
+    accessedAt: entry.accessedAt,
+    bytes: entry.bytes,
+  };
+}
+
+function toVFSCleanupResult(result: StoreCleanupResult): VFSCleanupResult {
+  return {
+    evicted: result.evicted.map(toVFSEntryMeta),
+    evictedBytes: result.evictedBytes,
+    evictedByAge: result.evictedByAge,
+    evictedByCount: result.evictedByCount,
+    evictedByBytes: result.evictedByBytes,
+    failed: result.failed.map(({ entry, error }) => ({ entry: toVFSEntryMeta(entry), error })),
+  };
 }

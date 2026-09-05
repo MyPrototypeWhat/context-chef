@@ -1,99 +1,82 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+import { FileSystemBackend, type FileSystemNamespaceLayout } from '../../store/backends/fileSystem';
+import { memoryEntryToStored, storedToMemoryEntry } from '../../store/legacy';
+import { type NamespaceView, Store } from '../../store/store';
+import { MEMORY_NAMESPACE, type StoredEntry } from '../../store/types';
 import type { MemoryStore, MemoryStoreEntry } from './memoryStore';
 
+const EXT = '.mem';
+
+/**
+ * The on-disk shape this store has always used: one base64url-named `.mem`
+ * file per key, holding the JSON-serialized entry. Kept byte-for-byte so
+ * existing storage directories keep loading.
+ */
+function memoryFileLayout(dir: string): FileSystemNamespaceLayout {
+  return {
+    dir,
+    encode: (key) => `${Buffer.from(key).toString('base64url')}${EXT}`,
+    decode: (file) =>
+      file.endsWith(EXT)
+        ? Buffer.from(file.slice(0, -EXT.length), 'base64url').toString('utf8')
+        : null,
+    serialize: (entry) => JSON.stringify(storedToMemoryEntry(entry)),
+    deserialize: (raw) => {
+      try {
+        return memoryEntryToStored(JSON.parse(raw) as MemoryStoreEntry);
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+function mapRecord<A, B>(data: Record<string, A>, fn: (value: A) => B): Record<string, B> {
+  const out: Record<string, B> = {};
+  for (const [key, value] of Object.entries(data)) out[key] = fn(value);
+  return out;
+}
+
+/**
+ * File-backed memory store.
+ *
+ * @deprecated This is the `memory` namespace of a {@link FileSystemBackend}.
+ *   Prefer `new Store(new FileSystemBackend(dir))` and pass it as
+ *   `memory.store` (and, if you like, `vfs.store`) so one backend serves every
+ *   namespace. The class stays for existing callers and reads the same files.
+ */
 export class VFSMemoryStore implements MemoryStore {
-  private readonly dir: string;
-  private readonly indexPath: string;
-  private index: Set<string>;
+  private readonly ns: NamespaceView;
 
   constructor(storageDir = '.context_memory') {
-    this.dir = storageDir;
-    this.indexPath = path.join(storageDir, '_index.json');
-    this.index = new Set(this._loadIndex());
+    const backend = new FileSystemBackend(storageDir, {
+      layouts: { [MEMORY_NAMESPACE]: memoryFileLayout(storageDir) },
+    });
+    this.ns = new Store(backend).namespace(MEMORY_NAMESPACE);
   }
 
   get(key: string): MemoryStoreEntry | null {
-    const file = this._keyToFile(key);
-    if (!fs.existsSync(file)) return null;
-    try {
-      // JSON.parse returns `any`, which TypeScript allows assigning to a typed variable.
-      // The runtime contract is trusted — files under storageDir are written by set().
-      const entry: MemoryStoreEntry = JSON.parse(fs.readFileSync(file, 'utf-8'));
-      return entry;
-    } catch {
-      return null;
-    }
+    const entry = this.ns.getSync(key);
+    return entry ? storedToMemoryEntry(entry) : null;
   }
 
   set(key: string, entry: MemoryStoreEntry): void {
-    this._ensureDir();
-    fs.writeFileSync(this._keyToFile(key), JSON.stringify(entry), 'utf-8');
-    this.index.add(key);
-    this._saveIndex();
+    const stored = memoryEntryToStored(entry);
+    this.ns.putSync(key, stored.content, stored.meta);
   }
 
   delete(key: string): boolean {
-    const file = this._keyToFile(key);
-    if (!fs.existsSync(file)) return false;
-    fs.unlinkSync(file);
-    this.index.delete(key);
-    this._saveIndex();
-    return true;
+    return this.ns.deleteSync(key);
   }
 
   keys(): string[] {
-    return Array.from(this.index);
+    return this.ns.listSync().map((entry) => entry.path);
   }
 
   snapshot(): Record<string, MemoryStoreEntry> {
-    const result: Record<string, MemoryStoreEntry> = {};
-    for (const key of this.index) {
-      const entry = this.get(key);
-      if (entry) result[key] = entry;
-    }
-    return result;
+    return mapRecord(this.ns.snapshot() ?? {}, storedToMemoryEntry);
   }
 
   restore(data: Record<string, MemoryStoreEntry>): void {
-    // Remove existing entries not in snapshot
-    for (const key of this.index) {
-      const file = this._keyToFile(key);
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-    }
-    this.index.clear();
-
-    // Write snapshot entries
-    for (const [key, entry] of Object.entries(data)) {
-      this.set(key, entry);
-    }
-  }
-
-  // ─── Private helpers ────────────────────────────────────────────────────
-
-  private _keyToFile(key: string): string {
-    const safe = Buffer.from(key).toString('base64url');
-    return path.join(this.dir, `${safe}.mem`);
-  }
-
-  private _ensureDir(): void {
-    if (!fs.existsSync(this.dir)) {
-      fs.mkdirSync(this.dir, { recursive: true });
-    }
-  }
-
-  private _loadIndex(): string[] {
-    if (!fs.existsSync(this.indexPath)) return [];
-    try {
-      const parsed: string[] = JSON.parse(fs.readFileSync(this.indexPath, 'utf-8'));
-      return parsed;
-    } catch {
-      return [];
-    }
-  }
-
-  private _saveIndex(): void {
-    this._ensureDir();
-    fs.writeFileSync(this.indexPath, JSON.stringify(Array.from(this.index)), 'utf-8');
+    this.ns.restore(mapRecord<MemoryStoreEntry, StoredEntry>(data, memoryEntryToStored));
   }
 }

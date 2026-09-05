@@ -12,6 +12,12 @@ export interface MemoryStoreEntry {
   expiresAtTurn?: number;
 }
 
+/**
+ * @deprecated Implement `StorageBackend` and pass it (or a `Store`) as
+ *   `memory.store`. Legacy stores keep working — Memory wraps them with
+ *   `Store.fromMemoryStore`, mapping every field of {@link MemoryStoreEntry}
+ *   onto `StoredEntry.meta` one for one.
+ */
 export interface MemoryStore {
   get(key: string): MemoryStoreEntry | null | Promise<MemoryStoreEntry | null>;
   set(key: string, entry: MemoryStoreEntry): void | Promise<void>;
