@@ -1,11 +1,7 @@
 import type { z } from 'zod';
-import { adapterRegistry } from './adapters/adapterRegistry';
-import { AnthropicAdapter, anthropicServerContextManagement } from './adapters/anthropicAdapter';
-import { auditAnthropicCachePlacement } from './adapters/anthropicCacheAudit';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import {
-  buildToolNameMap,
   type CompressionDetails,
   Janitor,
   type JanitorConfig,
@@ -29,11 +25,24 @@ import {
   type ToolGroup,
 } from './modules/pruner';
 import type { Skill } from './modules/skill';
+import {
+  ABORT_AFTER_PHASE,
+  type BudgetInfo,
+  COMPILE_PHASES,
+  CompileContext,
+  type CompileWindow,
+  createWindowId,
+  type PhaseName,
+  type PipelineHost,
+  type SlotHandlers,
+  type SlotName,
+  SlotRegistry,
+} from './pipeline';
+import { escapeXmlAttribute } from './pipeline/xml';
 import { Prompts } from './prompts';
 import type {
   AnthropicPayload,
   ChefLogger,
-  CompileMeta,
   CompileOptions,
   GeminiPayload,
   ITargetAdapter,
@@ -44,12 +53,15 @@ import type {
   ToolDefinition,
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
+import { estimateObject } from './utils/tokenUtils';
 import { objectToXml } from './utils/xmlGenerator';
 
-/** Escapes a string for use inside an XML attribute value. */
-function escapeXmlAttribute(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-}
+/**
+ * Mirrors the Janitor's own (unexported) default. Used only for the budget
+ * reading handed to `before-overflow` handlers; Phase 2 moves budget
+ * evaluation into the overflow runner and this copy goes away with it.
+ */
+const DEFAULT_TRIGGER_RATIO = 0.7;
 
 /**
  * Delivery channel for an announcement (see {@link ContextChef.announce}).
@@ -172,6 +184,11 @@ export interface ChefConfig {
    * Contract: must not throw or reject. Errors propagate out of compile() — there
    * is no fallback path. Wrap your logic in try/catch and return the original
    * messages on failure.
+   *
+   * @deprecated Register on the `after-assemble` slot instead —
+   * `chef.use('after-assemble', fn)`. This field is registered on that same
+   * slot at construction (ahead of any later `use()` call) and keeps working
+   * unchanged; it is removed in 5.0.
    */
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   /**
@@ -215,6 +232,11 @@ export interface ChefConfig {
    *     return snippets.map(s => s.content).join('\n');
    *   },
    * });
+   *
+   * @deprecated Register on the `before-assemble` slot instead —
+   * `chef.use('before-assemble', async (ctx) => ctx.inject(await retrieve(ctx)))`.
+   * This field is registered on that same slot at construction (ahead of any
+   * later `use()` call) and keeps working unchanged; it is removed in 5.0.
    */
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
   /**
@@ -229,7 +251,7 @@ export interface ChefConfig {
 
   /**
    * When true, every compile targeting Anthropic runs
-   * {@link auditAnthropicCachePlacement} on the produced payload and logs each
+   * `auditAnthropicCachePlacement` on the produced payload and logs each
    * distinct issue ONCE per chef instance — volatile content (memory data,
    * dynamic state, guardrail instructions) sitting inside the cached prefix
    * silently invalidates prompt caching on every change. Anthropic-only:
@@ -237,6 +259,18 @@ export interface ChefConfig {
    * Zero cost on other targets. Default false.
    */
   cacheAudit?: boolean;
+  /**
+   * Dev-mode pipeline invariants. When true, `compile()` verifies after every
+   * `after-assemble` handler that pinned messages survived and tool
+   * call/result pairs are still paired, and after the tail phase that nothing
+   * ahead of the tail insertion point changed.
+   *
+   * Violations are REPORTED, never enforced: each one goes to
+   * `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event.
+   * `compile()` never throws because of a check. Costs a snapshot + a
+   * serialization pass per compile, so keep it off in production. Default false.
+   */
+  pipelineChecks?: boolean;
   /**
    * Where history compression happens:
    *
@@ -314,6 +348,15 @@ export interface ChefEvents {
   'pruner:tool-blocked': {
     name: string;
   };
+  /**
+   * A `ChefConfig.pipelineChecks` invariant was violated — a slot handler
+   * dropped a pinned message, split a tool pair, or rewrote content ahead of
+   * the tail insertion point. Reported only; compile() continues.
+   */
+  'pipeline:invariant': {
+    phase: PhaseName;
+    message: string;
+  };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
 }
@@ -325,19 +368,34 @@ export class ContextChef {
   private guardrail: Guardrail;
   private pruner: Pruner;
   private memory: Memory | null;
-  private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   private transformToolResult?: ChefConfig['transformToolResult'];
-  private onBeforeCompile?: (
-    context: BeforeCompileContext,
-  ) => string | null | Promise<string | null>;
   private defaultTarget?: TargetProvider | ITargetAdapter;
   private contextManagement?: ChefConfig['contextManagement'];
   private logger?: ChefLogger;
-  /** One-time warning flag: strategy 'server' compiled for a non-server-managed target. */
-  private _serverFallbackWarned = false;
   private cacheAudit = false;
-  /** Distinct cache-audit issues already warned (once per instance each). */
-  private _cacheAuditWarned = new Set<string>();
+  private pipelineChecks = false;
+  /**
+   * Diagnostics already warned on this instance, keyed by kind (never by
+   * position: as history grows the same misconfiguration drifts through
+   * message indices, and a positional key would re-warn every compile and
+   * grow the set unboundedly). The kind space is fixed, so the set is bounded.
+   */
+  private _warnedOnce = new Set<string>();
+  /** Slot handlers, including the ones the legacy config hooks register. */
+  private readonly _slots = new SlotRegistry();
+  /** Budget inputs for the `before-overflow` reading (Janitor config mirror). */
+  private readonly _budget: {
+    contextWindow: number;
+    triggerRatio?: number;
+    tokenizer?: (messages: Message[]) => number;
+  };
+  /**
+   * Window lineage stub — one id per chef instance. Phase 3 allocates a fresh
+   * id per overflow and records the previous one; nothing depends on it yet.
+   */
+  private readonly _window: CompileWindow;
+  /** The pipeline's view of this chef, built once (see {@link PipelineHost}). */
+  private readonly _host: PipelineHost;
   /**
    * Serializes compile() calls on this instance (Snapshot + Serialize model):
    * concurrent callers queue instead of interleaving the mutable state a
@@ -347,12 +405,6 @@ export class ContextChef {
   /** True while _compileInner runs — lets re-entrant compile() calls (from
    *  hooks/event handlers) bypass the queue instead of deadlocking on it. */
   private _compiling = false;
-  /** Warn-once: system-channel announcements degraded to a user message
-   *  because the assembled payload had no conversational tail. */
-  private _announcementNoTailWarned = false;
-  /** Warn-once: a positional system message sat where the Anthropic API
-   *  rejects it, so the adapter will hoist it into the cached prefix. */
-  private _positionalHoistWarned = false;
   /**
    * Per-source-message cache for transformToolResult, keyed by the ORIGINAL
    * history message. Keeps transformed message objects stable across
@@ -400,14 +452,30 @@ export class ContextChef {
     this.offloader = new Offloader({ logger: config.logger, ...config.vfs });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
-    this.transformContext = config.transformContext;
     this.transformToolResult = config.transformToolResult;
-    this.onBeforeCompile = config.onBeforeCompile;
     this.defaultTarget = config.defaultTarget;
     this.contextManagement = config.contextManagement;
     this.logger = config.logger;
     this.cacheAudit = config.cacheAudit ?? false;
+    this.pipelineChecks = config.pipelineChecks ?? false;
     this.skillPlacement = config.skillPlacement ?? 'after_system';
+    const windowId = createWindowId();
+    this._window = { first: windowId, current: windowId };
+
+    // Legacy lifecycle hooks are slot registrations — one code path, no second
+    // idiom. Registering here puts them ahead of anything the caller adds
+    // later with use(), which is the order they used to run in.
+    if (config.onBeforeCompile) {
+      const hook = config.onBeforeCompile;
+      this._slots.use('before-assemble', async (context) => {
+        const injected = await hook(context);
+        if (injected) context.inject(injected);
+      });
+    }
+    if (config.transformContext) {
+      this._slots.use('after-assemble', config.transformContext);
+    }
+
     if (config.contextManagement?.strategy === 'server' && config.janitor?.compressionModel) {
       (config.logger ?? console).warn(
         "[context-chef] contextManagement.strategy 'server' is configured together with a " +
@@ -466,6 +534,11 @@ export class ContextChef {
         return userOnBeforeCompress ? userOnBeforeCompress(history, tokenInfo) : null;
       },
     });
+    this._budget = {
+      contextWindow: janitorConfig.contextWindow,
+      triggerRatio: janitorConfig.triggerRatio,
+      tokenizer: janitorConfig.tokenizer,
+    };
 
     // Bridge Memory's notification callbacks to the unified event system
     if (config.memory) {
@@ -485,6 +558,111 @@ export class ContextChef {
     } else {
       this.memory = null;
     }
+
+    this._host = this._createPipelineHost();
+  }
+
+  /**
+   * The pipeline's view of this chef: every accessor reads live state, so the
+   * phases work against current values while the fields above stay `private`.
+   * Built once — the object identity is stable for the chef's lifetime.
+   */
+  private _createPipelineHost(): PipelineHost {
+    // `this` inside the object literal's methods and getters is the literal,
+    // not the chef — the alias is what gives them access to the instance.
+    const chef = this;
+    return {
+      get systemPrompt() {
+        return chef.systemPrompt;
+      },
+      get history() {
+        return chef.history;
+      },
+      get dynamicState() {
+        return chef.dynamicState;
+      },
+      get dynamicStateXml() {
+        return chef.dynamicStateXml;
+      },
+      get dynamicStatePlacement() {
+        return chef.dynamicStatePlacement;
+      },
+      get defaultTarget() {
+        return chef.defaultTarget;
+      },
+      get contextManagement() {
+        return chef.contextManagement;
+      },
+      get transformToolResult() {
+        return chef.transformToolResult;
+      },
+      get toolTransformCache() {
+        return chef._toolTransformCache;
+      },
+      get cacheAudit() {
+        return chef.cacheAudit;
+      },
+      get pipelineChecks() {
+        return chef.pipelineChecks;
+      },
+      get slots() {
+        return chef._slots;
+      },
+      get assembler() {
+        return chef.assembler;
+      },
+      get guardrail() {
+        return chef.guardrail;
+      },
+      get guardrailOptions() {
+        return chef._guardrailOptions;
+      },
+      get memory() {
+        return chef.memory;
+      },
+      get skill() {
+        return {
+          name: chef._activeSkill?.name,
+          instructions: chef._skillInstructions,
+          placement: chef.skillPlacement,
+        };
+      },
+      emit(event, payload, signal) {
+        return chef.emitter.emit(event, payload, signal);
+      },
+      compress(history) {
+        return chef.janitor.compress(history);
+      },
+      estimateBudget(history): BudgetInfo {
+        const limit = chef._budget.contextWindow;
+        const trigger = limit * (chef._budget.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
+        const current = chef._budget.tokenizer
+          ? chef._budget.tokenizer(history)
+          : estimateObject(history);
+        return { limit, current, trigger, remaining: trigger - current };
+      },
+      shapeMemoryParts(dataXml, injectedMemoryKeys) {
+        return chef._shapeMemorySandwichParts(dataXml, injectedMemoryKeys);
+      },
+      resolveAnnouncementChannels(isAnthropicTarget) {
+        return chef._resolveAnnouncementChannels(isAnthropicTarget);
+      },
+      prunerTools() {
+        return chef._getPrunerTools();
+      },
+      warnOnce(kind, message) {
+        if (chef._warnedOnce.has(kind)) return;
+        chef._warnedOnce.add(kind);
+        (chef.logger ?? console).warn(message);
+      },
+      hasWarned(kind) {
+        return chef._warnedOnce.has(kind);
+      },
+      async reportInvariant(phase, message, signal) {
+        (chef.logger ?? console).warn(`[context-chef] pipeline invariant (${phase}): ${message}`);
+        await chef.emitter.emit('pipeline:invariant', { phase, message }, signal);
+      },
+    };
   }
 
   // ─── Event System ──────────────────────────────────────────────────────
@@ -518,6 +696,42 @@ export class ContextChef {
    */
   public off<K extends keyof ChefEvents>(event: K, handler: EventHandler<ChefEvents[K]>): this {
     this.emitter.off(event, handler);
+    return this;
+  }
+
+  // ─── Pipeline Slots ────────────────────────────────────────────────────
+
+  /**
+   * Registers a handler on a compile-pipeline slot. Slots are the composition
+   * surface events cannot cover: unlike `on()`, a slot handler participates in
+   * the compile — it can inject context, transform the assembled messages, or
+   * skip the overflow phase.
+   *
+   * Handlers run in registration order and are awaited one after another. The
+   * legacy config hooks (`onBeforeCompile`, `transformContext`) are registered
+   * on this same registry at construction, so they always run first.
+   *
+   * Errors are NOT isolated (unlike event handlers): a throwing slot handler
+   * fails the compile. Wrap your logic in try/catch if that is not what you
+   * want.
+   *
+   * @example
+   * chef.use('before-assemble', async (ctx) => {
+   *   ctx.inject(await vectorDB.search(ctx.dynamicStateXml));
+   * });
+   * chef.use('after-adapt', (payload) => metrics.record(payload));
+   */
+  public use<S extends SlotName>(slot: S, handler: SlotHandlers[S]): this {
+    this._slots.use(slot, handler);
+    return this;
+  }
+
+  /**
+   * Removes one registration of `handler` from `slot`. Registering the same
+   * function twice requires two `unuse` calls.
+   */
+  public unuse<S extends SlotName>(slot: S, handler: SlotHandlers[S]): this {
+    this._slots.unuse(slot, handler);
     return this;
   }
 
@@ -1163,390 +1377,21 @@ export class ContextChef {
     const isOutermostCompile = !this._compiling;
     this._compiling = true;
     try {
-      // 0. Emit compile:start (unconditional — observers may want to log even
-      //    aborted compiles. throwIfAborted runs immediately after so the
-      //    expensive Janitor phase is skipped on a pre-aborted signal.)
-      await this.emitter.emit(
-        'compile:start',
-        {
-          systemPrompt: this.systemPrompt,
-          history: this.history,
-        },
+      const ctx = new CompileContext({
+        options: options ?? {},
         signal,
-      );
-      signal?.throwIfAborted();
-
-      // 0.4 Resolve the target adapter up front — the server-side context
-      //     management decision below is per-target.
-      const target = options?.target ?? this.defaultTarget ?? 'openai';
-      const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
-      const isAnthropicTarget = target === 'anthropic' || adapter instanceof AnthropicAdapter;
-      const serverManaged = this.contextManagement?.strategy === 'server' && isAnthropicTarget;
-      if (
-        this.contextManagement?.strategy === 'server' &&
-        !isAnthropicTarget &&
-        !this._serverFallbackWarned
-      ) {
-        this._serverFallbackWarned = true;
-        (this.logger ?? console).warn(
-          "[context-chef] contextManagement.strategy 'server' is configured, but the current " +
-            'compile target has no server-side context management implementation — falling back ' +
-            'to client-side compression for this target. Only the Anthropic target is server-managed.',
-        );
-      }
-
-      // 0.5 transformToolResult: uniform tool-result rewrite BEFORE compression
-      //     so the summarizer and all later stages see transformed content.
-      //     Cached per source message: unchanged tool results reuse the SAME
-      //     transformed object across compiles (no re-transform, stable
-      //     identity for the Janitor's background staleness check).
-      let workingHistory = this.history;
-      if (this.transformToolResult) {
-        const transform = this.transformToolResult;
-        const nameById = buildToolNameMap(workingHistory);
-        workingHistory = await Promise.all(
-          workingHistory.map(async (m) => {
-            if (m.role !== 'tool') return m;
-            const cached = this._toolTransformCache.get(m);
-            if (cached && cached.source === m.content) return cached.transformed;
-            const content = await transform(m.content, {
-              toolName: (m.tool_call_id && nameById.get(m.tool_call_id)) || null,
-              toolCallId: m.tool_call_id ?? null,
-            });
-            const transformed = content === m.content ? m : { ...m, content };
-            this._toolTransformCache.set(m, { source: m.content, transformed });
-            return transformed;
-          }),
-        );
-        signal?.throwIfAborted();
-      }
-
-      // 1. Janitor: Compress history if needed. When the target is server-
-      //    managed (Anthropic + strategy 'server') the provider compacts —
-      //    client compression is skipped (mechanical compact() and every
-      //    other module remain available). Non-server-managed targets keep
-      //    client-side compression even under strategy 'server'.
-      const compressedHistory = serverManaged
-        ? workingHistory
-        : await this.janitor.compress(workingHistory);
-      await this.emitter.emit(
-        'compress:end',
-        { compressed: compressedHistory !== workingHistory },
-        signal,
-      );
-      signal?.throwIfAborted();
-
-      // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
-      let implicitContextXml = '';
-      if (this.onBeforeCompile) {
-        const injected = await this.onBeforeCompile({
-          systemPrompt: this.systemPrompt,
-          history: compressedHistory,
-          dynamicState: this.dynamicState,
-          dynamicStateXml: this.dynamicStateXml,
-        });
-        if (injected) {
-          implicitContextXml = `<implicit_context>\n${injected}\n</implicit_context>`;
-        }
-      }
-      signal?.throwIfAborted();
-
-      // 3. For system placement, append implicit_context directly to the dynamic state message
-      //    (Assembler only handles last_user injection)
-      let dynamicState = this.dynamicState;
-      if (
-        implicitContextXml &&
-        this.dynamicStatePlacement === 'system' &&
-        dynamicState.length > 0
-      ) {
-        dynamicState = dynamicState.map((msg) =>
-          msg.content.includes('CURRENT TASK STATE')
-            ? { ...msg, content: `${msg.content}\n${implicitContextXml}` }
-            : msg,
-        );
-      }
-
-      // 4+5. Memory: single-read artifacts — sweep expired entries, apply the
-      //      selector exactly once, and derive injection XML + tool definitions
-      //      from the same store read (Memory.compileArtifacts), then advance
-      //      the turn counter and shape the sandwich parts:
-      //      - `topMessages`: system message(s) that always sit at the top
-      //      - `tailDataXml`: volatile <memory> block to inject at user tail
-      //                       (empty unless memoryPlacement === 'before_history_tail')
-      let memoryExpiredKeys: string[] = [];
-      let injectedMemoryKeys: string[] = [];
-      let memoryTools: ToolDefinition[] = [];
-      let memoryMessages: Message[] = [];
-      let memoryTailDataXml = '';
-      if (this.memory) {
-        const artifacts = await this.memory.compileArtifacts();
-        this.memory.advanceTurn();
-        memoryExpiredKeys = artifacts.expiredKeys;
-        injectedMemoryKeys = artifacts.selected.map((e) => e.key);
-        memoryTools = artifacts.toolDefinitions;
-        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, injectedMemoryKeys);
-        memoryMessages = parts.topMessages;
-        memoryTailDataXml = parts.tailDataXml;
-      }
-      // compileArtifacts() awaits per-entry onMemoryExpired hooks, so handler
-      // latency adds up before the next throwIfAborted at step 7. Caveat:
-      // turn counter has already advanced; aborting here means TTL state
-      // diverges from payload state. Documented in CompileOptions.signal.
-      signal?.throwIfAborted();
-
-      // 5b. Skill instructions slot. Under 'after_system' (default) they are a
-      //     single dedicated system message between userSystemPrompt and
-      //     memoryMessages — NOT appended to user system, so the cache
-      //     breakpoint stays clean and LLM attribution is direct. Under 'tail'
-      //     they leave the prefix entirely and ride the tail stitch instead.
-      const skillActive = this._skillInstructions.length > 0;
-      const skillMessages: Message[] =
-        skillActive && this.skillPlacement === 'after_system'
-          ? [{ role: 'system', content: this._skillInstructions }]
-          : [];
-      const skillTailXml =
-        skillActive && this.skillPlacement === 'tail'
-          ? `<skill_instructions skill="${escapeXmlAttribute(this._activeSkill?.name ?? '')}">\n${this._skillInstructions}\n</skill_instructions>`
-          : '';
-
-      // 5c. Guardrail messages (enforce-XML instruction + prefill) — applied
-      //     from the stored options at compile time, closest to generation.
-      //     Independent of setDynamicState call order by design.
-      //     placement 'last_user' routes the enforce-XML text through the
-      //     Assembler tail instead (cache-safe on Anthropic, where system-role
-      //     messages are hoisted into the top-level prefix); only the prefill
-      //     remains as a trailing assistant message in that mode.
-      const guardrailTailMode = this._guardrailOptions?.placement === 'last_user';
-      const guardrailMessages: Message[] = this._guardrailOptions
-        ? this.guardrail.apply(
-            [],
-            guardrailTailMode
-              ? { ...this._guardrailOptions, enforceXML: undefined }
-              : this._guardrailOptions,
-          )
-        : [];
-      const guardrailTailXml =
-        guardrailTailMode && this._guardrailOptions?.enforceXML
-          ? Prompts.getXMLGuardrail(this._guardrailOptions.enforceXML.outputTag)
-          : '';
-
-      // 6. Sandwich assembly
-      let messages = [
-        ...this.systemPrompt,
-        ...skillMessages,
-        ...memoryMessages,
-        ...compressedHistory,
-        ...dynamicState,
-        ...guardrailMessages,
-      ];
-
-      // 7. Transform hook
-      if (this.transformContext) {
-        messages = await this.transformContext(messages);
-      }
-      signal?.throwIfAborted();
-
-      // 8. Assembler: tail injection (volatile content closest to LLM generation
-      //    point) + deterministic key ordering. The stitch is composed in a fixed
-      //    inner order — skill instructions, memory data, dynamic state,
-      //    implicit context, announcements, anchor — so callers reading the
-      //    final user message can rely on the layout.
-      const announcementXml = this._resolveAnnouncementChannels(isAnthropicTarget);
-      const tailParts: string[] = [];
-      // skillPlacement 'tail': standing mode instructions lead the stitch, so
-      // the model reads "who you are right now" before the state it applies to.
-      if (skillTailXml) {
-        tailParts.push(skillTailXml);
-      }
-      if (memoryTailDataXml) {
-        tailParts.push(memoryTailDataXml);
-      }
-      {
-        let dynamicTailAdded = false;
-        if (this.dynamicStatePlacement === 'last_user') {
-          if (this.dynamicStateXml) {
-            tailParts.push(this.dynamicStateXml);
-            dynamicTailAdded = true;
-          }
-          if (implicitContextXml) {
-            tailParts.push(implicitContextXml);
-            dynamicTailAdded = true;
-          }
-        }
-        // Announcements are system-state statements too, so they do trigger the
-        // anchor — unlike skill instructions and memory data.
-        if (announcementXml.tailXml) {
-          tailParts.push(announcementXml.tailXml);
-          dynamicTailAdded = true;
-        }
-        // The anchor refers specifically to dynamic state / implicit context /
-        // announcements. Memory data already self-introduces via
-        // `Prompts.MEMORY_BLOCK_HEADER` ("You recall the following from previous
-        // conversations:"), and skill instructions are self-describing inside
-        // their own tag, so an anchor for those alone is redundant and reads as
-        // noise to the model. If `MEMORY_BLOCK_HEADER` is ever changed or
-        // removed in `prompts.ts`, this suppression rule needs re-evaluating.
-        if (dynamicTailAdded) {
-          tailParts.push('Above is the current system state. Use it to guide your next action.');
-        }
-      }
-      // Guardrail enforce-XML in 'last_user' placement: appended as the FINAL
-      // tail element (after the anchor) — a standing output-format instruction,
-      // not system state, so it sits closest to generation.
-      if (guardrailTailXml) {
-        tailParts.push(guardrailTailXml);
-      }
-      const tailXml = tailParts.join('\n\n');
-      const rawPayload = this.assembler.compile(messages, {
-        tailXml: tailXml || undefined,
+        history: this.history,
+        window: this._window,
       });
-
-      // 8b. System-channel announcements: ONE positional system message placed
-      //     after the conversational tail of the ASSEMBLED result — deliberately
-      //     after the assembler ran, because the tail stitch either merged into
-      //     the last user message or added a new user message for a tool-result
-      //     tail. Scanning the result puts the announcement after that user
-      //     content (a system message following the user turn is the shape
-      //     Anthropic documents) and still before any trailing assistant
-      //     prefill. Same last-user/tool scan the Assembler uses; kept inline
-      //     rather than widening the Assembler's internal API.
-      const assembled = [...rawPayload.messages];
-      if (announcementXml.systemXml) {
-        let tail = -1;
-        for (let i = assembled.length - 1; i >= 0; i--) {
-          if (assembled[i].role === 'user' || assembled[i].role === 'tool') {
-            tail = i;
-            break;
-          }
-        }
-        if (tail !== -1) {
-          assembled.splice(
-            tail + 1,
-            0,
-            Assembler.orderKeysDeterministically<Message>({
-              role: 'system',
-              content: announcementXml.systemXml,
-              _positional: true,
-            }),
-          );
-        } else {
-          // No conversational tail at all. The degrade below is an
-          // ANTHROPIC-only constraint: a positional system message that
-          // precedes every user turn is invalid on that API, and the
-          // adapter's hoist fallback would land the volatile text back in
-          // the cacheable prefix (the exact failure this channel exists to
-          // avoid). Other targets accept a leading inline system message
-          // (OpenAI natively; Gemini via the adapter's user degrade), so
-          // they keep the positional shape.
-          let insertAt = assembled.length;
-          while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
-          if (isAnthropicTarget) {
-            if (!this._announcementNoTailWarned) {
-              this._announcementNoTailWarned = true;
-              (this.logger ?? console).warn(
-                '[context-chef] system-channel announcements need a conversational tail ' +
-                  '(a user or tool message) to attach after — none exists, and the Anthropic ' +
-                  'API rejects a leading mid-conversation system message, so the announcements ' +
-                  'were delivered as a user message instead (warned once).',
-              );
-            }
-            assembled.splice(
-              insertAt,
-              0,
-              Assembler.orderKeysDeterministically<Message>({
-                role: 'user',
-                content: announcementXml.systemXml,
-              }),
-            );
-          } else {
-            assembled.splice(
-              insertAt,
-              0,
-              Assembler.orderKeysDeterministically<Message>({
-                role: 'system',
-                content: announcementXml.systemXml,
-                _positional: true,
-              }),
-            );
-          }
-        }
+      for (const phase of COMPILE_PHASES) {
+        await phase.run(ctx, this._host);
+        // Abort points are per-phase rather than uniform: these are the
+        // boundaries that follow an await which can take arbitrarily long
+        // (compression model, memory store, user hooks). `start` and
+        // `transform-tool-results` check inside the phase instead.
+        if (ABORT_AFTER_PHASE.has(phase.name)) signal?.throwIfAborted();
       }
-
-      // Pre-flight the positional-system placement contract on the Anthropic
-      // target so the diagnostic reaches THIS chef's logger, once per
-      // instance. The adapter has its own console fallback warning, but the
-      // built-in adapters are process-wide registry singletons — their
-      // warn-once fires for the first chef in the process only, and
-      // ChefConfig.logger never reaches them. Chef-injected announcements
-      // can't trip this (their insertion point is always after a user/tool
-      // message); it catches hand-written `_positional` messages in history.
-      if (isAnthropicTarget && !this._positionalHoistWarned) {
-        for (let i = 0; i < assembled.length; i++) {
-          const msg = assembled[i];
-          if (msg.role !== 'system' || !msg._positional) continue;
-          // Walk back over ALL system messages, not just positional ones —
-          // this mirrors the adapter, which never resets its user-turn
-          // tracking on a system message (a hoisted non-positional system
-          // leaves the wire stream, so adjacency to the user turn survives;
-          // consecutive positional messages form one API section).
-          let j = i - 1;
-          while (j >= 0 && assembled[j].role === 'system') j--;
-          const prev = assembled[j];
-          if (prev && (prev.role === 'user' || prev.role === 'tool')) continue;
-          this._positionalHoistWarned = true;
-          (this.logger ?? console).warn(
-            '[context-chef] a positional system message is not immediately after a user turn — ' +
-              'the Anthropic API rejects it there, so the adapter will hoist it into the ' +
-              'top-level system prompt (its text then sits in the cacheable prefix; ' +
-              'warned once).',
-          );
-          break;
-        }
-      }
-
-      const adapterPayload = adapter.compile(assembled);
-
-      const prunerTools = this._getPrunerTools();
-      const tools = [...prunerTools, ...memoryTools];
-      const meta: CompileMeta = { injectedMemoryKeys, memoryExpiredKeys };
-      if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;
-      const payload: TargetPayload = { ...adapterPayload, meta };
-      if (tools.length > 0) payload.tools = tools;
-
-      // Server-side context management: on the server-managed (Anthropic)
-      // target, carry the edits config + required beta headers in the payload.
-      // What those two fields contain is the adapter layer's business.
-      if (serverManaged) {
-        const anthropicPayload = payload as AnthropicPayload;
-        const { context_management, betas } = anthropicServerContextManagement(
-          this.contextManagement?.server,
-        );
-        anthropicPayload.context_management = context_management;
-        anthropicPayload.betas = betas;
-      }
-
-      // 8.5 Optional cache audit (Anthropic target only). Dedupe on the
-      //     semantic issue kind, NOT the position: as history grows the same
-      //     misconfiguration drifts through message indices, and a positional
-      //     key would re-warn every compile and grow the seen-set unboundedly.
-      //     The kind space is fixed (markers × placements), so the set is
-      //     bounded too.
-      if (this.cacheAudit && isAnthropicTarget) {
-        for (const issue of auditAnthropicCachePlacement(payload as AnthropicPayload)) {
-          const key = issue.dedupeKey;
-          if (!this._cacheAuditWarned.has(key)) {
-            this._cacheAuditWarned.add(key);
-            (this.logger ?? console).warn(
-              `[context-chef] cache audit — ${issue.location}: ${issue.message}`,
-            );
-          }
-        }
-      }
-
-      // 9. Emit compile:done
-      await this.emitter.emit('compile:done', { payload }, signal);
-
-      return payload;
+      return ctx.requirePayload();
     } finally {
       this._currentSignal = prevSignal;
       if (isOutermostCompile) this._compiling = false;

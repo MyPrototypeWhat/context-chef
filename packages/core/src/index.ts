@@ -118,7 +118,20 @@ export {
   type Skill,
   type SkillLoadResult,
 } from './modules/skill';
+export type {
+  BeforeAssembleContext,
+  BudgetInfo,
+  CompileContext,
+  OverflowResult,
+  Phase,
+  PhaseName,
+  PipelineHost,
+  ResolvedTarget,
+  SlotHandlers,
+  SlotName,
+} from './pipeline';
 export * from './prompts';
+export * from './store';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
