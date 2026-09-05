@@ -250,9 +250,12 @@ definition + the method.
 
 **Window lineage**: `WindowLineage = { first: string; previous?: string; current: string }`.
 The runner allocates a new id on every overflow that returns `changed: true`.
-`OverflowResult.meta.windowId` records it; the summary wrapper renders a
-`Context window: <current> (previous: <previous>)` line; `anchored()` keys its anchor
-document by window id; `CompileMeta.windowId` exposes it; it survives snapshot/restore.
+`OverflowResult.meta.windowId` records it; `reset()`'s summary stub renders the
+lineage; `anchored()` keys its anchor document by window id; `CompileMeta.windowId`
+exposes it; it survives snapshot/restore. The legacy summary wrapper text is NOT
+changed in 4.x (it would break the anchored golden fixture) — a
+`Context window: <current> (previous: <previous>)` line in summaries is part of the
+unified vocabulary and lands with Phase 4c.
 
 Deliverable: handoff notice appears exactly once per window in tests; `new_context`
 forces overflow; lineage round-trips through snapshot.
