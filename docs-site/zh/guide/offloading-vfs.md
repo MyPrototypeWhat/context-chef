@@ -1,6 +1,8 @@
 # 大文本卸载（Offloader / VFS）
 
-终端日志和 API 响应可能比上下文的其余部分还大。Offloader 截断超大内容，把原文存进虚拟文件系统，并留下一个 `context://` URI 指针，让模型（或你的代码）按需取回完整内容。本页覆盖卸载 API、清理生命周期和 5 个生产级 recipe。
+> **本页讲的是 Offloader 模块。** 卸载出去的内容**住在哪** —— `memory/` / `notes/` / `vfs/` / `archive/` 背后那一套存储基底、`ChefConfig.store`，以及把它读回来的统一 `context` 工具 —— 见[上下文存储](/zh/guide/context-store)。VFS 是 `vfs/` 命名空间，再加上真正属于 Offloader 自己的东西：截断策略和清理生命周期。
+
+终端日志和 API 响应可能比上下文的其余部分还大。Offloader 截断超大内容，把原文存进上下文存储的 `vfs` 命名空间，并留下一个 `context://vfs/` URI 指针，让模型（或你的代码）按需取回完整内容。本页覆盖卸载 API、清理生命周期和 5 个生产级 recipe。
 
 ## 卸载内容
 
@@ -28,6 +30,8 @@ import { Offloader } from "@context-chef/core";
 const offloader = new Offloader({ storageDir: ".context_vfs" });
 const fullContent = offloader.resolve(uri);
 ```
+
+在 `tools: 'unified'` 下你不需要自己的工具：带 `command: 'view'` 的 `context` 可以读任何 `context://vfs/` URI，并由 `chef.handleTool` 分发。在默认的 `'legacy'` 模式下，注册 `getRecallToolDefinition()` 并用 `chef.resolveRecall(uri)` 解析。无论哪种方式，模型看到的截断标记都会用与 payload 里工具相匹配的词汇书写 —— 见[词汇表开关](/zh/guide/context-store)。
 
 ## 清理与生命周期
 
@@ -239,7 +243,11 @@ async function sweep() {
 
 ## Recipe 4 —— 自定义 storage adapter（Redis 示例）
 
-`FileSystemAdapter` 是唯一内置实现。其他后端 —— Redis、S3、SQLite、IndexedDB、纯内存 —— 都需要自定义 adapter。要启用 `cleanup()` 和 `reconcile()`，adapter 必须实现可选的 `list()` 和 `delete()` 方法。任一缺失，`cleanup()` 抛 `VFSCleanupNotSupportedError({ missing: ['list'?, 'delete'?] })`。
+文件系统以外的任何后端 —— Redis、S3、SQLite、IndexedDB、纯内存 —— 都需要你自己写一份存储实现。要启用 `cleanup()` 和 `reconcile()`，它必须实现可选的 `list()` 和 `delete()` 方法。任一缺失，`cleanup()` 抛 `VFSCleanupNotSupportedError({ missing: ['list'?, 'delete'?] })`。
+
+::: tip 新后端请对着 `StorageBackend` 写 <Badge type="tip" text="4.2" />
+下面用到的 `VFSStorageAdapter` 已废弃但完全受支持：Offloader 会用 `Store.fromVfsAdapter` 包装它。新的实现应当面向 [`StorageBackend`](/zh/guide/context-store) —— 一个对象即可同时服务 `memory/`、`notes/`、`vfs/` 和 `archive/`，而 `FileSystemBackend` 就是内置的参考实现。
+:::
 
 ```typescript
 import type { VFSStorageAdapter } from '@context-chef/core';

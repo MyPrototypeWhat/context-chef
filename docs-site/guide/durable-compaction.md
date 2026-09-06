@@ -1,6 +1,8 @@
 # Durable Compaction
 
-In-flight compression rewrites each outgoing payload but does not touch your message store — for a sustained over-budget conversation the summary is recomputed on every call. When you own the store, compact it once and persist the result. This page covers the durable compaction helpers in core and their AI SDK / TanStack AI ports.
+In-flight [overflow](/guide/history-compression) rewrites each outgoing payload but does not touch your message store — for a sustained over-budget conversation the summary is recomputed on every call. When you own the store, compact it once and persist the result. This page covers the durable compaction helpers in core and their AI SDK / TanStack AI ports.
+
+These helpers are deliberately outside the overflow axis: they are stateless functions over a message array, with no runner, no strategy, no window lineage. Reach for them when the store is yours to rewrite; reach for [overflow strategies](/guide/history-compression#strategies) when it is not.
 
 All three helpers split on atomic turn boundaries (an assistant message and its tool results never separate), summarize the old slice, and return `[...system, <summary>, ...recent turns]`; on a no-op the input reference is returned unchanged, so you can skip persistence via `result === input`.
 
@@ -105,4 +107,4 @@ if (toSummarize.length > 0) {
 
 ## Don't double-compress
 
-Don't combine durable compaction with in-flight compression ([Janitor](/guide/history-compression), or middleware `compress`) on the same conversation — that compresses the same history twice. Pick one strategy per conversation. See the [core](/packages/core), [ai-sdk-middleware](/packages/ai-sdk-middleware), and [tanstack-ai](/packages/tanstack-ai) package pages for the full contracts.
+Don't combine durable compaction with in-flight overflow ([the Janitor runner and its strategy](/guide/history-compression), or middleware `compress`) on the same conversation — that compresses the same history twice. Pick one strategy per conversation. See the [core](/packages/core), [ai-sdk-middleware](/packages/ai-sdk-middleware), and [tanstack-ai](/packages/tanstack-ai) package pages for the full contracts.

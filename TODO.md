@@ -2,7 +2,7 @@
 
 ## Background
 
-Memory module uses XML tags (`<update_core_memory>` / `<delete_core_memory>`) in LLM responses, with a KV store that injects all entries into the system prompt. Based on industry research (Mem0, Letta/MemGPT, Cursor, Claude Code, Manus, Windsurf, Augment, Cline), the following optimizations are planned.
+This roadmap was written when the Memory module read `<update_core_memory>` / `<delete_core_memory>` tags out of LLM responses and injected a KV store into the system prompt. **That inline write path is gone** — nothing in `packages/core/src` parses those tags any more. Writes go through tool calls: `create_memory` / `modify_memory` under `tools: 'legacy'`, or the single `context` tool at `context://memory/<key>` under `tools: 'unified'` (4.2), both dispatched by `chef.handleTool`. The sections below are kept for the design rationale, which is unchanged; read every mention of the XML tags as history. Based on industry research (Mem0, Letta/MemGPT, Cursor, Claude Code, Manus, Windsurf, Augment, Cline).
 
 Design principle: **ContextChef provides mechanisms (hooks + utility functions), not policies.**
 
@@ -50,18 +50,17 @@ type TTLValue = number | { ms: number } | { turns: number };
 ### Memory Lifecycle
 
 ```
-LLM response → extractAndApply() → set() with defaultTTL → store
+tool call → chef.handleTool() → set() with defaultTTL → store
                                                               ↓
-compile() → sweepExpired() → advanceTurn() → selector → toXml() → inject into system prompt
+compile() → sweepExpired() → advanceTurn() → selector → toXml() → inject into the sandwich
                ↓                                                        ↓
          onMemoryExpired hook                              meta: { injectedMemoryKeys, memoryExpiredKeys }
 ```
 
-- **Write**: LLM via XML tags (`extractAndApply()`) or developer via `memory().set()`
-- **Read**: Always injected into system prompt during `compile()`
+- **Write**: the LLM via a tool call (`create_memory` / `modify_memory`, or `context` with `path: 'memory/<key>'`), or the developer via `memory().set()`
+- **Read**: injected every `compile()` — `after_system` by default, `before_history_tail` to keep the volatile block out of the cached prefix
 - **Expire**: Lazily during `compile()` — check `expiresAt` (wall-clock) or `expiresAtTurn` (turn-based)
 - **Filter**: `selector` hook controls which entries are injected (default: all)
-- **Clean response**: `stripMemoryTags()` removes XML tags from assistant content
 - **Observe**: `compile()` returns `meta` with `injectedMemoryKeys` and `memoryExpiredKeys`
 
 ---
@@ -81,10 +80,12 @@ compile() → sweepExpired() → advanceTurn() → selector → toXml() → inje
 - `onMemoryExpired` hook for developer to handle expiring entries (offload, extend, log)
 - Turn counter (`advanceTurn()`) incremented per `compile()` call, included in snapshot/restore
 
-### ✅ `stripMemoryTags(content: string): string`
+### ✅ `stripMemoryTags(content: string): string` — later removed
 
-- Strips `<update_core_memory>` and `<delete_core_memory>` tags from LLM response
-- Pure utility function, no side effects
+Shipped as a pure utility that stripped `<update_core_memory>` / `<delete_core_memory>`
+tags out of an assistant message. It went away with the inline write path it existed to
+clean up: memory is written through tool calls, so no tags reach the assistant content
+and there is nothing to strip. Nothing in `packages/core/src` exports or parses it today.
 
 ### ✅ `selector` hook
 
@@ -701,20 +702,69 @@ For a future blog post or comparison doc:
 
 # v4 Review Follow-ups (PR #47, 2026-08-18)
 
-The 8-angle review confirmed 41 findings; the correctness ones were fixed pre-merge. Deferred (cleanup/altitude, all CONFIRMED but non-blocking):
+The 8-angle review confirmed 41 findings; the correctness ones were fixed pre-merge. The deferred cleanup/altitude items all landed across the 4.2 phases and have been removed from this list. Still open:
 
-- **Cross-package duplication → hoist into core**: the compress-without-persistence warn machinery, `createJanitor` assembly, and the redacted-thinking warn-once block are near-identical in ai-sdk-middleware and tanstack-ai (and the `<thinking>` textifier is duplicated across OpenAI/Gemini adapters). Extract shared helpers in core.
-- **Simplifications**: ~~BackgroundCompressionJob stores fields derivable from `toCompress`~~ (done, v5 phase 0a); ~~`_summarize`'s three failure paths repeat the breaker-warn block~~ (done, v5 phase 0a — extracted as `Janitor._compressionFailed`); tanstack adapter `_originalText`/`_originalThinkingText` are derivable projections; `detectServerContextManagement`'s clearOnly analysis only picks a warn string.
-- **Altitude**: ~~move `computeAnthropicBetas` + the default server edits config from the facade into the Anthropic adapter layer~~ (done, v5 phase 0a — `anthropicServerContextManagement()` in `adapters/anthropicAdapter.ts`); ~~promote `_anthropic_compaction` / `_gemini_thought_signature` / `_openai_reasoning` from index-signature passthroughs to typed optional Message fields (like `ToolCall.thoughtSignature`)~~ (done, v5 phase 0a); ~~give `resolveRecall` a formatted rendering option instead of raw archive JSON~~ (done, v5 phase 0a — `resolveRecall(uri, { format: 'text' })`).
-- **Docs**: `.agents/skills/integrate/` got a targeted stale-API patch only — needs the same full v4 refresh `skills/context-chef-core/` received.
 - **Events**: `offload:resolved` and the `memory:changed` split (planned in T2.5) did not land in v4 — revisit with real demand.
+
+One correction worth keeping: the review attributed a duplicated redacted-thinking warn-once block to ai-sdk-middleware and tanstack-ai. That was a misattribution — the duplication was between the OpenAI and Gemini **adapters**, and it is now `createThinkingTextifier()` in `adapters/thinkingText.ts`.
 
 ---
 
 # Cache-Stability Follow-ups (PR #49, 2026-08-25)
 
-Deferred behavioral items surfaced by the 4.1 review + the dynamic tool/skill hot-plug research. Both belong in the hot-plug PR (or its immediate neighborhood), not in 4.1:
+The two deferred behavioral items — skill-activation tail delivery and positional system messages in the Anthropic adapter — shipped in 4.1 as `ChefConfig.skillPlacement: 'after_system' | 'tail'` and `Message._positional` (with the hoist fallback + one-time warning), and have been removed from this list. Still open:
 
-- **Skill activation tail delivery**: `activateSkill` injects the skill's instructions as a system message between the system prompt and the memory block — near the TOP of the sandwich, so activating or switching a skill invalidates every provider cache breakpoint downstream. Claude Code appends skill instructions at the invocation point instead (append-only, cache-safe). Add a placement option (e.g. `skillPlacement: 'after_system' | 'tail'`) that delivers instructions through the assembler tail-injection path fixed in 4.1. Default stays `'after_system'` for compatibility.
-- **Positional system messages in the Anthropic adapter**: the adapter hoists ALL `role: 'system'` messages into the top-level `system` parameter. Anthropic's mid-conversation system messages (no beta needed on Fable 5 / Mythos 5 / Opus 4.8 / Opus 5; NOT Sonnet 5) keep the cached prefix intact and carry operator precedence — the natural channel for tool/skill availability announcements. Supporting them needs an adapter-level exception (e.g. a `_positional` message flag, or capability detection per target model) so a mid-stream system message stays in place instead of being hoisted to the top. Other targets keep rendering announcements into the existing user-tail channel.
-- **Hot-plug catalog + announcement channel**: full design conclusions from the 2026-08-25 research (Anthropic `tool_addition`/`tool_removal` + `defer_loading`; OpenAI native tool search; Gemini bust-once; three-tier announcement degradation; delta + dedup set with `isInitial`; dispatch-gate over true removal for history coherence) are recorded in the session memory `context-chef-research-findings-2026-08`.
+- **Hot-plug catalog**: of the 2026-08-25 research conclusions, the announcement channel and the dispatch-gate (`chef.checkToolCall`) shipped in 4.1. Anthropic `tool_addition` / `tool_removal` content-block pass-through is still out of scope (ContextChef's IR is text-content based), as are OpenAI native tool search and the Gemini bust-once handling. Full design notes are in the session memory `context-chef-research-findings-2026-08`.
+
+---
+
+# 5.0 Removal List
+
+The mirror of `MIGRATION-5.md` — what 4.2 deprecated and 5.0 deletes. Nothing here is
+scheduled; 5.0 lands when there is a reason for it beyond the removals.
+
+**One default flips.**
+
+- `ChefConfig.tools` default `'legacy'` → `'unified'`. `compile()` then emits the single
+  `context` tool (plus `new_context` when `overflow.handoff` is set) instead of Memory's
+  `create_memory` / `modify_memory`, and emits it whether or not memory is configured.
+  Tool names are dispatch keys in user code, so this is the one break that reaches a host
+  that changed nothing: a loop branching on `'create_memory'` stops matching, tool-list
+  assertions see `context`, and the prompt's memory instruction / memory block / offload
+  marker / summary wrapper switch to the `context://` vocabulary. Hosts that route through
+  `chef.ownsTool` / `chef.handleTool` (which already understand both vocabularies) are
+  unaffected.
+
+**Every alias is deleted.**
+
+- `janitor.compressionMode` / `compressionScheduling` / `archive` → `overflow.strategy`
+  (`summarize` / `anchored` / `background`) and `overflow.archive`.
+- `contextManagement.strategy` / `.server` → `overflow.strategy: server(config, { fallback })`.
+- `JanitorSnapshot.anchorDoc` → `JanitorSnapshot.strategy`. The read path that adopts a
+  pre-4.2 `anchorDoc` on restore stays.
+- `ChefConfig.onBeforeCompile` / `transformContext` → `chef.use('before-assemble' | 'after-assemble', …)`.
+- `MemoryStore`, `VFSStorageAdapter`, `VFSMemoryStore`, `FileSystemAdapter` →
+  `StorageBackend` / `Store` / `InMemoryBackend` / `FileSystemBackend`, plus the
+  `Store.fromMemoryStore` / `Store.fromVfsAdapter` wrappers that exist only to keep them
+  working. `InMemoryStore` implements the removed `MemoryStore` interface and goes with it
+  (`InMemoryBackend` replaces it).
+- `Memory.getToolDefinitions()` and the `create_memory` / `modify_memory` definitions.
+- `getRecallToolDefinition()` and the `recall_context` dispatch branch → the `context`
+  tool's `view`.
+- `TruncateOptions.storage` in ai-sdk-middleware and tanstack-ai → `TruncateOptions.store`.
+
+**Two behavioral switches that are not alias removals.**
+
+- **`archive/` namespace**: in 4.x the archive writes into the `vfs` namespace so
+  `context://vfs/<id>` URIs stay byte-identical (a golden fixture asserts it). 5.0 writes
+  to `context://archive/<id>`. `chef.resolveRecall` parses only the Offloader's `vfs`
+  namespace today, so it must learn `archive` with the switch (the `context` tool's `view`
+  already reads both). URIs cited in already-persisted summaries keep pointing at
+  `context://vfs/…`, and per-namespace eviction starts applying to the two separately.
+- **`durableCompaction` speaks the unified vocabulary**:
+  `packages/core/src/modules/janitor/durableCompaction.ts` calls
+  `Prompts.getCompactSummaryWrapper` directly — it is standalone, with no chef and so no
+  resolved `Vocabulary`. In 5.0 it takes the unified wrapper. Because durable compaction
+  writes into a caller-owned store, that wording is persisted history: a store will hold
+  both spellings side by side across the upgrade, and snapshot tests over stored messages
+  need re-baselining.

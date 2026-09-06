@@ -69,6 +69,31 @@ const model = withContextChef(openai('gpt-4o'), {
 
 > **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 压缩实际上只会隔次触发,payload 还会持续增长。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactModelMessages`](#compactmodelmessagesmessages-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
 
+### 溢出策略（Overflow）
+
+`compress` 是用一组选项去**描述**一套压缩策略；`overflow.strategy` 则**本身就是**那套策略。传入 `@context-chef/core` 里的策略 —— `summarize()`、`anchored()`、`reset()`，以及 `chain()` / `background()` 组合，或你自己实现的对象 —— 它会整体取代 `compress` 所描述的策略：
+
+```typescript
+import { chain, InMemoryBackend, reset, Store, summarize } from '@context-chef/core';
+
+const archive = new Store(new InMemoryBackend()).namespace('archive');
+
+const model = withContextChef(openai('gpt-4o'), {
+  contextWindow: 128_000,
+  overflow: {
+    strategy: chain(summarize({ compressionModel }), reset()),
+    archive: { store: async (serialized) => (await archive.put(serialized)).uri },
+  },
+});
+```
+
+- **只配策略也会开启预算检查** —— 不需要再写 `compress` 块。但一旦配置了策略，`contextWindow` 就是必填的，否则 `createMiddleware` / `withContextChef` 会抛错：预算检查没有可比较的基准。
+- **`overflow.strategy` 覆盖 `compress` 的调参项**（`preserveRatio`、`minShrinkRatio`、`toolResultStubThreshold`，以及 `compress.model`）—— 同一件事有两套描述必然打架。`summarize()` 自带 `compressionModel` 回调，签名是 `(messages: Message[]) => Promise<string>`。
+- **runner 侧的配置继续生效**，与用哪套策略无关：`contextWindow`、`tokenizer`、`compress.triggerRatio`、`compress.usagePreference`、`onCompress`、`onBeforeCompress`、`maxSessions`、`logger`。
+- **`overflow.archive` 只接受显式的 `{ store }` 形式。** `'vfs'` 简写会替换成 ContextChef 自己的 Offloader，而中间件没有它。被驱逐的片段以 `JSON.stringify({ version: 1, messages })` 传入，返回的 URI 会被摘要引用。
+
+> **这里不提供 `overflow.handoff` 和 `tools`。** handoff 提示走的是 tail 通道，只有 `ContextChef.compile()` 才有；而本包只重写 prompt，从不产出工具定义，所以 tools 模式在这里没有作用对象。需要这两者时，请直接使用 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core)，在 `ContextChef` 上注册 `getContextToolDefinition()`。
+
 ### 工具结果截断
 
 大体积工具输出（终端日志、API 响应）会被自动截断，同时保留头部和尾部：
@@ -84,10 +109,10 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-可选地通过存储适配器持久化原始内容，方便后续被工具、审计流水线或回放层取回：
+可选地把原始内容持久化到 context store，方便后续被工具、审计流水线或回放层取回：
 
 ```typescript
-import { FileSystemAdapter } from '@context-chef/core';
+import { FileSystemBackend } from '@context-chef/core';
 
 const model = withContextChef(openai('gpt-4o'), {
   contextWindow: 128_000,
@@ -95,12 +120,16 @@ const model = withContextChef(openai('gpt-4o'), {
     threshold: 5000,
     headChars: 500,
     tailChars: 1000,
-    storage: new FileSystemAdapter('.context_vfs'), // 或自定义数据库适配器
+    store: new FileSystemBackend('.context'), // 也可以是 InMemoryBackend 或自定义 StorageBackend
   },
 });
 ```
 
-当适配器暴露物理路径（`FileSystemAdapter` 通过 `getPhysicalPath` 默认就支持），截断 marker 会把该路径作为首选的取回句柄输出 —— 模型用现成的 file-read 工具直接读取即可，不必另写一个识别自定义 URI 的工具。不映射到文件系统的适配器（DB、内存）则不实现 `getPhysicalPath`，marker 退化为单独的 `context://vfs/` URI。
+`store` 接受一个 `StorageBackend`（`InMemoryBackend`、`FileSystemBackend` 或你自己的实现），也接受一个已构造好的 `Store` —— 把同一个 `Store` 同时交给 `overflow.archive`，一个后端就能同时服务截断和归档。无论哪种方式，截断后的内容都会带上 `context://vfs/` URI。
+
+> **`truncate.storage` 在 4.2 中已废弃**（5.0 移除）—— 请改传 `store`。旧的 `VFSStorageAdapter` 仍然可用：它会被 `Store.fromVfsAdapter` 包装，用其单一扁平键空间同时服务 `vfs` 与 `archive` 两个 namespace。两者同时配置时，`store` 胜出。
+
+当后端暴露物理路径（`FileSystemBackend` 与旧的 `FileSystemAdapter` 都通过 `getPhysicalPath` 支持），截断 marker 会把该路径作为首选的取回句柄输出 —— 模型用现成的 file-read 工具直接读取即可，不必另写一个识别自定义 URI 的工具。不映射到文件系统的后端（DB、内存）则不实现 `getPhysicalPath`，marker 退化为单独的 `context://vfs/` URI。
 
 通过 `perTool` 做按工具覆写 —— 字符串条目完全保留该工具（同时跳过 VFS 写入），对象条目则只针对该工具覆盖 `threshold` / `headChars` / `tailChars`：
 
@@ -119,7 +148,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-未列出的工具继续使用顶层默认值。查找键是 `tool-result.toolName`，过滤粒度是**单个 `tool-result` part** —— 因此同一条 tool 消息可以混合保留与截断的 part。（TanStack 中间件的同名选项粒度是**单条消息**，因为 TanStack 的一条 tool 消息对应一次 tool 调用。）不支持通配符，`storage` 也无法按工具覆写。`perTool` 只控制 truncate 这一步 —— 保留下来的消息仍可能被 `compact` 整条删除（若 `compact.toolCalls` 命中）、被 `compress` 在超出 token 预算时摘要，或被 `transformContext` 改写。
+未列出的工具继续使用顶层默认值。查找键是 `tool-result.toolName`，过滤粒度是**单个 `tool-result` part** —— 因此同一条 tool 消息可以混合保留与截断的 part。（TanStack 中间件的同名选项粒度是**单条消息**，因为 TanStack 的一条 tool 消息对应一次 tool 调用。）不支持通配符，`store` / `storage` 也无法按工具覆写。`perTool` 只控制 truncate 这一步 —— 保留下来的消息仍可能被 `compact` 整条删除（若 `compact.toolCalls` 命中）、被 `compress` 在超出 token 预算时摘要，或被 `transformContext` 改写。
 
 ### Token 预算追踪
 
@@ -177,12 +206,16 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.threshold` | `number` | 是（如启用 truncate） | 触发截断的字符数 |
 | `truncate.headChars` | `number` | 否 | 保留开头的字符数（默认：`0`） |
 | `truncate.tailChars` | `number` | 否 | 保留结尾的字符数（默认：`1000`） |
-| `truncate.storage` | `VFSStorageAdapter` | 否 | 截断前持久化原始内容的存储适配器 |
+| `truncate.store` | `StorageBackend \| Store` | 否 | 承载 `vfs` namespace 的 context store —— `InMemoryBackend`、`FileSystemBackend`、自定义实现，或与 `overflow.archive` 共用的 `Store`。截断后的内容带 `context://vfs/` URI。优先级高于 `storage`。 |
+| `truncate.storage` | `VFSStorageAdapter` | 否 | **4.2 起废弃 → `truncate.store`。** 旧的存储适配器，会被 `Store.fromVfsAdapter` 包装。 |
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | 否 | 按工具覆写。字符串 = 保留（同时跳过存储）；对象 = 为该工具覆写参数。重复名称时后者胜出。 |
 | `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
 | `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV3Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
 | `logger` | `ChefLogger` | 否 | 降级警告的输出目标（存储写入失败、缺少 usage 数据、配置异常等），默认 `console`。转发给底层 Janitor 和 Offloader。 |
+| `overflow` | `{ strategy?, archive? }` | 否 | 溢出轴 —— 见[溢出策略（Overflow）](#溢出策略overflow)。 |
+| `overflow.strategy` | `OverflowStrategy` | 否 | 来自 `@context-chef/core` 的 `summarize()` / `anchored()` / `reset()` / `chain()` / `background()`，或自定义实现。会覆盖 `compress` 的调参项（含 `compress.model`）；runner 侧配置继续生效。配置后 `contextWindow` 变为必填。 |
+| `overflow.archive` | `CompressionArchiveConfig` | 否 | `{ store: (serialized, { messageCount }) => uri }` —— 让被驱逐的片段仍可通过摘要引用的 URI 取回。`'vfs'` 简写仅 core 支持。 |
 | `clear` | `ClearTarget[]` | 否 | 占位符式的 **tool-result** 清除。被清除的工具结果变为 `'[Old tool result content cleared]'`——消息结构保持完整，与删除内容的 `compact` 不同。在压缩之后执行。当工具结果被清除时，自动注入一条系统消息以避免模型将占位符读作错误。仅 `'tool-result'` 目标生效；`'thinking'` 目标为空操作（会记录一条警告）——请用 `compact: { reasoning: ... }` 删除 reasoning。`ClearTarget` 从 `@context-chef/core` 导出。 |
 
 **返回值：** `LanguageModelV3` — 包装后的模型，可在任何使用原模型的地方直接替换。
@@ -389,7 +422,7 @@ wrapGenerate / wrapStream（LLM 调用后）
 
 ## 需要更多控制？
 
-中间件覆盖了最常见的场景：透明的压缩和截断。如需动态状态注入、工具命名空间、记忆或快照/恢复等高级功能，请直接使用 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core)。
+中间件覆盖了最常见的场景：透明的压缩和截断。如需动态状态注入、工具命名空间、记忆、快照/恢复，或统一的 `context` 工具（`tools: 'unified'`）与 handoff 预算（`overflow.handoff`）等高级功能，请直接使用 [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core)。
 
 ## 许可证
 

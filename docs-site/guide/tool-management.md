@@ -131,6 +131,30 @@ Set `deferLoading: true` on a `ToolDefinition` to annotate it for Anthropic's se
 
 Two consumers, one flag. Claude discovers deferred tools on demand via tool search; under the `mid-conversation-tool-changes` beta a deferred tool additionally stays withheld until a `tool_addition` block surfaces it mid-conversation. Deferred definitions are stripped before the cache key is computed, so adding them never invalidates an existing cache entry. Chef passes the flag through verbatim — converting it to the provider's wire field (`defer_loading`) is your tool-conversion step, same as the rest of the definition, and `tool_addition` / `tool_removal` content blocks are not passed through (chef's IR is text-content based). To tell the model *in words* that the tool set moved, use announcements below.
 
+## Library-owned tools <Badge type="tip" text="4.2" />
+
+Not every entry in `payload.tools` comes from your registry. ContextChef adds its own: Memory's `create_memory` / `modify_memory` under the default `tools: 'legacy'`, or the single `context` tool — plus `new_context` when `overflow.handoff` is configured — under `tools: 'unified'`. The two sets never co-exist in one payload.
+
+They are appended **after** pruning, so the Pruner never removes them, and they are dispatched through `chef.ownsTool(name)` / `chef.handleTool(call)` rather than your own router:
+
+```typescript
+for (const call of response.tool_calls) {
+  if (chef.ownsTool(call.function.name)) {
+    const content = await chef.handleTool({
+      name: call.function.name,
+      arguments: call.function.arguments,
+    });
+    history.push({ role: 'tool', tool_call_id: call.id, content });
+    continue;
+  }
+  await executeYourOwnTool(call);
+}
+```
+
+Their schemas are deliberately static — no enum ever varies with live state — so they sit in the cached prefix next to yours without invalidating it. See [Context store](/guide/context-store) for the commands, the access policy, and the `tools` mode switch.
+
+`new_context` deserves a mention here specifically. Hot-plugging a toolkit usually means the *task* changed too, and the turns that led up to it are often dead weight. `new_context` lets the model say so: `chef.requestNewContext()` makes the next compile apply the overflow strategy whatever the budget says, so the model starts the new phase of work with a summary instead of a transcript. See [Overflow](/guide/history-compression).
+
 ## Announcements — telling the model what changed <Badge type="tip" text="4.1" />
 
 Capabilities change mid-session: a permission is granted, a toolkit is loaded, a rate limit withdraws `web_search`. The payload changes shape, but nothing tells the model *what* changed — it keeps calling the tool that vanished, or ignores the one that just appeared. `announce()` states the change and keeps stating it until you retract it.

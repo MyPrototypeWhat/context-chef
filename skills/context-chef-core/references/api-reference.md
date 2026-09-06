@@ -1,4 +1,4 @@
-# context-chef API Quick Reference (v4)
+# context-chef API Quick Reference (v4.2)
 
 ## Installation
 
@@ -8,7 +8,7 @@ npm install @context-chef/core zod
 
 ## Exports
 
-All names below are verified against the v4 public barrel (`packages/core/src/index.ts`).
+All names below are verified against the 4.2 public barrel (`packages/core/src/index.ts`). Entries marked **(deprecated)** still work in 4.x and are removed in 5.0 — the "Deprecated in 4.2" table at the bottom lists the replacements.
 
 ```typescript
 import {
@@ -23,10 +23,42 @@ import {
   Guardrail,             // output-format guardrails
   Assembler,             // sandwich assembly (rarely needed directly)
 
-  // Memory stores
-  InMemoryStore,         // ephemeral (testing)
-  VFSMemoryStore,        // persistent (production)
-  FileSystemAdapter,     // default VFS storage adapter
+  // Context store (4.2) — one substrate for memory / vfs / archive / notes
+  Store,                 // namespace routing + context://<ns>/<path> addressing
+  NamespaceView,         // one namespace of a Store (get/put/append/delete/list/search/uri)
+  InMemoryBackend,       // ephemeral StorageBackend
+  FileSystemBackend,     // on-disk StorageBackend, one root for every namespace
+  fromMemoryStore,       // legacy MemoryStore  → StorageBackend  (= Store.fromMemoryStore)
+  fromVfsAdapter,        // legacy VFSStorageAdapter → StorageBackend (= Store.fromVfsAdapter)
+  StoreCapabilityError,  // thrown when a backend lacks an optional capability
+  MEMORY_NAMESPACE, VFS_NAMESPACE, ARCHIVE_NAMESPACE, NOTES_NAMESPACE,
+
+  // Memory stores — (deprecated), see the 4.2 table at the bottom
+  InMemoryStore,         // (deprecated) → InMemoryBackend
+  VFSMemoryStore,        // (deprecated) → FileSystemBackend
+  FileSystemAdapter,     // (deprecated) → FileSystemBackend
+
+  // Overflow — what leaves the window (4.2)
+  summarize,             // regenerate the summary from the evicted span
+  anchored,              // persistent anchor doc, merge only the newly evicted span
+  server,                // Anthropic server-managed compaction, with a fallback
+  reset,                 // keep pinned, evict the rest
+  chain,                 // escalate when a strategy declines or is still over budget
+  background,            // non-blocking wrapper with a staleness check
+  resolveOverflowStrategy, // builds the strategy the deprecated janitor aliases describe
+  isServerStrategy,
+  renderSummaryMessage,  // the summary message a strategy result becomes
+  renderHandoffNotice, validateHandoffConfig, HANDOFF_REMAINING_PLACEHOLDER,
+
+  // Library-owned tools (4.2)
+  getContextToolDefinition,   // the single `context` tool — static, frozen, cache-safe
+  getNewContextToolDefinition,// `new_context` — no parameters
+  dispatchContextTool,        // dispatcher for a host with no ContextChef
+  isContextToolName, CONTEXT_TOOL_NAMES, CONTEXT_COMMANDS,
+  resolveContextToolPolicy, canWrite, DEFAULT_WRITABLE_NAMESPACES,
+
+  // Vocabulary (4.2) — the words the model reads, picked by `tools` mode
+  resolveVocabulary, LEGACY_VOCABULARY, UNIFIED_VOCABULARY,
 
   // Adapters
   adapterRegistry,       // global registry: register/unregister/get/list
@@ -47,7 +79,8 @@ import {
   groupIntoTurns,        // atomic turn grouping (assistant + its tool results)
 
   // Recall
-  getRecallToolDefinition, // recall_context tool def → dispatch to chef.resolveRecall(uri)
+  getRecallToolDefinition, // (deprecated) recall_context tool def → use the `context` tool's `view`
+  renderRecalledContent,   // archived span → readable transcript (what format: 'text' uses)
 
   // Skill module
   loadSkill,             // single SKILL.md → Skill
@@ -61,7 +94,13 @@ import {
   estimateObject,        // rough token estimate for any object
   objectToXml,           // object → XML (what setDynamicState uses)
   ensureValidHistory,    // drops orphan tool results etc.
-  Prompts,               // prompt constants + helpers (getCompactSummaryWrapper, ...)
+  Prompts,               // prompt constants + helpers. Legacy: getCompactSummaryWrapper,
+                         // MEMORY_INSTRUCTION, getMemoryBlock, getVFSOffloadReminder.
+                         // Unified (tools: 'unified'): CONTEXT_STORE_INSTRUCTION,
+                         // CONTEXT_MEMORY_BLOCK_HEADER, getContextMemoryBlock,
+                         // getContextOffloadReminder, getContextSummaryWrapper,
+                         // CONTEXT_HANDOFF_NOTICE_TEMPLATE
+  createJanitorPool,     // the Janitor-per-session pool the framework integrations use
   TypedEventEmitter,
   SessionPool,           // keyed chef instances for multi-session hosts
   DEFAULT_SESSION_KEY,
@@ -81,10 +120,18 @@ import type {
   JanitorSnapshot, CompressionDetails, CompressionArchiveConfig,
   SummarizeHistoryOptions, PlanCompactionOptions, CompactionPlan, Turn,
   UsagePreferenceWithTokenizer, UsagePreferenceWithoutTokenizer,
-  MemoryConfig, MemoryEntry, MemorySetOptions, MemoryChangeEvent, TTLValue,
-  MemoryPlacement, MemoryStore, MemoryStoreEntry, MemorySnapshot,
-  OffloadOptions, VFSConfig, VFSStorageAdapter, VFSResult, VFSEntryMeta,
+  MemoryConfig, ChefMemoryConfig, MemoryEntry, MemorySetOptions, MemoryChangeEvent, TTLValue,
+  MemoryPlacement, MemoryStore, MemoryStoreEntry, MemorySnapshot,   // MemoryStore: (deprecated)
+  OffloadOptions, VFSConfig, VFSStorageAdapter, VFSResult, VFSEntryMeta,  // VFSStorageAdapter: (deprecated)
   VFSEvictionReason, VFSCleanupResult, CleanupOptions,
+  StorageBackend, StoredEntry, StoredEntryMeta, ListedEntry, SearchHit,
+  StoreOptions, NamespaceOptions, PutResult, EvictionPolicy, StoreCapability,
+  OverflowStrategy, OverflowInput, OverflowResult, OverflowRunner, BudgetInfo,
+  WindowLineage, HandoffConfig, SummarizeOptions, AnchoredOptions, ResetOptions,
+  ServerOverflowStrategy, BackgroundOverflowStrategy, SplitMode,
+  SlotName, SlotHandlers, BeforeAssembleContext, CompileContext, PhaseName, ToolsMode,
+  ContextToolCall, ContextToolHost, ContextToolName, ContextToolPolicyConfig, ContextCommand,
+  Vocabulary, VocabularyMode, SkillPlacement, Announcement, AnnouncementChannel,
   PrunerConfig, PrunerResult, PrunerSnapshot,
   Skill, SkillLoadResult, LoadSkillsDirsOptions, FormatSkillListingOptions, RenderSkillOptions,
   BeforeCompileContext, ChefSnapshot, ChefConfig, ChefEvents, ToolCallCheckResult,
@@ -99,7 +146,54 @@ interface ChefConfig {
   vfs?: Partial<VFSConfig>;             // see VFSConfig below
   janitor?: JanitorConfig;              // see JanitorConfig below
   pruner?: PrunerConfig;                // { strategy?: 'union' | 'intersection' }
-  memory?: MemoryConfig;                // see MemoryConfig below
+  memory?: ChefMemoryConfig;            // MemoryConfig with `store` optional (4.2)
+
+  /**
+   * 4.2 — one storage substrate for every namespace: memory, vfs, archive, notes.
+   * Fills in what nothing else specifies: an explicit memory.store wins for
+   * memory, an explicit vfs.store / vfs.adapter / vfs.storageDir wins for the VFS.
+   */
+  store?: StorageBackend | Store;
+
+  /**
+   * 4.2 — which library-owned tools compile() emits.
+   * - 'legacy' (default in 4.x): Memory's create_memory / modify_memory, and
+   *   only when memory is configured.
+   * - 'unified': one `context` tool over every namespace (+ new_context when
+   *   overflow.handoff is set), emitted whether or not memory is configured.
+   * The two sets never co-exist. The mode also picks the session's Vocabulary.
+   * Becomes 'unified' in 5.0 — tool names are dispatch keys, so it cannot flip
+   * in a minor.
+   */
+  tools?: ToolsMode;
+
+  /** 4.2 — access policy for the `context` tool. Reading is always allowed. */
+  contextTool?: { writable?: string[] };   // default ['memory', 'notes']
+
+  /**
+   * 4.2 — the overflow axis. `strategy` REPLACES janitor.compressionMode /
+   * compressionScheduling and contextManagement; `archive` replaces
+   * janitor.archive and applies to whatever any strategy evicts.
+   */
+  overflow?: {
+    strategy?: OverflowStrategy;
+    archive?: 'vfs' | CompressionArchiveConfig;
+    handoff?: { budgetTokens: number; prompt?: string };  // {n_remaining} template
+  };
+
+  /** 4.1 — where the active skill's instructions land. Default 'after_system'. */
+  skillPlacement?: 'after_system' | 'tail';
+
+  /** 4.1 — audit Anthropic payloads for volatile content inside the cached prefix. */
+  cacheAudit?: boolean;
+
+  /**
+   * 4.2 — dev-mode pipeline invariants: pinned survival + tool-pair integrity
+   * after each after-assemble handler, pre-tail byte-identity after the tail
+   * phase. Reported via logger.warn + the 'pipeline:invariant' event, never
+   * thrown. Costs a snapshot + a serialization pass per compile. Default false.
+   */
+  pipelineChecks?: boolean;
 
   /** Sink for degradation warnings across all modules. Defaults to console.
    *  A module-level logger in vfs/janitor config wins over this one. */
@@ -114,21 +208,19 @@ interface ChefConfig {
   defaultTarget?: TargetProvider | ITargetAdapter;
 
   /**
-   * Where history compression happens:
-   * - 'client' (default): Janitor compresses locally.
-   * - 'server': client LLM compression is skipped entirely; on the Anthropic
-   *   target the payload carries context_management + betas. Compaction
-   *   blocks returned by the API round-trip through fromAnthropic (pinned).
-   * Construction warning if 'server' is combined with janitor.compressionModel.
+   * (deprecated) Where history compression happens. 'server' builds
+   * overflow.strategy = server(contextManagement.server, { fallback }); 'client'
+   * is the default. Both fields are removed in 5.0.
    */
   contextManagement?: {
     strategy: 'client' | 'server';
-    /** Provider-shaped edits config, passed through verbatim. Default when
-     *  omitted under 'server': { edits: [{ type: 'compact_20260112' }] } */
+    /** (deprecated) The first argument of server(). Default when omitted under
+     *  'server': { edits: [{ type: 'compact_20260112' }] } */
     server?: unknown;
   };
 
-  /** Transform the full message array after assembly, before adapter formatting. */
+  /** (deprecated) Registers on the `after-assemble` slot at construction. Use
+   *  chef.use('after-assemble', fn). Removed in 5.0. */
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
 
   /**
@@ -144,12 +236,47 @@ interface ChefConfig {
   ) => string | Promise<string>;
 
   /**
-   * Inject external context (RAG, AST, MCP) before compilation.
+   * (deprecated) Inject external context (RAG, AST, MCP) before compilation.
    * Return a string to inject as <implicit_context>, or null to skip.
+   * Registers on the `before-assemble` slot at construction. Use
+   * chef.use('before-assemble', (ctx) => ctx.inject(text)). Removed in 5.0.
    */
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
 }
 ```
+
+## Pipeline phases and slots (4.2)
+
+`compile()` runs a fixed, ordered phase list; each phase lives in
+`src/pipeline/phases/<name>.ts`:
+
+```
+start → transform-tool-results → overflow → handoff → inject → memory
+      → skill → assemble → tail → adapt → audit → done
+```
+
+Slots are the public composition surface. `chef.use(slot, handler)` registers,
+`chef.unuse(slot, handler)` removes one registration. Handlers run in
+registration order and are awaited in sequence. Their errors are **not**
+isolated — they propagate out of `compile()`, exactly like the config hooks they
+generalize.
+
+```typescript
+interface SlotHandlers {
+  'before-overflow': (ctx: { history: readonly Message[]; budget: BudgetInfo })
+                     => void | false | Promise<void | false>;   // false = skip overflow this compile
+  'after-overflow':  (ctx: { history: Message[]; result: OverflowResult | null }) => void | Promise<void>;
+  'before-assemble': (ctx: BeforeCompileContext & { inject(text: string): void }) => void | Promise<void>;
+  'after-assemble':  (messages: Message[]) => Message[] | Promise<Message[]>;   // handlers chain
+  'before-adapt':    (messages: readonly Message[]) => void | Promise<void>;
+  'after-adapt':     (payload: TargetPayload) => void | Promise<void>;
+}
+```
+
+`ChefConfig.onBeforeCompile` → `before-assemble`; `ChefConfig.transformContext` →
+`after-assemble`. Both register at construction, ahead of any later `use()` call,
+and produce identical output. `transformToolResult` is per-message, not a slot,
+and is not deprecated.
 
 ## Events
 
@@ -164,12 +291,13 @@ interface ChefEvents {
   'compress':           { summary: Message; truncatedCount: number; details: CompressionDetails };
   'offload:created':    { uri: string };   // chef.offload/offloadAsync or the compression archive
   'pruner:tool-blocked': { name: string }; // checkToolCall() rejected a call
+  'pipeline:invariant': { phase: PhaseName; message: string }; // 4.2, pipelineChecks only
   'memory:changed':     MemoryChangeEvent;
   'memory:expired':     MemoryEntry;
 }
 ```
 
-Intercept hooks (can modify data / veto) remain config callbacks: `onBeforeCompress` (JanitorConfig), `onMemoryUpdate` (MemoryConfig), `onBeforeCompile` / `transformContext` / `transformToolResult` (ChefConfig).
+Intercept hooks (can modify data / veto) remain config callbacks: `onBeforeCompress` (JanitorConfig), `onMemoryUpdate` / `validateCompression` (MemoryConfig / JanitorConfig), `transformToolResult` (ChefConfig). `onBeforeCompile` / `transformContext` are **(deprecated)** — they now register on the `before-assemble` / `after-assemble` slots.
 
 ## JanitorConfig
 
@@ -290,6 +418,91 @@ interface JanitorConfigBase {
 //   usagePreference?: 'max' | 'feedFirst'
 ```
 
+### Deprecated JanitorConfig fields (4.2)
+
+`compressionMode`, `compressionScheduling` and `archive` describe the overflow
+policy in the old vocabulary. They still build exactly the equivalent strategy
+and are removed in 5.0:
+
+| Deprecated | Replacement |
+|---|---|
+| `compressionMode: 'rewrite'` | `overflow.strategy: summarize(opts)` |
+| `compressionMode: 'incremental-anchored'` | `overflow.strategy: anchored(opts)` |
+| `compressionScheduling: 'background'` | `overflow.strategy: background(<strategy>)` |
+| `archive` | `overflow.archive` |
+| `JanitorSnapshot.anchorDoc` | `JanitorSnapshot.strategy` (opaque strategy state) |
+
+The runner options stay on `janitor`: `contextWindow`, `tokenizer`,
+`usagePreference`, `triggerRatio`, `logger`, `onCompress`, `onBeforeCompress`.
+The summarizer tuning options (`compressionModel`, `compressionGuidelines`,
+`customCompressionInstructions`, `minShrinkRatio`, `validateCompression`,
+`preserveRecentMessages`, `preserveRatio`, `toolResultStubThreshold`) become
+options of the default strategy — they are not deprecated, but an explicit
+`overflow.strategy` supersedes them (setting both warns once).
+
+## Overflow strategies (4.2)
+
+```typescript
+interface BudgetInfo { limit: number; current: number; trigger: number; remaining: number }
+
+interface OverflowInput {
+  history: Message[];               // post transform-tool-results
+  budget: BudgetInfo;
+  tokenizer: (m: Message[]) => number;
+  pinned: readonly Message[];       // must survive verbatim (turn-scoped)
+  window: WindowLineage;            // { first, previous?, current }
+  signal?: AbortSignal;
+}
+
+interface OverflowResult {
+  history: Message[];               // the new in-window history
+  evicted: Message[];               // what left (archive input)
+  summary?: string;                 // rendered summary text, if any
+  meta: { strategy: string; windowId: string; changed: boolean; reason?: string };
+}
+
+interface OverflowStrategy {
+  readonly name: string;
+  apply(input: OverflowInput): Promise<OverflowResult>;
+  commit?(result: OverflowResult): void;   // only fires when a result lands
+  attach?(runner: OverflowRunner): void;   // breaker + logger
+  snapshot?(): unknown;
+  restore?(state: unknown): void;
+}
+```
+
+| Factory | What it does |
+|---|---|
+| `summarize(opts)` | LLM summary of the evicted span, regenerated each time |
+| `anchored(opts)` | persistent anchor document; each compression merges only the newly evicted span. Anchor is keyed per window |
+| `server(config, { fallback })` | Anthropic target → server-managed (`changed: false`, adapt attaches `context_management` + betas); every other target runs `fallback`, or declines with a reason when none is given |
+| `reset(opts)` | keeps `pinned` and nothing else; everything else is evicted. Safe only with `archive` — documented, not enforced |
+| `chain(...strategies)` | runs the next when the previous returned `changed: false` or is still over budget |
+| `background(strategy)` | first over-budget compile returns unchanged and starts the job; a later compile swaps the result in if the compressed span is still a prefix of the current history |
+
+The Janitor is the **runner**: budget evaluation, tokenizer / usage, circuit
+breaker, `compress:*` events, archive, `onCompress` / `onBeforeCompress`, durable
+compaction. It calls `strategy.apply()`. Failures of whatever strategy is
+installed count toward the same 3-strike breaker.
+
+**Window lineage**: the runner allocates a new window id on every overflow that
+returns `changed: true`, at commit time — a stale background result never
+advances it. `CompileMeta.windowId` is the window the payload belongs to;
+lineage rides `JanitorSnapshot` / `ChefSnapshot` and restarts on `clearHistory()`.
+
+**Handoff budget**: `overflow.handoff = { budgetTokens, prompt? }` reserves
+headroom above the trigger. When `budget.remaining <= budgetTokens` and no notice
+has been issued for the current window, one compile carries the rendered prompt
+(`{n_remaining}` placeholder) through the tail channel. Never persisted, absent
+from `getAnnouncements()`, skipped on server-managed compiles. Validated at
+construction (positive budget, non-empty prompt, ≤ 2000 bytes).
+
+**`new_context`**: `getNewContextToolDefinition()` is a static, parameterless
+tool; dispatching it through `chef.handleTool` calls `chef.requestNewContext()`,
+which makes the next compile apply the strategy regardless of budget. A
+`before-overflow` veto and an open circuit breaker still win. The request is
+consumed by one compile whether or not the window actually changed.
+
 ### Constraint pinning
 
 `Message.pinned?: boolean` — a pinned message survives every lossy operation verbatim: `compress()` re-inserts it (in order) right after the summary; `compact()` never clears its tool results / thinking / reasoning tags. Pinning is **turn-scoped**: pinning any message of an atomic turn (assistant with tool_calls + its tool results) protects the whole turn. Use for governance/safety constraints and standing task rules.
@@ -352,18 +565,147 @@ Empty slice → `''` (no model call); stateless (no circuit breaker); **throws**
 ### Recall (archive + VFS retrieval)
 
 ```typescript
-import { getRecallToolDefinition } from "@context-chef/core";
+// 4.2 — one tool, one dispatcher
+const chef = new ContextChef({ tools: 'unified', overflow: { archive: 'vfs' } });
 
-chef.registerTools([getRecallToolDefinition()]); // recall_context tool
-// In the dispatch loop:
-if (call.function.name === 'recall_context') {
-  const { uri } = JSON.parse(call.function.arguments);
-  const content = await chef.resolveRecall(uri); // full stored content, or null
-  history.push({ role: 'tool', tool_call_id: call.id, content: content ?? '[not found]' });
+for (const call of response.tool_calls ?? []) {
+  if (chef.ownsTool(call.function.name)) {
+    const content = await chef.handleTool({
+      name: call.function.name,
+      arguments: call.function.arguments,
+    });
+    history.push({ role: 'tool', tool_call_id: call.id, content });
+    continue;
+  }
+  // ... the host's own tools
 }
 ```
 
-`resolveRecall` covers both offloaded tool outputs (`chef.offload`) and archived compressed spans (`janitor.archive`).
+`chef.resolveRecall(uri, { format? })` is still the programmatic path and covers
+both offloaded tool outputs (`chef.offload`) and archived compressed spans
+(`overflow.archive`); `format: 'text'` renders an archived span as a readable
+transcript instead of the stored `{ version, messages }` JSON.
+
+`getRecallToolDefinition()` / the `recall_context` tool are **(deprecated)** —
+the `context` tool's `view` on a `context://vfs/…` or `context://archive/…` path
+does the same job and reaches every other namespace too. `handleTool` still
+dispatches `recall_context` for hosts that already emit it.
+
+## Context store (4.2)
+
+One substrate for everything that lives outside the window: addressed content
+plus metadata, in named namespaces, reachable as `context://<ns>/<path>`.
+
+| Namespace | Holds | Auto-injected? |
+|---|---|---|
+| `memory` | durable facts worth carrying between conversations | yes, every compile |
+| `notes` | the model's own working scratch space | no — read on demand |
+| `vfs` | tool output too large to keep inline (`chef.offload`) | no |
+| `archive` | spans of this conversation that were compacted away | no |
+
+```typescript
+interface StoredEntry {
+  content: string;
+  meta: { createdAt: number; updatedAt: number; bytes?: number } & Record<string, unknown>;
+}
+
+interface StorageBackend {
+  read(ns: string, path: string): StoredEntry | null | Promise<StoredEntry | null>;
+  write(ns: string, path: string, entry: StoredEntry): void | Promise<void>;
+  delete(ns: string, path: string): boolean | Promise<boolean>;
+  list(ns: string, prefix?: string): ListedEntry[] | Promise<ListedEntry[]>;
+  // Optional, capability-queried — a missing one throws StoreCapabilityError
+  // only where it is actually required:
+  readAll?(ns: string): Record<string, StoredEntry> | Promise<Record<string, StoredEntry>>;
+  append?(ns: string, path: string, content: string): void | Promise<void>;
+  search?(ns: string, query: string): SearchHit[] | Promise<SearchHit[]>;
+  snapshot?(ns: string): Record<string, StoredEntry>;
+  restore?(ns: string, data: Record<string, StoredEntry>): void;
+  getPhysicalPath?(ns: string, path: string): string | null | Promise<string | null>;
+}
+
+class Store {
+  constructor(backend: StorageBackend, options?: StoreOptions);
+  namespace(ns: string, options?: NamespaceOptions): NamespaceView;
+  static uri(ns: string, path: string): string;                       // context://<ns>/<path>
+  static parseUri(uri: string): { ns: string; path: string } | null;
+  static from(input: Store | StorageBackend, options?: StoreOptions): Store;
+  static fromMemoryStore(legacy: MemoryStore): StorageBackend;        // (deprecated shim)
+  static fromVfsAdapter(legacy: VFSStorageAdapter): StorageBackend;   // (deprecated shim)
+}
+```
+
+`NamespaceView`: `get` / `put(path, content, meta)` / `put(content, meta)` →
+auto-id / `append` / `delete` / `list` / `entries` / `search` / `uri` / `parseUri`.
+Per-namespace eviction (`maxAge` / `maxFiles` / `maxBytes`, the old `VFSConfig`
+caps) is a `Store` option now.
+
+Built-in backends: `InMemoryBackend`, `FileSystemBackend(rootDir)`. Wiring:
+
+```typescript
+import { FileSystemBackend } from "@context-chef/core";
+
+const chef = new ContextChef({
+  store: new FileSystemBackend(".context-store"),  // memory + vfs + archive + notes
+  memory: {},
+});
+await chef.getStore().namespace("notes").put("plan.md", "# Plan\n");
+```
+
+`ChefConfig.store` fills in only what nothing else specifies — an explicit
+`memory.store`, `vfs.store`, `vfs.adapter` or `vfs.storageDir` still wins.
+Legacy `MemoryStore` / `VFSStorageAdapter` implementations keep working through
+the `from*` shims; both interfaces (and `InMemoryStore`, `VFSMemoryStore`,
+`FileSystemAdapter`) are **(deprecated)**.
+
+## The `context` tool (4.2)
+
+`getContextToolDefinition()` returns one frozen, reference-stable definition —
+`memory_20250818`-shaped, with exactly one enum (`command`), so no live state can
+enter the cached prefix.
+
+```typescript
+{
+  name: 'context',
+  parameters: {
+    command: 'view' | 'create' | 'str_replace' | 'insert' | 'delete' | 'rename' | 'search',
+    path: string,        // context://<ns>/<path> — the context:// prefix is optional;
+                         // a trailing slash (or a bare namespace) is the directory
+    file_text?: string;  // create
+    old_str?, new_str?: string;   // str_replace — old_str must occur exactly once
+    insert_line?: number; insert_text?: string;  // insert — 0-based line
+    new_path?: string;   // rename, same namespace
+    query?: string;      // search, scoped by `path`
+    description?: string;// create under memory/ — what the entry is for
+  }
+}
+```
+
+Dispatch behavior per namespace:
+
+- `memory/` routes through the Memory module, so `allowedKeys`, the
+  `onMemoryUpdate` veto, `onMemoryChanged`, TTL and `updateCount` all apply.
+  `create` on an existing key is an error; `rename` is create + delete.
+- `notes/` goes straight to `store.namespace('notes')`: line-numbered `view`,
+  single-occurrence `str_replace`, 0-based `insert`, and `search` with a
+  list+get fallback when the backend has no `search` capability.
+- `vfs/` and `archive/` are view-only by default and render through the recall
+  path.
+
+Access control is `ChefConfig.contextTool.writable` (default
+`['memory', 'notes']`), enforced at dispatch, never in the store — your own code
+writes wherever it likes. Model-facing mistakes come back as `Error: …` text the
+model can read and correct; programmer errors throw.
+
+```typescript
+chef.ownsTool(name): boolean            // context, new_context, and the legacy trio
+chef.handleTool(call): Promise<string>  // { name, arguments: string | object }
+chef.getStore(): Store
+```
+
+Both are independent of `ChefConfig.tools`: the mode decides what `compile()`
+**emits**, not what the dispatcher understands. Routing through them today is the
+whole migration for 5.0, where `'unified'` becomes the default.
 
 ## MemoryConfig
 
@@ -371,7 +713,10 @@ if (call.function.name === 'recall_context') {
 type MemoryPlacement = 'after_system' | 'before_history_tail';
 
 interface MemoryConfig {
-  store: MemoryStore;                       // InMemoryStore or VFSMemoryStore
+  /** 4.2: a Store, a raw StorageBackend (Memory owns its `memory` namespace),
+   *  or a legacy MemoryStore (deprecated, wrapped with Store.fromMemoryStore).
+   *  Optional on ChefConfig.memory — a shared ChefConfig.store supplies it. */
+  store: MemoryStore | StorageBackend | Store;
   defaultTTL?: TTLValue;                    // bare number = turns
   allowedKeys?: string[];                   // whitelist of allowed memory keys
 
@@ -423,9 +768,10 @@ interface MemoryChangeEvent {
 ```typescript
 interface VFSConfig {
   threshold: number;            // char limit before offload (ChefConfig.vfs default: 5000)
-  storageDir?: string;          // default '.context_vfs' (FileSystemAdapter)
+  storageDir?: string;          // default '.context_vfs'
   uriScheme?: string;           // custom URI prefix
-  adapter?: VFSStorageAdapter;  // custom storage (overrides storageDir)
+  store?: Store | StorageBackend;  // 4.2 — takes precedence over adapter/storageDir
+  adapter?: VFSStorageAdapter;  // (deprecated) wrapped with Store.fromVfsAdapter
   maxAge?: number;              // ms since createdAt before cleanup eligibility
   maxFiles?: number;            // entry-count cap
   maxBytes?: number;            // total UTF-8 byte cap
@@ -433,6 +779,7 @@ interface VFSConfig {
   logger?: ChefLogger;
 }
 
+// (deprecated) — implement StorageBackend instead (see "Context store" above)
 interface VFSStorageAdapter {
   write(filename: string, content: string): void | Promise<void>;
   read(filename: string): string | null | Promise<string | null>;
@@ -523,7 +870,11 @@ interface ToolDefinition {
 | `setHistory(messages): this` | Set conversation history |
 | `setDynamicState(schema, data, { placement? }): this` | Inject Zod-validated state as XML (`'last_user'` default / `'system'`) |
 | `withGuardrails(options \| null): this` | v4: options are STORED and applied at compile() — order-independent vs setDynamicState; replace semantics; `null` clears; persisted in snapshots. `GuardrailOptions = { enforceXML?: { outputTag }, prefill? }` |
-| `clearHistory(): this` | Clear history and reset Janitor (incl. circuit breaker + anchor doc) |
+| `clearHistory(): this` | Clear history and reset Janitor (circuit breaker, strategy state, window lineage). Announcements survive |
+| `use(slot, handler): this` | 4.2: register a pipeline slot handler (see "Pipeline phases and slots") |
+| `unuse(slot, handler): this` | 4.2: remove one registration of `handler` on `slot` |
+| `announce(id, content, { channel? }): this` | 4.1: standing capability statement, rendered until retracted |
+| `retractAnnouncement(id): boolean` / `getAnnouncements()` | 4.1 |
 
 ### Tool Management
 
@@ -534,6 +885,8 @@ interface ToolDefinition {
 | `registerToolkits(groups): this` | Register Layer 2 lazy-loadable toolkits |
 | `getPruner(): Pruner` | Direct access to the pruner |
 | `checkToolCall({ name }): ToolCallCheckResult` | v4 dispatch-time gate against the Pruner blocklist. Call per LLM tool call BEFORE invoking: `chef.checkToolCall({ name: call.function.name })`. Returns `{ allowed: true }` or `{ allowed: false, reason }` (surface `reason` back as the tool result). Missing/empty name is rejected. Emits `'pruner:tool-blocked'`. |
+| `ownsTool(name): boolean` | 4.2: is this a library-owned tool (`context`, `new_context`, `create_memory`, `modify_memory`, `recall_context`)? Independent of `tools` mode |
+| `handleTool(call): Promise<string>` | 4.2: run one library tool call and return the text to hand back as the tool result. `arguments` may be a JSON string or a parsed object. Throws only for an unowned name |
 
 ### Pruner methods (via `chef.getPruner()`)
 
@@ -582,9 +935,11 @@ Note: Pruner's two-layer architecture (namespaces + toolkits) is deliberately tw
 
 | Method | Description |
 |---|---|
+| `getStore(): Store` | 4.2: the context store every namespace is addressed through |
+| `requestNewContext(): this` | 4.2: next compile applies the overflow strategy regardless of budget (consumed by one compile) |
 | `offload(content, options?): string` | Sync truncation with VFS pointer (throws on async adapters) |
 | `offloadAsync(content, options?): Promise<string>` | Async version |
-| `resolveRecall(uri): Promise<string \| null>` | v4: full stored content behind a `context://` URI (offloaded output or archived span) |
+| `resolveRecall(uri, { format? }): Promise<string \| null>` | Full stored content behind a `context://vfs/` URI (offloaded output or archived span). 4.2: `format: 'text'` renders an archived span as a readable transcript |
 | `getOffloader(): Offloader` | Advanced ops: `cleanup()/cleanupAsync()` (age/count/byte caps), `reconcileAsync()` (adopt orphans after restart), `resolve(uri)/resolveAsync(uri)` |
 
 `OffloadOptions: { threshold?, headChars?, tailChars? }` (tailChars default 2000).
@@ -680,25 +1035,42 @@ interface CompileMeta {
   injectedMemoryKeys: string[];
   memoryExpiredKeys: string[];
   activeSkillName?: string;      // v4
+  windowId?: string;             // 4.2: the window this payload belongs to
 }
 ```
 
-## Memory tool schemas
+## Library-owned tool schemas
 
-When memory is configured, `compile()` auto-injects these tool definitions:
+What `compile()` puts in `payload.tools` depends on `ChefConfig.tools`.
+
+**`tools: 'legacy'`** (default in 4.x) — only when memory is configured:
 
 - **`create_memory`** — `{ key, value, description? }`; `key` becomes an enum when `allowedKeys` is configured.
-- **`modify_memory`** — `{ action: 'update' | 'delete', key, value?, description? }`; only injected when entries exist; `key` is an enum of existing keys.
+- **`modify_memory`** — `{ action: 'update' | 'delete', key, value?, description? }`; static since 4.1 (no enum of live keys — the visible key list rides the injected memory block instead).
 
-Intercept both in the agent loop and route to `chef.getMemory().createMemory(...)` / `updateMemory(...)` / `deleteMemory(...)`.
+**`tools: 'unified'`** — always, memory or not:
+
+- **`context`** — the seven-command tool over `context://<ns>/<path>` (see "The `context` tool" above).
+- **`new_context`** — no parameters; emitted only when `overflow.handoff` is set.
+
+Route both sets the same way: `if (chef.ownsTool(name)) await chef.handleTool(call)`.
+`Memory.getToolDefinitions()` is **(deprecated)** — a `memory/` write through the
+`context` tool runs the same validation, veto and TTL path.
 
 ## Hook use cases
 
-### `onBeforeCompile` — inject external context
+### `onBeforeCompile` — inject external context (deprecated → `before-assemble`)
 
 Called after Janitor compression, before adapter formatting. Return a string to inject as `<implicit_context>` alongside dynamic state, or null to skip.
 
 ```typescript
+// 4.2 — the slot form. Any number of handlers, each may inject.
+chef.use("before-assemble", async (ctx) => {
+  const results = await vectorDB.search(ctx.dynamicStateXml);
+  if (results.length) ctx.inject(results.map(r => r.content).join("\n"));
+});
+
+// (deprecated) the config form, registered on the same slot at construction:
 const chef = new ContextChef({
   onBeforeCompile: async (ctx) => {
     const results = await vectorDB.search(ctx.dynamicStateXml);
@@ -706,7 +1078,7 @@ const chef = new ContextChef({
   },
 });
 
-// BeforeCompileContext:
+// BeforeCompileContext (a `before-assemble` handler also gets `inject(text)`):
 interface BeforeCompileContext {
   systemPrompt: readonly Message[];
   history: readonly Message[];      // post-compression
@@ -726,7 +1098,7 @@ const compactJanitor = new Janitor({ contextWindow: Infinity });
 const chef = new ContextChef({
   janitor: {
     contextWindow: 200000,
-    compressionModel: async (msgs) => summarize(msgs),
+    compressionModel: async (msgs) => summarizeWithCheapModel(msgs),
     toolResultStubThreshold: 5000, // trims big tool results inside the summarized span
     onBeforeCompress: (history, { currentTokens, limit }) => {
       // Zero-cost first pass: strip thinking blocks
@@ -750,11 +1122,15 @@ const chef = new ContextChef({
 });
 ```
 
-### `transformContext` — final message transform
+### `transformContext` — final message transform (deprecated → `after-assemble`)
 
 Called after all assembly (system + skill + memory + history + dynamic state + guardrails), before adapter formatting.
 
 ```typescript
+// 4.2 — the slot form. Handlers chain: each receives the previous result.
+chef.use("after-assemble", (messages) => messages.filter(m => m.content !== ''));
+
+// (deprecated) the config form, registered on the same slot at construction:
 const chef = new ContextChef({
   transformContext: (messages) => messages.filter(m => m.content !== ''),
 });
@@ -764,7 +1140,7 @@ const chef = new ContextChef({
 
 ```typescript
 janitor: {
-  compressionModel: summarize,
+  compressionModel: summarizeWithCheapModel,
   validateCompression: async (summary, { compressed, kept }) => {
     // e.g. require every pinned fact / active file path to appear in the summary
     return requiredFacts.every(f => summary.includes(f));
@@ -776,7 +1152,8 @@ janitor: {
 
 ```typescript
 memory: {
-  store: new VFSMemoryStore(".memory"),
+  // store is optional — a shared ChefConfig.store (e.g. new FileSystemBackend('.context-store'))
+  // supplies it. An explicit one still wins.
   memoryPlacement: "before_history_tail",
   selector: (entries) => entries.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 10),
   onMemoryUpdate: (key) => !key.startsWith("system_"),   // veto
@@ -794,9 +1171,45 @@ objectToXml(obj, rootName?)    // object → XML (what setDynamicState uses unde
 ensureValidHistory(messages)   // drops orphan tool results / repairs pairing
 Prompts                        // getCompactSummaryWrapper, getAnchoredCompactionInstruction,
                                // getArchiveCitation, formatCompactSummary, CONTEXT_COMPACTION_INSTRUCTION, ...
+                               // 4.2 unified set (tools: 'unified'): CONTEXT_STORE_INSTRUCTION,
+                               // CONTEXT_MEMORY_BLOCK_HEADER, getContextMemoryBlock,
+                               // getContextOffloadReminder, getContextSummaryWrapper,
+                               // CONTEXT_HANDOFF_NOTICE_TEMPLATE
+createTokenizerAdapter(encode) // any (text) => tokens encoder → a correct JanitorConfig.tokenizer
+resolveVocabulary(mode)        // 4.2: LEGACY_VOCABULARY | UNIFIED_VOCABULARY
 ```
 
-## Migrating from v3
+## Deprecated in 4.2 (removed in 5.0)
+
+Everything here still works in 4.x. Generate the replacement in new code; see
+`MIGRATION-5.md` in the repo for the full story and the 5.0 flip list.
+
+| Deprecated | Replacement |
+|---|---|
+| `janitor.compressionMode: 'rewrite'` | `overflow.strategy: summarize(opts)` |
+| `janitor.compressionMode: 'incremental-anchored'` | `overflow.strategy: anchored(opts)` |
+| `janitor.compressionScheduling: 'background'` | `overflow.strategy: background(<strategy>)` |
+| `janitor.archive` | `overflow.archive` |
+| `contextManagement.strategy` / `.server` | `overflow.strategy: server(config, { fallback })` |
+| `JanitorSnapshot.anchorDoc` | `JanitorSnapshot.strategy` |
+| `ChefConfig.onBeforeCompile` | `chef.use('before-assemble', (ctx) => ctx.inject(text))` |
+| `ChefConfig.transformContext` | `chef.use('after-assemble', (messages) => messages)` |
+| `MemoryStore` (and `memory.store` taking one) | `StorageBackend` / `Store` |
+| `VFSStorageAdapter` (and `vfs.adapter`) | `StorageBackend` as `vfs.store`, or one `ChefConfig.store` |
+| `InMemoryStore` | `InMemoryBackend` |
+| `VFSMemoryStore` / `FileSystemAdapter` | `FileSystemBackend` |
+| `Memory.getToolDefinitions()` | `tools: 'unified'` — `compile()` emits the `context` tool |
+| `create_memory` / `modify_memory` calls | the `context` tool via `chef.handleTool(call)` |
+| `getRecallToolDefinition()` / `recall_context` | the `context` tool's `view` |
+| middleware `truncate.storage` | `truncate.store` |
+
+**The one default that flips in 5.0**: `ChefConfig.tools` goes to `'unified'`, so
+`payload.tools` carries `context` where it used to carry the memory trio (and
+carries it even with no memory configured). Tool names are dispatch keys, so a
+loop branching on `'create_memory'` stops matching. Routing through
+`chef.ownsTool` / `chef.handleTool` today makes the flip a no-op.
+
+## Migrating from v3 (removed APIs)
 
 These APIs were **removed** in v4 — replace on sight:
 

@@ -57,16 +57,18 @@ The full API is documented across the guide, one page per concern:
 
 | Module | Guide page |
 |---|---|
-| Janitor — history compression, `compact()`, `ensureValidHistory` | [History Compression](/guide/history-compression) |
+| The five axes, the compile pipeline, the slots | [Architecture](/guide/architecture) |
+| Overflow strategies, Janitor runner, `compact()`, `ensureValidHistory` | [Overflow](/guide/history-compression) |
 | `planCompaction` / `compactHistory` / `summarizeHistory` | [Durable Compaction](/guide/durable-compaction) |
-| `contextManagement: { strategy: 'server' }` | [Server-Side Context Management](/guide/server-side-context-management) |
+| `server()` strategy, `contextManagement: { strategy: 'server' }` | [Server-Side Context Management](/guide/server-side-context-management) |
+| `StorageBackend` / `Store`, the `context` tool, `tools` mode | [Context Store](/guide/context-store) |
+| Memory — TTL, `selector`, `allowedKeys`, `memoryPlacement` | [Memory](/guide/memory) |
 | Offloader / VFS — `offload`, `cleanupAsync`, `reconcileAsync` | [Offloading & VFS](/guide/offloading-vfs) |
 | Pruner — flat mode, blocklist, namespaces, `deferLoading` | [Tool Management](/guide/tool-management) |
-| Memory — stores, tools, `memoryPlacement` | [Memory](/guide/memory) |
 | Skill — `SKILL.md` loading, `renderSkill`, delivery models | [Skills](/guide/skills) |
 | `withGuardrails` — XML contract + prefill | [Guardrail](/guide/guardrail) |
 | `snapshot()` / `restore()` | [Snapshot & Restore](/guide/snapshot-restore) |
-| Events, `compile({ signal })`, concurrency, `onBeforeCompile` | [Events & Hooks](/guide/events-hooks) |
+| Slots, events, `compile({ signal })`, concurrency | [Events & Hooks](/guide/events-hooks) |
 | Input/target adapters, `adapterRegistry`, `openai-responses` | [Adapters](/guide/adapters) |
 
 ## Utilities

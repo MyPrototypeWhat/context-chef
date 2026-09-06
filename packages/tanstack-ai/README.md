@@ -65,6 +65,32 @@ contextChefMiddleware({
 
 **Without a compression model** — configure `onBeforeCompress` (with or without returning replacement messages); when the budget is exceeded and no model is set, old messages are discarded and only recent messages are kept.
 
+### Overflow Strategies
+
+`compress` *describes* a compression policy in options; `overflow.strategy` **is** the policy. Pass a strategy built in `@context-chef/core` — `summarize()`, `anchored()`, `reset()`, composed with `chain()` / `background()`, or your own object — and it replaces the policy the `compress` options describe:
+
+```typescript
+import { chain, InMemoryBackend, reset, Store, summarize } from '@context-chef/core';
+
+const archive = new Store(new InMemoryBackend()).namespace('archive');
+
+contextChefMiddleware({
+  contextWindow: 128_000,
+  tokenizer,
+  overflow: {
+    strategy: chain(summarize({ compressionModel }), reset()),
+    archive: { store: async (serialized) => (await archive.put(serialized)).uri },
+  },
+})
+```
+
+- **A strategy alone opens the budget check** — no `compress` block needed. `contextWindow` is required as soon as one is configured; `contextChefMiddleware` throws otherwise, because the budget check has nothing to compare against.
+- **`overflow.strategy` supersedes the `compress` tuning** (`preserveRatio`, `minShrinkRatio`, `toolResultStubThreshold`, and `compress.adapter`) — two descriptions of one thing would disagree. `summarize()` takes its own `compressionModel` callback, `(messages: Message[]) => Promise<string>`; `createCompressionAdapter(adapter)` builds one from a TanStack AI text adapter.
+- **The runner concerns keep applying** whatever the strategy is: `contextWindow`, `tokenizer`, `compress.triggerRatio`, `compress.usagePreference`, `onCompress`, `onBeforeCompress`, `maxSessions`, `logger`.
+- **`overflow.archive` takes the explicit `{ store }` form only.** The `'vfs'` shorthand substitutes a ContextChef-owned Offloader, which this middleware does not have. The evicted span arrives serialized as `JSON.stringify({ version: 1, messages })`; return the URI and the summary cites it.
+
+> **`overflow.handoff` and `tools` are not offered here.** The handoff notice rides the tail channel, which only `ContextChef.compile()` has; and this package rewrites messages without ever emitting tool definitions, so a `tools` mode would have nothing to reach. For either, use [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) directly and register `getContextToolDefinition()` on a `ContextChef`.
+
 ### Tool Result Truncation
 
 Large tool outputs (terminal logs, API responses) are automatically truncated while preserving the head and tail:
@@ -79,22 +105,26 @@ contextChefMiddleware({
 })
 ```
 
-Optionally persist the original content via a storage adapter so it can be retrieved later by a tool, audit pipeline, or replay layer:
+Optionally persist the original content in a context store so it can be retrieved later by a tool, audit pipeline, or replay layer:
 
 ```typescript
-import { FileSystemAdapter } from '@context-chef/core';
+import { FileSystemBackend } from '@context-chef/core';
 
 contextChefMiddleware({
   truncate: {
     threshold: 5000,
     headChars: 500,
     tailChars: 1000,
-    storage: new FileSystemAdapter('.context_vfs'), // or your own DB adapter
+    store: new FileSystemBackend('.context'), // or InMemoryBackend, or your own StorageBackend
   },
 })
 ```
 
-When the adapter exposes a physical path (`FileSystemAdapter` does this out of the box via `getPhysicalPath`), the truncation marker advertises that path as the primary retrieval handle — the model can read it back with its standard file-read tool, no custom URI-aware tool needed. Adapters that don't map to a filesystem (DB, in-memory) leave `getPhysicalPath` unset and the marker falls back to the `context://vfs/` URI alone.
+`store` takes a `StorageBackend` (`InMemoryBackend`, `FileSystemBackend`, or your own) or a pre-built `Store` — hand the same `Store` to `overflow.archive` and one backend serves both. Truncated output carries a `context://vfs/` URI either way.
+
+> **`truncate.storage` is deprecated in 4.2** (removed in 5.0) — pass `store` instead. A legacy `VFSStorageAdapter` keeps working: it is wrapped with `Store.fromVfsAdapter`, which serves the `vfs` and `archive` namespaces from its single flat keyspace. When both are set, `store` wins.
+
+When the backend exposes a physical path (`FileSystemBackend` and the legacy `FileSystemAdapter` both do, via `getPhysicalPath`), the truncation marker advertises that path as the primary retrieval handle — the model can read it back with its standard file-read tool, no custom URI-aware tool needed. Backends that don't map to a filesystem (DB, in-memory) leave `getPhysicalPath` unset and the marker falls back to the `context://vfs/` URI alone.
 
 Per-tool overrides via `perTool` — bare strings preserve a tool entirely (storage is also bypassed), object entries override `threshold` / `headChars` / `tailChars` for that one tool:
 
@@ -112,7 +142,7 @@ contextChefMiddleware({
 })
 ```
 
-The lookup key is the tool's name — read from `ModelMessage.name` when set, otherwise resolved from the preceding assistant turn's `toolCalls[].function.name` via `toolCallId`. This fallback is what makes `perTool` work for the canonical `chat()` flow, where `convertMessagesToModelMessages` constructs tool messages without `name`. Wildcards are not supported, and `storage` cannot be overridden per-tool. `perTool` only affects the truncate step itself — a preserved message may still be dropped by `compact`, summarized by `compress` over the token budget, or rewritten by `transformContext`.
+The lookup key is the tool's name — read from `ModelMessage.name` when set, otherwise resolved from the preceding assistant turn's `toolCalls[].function.name` via `toolCallId`. This fallback is what makes `perTool` work for the canonical `chat()` flow, where `convertMessagesToModelMessages` constructs tool messages without `name`. Wildcards are not supported, and `store` / `storage` cannot be overridden per-tool. `perTool` only affects the truncate step itself — a preserved message may still be dropped by `compact`, summarized by `compress` over the token budget, or rewritten by `transformContext`.
 
 ### Token Budget Tracking
 
@@ -251,7 +281,8 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `truncate.threshold` | `number` | Yes (if truncate) | Character count to trigger truncation |
 | `truncate.headChars` | `number` | No | Characters to preserve from start (default: `0`) |
 | `truncate.tailChars` | `number` | No | Characters to preserve from end (default: `1000`) |
-| `truncate.storage` | `VFSStorageAdapter` | No | Storage adapter to persist original content |
+| `truncate.store` | `StorageBackend \| Store` | No | Context store backing the `vfs` namespace — `InMemoryBackend`, `FileSystemBackend`, your own, or a pre-built `Store` shared with `overflow.archive`. Truncated output carries a `context://vfs/` URI. Takes precedence over `storage`. |
+| `truncate.storage` | `VFSStorageAdapter` | No | **Deprecated in 4.2 → `truncate.store`.** Legacy storage adapter for the original content; wrapped with `Store.fromVfsAdapter`. |
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. |
 | `compact` | `CompactConfig` | No | Mechanical pruning of reasoning, tool calls, and empty messages (`reasoning` / `toolCalls` incl. per-tool array form / `emptyMessages`) |
 | `clear` | `ClearTarget[]` | No | Placeholder-style clearing. `'tool-result'` targets become `'[Old tool result content cleared]'` (+ auto explainer prompt); `'thinking'` strips reasoning. Runs AFTER compression. `ClearTarget` is exported from `@context-chef/core`. |
@@ -263,6 +294,9 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `onBeforeCompress` | `(history, tokenInfo) => msgs \| null` | No | Hook before compression with override capability |
 | `transformContext` | `(msgs, prompts, ctx) => { messages, systemPrompts }` | No | Post-compression transformation. Runs per iteration — must be idempotent. |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings; defaults to `console`. |
+| `overflow` | `{ strategy?, archive? }` | No | The overflow axis — see [Overflow Strategies](#overflow-strategies). |
+| `overflow.strategy` | `OverflowStrategy` | No | `summarize()` / `anchored()` / `reset()` / `chain()` / `background()` from `@context-chef/core`, or your own. Supersedes the `compress` tuning options (`compress.adapter` included); the runner concerns still apply. Configuring one makes `contextWindow` required. |
+| `overflow.archive` | `CompressionArchiveConfig` | No | `{ store: (serialized, { messageCount }) => uri }` — keeps the evicted span retrievable behind the URI the summary cites. The `'vfs'` shorthand is core-only. |
 
 **Returns:** `ChatMiddleware` — plug directly into the `middleware` array of `chat()`.
 
@@ -319,7 +353,7 @@ The middleware is **stateful** — it tracks token usage per `ctx.threadId` acro
 
 ## Need More Control?
 
-The middleware covers the most common use case: transparent compression and truncation. For advanced features like tool namespaces, core memory, or snapshot/restore, use [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) directly.
+The middleware covers the most common use case: transparent compression and truncation. For advanced features like tool namespaces, core memory, snapshot/restore, the unified `context` tool (`tools: 'unified'`) or the handoff budget (`overflow.handoff`), use [`@context-chef/core`](https://www.npmjs.com/package/@context-chef/core) directly.
 
 ## License
 

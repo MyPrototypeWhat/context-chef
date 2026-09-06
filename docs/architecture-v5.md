@@ -136,7 +136,7 @@ Legacy hooks become registrations at construction — same code path, no second 
 | Legacy (kept, deprecated JSDoc) | Registers as |
 |---|---|
 | `ChefConfig.transformToolResult` | phase `transform-tool-results` (per-message; not a slot) |
-| `JanitorConfig.onBeforeCompress` | `before-overflow` — the slot itself ships in Phase 1; the Janitor-side alias migrates in Phase 2 (Janitor is Phase 2's file) |
+| `JanitorConfig.onBeforeCompress` | stays on the Janitor runner (NOT deprecated): it may return a replacement history and must work on a standalone `Janitor` with no slot registry. `before-overflow` is the chef-level slot alongside it |
 | `ChefConfig.onBeforeCompile` | `before-assemble` (`inject` = the returned string) |
 | `ChefConfig.transformContext` | `after-assemble` |
 | events `compile:*`, `compress:*`, `offload:*`, `pruner:*` | unchanged (read-only) |
@@ -346,8 +346,9 @@ The model must see one vocabulary. Under `tools: 'unified'`:
   header (both legacy and unified markers are present).
 - Offload truncation placeholder and the summary wrapper's archive citation use the
   `context://` wording consistently.
-- Inline `<update_core_memory>` / `<delete_core_memory>` tags keep working (deprecated),
-  writing to `memory/`.
+- The inline `<update_core_memory>` / `<delete_core_memory>` write path described in
+  older TODO notes no longer exists in code (verified in Phase 4c); the surviving legacy
+  write path is the `create_memory` / `modify_memory` tool pair, now `@deprecated`.
 - `ai-sdk-middleware` and `tanstack-ai` pass through `tools`, `store`, `overflow`;
   any auto-dispatch routes via `chef.handleTool`.
 - Vocabulary is resolved ONCE in `ContextChef` from `tools` mode into a `Vocabulary`

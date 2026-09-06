@@ -13,6 +13,12 @@ import type { Message, ToolDefinition } from '../../types';
  *   const content = await chef.resolveRecall(uri, { format: 'text' });
  *   history.push({ role: 'tool', tool_call_id: call.id, content: content ?? '[not found]' });
  * }
+ *
+ * @deprecated Under `ChefConfig.tools: 'unified'` this is the `context` tool's
+ *   `view` command on a `context://vfs/…` or `context://archive/…` path, which
+ *   reaches every other namespace too and needs no separate registration.
+ *   `chef.handleTool` keeps dispatching `recall_context` unchanged in 4.x; the
+ *   definition is removed in 5.0.
  */
 export function getRecallToolDefinition(): ToolDefinition {
   return {

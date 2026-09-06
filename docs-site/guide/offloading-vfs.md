@@ -1,6 +1,8 @@
 # Large Output Offloading (Offloader / VFS)
 
-Terminal logs and API responses can dwarf the rest of your context. The Offloader truncates oversized content, stores the original in a virtual file system, and leaves a `context://` URI pointer so the model (or your code) can retrieve the full content on demand. This page covers the offload API, the cleanup lifecycle, and five production recipes.
+> **This page documents the Offloader module.** For where offloaded content *lives* — the one storage substrate behind `memory/`, `notes/`, `vfs/` and `archive/`, `ChefConfig.store`, and the unified `context` tool that reads it back — see [Context store](/guide/context-store). The VFS is the `vfs/` namespace plus the things that are genuinely the Offloader's own: the truncation policy and the cleanup lifecycle.
+
+Terminal logs and API responses can dwarf the rest of your context. The Offloader truncates oversized content, stores the original in the `vfs` namespace of the context store, and leaves a `context://vfs/` URI pointer so the model (or your code) can retrieve the full content on demand. This page covers the offload API, the cleanup lifecycle, and five production recipes.
 
 ## Offloading content
 
@@ -28,6 +30,8 @@ import { Offloader } from "@context-chef/core";
 const offloader = new Offloader({ storageDir: ".context_vfs" });
 const fullContent = offloader.resolve(uri);
 ```
+
+Under `tools: 'unified'` you do not need a tool of your own: `context` with `command: 'view'` reads any `context://vfs/` URI, and `chef.handleTool` dispatches it. Under the default `'legacy'` mode, register `getRecallToolDefinition()` and resolve with `chef.resolveRecall(uri)`. Either way the truncation marker the model sees is written in the vocabulary that matches the tools in the payload — see [the vocabulary switch](/guide/context-store#the-vocabulary-switch).
 
 ## Cleanup & lifecycle
 
@@ -239,7 +243,11 @@ async function sweep() {
 
 ## Recipe 4 — Custom storage adapter (Redis example)
 
-`FileSystemAdapter` is the only built-in. Anything else — Redis, S3, SQLite, IndexedDB, in-memory — needs a custom adapter. To enable `cleanup()` and `reconcile()`, the adapter must implement the optional `list()` and `delete()` methods. Without them, `cleanup()` throws `VFSCleanupNotSupportedError({ missing: ['list'?, 'delete'?] })`.
+Anything other than the filesystem — Redis, S3, SQLite, IndexedDB, in-memory — needs a storage implementation of your own. To enable `cleanup()` and `reconcile()`, it must implement the optional `list()` and `delete()` methods. Without them, `cleanup()` throws `VFSCleanupNotSupportedError({ missing: ['list'?, 'delete'?] })`.
+
+::: tip Write new backends against `StorageBackend` <Badge type="tip" text="4.2" />
+`VFSStorageAdapter` (below) is deprecated but fully supported: the Offloader wraps it with `Store.fromVfsAdapter`. A new implementation should target [`StorageBackend`](/guide/context-store#the-substrate) instead — one object then serves `memory/`, `notes/`, `vfs/` and `archive/`, and `FileSystemBackend` is the built-in reference implementation.
+:::
 
 ```typescript
 import type { VFSStorageAdapter } from '@context-chef/core';
