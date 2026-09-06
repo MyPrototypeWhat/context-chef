@@ -350,15 +350,21 @@ The model must see one vocabulary. Under `tools: 'unified'`:
   writing to `memory/`.
 - `ai-sdk-middleware` and `tanstack-ai` pass through `tools`, `store`, `overflow`;
   any auto-dispatch routes via `chef.handleTool`.
-- README (en/zh), core README, docs-site (en/zh): Memory, VFS, archive and FileMemory
-  sections merge into one "Context store" chapter.
+- Vocabulary is resolved ONCE in `ContextChef` from `tools` mode into a `Vocabulary`
+  object (`src/vocabulary.ts`) and injected into memory shaping, the Offloader
+  placeholder, the summary wrapper (lineage line lives here) and the handoff notice;
+  `LEGACY_VOCABULARY` delegates verbatim to the existing `Prompts` strings — that is the
+  byte-identity guarantee. Standalone modules without a vocabulary behave as today.
+- README / docs-site restructuring is Phase 5 (one pass, not two).
 - Rename sweep per CLAUDE.md "No Semantic Search": direct references, type references,
   string literals (tool names, header text, `context://` spellings), dynamic imports,
   barrel re-exports, tests/mocks — across all three packages and docs.
 
 ## 9. Phase 5 — documentation, release, 5.0 plan
 
-- README/docs restructured around the five axes (map, not list).
+- README (en/zh), core README, docs-site (en/zh) restructured around the five axes
+  (map, not list): Memory, VFS, archive and FileMemory merge into one "Context store"
+  chapter; overflow strategies, slots, handoff, `tools` mode documented.
 - Changesets: core `minor` (4.2.0) with one section per phase; `ai-sdk-middleware` /
   `tanstack-ai` `minor` if touched.
 - `MIGRATION-5.md` skeleton: everything deprecated in 4.2 and what replaces it.
