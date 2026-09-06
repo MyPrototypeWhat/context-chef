@@ -159,12 +159,15 @@ interface OverflowStrategy {
   readonly name: string;
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // fires only when a result lands
+  pending?(): boolean;                     // a finished off-turn result is waiting to land
   attach?(runner: OverflowRunner): void;
   snapshot?(): unknown;
   restore?(state: unknown): void;
 }
-// OverflowInput  = { history, budget, tokenizer, pinned, window, signal? }
-// OverflowResult = { history, evicted, summary?, meta: { strategy, windowId, changed, reason? } }
+// OverflowInput  = { history, budget, tokenizer, pinned, window, forced?, signal? }
+// OverflowResult = { history, evicted, span?, summary?, meta: { strategy, windowId, changed, reason? } }
+// `evicted` left the window; `span` is what the summary covers (evicted + re-inserted
+// pinned turns). The runner reads `span ?? evicted` for onCompress, archive and citation.
 ```
 
 | Factory | What it does |

@@ -148,8 +148,10 @@ async function runCommand(
   rawPath: string,
   args: Args,
 ): Promise<string> {
-  const target = parsePath(rawPath);
   const readOnly = command === 'view' || command === 'search';
+  // A read may be addressed with the Offloader's own scheme; a write never is
+  // (vfs holds offloaded output, which the model recalls rather than edits).
+  const target = (readOnly ? offloadedTarget(host, rawPath) : null) ?? parsePath(rawPath);
   if (!readOnly && !canWrite(host.policy, target.ns)) {
     fail(
       `${uriOf(target)} is read-only. This tool may write to: ${host.policy.writable
@@ -263,6 +265,8 @@ async function createMemoryEntry(
 ): Promise<string> {
   const memory = requireMemory(host);
   const target: Target = { ns: MEMORY_NAMESPACE, path: key };
+  // The legacy tools take the key raw — nothing has parsed it as a path yet.
+  assertSafePath(key, uriOf(target));
   if (!canWrite(host.policy, MEMORY_NAMESPACE)) fail(`${uriOf(target)} is read-only.`);
   requireAllowedKey(memory, key);
   if (await memory.getEntry(key)) {
@@ -278,6 +282,7 @@ async function modifyMemoryEntry(host: ContextToolHost, args: Args): Promise<str
   const action = requireString(args, 'action');
   const key = requireString(args, 'key');
   const target: Target = { ns: MEMORY_NAMESPACE, path: key };
+  assertSafePath(key, uriOf(target));
   if (!canWrite(host.policy, MEMORY_NAMESPACE)) fail(`${uriOf(target)} is read-only.`);
   requireAllowedKey(memory, key);
   if (!(await memory.getEntry(key))) fail(notFound(target));
@@ -589,6 +594,24 @@ function requireQuery(query: string): string {
 }
 
 /**
+ * The `vfs` entry an address names under the Offloader's own `uriScheme`, or
+ * null when the Offloader does not recognise it.
+ *
+ * Every truncation marker cites `offloader.uri(filename)`. With the default
+ * scheme that address is `context://vfs/<filename>` and {@link parsePath}
+ * reads it correctly; with a custom scheme (`mem://<filename>`) it parses as a
+ * namespace called `mem:`, and the library's own dispatcher could not resolve
+ * the URI the library itself handed the model.
+ */
+function offloadedTarget(host: ContextToolHost, rawPath: string): Target | null {
+  const raw = rawPath.trim();
+  const filename = host.offloader.parseUri(raw);
+  if (filename === null) return null;
+  assertSafePath(filename, rawPath);
+  return { ns: VFS_NAMESPACE, path: filename };
+}
+
+/**
  * `context://<ns>/<path>`, `<ns>/<path>` and a bare `<ns>` all parse. A
  * trailing slash (or nothing after the namespace) addresses a directory.
  */
@@ -603,11 +626,55 @@ function parsePath(raw: string): Target {
   if (ns === '') {
     fail(`"${raw}" is not a context path. Use ${URI_PREFIX}<namespace>/<path>.`);
   }
-  // The path is a storage key, and some backends map keys onto the filesystem.
-  if (path.split('/').includes('..')) {
-    fail(`"${raw}" is not a context path: ".." is not allowed in a path.`);
-  }
+  assertSafeNamespace(ns, raw);
+  assertSafePath(path, raw);
   return { ns, path };
+}
+
+/**
+ * The namespace names a store namespace and, on a filesystem backend, one
+ * directory under the store root — so it is a single plain segment. `..` here
+ * used to reach the parent of the store root.
+ */
+function assertSafeNamespace(ns: string, raw: string): void {
+  const badNamespace = (problem: string): never =>
+    fail(`"${raw}" is not a context path: ${problem}. Use ${URI_PREFIX}<namespace>/<path>.`);
+
+  if (ns === '.' || ns === '..') badNamespace(`"${ns}" is not a namespace`);
+  if (ns.includes('\\')) badNamespace('a namespace cannot contain a backslash');
+  if (ns.includes(':')) badNamespace(`"${ns}" is not a namespace — check the scheme`);
+  if (hasControlCharacter(ns)) badNamespace('a namespace cannot contain control characters');
+}
+
+/**
+ * The path is a storage key, and some backends map keys onto the filesystem —
+ * where `.` and `..` climb, and a backslash is a separator on Windows. A single
+ * trailing empty segment is the directory form (`notes/sub/`).
+ */
+function assertSafePath(path: string, raw: string): void {
+  if (path === '') return;
+  if (path.includes('\\')) {
+    fail(`"${raw}" is not a context path: a backslash is not allowed in a path.`);
+  }
+  if (hasControlCharacter(path)) {
+    fail(`"${raw}" is not a context path: control characters are not allowed in a path.`);
+  }
+  const segments = path.split('/');
+  segments.forEach((segment, index) => {
+    if (segment === '.' || segment === '..') {
+      fail(`"${raw}" is not a context path: "${segment}" is not allowed in a path.`);
+    }
+    if (segment === '' && index !== segments.length - 1) {
+      fail(`"${raw}" is not a context path: it has an empty path segment.`);
+    }
+  });
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+function hasControlCharacter(value: string): boolean {
+  return CONTROL_CHARACTERS.test(value);
 }
 
 function isDirectory(path: string): boolean {

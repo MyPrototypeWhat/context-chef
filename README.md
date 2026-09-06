@@ -345,7 +345,7 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-> **Note:** Without a `compressionModel`, old messages are discarded with no summary. A console warning is printed at construction time if neither `tokenizer` nor `compressionModel` is provided.
+> **Note:** Without a `compressionModel`, old messages are discarded with no summary. A console warning is printed once at construction if neither `tokenizer` nor `compressionModel` is provided, unless an explicit `overflow.strategy` (or `janitor.strategy`) says you meant it.
 
 #### `JanitorConfig`
 
@@ -358,7 +358,7 @@ Runner options — when compression fires, what it is measured against, and what
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. Without `tokenizer`, the value union narrows to `'max' \| 'feedFirst'` — TypeScript rejects `'tokenizerFirst'` at compile time. See the [core package README](./packages/core) for the full breakdown. |
 | `onCompress`                    | `(summary, count, details) => void`         | —          | Fires after compression with the summary message and truncated count. `details.compressedMessages` is the exact slice of history the summary replaced. |
-| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before LLM compression. Return modified history to intervene, or null to proceed normally. Same registry as the `before-overflow` slot. |
+| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires once the budget verdict says overflow will run, before the strategy. Return modified history to intervene, or null to proceed normally. Not deprecated, and not the `before-overflow` slot — that one is chef-level and fires on every compile. |
 | `logger`                        | `ChefLogger`                                | —          | Sink for degradation warnings (storage/compaction); defaults to `console`. |
 | `strategy`                      | `OverflowStrategy`                          | —          | The policy the runner applies. When building a `Janitor` directly; through `ContextChef` use `overflow.strategy`. |
 
@@ -677,6 +677,8 @@ if (call.function.name === "new_context") {
 
 Under `tools: 'unified'` the definition is emitted for you whenever `overflow.handoff` is configured, and `chef.handleTool` dispatches it — see [the `context` tool](#the-context-tool-42). The request is consumed by one compile whether or not the window actually changed (a strategy may decline; the circuit breaker may be open), so call it again if it must be retried.
 
+Under `summarize()` and `anchored()` a forced pass compresses every turn but the most recent one — `preserveRecentMessages` and `preserveRatio` do not apply, since they exist to bring a full window under the trigger and this pass is not about the budget. With a single turn in the window nothing happens. Two compiles decline overflow outright — a server-managed target and a `before-overflow` veto — and a forced request dropped that way is reported through a `pipeline:invariant` event plus one warning per cause, never silently.
+
 #### Window lineage — `meta.windowId` (4.2)
 
 Each context window has an id. The runner allocates a new one **at commit time**, only when an overflow result actually enters the window — a stale `background()` result that gets discarded never advances it.
@@ -740,7 +742,7 @@ Everything ContextChef keeps *outside* the window is the same thing at different
 | `memory/` | Durable facts worth carrying between sessions | Injected into every compile | Yes (default) |
 | `notes/` | The model's own scratchpad | Never — that is the point | Yes (default) |
 | `vfs/` | Offloaded tool output, addressed by the URI left in its place | Only what it reads back | No (read-only by default) |
-| `archive/` | Full pre-overflow spans behind a summary's citation | Only what it reads back | No (read-only by default) |
+| `archive/` | Reserved for pre-overflow spans behind a summary's citation — nothing writes here in 4.x, where `overflow.archive` still lands in `vfs/` | Only what it reads back | No (read-only by default) |
 
 ```typescript
 import { ContextChef, FileSystemBackend, InMemoryBackend, Store } from "@context-chef/core";
@@ -783,7 +785,7 @@ Every `NamespaceView` method mirrors its backend's sync-or-async nature, so a sy
 |---|---|
 | `MemoryStore` (`memory.store`) | `StorageBackend` (or a `Store`); wrapped via `Store.fromMemoryStore`, `MemoryStoreEntry` mapping onto `StoredEntry.meta` one for one |
 | `VFSStorageAdapter` (`vfs.adapter`) | `StorageBackend` as `vfs.store`; wrapped via `Store.fromVfsAdapter`, serving `vfs` and `archive` from its flat keyspace |
-| `VFSMemoryStore(dir)` | `new Store(new FileSystemBackend(dir))` as `memory.store` — it *is* the `memory` namespace on that backend, and reads the same files |
+| `VFSMemoryStore(dir)` | `new Store(new FileSystemBackend(dir))` as `memory.store` — for a **new** directory. A plain backend does not read `VFSMemoryStore`'s `<base64url>.mem` files; to keep an existing one, keep the store or wrap it with `Store.fromMemoryStore` |
 | `FileSystemAdapter(dir)` | `FileSystemBackend(dir)`, which serves every namespace from one root |
 
 `InMemoryStore` is not deprecated — it is still the simplest ephemeral `memory.store` for tests — but a single `InMemoryBackend` now covers every namespace at once.
@@ -1412,7 +1414,7 @@ Handlers run in **registration order** and are awaited one after another. The le
 | `ChefConfig.onBeforeCompile` | `before-assemble` (the returned string becomes `ctx.inject(...)`) |
 | `ChefConfig.transformContext` | `after-assemble` |
 
-Both keep working unchanged and are removed in 5.0. `ChefConfig.transformToolResult` is **not** deprecated: it is a per-message transform in the `transform-tool-results` phase (applied to every `role: 'tool'` message before compression), not a slot. `JanitorConfig.onBeforeCompress` also still works and now receives the runner's real budget.
+Both keep working unchanged and are removed in 5.0. `ChefConfig.transformToolResult` is **not** deprecated: it is a per-message transform in the `transform-tool-results` phase (applied to every `role: 'tool'` message before compression), not a slot. `JanitorConfig.onBeforeCompress` is not deprecated either: it is a runner callback that fires inside the Janitor once the budget verdict says overflow will run, may return a replacement history, and works on a standalone `Janitor` with no slot registry.
 
 Slot errors are **not** isolated — unlike event handlers, a throwing slot handler fails the compile, exactly like the config hooks it generalizes. Wrap your own logic in try/catch when a failure should be survivable.
 
@@ -1430,7 +1432,7 @@ chef.use("after-overflow", ({ result }) => {
 
 #### Dev invariants — `pipelineChecks`
 
-`ChefConfig.pipelineChecks: true` verifies, after every `after-assemble` handler, that pinned messages survived and tool call/result pairs are still paired — and after the tail phase, that nothing ahead of the tail insertion point changed.
+`ChefConfig.pipelineChecks: true` verifies, once after the whole `after-assemble` chain, that pinned messages survived and tool call/result pairs are still paired — and once after the tail phase, that nothing ahead of the tail insertion point changed. The assemble check compares the list the chain started from against the list it produced, so a violation names the chain rather than an individual handler.
 
 ```typescript
 const chef = new ContextChef({ pipelineChecks: true });

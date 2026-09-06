@@ -127,6 +127,36 @@ describe('Store namespaces', () => {
     expect(sync(notes.get('log'))?.content).toBe('from nothing');
   });
 
+  // Regression: "NamespaceView.append silently drops `meta` when the backend
+  // implements native append" — one public method, one meaning, whichever
+  // backend is configured.
+  describe('append applies meta on every backend', () => {
+    const backends: [string, () => StorageBackend][] = [
+      ['InMemoryBackend (native append)', () => new InMemoryBackend()],
+      ['FileSystemBackend (read-modify-write)', () => new FileSystemBackend(tmpDir())],
+    ];
+
+    it.each(backends)('%s', (_name, make) => {
+      const notes = new Store(make()).namespace('notes');
+      notes.put('a.md', 'one', { description: 'x', createdAt: 5000 });
+      notes.append('a.md', 'two', { description: 'y' });
+
+      const entry = sync(notes.get('a.md'));
+      expect(entry?.content).toBe('onetwo');
+      expect(entry?.meta.description).toBe('y');
+      expect(entry?.meta.createdAt).toBe(5000);
+      expect(entry?.meta.bytes).toBe(6);
+    });
+
+    it.each(backends)('%s keeps metadata the caller did not mention', (_name, make) => {
+      const notes = new Store(make()).namespace('notes');
+      notes.put('a.md', 'one', { description: 'x' });
+      notes.append('a.md', 'two');
+
+      expect(sync(notes.get('a.md'))?.meta.description).toBe('x');
+    });
+  });
+
   it('search throws a capability error naming the namespace and the gap', () => {
     const notes = new Store(new InMemoryBackend()).namespace('notes');
     let caught: unknown;

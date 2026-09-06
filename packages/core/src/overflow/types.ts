@@ -89,6 +89,15 @@ export interface OverflowInput {
    */
   pinned: readonly Message[];
   window: WindowLineage;
+  /**
+   * This overflow was REQUESTED, not triggered: `chef.requestNewContext()` or
+   * the `new_context` tool. The budget reading is still the real one, so a
+   * strategy that sizes its preserved tail against it would keep the whole
+   * history when there is headroom — exactly the case the request exists for.
+   * Under `forced` a strategy closes the window as far as it can instead,
+   * leaving only what the pending request needs.
+   */
+  forced?: boolean;
   signal?: AbortSignal;
 }
 
@@ -97,10 +106,22 @@ export interface OverflowResult {
   /** The new in-window history. */
   history: Message[];
   /**
-   * The messages that left the window — the archive input. Pinned messages
-   * re-inserted into `history` are NOT here: they never left.
+   * The messages that left the window. Pinned messages re-inserted into
+   * `history` are NOT here: they never left.
    */
   evicted: Message[];
+  /**
+   * The span the summary COVERS — every message the strategy compressed,
+   * including pinned ones it re-inserted into `history` verbatim. This is what
+   * the runner archives, counts in the citation and reports through
+   * `onCompress`: the archived span has to be a contiguous transcript, and a
+   * consumer persisting `compressedMessages` must not silently lose the pinned
+   * turns that sat inside it.
+   *
+   * Omitted when it is the same array as `evicted` is built from — the runner
+   * reads `span ?? evicted`.
+   */
+  span?: Message[];
   /**
    * The summary text the strategy produced, WITHOUT the continuation wrapper.
    *
@@ -175,6 +196,14 @@ export interface OverflowStrategy {
    * result OPENS, which is the key a per-window strategy state belongs under.
    */
   commit?(result: OverflowResult): void;
+  /**
+   * Whether a result computed earlier is waiting to enter the window — the
+   * off-turn strategies (`background()`) only. The runner asks before it
+   * evaluates the budget: a summary that is already paid for lands on the next
+   * compile whatever the window currently costs, because holding it means the
+   * model keeps paying for the span it replaces.
+   */
+  pending?(): boolean;
   /** Serializable state, for `Janitor.snapshotState()`. Stateless strategies omit it. */
   snapshot?(): unknown;
   /** Restores {@link snapshot} output. `restore(undefined)` resets to the initial state. */

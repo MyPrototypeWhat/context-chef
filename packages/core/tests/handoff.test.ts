@@ -116,6 +116,33 @@ describe('handoff budget', () => {
     expect(text(await chefWith().compile({ target: 'gemini' }))).toContain('HANDOFF');
   });
 
+  it('carries the once-per-window flag through snapshot/restore', async () => {
+    const live = chefWith();
+    expect(text(await live.compile({ target: 'openai' }))).toContain('HANDOFF');
+
+    // Same window, a fresh chef: the notice this window already got must not
+    // be re-issued just because the session was rebuilt from its snapshot —
+    // the canonical one-chef-per-request pattern does exactly this.
+    const restored = chefWith().restore(live.snapshot());
+    expect(text(await restored.compile({ target: 'openai' }))).not.toContain('HANDOFF');
+  });
+
+  it('re-issues the notice for a window that had not been noticed when the snapshot was taken', async () => {
+    // 12 messages is over the trigger: this compile notices window 1 and
+    // overflows into window 2.
+    const chef = chefWith({}, 12);
+    await chef.compile({ target: 'openai' });
+
+    // Window 2 is inside the band but has not been noticed yet.
+    chef.setHistory(history(8));
+    const snap = chef.snapshot();
+    expect(text(await chef.compile({ target: 'openai' }))).toContain('HANDOFF');
+
+    // Rolling back to before that notice rolls the flag back with it.
+    chef.restore(snap);
+    expect(text(await chef.compile({ target: 'openai' }))).toContain('HANDOFF');
+  });
+
   it('rejects a budget that cannot work, at construction', () => {
     expect(() => chefWith({ overflow: { handoff: { budgetTokens: 0 } } })).toThrow(
       /positive integer/,

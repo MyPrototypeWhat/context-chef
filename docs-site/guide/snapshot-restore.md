@@ -16,6 +16,7 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 - **Janitor state** — including the compression failure counter (circuit breaker) and, in `'incremental-anchored'` mode, the persistent anchor document. Background compression state is *not* snapshotted.
 - **Memory** entries.
 - **Guardrail options** <Badge type="tip" text="v4" /> — `withGuardrails` is stored state in v4, so `ChefSnapshot` gains `guardrailOptions` and snapshot/restore round-trips it.
+- **The handoff notice flag** <Badge type="tip" text="4.2" /> — `ChefSnapshot.handoffNoticedWindow` records the window the notice had already been issued for. The window lineage round-trips through the janitor state, so without it a restored session would sit on a window it had already noticed with the flag cleared, and repeat the notice every turn.
 - Snapshot metadata: the `label` you passed and `createdAt`.
 
 See the runnable [snapshot-restore example](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/snapshot-restore.ts) for a full rollback walkthrough.

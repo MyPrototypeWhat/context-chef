@@ -40,18 +40,20 @@ export function fromMemoryStore(legacy: MemoryStore): StorageBackend {
   if (legacy.snapshot) capabilities.add('snapshot');
   if (legacy.restore) capabilities.add('restore');
 
+  // A Map, not a plain object: `legacy.keys()` order is the store's own, and
+  // an object would reorder integer-like keys ('10' ahead of 'zeta').
   const readAll = (
     _ns: string,
     prefix?: string,
-  ): Record<string, StoredEntry> | Promise<Record<string, StoredEntry>> =>
+  ): Map<string, StoredEntry> | Promise<Map<string, StoredEntry>> =>
     chain(legacy.keys(), (keys) => {
       const selected = prefix ? keys.filter((key) => key.startsWith(prefix)) : keys;
       const reads = selected.map((key) => legacy.get(key));
-      const collect = (entries: (MemoryStoreEntry | null)[]): Record<string, StoredEntry> => {
-        const out: Record<string, StoredEntry> = {};
+      const collect = (entries: (MemoryStoreEntry | null)[]): Map<string, StoredEntry> => {
+        const out = new Map<string, StoredEntry>();
         for (let i = 0; i < selected.length; i++) {
           const entry = entries[i];
-          if (entry) out[selected[i]] = memoryEntryToStored(entry);
+          if (entry) out.set(selected[i], memoryEntryToStored(entry));
         }
         return out;
       };
@@ -66,7 +68,7 @@ export function fromMemoryStore(legacy: MemoryStore): StorageBackend {
     delete: (_ns, path) => legacy.delete(path),
     list: (ns, prefix) =>
       chain(readAll(ns, prefix), (entries) =>
-        Object.entries(entries).map(([path, entry]): ListedEntry => ({ path, meta: entry.meta })),
+        Array.from(entries, ([path, entry]): ListedEntry => ({ path, meta: entry.meta })),
       ),
     readAll,
     snapshot: (ns) => {

@@ -2,7 +2,7 @@
 
 两个面，两种职责。**事件**只做观察：它们为日志、指标和调试而触发，不能改变编译出的东西。**Slot** 参与其中：slot 处理器在编译管道内部运行，可以否决 overflow、注入上下文，或改写装配好的消息。
 
-4.1 的那几个配置钩子（`onBeforeCompile`、`transformContext`、`onBeforeCompress`）现在就是 slot —— 同一条代码路径，在构造时注册，并且已被 slot 名称取代（deprecated）。
+4.1 的配置钩子里有两个（`onBeforeCompile`、`transformContext`）现在就是 slot —— 同一条代码路径，在构造时注册，并且已被 slot 名称取代（deprecated）。`JanitorConfig.onBeforeCompress` 不在其列：它仍然是 Janitor 上的 runner 回调。
 
 ## Slot <Badge type="tip" text="4.2" />
 
@@ -60,10 +60,10 @@ chef.unuse('before-overflow', skipWhileStreaming); // → this
 |---|---|
 | `ChefConfig.onBeforeCompile` | `chef.use('before-assemble', async (ctx) => ctx.inject(await retrieve(ctx)))` —— 返回的字符串就是注入内容 |
 | `ChefConfig.transformContext` | `chef.use('after-assemble', fn)` |
-| `JanitorConfig.onBeforeCompress` | `chef.use('before-overflow', fn)` —— slot 能看到 runner 真实的预算 |
-| `ChefConfig.transformToolResult` | 仍然是配置项：它是 `transform-tool-results` 阶段里的逐条消息转换，不是 slot |
 
 别名等价性由测试断言：同样的输入，通过旧字段和新 slot 会在三个目标上产出字节一致的 payload。
+
+有两个邻居看着像该进这张表，其实不是。`ChefConfig.transformToolResult` 仍然是配置项 —— 它是 `transform-tool-results` 阶段里的逐条消息转换，不是 slot。`JanitorConfig.onBeforeCompress` 仍然是 runner 上的回调：预算判定认为要执行溢出之后，它在 Janitor 内部触发，可以返回替换后的 `Message[]`，并且在没有 slot 注册表的独立 `Janitor` 上照样能用。`before-overflow` 是另一个边界、另一套契约 —— chef 这一层、每次编译都跑、`void | false` —— 所以把处理器从一边搬到另一边并不是改个名字，返回数组在那里只会被忽略。
 
 ## 生命周期事件
 
@@ -119,7 +119,7 @@ chef.on('pipeline:invariant', ({ phase, message }) => {
 });
 ```
 
-- 每个 `after-assemble` 处理器之后：固定消息仍在，tool call / result 仍然配对。
+- 整条 `after-assemble` 链跑完之后检查一次：固定消息仍在，tool call / result 仍然配对。比对的是链的输入和链的输出，所以违规报的是整条链，而不是造成它的那个处理器。
 - `tail` 阶段之后：tail 插入点之前的内容一字未变，与 `tail` 之前的快照逐字节比对。
 
 违反只被**上报，绝不阻断** —— 机制，而非策略。每一条都会送到 `ChefConfig.logger`（或 `console`）以及 `pipeline:invariant` 事件；`compile()` 绝不会因为一次检查而抛异常。它的代价是每次编译一次快照加一次序列化，所以生产环境请关掉。默认 `false`。

@@ -345,7 +345,7 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-> **注意：** 如果没有提供 `compressionModel`，旧消息将被直接丢弃而不生成摘要。如果同时没有 `tokenizer` 和 `compressionModel`，构造时会打印控制台警告。
+> **注意：** 如果没有提供 `compressionModel`，旧消息将被直接丢弃而不生成摘要。如果同时没有 `tokenizer` 和 `compressionModel`，构造时会打印一次控制台警告；显式配置了 `overflow.strategy`（或 `janitor.strategy`）则视为你有意为之，不再警告。
 
 #### `JanitorConfig`
 
@@ -358,7 +358,7 @@ Runner 选项 —— 什么时候触发压缩、拿什么去量、压缩前后�
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                       |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`| 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。无 `tokenizer` 时取值范围收窄为 `'max' \| 'feedFirst'`，TypeScript 在编译期拒绝 `'tokenizerFirst'`。完整说明见 [core 包 README](./packages/core)。 |
 | `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
-| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | LLM 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。与 `before-overflow` 插槽同一个注册表。 |
+| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | 预算判定认为要执行溢出之后、策略运行之前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。它没有被废弃，也不是 `before-overflow` 插槽 —— 那个在 chef 这一层，每次 compile 都会触发。 |
 | `logger`                        | `ChefLogger`                                | —      | 降级警告的日志接收器（存储/压缩），默认使用 `console`。 |
 | `strategy`                      | `OverflowStrategy`                          | —      | runner 应用的策略。直接构造 `Janitor` 时用它；经 `ContextChef` 请用 `overflow.strategy`。 |
 
@@ -677,6 +677,8 @@ if (call.function.name === "new_context") {
 
 在 `tools: 'unified'` 下，只要配了 `overflow.handoff`，这个定义会自动出现在 payload 里，并由 `chef.handleTool` 分发 —— 见 [`context` 工具](#context-工具42)。这次请求会被一次 compile 消费掉，无论窗口是否真的换了（策略可能拒绝执行；熔断器可能是打开的），需要重试就再调一次。
 
+在 `summarize()` 和 `anchored()` 下，强制那一趟会压掉除最近一轮之外的所有轮次 —— `preserveRecentMessages` 和 `preserveRatio` 不参与，它们是为了把满窗口压回触发线以下，而这一趟与预算无关。窗口里只有一轮时什么都不会发生。有两种编译会直接不做溢出 —— 服务端托管的目标和 `before-overflow` 的否决 —— 强制请求这样落空时，会通过 `pipeline:invariant` 事件加上按原因各一次的警告上报，绝不静默。
+
 #### 窗口谱系 —— `meta.windowId`（4.2）
 
 每个上下文窗口都有一个 id。runner 只在**提交时**分配新 id —— 也就是溢出结果真正进入窗口的那一刻；被丢弃的过期 `background()` 结果永远不会推进它。
@@ -740,7 +742,7 @@ ContextChef 放在窗口**之外**的一切，本质是同一种东西的不同�
 | `memory/` | 值得带到下次会话的持久事实 | 每次 compile 都注入 | 是（默认） |
 | `notes/` | 模型自己的草稿纸 | 从不 —— 这正是它的意义 | 是（默认） |
 | `vfs/` | 被卸载的工具输出，靠留在原地的 URI 寻址 | 只有它读回来的部分 | 否（默认只读） |
-| `archive/` | 摘要引用背后的完整溢出前片段 | 只有它读回来的部分 | 否（默认只读） |
+| `archive/` | 预留给摘要引用背后的溢出前片段 —— 4.x 里没有东西往这写，`overflow.archive` 仍然落在 `vfs/` | 只有它读回来的部分 | 否（默认只读） |
 
 ```typescript
 import { ContextChef, FileSystemBackend, InMemoryBackend, Store } from "@context-chef/core";
@@ -783,7 +785,7 @@ const { path } = await chef.getStore().namespace("vfs").put("big output"); // �
 |---|---|
 | `MemoryStore`（`memory.store`） | `StorageBackend`（或 `Store`）；经 `Store.fromMemoryStore` 包装，`MemoryStoreEntry` 的每个字段一一映射到 `StoredEntry.meta` |
 | `VFSStorageAdapter`（`vfs.adapter`） | 作为 `vfs.store` 的 `StorageBackend`；经 `Store.fromVfsAdapter` 包装，用它那套扁平 keyspace 同时服务 `vfs` 和 `archive` |
-| `VFSMemoryStore(dir)` | `new Store(new FileSystemBackend(dir))` 作为 `memory.store` —— 它**就是**该后端上的 `memory` 命名空间，读的还是同一批文件 |
+| `VFSMemoryStore(dir)` | `new Store(new FileSystemBackend(dir))` 作为 `memory.store` —— 仅限**新**目录。裸后端读不了 `VFSMemoryStore` 的 `<base64url>.mem` 文件；要接着用已有目录，就留着这个 store，或用 `Store.fromMemoryStore` 包一层 |
 | `FileSystemAdapter(dir)` | `FileSystemBackend(dir)`，一个根目录服务所有命名空间 |
 
 `InMemoryStore` 没有被废弃 —— 测试里它仍然是最省事的临时 `memory.store` —— 只是现在一个 `InMemoryBackend` 就能一次覆盖所有命名空间。
@@ -1411,7 +1413,7 @@ handler 按**注册顺序**依次 await 执行。旧的 config 钩子在构造�
 | `ChefConfig.onBeforeCompile` | `before-assemble`（返回的字符串等价于 `ctx.inject(...)`） |
 | `ChefConfig.transformContext` | `after-assemble` |
 
-两者行为不变，5.0 移除。`ChefConfig.transformToolResult` **没有**被废弃：它是 `transform-tool-results` 阶段的逐条变换（在压缩之前作用于每条 `role: 'tool'` 消息），不是插槽。`JanitorConfig.onBeforeCompress` 同样仍然可用，现在还能拿到 runner 的真实预算。
+两者行为不变，5.0 移除。`ChefConfig.transformToolResult` **没有**被废弃：它是 `transform-tool-results` 阶段的逐条变换（在压缩之前作用于每条 `role: 'tool'` 消息），不是插槽。`JanitorConfig.onBeforeCompress` 同样没有被废弃：它是 runner 上的回调，在预算判定认为要执行溢出之后于 Janitor 内部触发，可以返回替换后的历史，并且在没有插槽注册表的独立 `Janitor` 上照样能用。
 
 插槽的错误**不做隔离** —— 和事件 handler 不同，抛出的插槽 handler 会让整次 compile 失败，这与它所泛化的那些 config 钩子完全一致。希望失败可存活就自己包 try/catch。
 
@@ -1429,7 +1431,7 @@ chef.use("after-overflow", ({ result }) => {
 
 #### 开发期不变量 —— `pipelineChecks`
 
-`ChefConfig.pipelineChecks: true` 会在每个 `after-assemble` handler 之后校验 pinned 消息是否还在、tool call/result 是否仍然配对，并在 tail 阶段之后校验插入点之前的内容有没有被改动。
+`ChefConfig.pipelineChecks: true` 会在整条 `after-assemble` 链跑完之后校验一次 pinned 消息是否还在、tool call/result 是否仍然配对，并在 tail 阶段之后校验一次插入点之前的内容有没有被改动。装配那次检查比对的是链的输入和链的输出，所以违规报的是整条链，不是某一个 handler。
 
 ```typescript
 const chef = new ContextChef({ pipelineChecks: true });

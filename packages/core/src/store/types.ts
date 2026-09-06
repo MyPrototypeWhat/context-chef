@@ -34,6 +34,13 @@ export interface ListedEntry {
   meta: StoredEntryMeta;
 }
 
+/**
+ * A whole namespace in one value. A Map preserves the backend's key order; a
+ * plain object is accepted so a backend written against the documented
+ * `Record` shape keeps compiling, and is read in `Object.keys` order.
+ */
+export type StoredEntries = Map<string, StoredEntry> | Record<string, StoredEntry>;
+
 export interface SearchHit {
   path: string;
   meta: StoredEntryMeta;
@@ -74,8 +81,13 @@ export interface StorageBackend {
    * Optional bulk read. Present so a full-namespace scan costs one pass
    * instead of `list()` plus one `read()` per path — the difference between
    * 1+N and 2N round-trips on a network-backed store.
+   *
+   * Return a Map to keep this namespace's own key order: a plain object hoists
+   * integer-like keys ('10' before 'zeta'), and callers that render entries in
+   * store order — `Memory.getAll()` → the injected `<memory>` block — would
+   * emit them in an order the backend never had.
    */
-  readAll?(ns: string, prefix?: string): MaybePromise<Record<string, StoredEntry>>;
+  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>;
   /**
    * Optional existence probe. Contract: only report `true` for FULLY persisted
    * content — content-addressed callers treat existence as proof the bytes are

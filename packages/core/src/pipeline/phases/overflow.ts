@@ -19,7 +19,9 @@ import type { Phase } from '../context';
  * whatever the budget says. It does not override the two ways a compile can
  * decline to overflow at all — a server-managed target and a `before-overflow`
  * veto — because both are statements about who owns this window, not about
- * whether it is full.
+ * whether it is full. It is consumed either way, and the drop is REPORTED:
+ * the model was told a new window was starting, and something has to say that
+ * it did not.
  */
 export const overflowPhase: Phase = {
   name: 'overflow',
@@ -40,6 +42,22 @@ export const overflowPhase: Phase = {
       for (const handler of beforeHandlers) {
         if ((await handler({ history: before, budget })) === false) skipped = true;
       }
+    }
+
+    if (forced && skipped) {
+      const message = ctx.target.serverManaged
+        ? '[context-chef] a requestNewContext() / new_context request was dropped: the compile ' +
+          'target is server-managed, so the provider decides when this window ends. The request ' +
+          'is consumed either way. Configure a client-side strategy (or drop new_context from ' +
+          'the tool set) if the model is meant to be able to close the window.'
+        : '[context-chef] a requestNewContext() / new_context request was dropped: a ' +
+          'before-overflow handler vetoed this compile. The request is consumed either way — ' +
+          'call requestNewContext() again once the handler is willing to let the window turn.';
+      host.warnOnce(
+        ctx.target.serverManaged ? 'forced-overflow-server-managed' : 'forced-overflow-vetoed',
+        message,
+      );
+      await host.emit('pipeline:invariant', { phase: 'overflow', message }, ctx.signal);
     }
 
     let result: OverflowResult | null = null;

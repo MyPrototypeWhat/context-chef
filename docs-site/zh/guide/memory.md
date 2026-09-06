@@ -69,7 +69,7 @@ await chef.getMemory().set("persona", "…", { ttl: null }); // never expires
 
 ## `selector` —— 决定什么被注入
 
-记忆和其他任何东西一样是一份选择预算：除非你另有说法，`memory/` 里的一切每次编译都会被注入。`selector` 每次编译运行一次，在过期清扫之后，作用于即将被注入的那批条目。
+记忆和其他任何东西一样是一份选择预算：除非你另有说法，`memory/` 里的一切每次编译都会被注入。`selector` 每次编译运行一次，在过期清扫之后，作用于即将被注入的那批条目。传给它的顺序就是 store 自己的 key 顺序 —— 一次批量读把这个顺序保住了，和 4.1 一样 —— 所以除非你自己重排，`<memory>` 块在多次编译之间是字节稳定的。
 
 ```typescript
 const chef = new ContextChef({

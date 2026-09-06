@@ -28,12 +28,14 @@ export class InMemoryBackend implements StorageBackend {
     const bucket = this._bucket(ns);
     const existing = bucket.get(path);
     const now = Date.now();
+    const appended = (existing?.content ?? '') + content;
     bucket.set(path, {
-      content: (existing?.content ?? '') + content,
+      content: appended,
       meta: {
         ...existing?.meta,
         createdAt: existing?.meta.createdAt ?? now,
         updatedAt: now,
+        bytes: Buffer.byteLength(appended, 'utf8'),
       },
     });
   }
@@ -55,13 +57,13 @@ export class InMemoryBackend implements StorageBackend {
     return out;
   }
 
-  readAll(ns: string, prefix?: string): Record<string, StoredEntry> {
+  readAll(ns: string, prefix?: string): Map<string, StoredEntry> {
+    const out = new Map<string, StoredEntry>();
     const bucket = this.namespaces.get(ns);
-    if (!bucket) return {};
-    const out: Record<string, StoredEntry> = {};
+    if (!bucket) return out;
     for (const [path, entry] of bucket) {
       if (prefix && !path.startsWith(prefix)) continue;
-      out[path] = entry;
+      out.set(path, entry);
     }
     return out;
   }

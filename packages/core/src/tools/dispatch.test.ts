@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Memory, type MemoryConfig } from '../modules/memory';
 import { Offloader } from '../modules/offloader';
+import { FileSystemBackend } from '../store/backends/fileSystem';
 import { InMemoryBackend } from '../store/backends/inMemory';
 import { Store } from '../store/store';
-import type { SearchHit } from '../store/types';
+import type { SearchHit, StorageBackend } from '../store/types';
 import {
   type ContextToolCall,
   type ContextToolHost,
@@ -24,7 +28,7 @@ class SearchableBackend extends InMemoryBackend {
 
 interface Harness {
   host: ContextToolHost;
-  backend: InMemoryBackend;
+  backend: StorageBackend;
   store: Store;
   memory: Memory | null;
   offloader: Offloader;
@@ -35,14 +39,16 @@ interface Harness {
 
 function harness(
   options: {
-    backend?: InMemoryBackend;
+    backend?: StorageBackend;
     memory?: Partial<MemoryConfig> | null;
     policy?: ContextToolPolicyConfig;
+    /** The Offloader's URI scheme, when the test needs a non-default one. */
+    uriScheme?: string;
   } = {},
 ): Harness {
   const backend = options.backend ?? new InMemoryBackend();
   const store = new Store(backend);
-  const offloader = new Offloader({ store, threshold: 0 });
+  const offloader = new Offloader({ store, threshold: 0, uriScheme: options.uriScheme });
   const memory = options.memory === null ? null : new Memory({ store, ...(options.memory ?? {}) });
 
   const state = { newContextCalls: 0 };
@@ -306,6 +312,45 @@ describe('dispatchContextTool — notes/', () => {
   it('rejects a malformed path', async () => {
     const result = await h.context({ command: 'view', path: 'context://' });
     expect(result).toContain('is not a context path');
+  });
+
+  // Regression: "parsePath validates `..` in the path but not in the namespace
+  // segment" and "Namespace segment is never validated, so
+  // context://../<dir>/<file> reads outside the store root". Reads are
+  // unrestricted by design, so parsePath is the whole containment for them.
+  describe('path validation', () => {
+    const rejected: [string, string][] = [
+      ['a namespace that climbs out of the store root', 'context://../'],
+      ['a namespace that climbs into a sibling directory', 'context://../secrets/key.txt'],
+      ['a dot namespace', 'context://./notes/plan.md'],
+      ['a backslash traversal', 'context://notes/..\\..\\evil.txt'],
+      ['a backslash separator', 'context://notes\\evil.txt'],
+      ['a dot segment inside the path', 'context://notes/./plan.md'],
+      ['an empty path segment', 'context://notes//plan.md'],
+      ['a foreign scheme read as a namespace', 'unknown://vfs_abc.txt'],
+    ];
+
+    it.each(rejected)('rejects %s', async (_why, path) => {
+      const result = await h.context({ command: 'view', path });
+      expect(result).toMatch(/^Error: .*is not a context path/);
+    });
+
+    it.each(rejected)('rejects %s for a write too', async (_why, path) => {
+      const result = await h.context({ command: 'create', path, file_text: 'pwned' });
+      expect(result).toMatch(/^Error: /);
+    });
+
+    it('still accepts keys with spaces, unicode and dots in them', async () => {
+      await h.store.namespace('notes').put('my 笔记 v1.2.md', 'kept');
+      const result = await h.context({ command: 'view', path: 'notes/my 笔记 v1.2.md' });
+      expect(result).toBe('     1\tkept');
+    });
+
+    it('still treats a trailing slash as a directory', async () => {
+      await h.store.namespace('notes').put('specs/api.md', 'x');
+      const result = await h.context({ command: 'view', path: 'context://notes/specs/' });
+      expect(result).toContain('context://notes/specs/api.md');
+    });
   });
 
   it('rejects an unknown command', async () => {
@@ -576,6 +621,22 @@ describe('dispatchContextTool — tool names', () => {
     expect((await h.memory?.getEntry('k'))?.description).toBe('why');
   });
 
+  // The legacy tools take the key raw, so the path check the `context` tool
+  // gets from parsePath has to happen here too — a memory key is a storage key.
+  it('create_memory and modify_memory refuse a traversing key', async () => {
+    const h = harness();
+    expect(
+      await h.run({ name: 'create_memory', arguments: { key: '../evil', value: 'v' } }),
+    ).toContain('is not a context path');
+    expect(
+      await h.run({
+        name: 'modify_memory',
+        arguments: { action: 'update', key: 'notes\\evil', value: 'v' },
+      }),
+    ).toContain('is not a context path');
+    expect(await h.memory?.getAll()).toEqual([]);
+  });
+
   it('modify_memory updates and deletes', async () => {
     const h = harness();
     await h.run({ name: 'create_memory', arguments: { key: 'k', value: 'v' } });
@@ -618,5 +679,117 @@ describe('dispatchContextTool — tool names', () => {
     expect(
       await h.run({ name: 'recall_context', arguments: { uri: 'context://vfs/gone.txt' } }),
     ).toBe('Error: nothing is stored at context://vfs/gone.txt.');
+  });
+});
+
+// Regression: "Namespace segment is never validated, so context://../<dir>/<file>
+// reads outside the store root" — proved against a real filesystem backend,
+// since an in-memory namespace has no parent to escape into.
+describe('dispatchContextTool — store root containment', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'context-chef-escape-'));
+
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  function fsHarness() {
+    fs.mkdirSync(path.join(base, 'secrets'), { recursive: true });
+    fs.writeFileSync(
+      path.join(base, 'secrets', 'key.txt'),
+      JSON.stringify({ content: 'AWS_SECRET=hunter2', meta: {} }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(base, 'creds.json'),
+      JSON.stringify({ content: 'AWS_SECRET=hunter2', meta: {} }),
+      'utf8',
+    );
+    return harness({ backend: new FileSystemBackend(path.join(base, 'store')) });
+  }
+
+  it('cannot view a file beside the store root', async () => {
+    const h = fsHarness();
+    const result = await h.context({ command: 'view', path: 'context://../creds.json' });
+    expect(result).not.toContain('hunter2');
+    expect(result).toContain('is not a context path');
+  });
+
+  it('cannot view a file under a sibling directory', async () => {
+    const h = fsHarness();
+    const result = await h.context({ command: 'view', path: 'context://../secrets/key.txt' });
+    expect(result).not.toContain('hunter2');
+    expect(result).toContain('is not a context path');
+  });
+
+  it('cannot enumerate the store root parent', async () => {
+    const h = fsHarness();
+    const result = await h.context({ command: 'view', path: 'context://../' });
+    expect(result).not.toContain('creds.json');
+    expect(result).toContain('is not a context path');
+  });
+
+  it('cannot search outside the store root', async () => {
+    const h = fsHarness();
+    const result = await h.context({ command: 'search', path: 'context://../', query: 'AWS' });
+    expect(result).not.toContain('hunter2');
+    expect(result).toContain('is not a context path');
+  });
+
+  it('cannot write outside the store root, and leaves nothing behind if it tries', async () => {
+    const h = fsHarness();
+    const result = await h.context({
+      command: 'create',
+      path: 'context://notes/..\\..\\evil.txt',
+      file_text: 'pwned',
+    });
+    expect(result).toMatch(/^Error: /);
+    expect(fs.existsSync(path.join(base, 'evil.txt'))).toBe(false);
+    expect(fs.readdirSync(base).sort()).toEqual(['creds.json', 'secrets']);
+  });
+});
+
+// Regression: "recall_context / context view cannot resolve offloaded content
+// when vfs.uriScheme is customised" — every truncation marker cites
+// offloader.uri(), so the dispatcher has to understand that scheme.
+describe('dispatchContextTool — custom vfs.uriScheme', () => {
+  it('recalls the URI the Offloader itself cited', async () => {
+    const h = harness({ uriScheme: 'mem://' });
+    const { uri } = await h.offloader.offloadAsync('offloaded body', {
+      threshold: 0,
+      headChars: 0,
+      tailChars: 0,
+    });
+
+    expect(uri).toMatch(/^mem:\/\//);
+    expect(await h.run({ name: 'recall_context', arguments: { uri } })).toBe('offloaded body');
+    expect(await h.context({ command: 'view', path: uri })).toBe('offloaded body');
+  });
+
+  it('reports a miss under the custom scheme as a miss, not a bad path', async () => {
+    const h = harness({ uriScheme: 'mem://' });
+    expect(await h.run({ name: 'recall_context', arguments: { uri: 'mem://gone.txt' } })).toBe(
+      'Error: nothing is stored at context://vfs/gone.txt.',
+    );
+  });
+
+  it('refuses a traversing path smuggled in under the custom scheme', async () => {
+    const h = harness({ uriScheme: 'mem://' });
+    const result = await h.run({ name: 'recall_context', arguments: { uri: 'mem://../evil.txt' } });
+    expect(result).toContain('is not a context path');
+  });
+
+  it('leaves the default scheme addressing exactly as it was', async () => {
+    const h = harness();
+    const { uri } = await h.offloader.offloadAsync('default body', {
+      threshold: 0,
+      headChars: 0,
+      tailChars: 0,
+    });
+
+    expect(uri).toMatch(/^context:\/\/vfs\//);
+    expect(await h.run({ name: 'recall_context', arguments: { uri } })).toBe('default body');
+    expect(await h.context({ command: 'view', path: 'context://vfs/' })).toContain(
+      'context://vfs/',
+    );
   });
 });

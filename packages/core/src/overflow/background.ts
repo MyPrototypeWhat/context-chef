@@ -45,7 +45,7 @@ function commonSuffixLength(a: readonly Message[], b: readonly Message[]): numbe
 
 export interface BackgroundOverflowStrategy extends OverflowStrategy {
   /** @internal The in-flight job, for the runner's background bookkeeping. */
-  readonly pending: { settled: boolean } | undefined;
+  readonly pendingJob: { settled: boolean } | undefined;
 }
 
 /**
@@ -129,7 +129,13 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
         job = undefined;
         const swapped = swapIn(finished, input);
         if (swapped) return swapped;
-        // Failed or stale — discard it and evaluate fresh.
+        // Failed or stale — discard it and evaluate fresh, unless the window
+        // is not over the trigger: the runner then called in only to give the
+        // finished job its chance, and starting another one would buy a
+        // summary nobody asked for.
+        if (!input.forced && input.budget.remaining >= 0) {
+          return unchanged(input, name, 'within budget — the finished job no longer applies');
+        }
       }
       start(input);
       return unchanged(input, name, 'background compression started');
@@ -154,7 +160,16 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
       inner.attach?.(installed);
     },
 
-    get pending(): { settled: boolean } | undefined {
+    /**
+     * A finished job with a usable result is waiting. Whether it still applies
+     * to the current history is settled in `apply` — the check needs that
+     * history, and this is asked before the runner has decided to run at all.
+     */
+    pending(): boolean {
+      return job?.settled === true && job.result?.meta.changed === true;
+    },
+
+    get pendingJob(): { settled: boolean } | undefined {
       return job;
     },
   };

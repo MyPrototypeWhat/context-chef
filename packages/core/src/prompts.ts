@@ -293,8 +293,8 @@ Continue the conversation from where it left off without asking the user any fur
    * The `tools: 'unified'` summary wrapper: the same continuation framing, with
    * the window the summary belongs to named above it.
    *
-   * The lineage line is what lets a model tie a summary to the `archive/`
-   * entry the same overflow wrote, so it only appears when the caller has a
+   * The lineage line is what lets a model tie a summary to the archive entry
+   * the same overflow wrote (under `context://vfs/` in 4.x), so it only appears when the caller has a
    * lineage to state — a standalone `summarizeHistory` result has none.
    */
   getContextSummaryWrapper: (
@@ -462,7 +462,6 @@ The context store holds addressed content that lives outside this conversation w
 - context://memory/ — durable facts, shown to you automatically below. They persist across conversations.
 - context://notes/ — your own scratchpad, read on demand. It survives a context reset.
 - context://vfs/ — tool output that was too large to keep inline. Read-only.
-- context://archive/ — spans of this conversation that were compacted away. Read-only.
 
 The context tool reads and writes these: view, create, str_replace, insert, delete, rename, search.
 The new_context tool, where it is available, starts a fresh window; earlier content is compressed or archived per configuration.

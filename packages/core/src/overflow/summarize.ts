@@ -194,6 +194,22 @@ export class AnchorDocument {
 }
 
 /**
+ * Where a FORCED overflow cuts: everything but the most recent turn.
+ *
+ * A forced overflow answers `chef.requestNewContext()` / the `new_context`
+ * tool — the model saying "this work is finished". The preserve rules exist to
+ * keep the window under the trigger, and a window with headroom would keep the
+ * whole history under them, so they are skipped: the only thing held back is
+ * the turn the pending request lives in. `null` when there is nothing left to
+ * compress once that turn is held back.
+ */
+function forcedSplit(history: Message[]): number | null {
+  const turns = groupIntoTurns(history);
+  if (turns.length <= 1) return null;
+  return turns[turns.length - 1].startIndex;
+}
+
+/**
  * The engine behind {@link summarize} and `anchored()`.
  *
  * @internal Construct it through the factories — they are the public surface.
@@ -238,9 +254,15 @@ export class SummarizingStrategy implements OverflowStrategy {
 
   async apply(input: OverflowInput): Promise<OverflowResult> {
     const { history } = input;
-    const splitIndex = this.splitIndex(input);
+    const splitIndex = input.forced ? forcedSplit(history) : this.splitIndex(input);
     if (splitIndex === null || splitIndex <= 0) {
-      return unchanged(input, this.name, 'no turn boundary above the preserved tail');
+      return unchanged(
+        input,
+        this.name,
+        input.forced
+          ? 'a forced overflow needs a turn to compress and a turn to answer in — the window holds one'
+          : 'no turn boundary above the preserved tail',
+      );
     }
 
     const toCompress = history.slice(0, splitIndex);
@@ -258,7 +280,7 @@ export class SummarizingStrategy implements OverflowStrategy {
     // runner reports the boundary through `onCompress` with a placeholder
     // summary — nothing is inserted into history.
     if (!this.options.compressionModel) {
-      return { history: [...pinnedInSpan, ...toKeep], evicted, meta };
+      return { history: [...pinnedInSpan, ...toKeep], evicted, span: toCompress, meta };
     }
 
     const summary = await this.summarizeSpan(toCompress, toKeep, input.window.current);
@@ -269,6 +291,7 @@ export class SummarizingStrategy implements OverflowStrategy {
     const result: OverflowResult = {
       history: [renderSummaryMessage(summary), ...pinnedInSpan, ...toKeep],
       evicted,
+      span: toCompress,
       summary,
       meta,
     };

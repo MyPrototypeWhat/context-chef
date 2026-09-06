@@ -29,6 +29,8 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
       let history = input.history;
       let pinned = input.pinned;
       const evicted: Message[] = [];
+      /** Every message any step compressed, in order, each one once. */
+      const span = new Set<Message>();
       let summary: string | undefined;
       let reason: string | undefined;
       const contributions: Array<[OverflowStrategy, OverflowResult]> = [];
@@ -43,6 +45,7 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
         contributions.push([strategy, result]);
         history = result.history;
         evicted.push(...result.evicted);
+        for (const message of result.span ?? result.evicted) span.add(message);
         summary = result.summary;
         // Pinned messages that are still in the window stay protected for the
         // strategies that come after this one.
@@ -63,6 +66,7 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
       const composed: OverflowResult = {
         history,
         evicted,
+        span: [...span],
         summary,
         meta: { strategy: name, windowId: input.window.current, changed: true, reason },
       };
@@ -73,6 +77,10 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
     commit(result) {
       for (const [strategy, step] of steps.get(result) ?? []) strategy.commit?.(step);
     },
+
+    // A wrapped `background()` anywhere in the chain still has to be able to
+    // land its finished job.
+    pending: () => strategies.some((s) => s.pending?.() === true),
 
     snapshot: () => strategies.map((s) => s.snapshot?.()),
 

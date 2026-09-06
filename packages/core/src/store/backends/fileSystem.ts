@@ -55,6 +55,47 @@ function defaultDecode(file: string): string | null {
   return file.startsWith('.') ? null : file;
 }
 
+/**
+ * Namespaces and entry paths reach this backend from model output (the
+ * `context` tool addresses storage keys directly), so a key must never be able
+ * to name a file outside its namespace directory. These throw rather than
+ * returning null: a caller that got here with a traversing path has a bug or an
+ * injection, and both deserve a stack trace, not a soft failure.
+ */
+function assertSafeNamespace(ns: string): void {
+  if (ns === '' || ns === '.' || ns === '..' || ns.includes('/') || ns.includes('\\')) {
+    throw new Error(
+      `FileSystemBackend: '${ns}' is not a usable namespace — a namespace is one path segment, ` +
+        'and cannot be empty, "." or ".." or contain a path separator.',
+    );
+  }
+}
+
+/**
+ * Resolves `file` under `dir` and proves the result stayed there. `path.join`
+ * alone does not: it collapses `..` segments, and on Windows it collapses
+ * backslash-separated ones too, so `notes/..\..\evil.txt` lands outside the
+ * root while looking like a single filename to any `/`-based guard.
+ */
+function confine(dir: string, file: string): string {
+  if (file.includes('\\')) {
+    throw new Error(
+      `FileSystemBackend: '${file}' is not a usable path — a backslash is a path separator ` +
+        'on some platforms, so it is never allowed in a storage key.',
+    );
+  }
+  const root = path.resolve(dir);
+  const resolved = path.resolve(root, file);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new Error(
+      `FileSystemBackend: '${file}' resolves to ${resolved}, outside the namespace directory ${root}.`,
+    );
+  }
+  // Joined, not resolved: a backend rooted at a relative path keeps handing out
+  // relative physical paths, exactly as it did before the check existed.
+  return path.join(dir, file);
+}
+
 function rawSerialize(entry: StoredEntry): string {
   return entry.content;
 }
@@ -147,34 +188,67 @@ export class FileSystemBackend implements StorageBackend {
     return fs.existsSync(this.getPhysicalPath(ns, entryPath));
   }
 
+  /**
+   * Walks the namespace directory depth-first. The walk is recursive because
+   * `write()` creates the directories a `/`-bearing key implies — a flat
+   * `readdir` would write `notes/todo` and then never list it again.
+   *
+   * `decode` sees the file's `/`-joined path relative to the namespace
+   * directory, which is exactly what `encode` produces, so a layout that owns
+   * files by name prefix (`vfs_…`) still rejects everything it does not own.
+   */
   list(ns: string, prefix?: string): ListedEntry[] {
     const dir = this._dir(ns);
     if (!fs.existsSync(dir)) return [];
     const layout = this._layout(ns);
-    const decode = layout.decode ?? defaultDecode;
-    // A raw namespace keeps everything the metadata needs in the file's own
-    // stat; any other format has to be parsed to answer honestly.
-    const statOnly = !layout.deserialize && this._format(ns) === 'raw';
     const out: ListedEntry[] = [];
-    for (const file of fs.readdirSync(dir)) {
-      const entryPath = decode(file);
-      if (entryPath == null) continue;
-      if (prefix && !entryPath.startsWith(prefix)) continue;
+    this._walk(ns, dir, '', {
+      decode: layout.decode ?? defaultDecode,
+      // A raw namespace keeps everything the metadata needs in the file's own
+      // stat; any other format has to be parsed to answer honestly.
+      statOnly: !layout.deserialize && this._format(ns) === 'raw',
+      prefix,
+      out,
+    });
+    return out;
+  }
+
+  private _walk(ns: string, dir: string, relative: string, ctx: WalkContext): void {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return; // raced with a delete
+    }
+    for (const name of names) {
+      // The backend's own scratch (`.tmp_…`) and anything else hidden.
+      if (name.startsWith('.')) continue;
+      const full = path.join(dir, name);
       let stat: fs.Stats;
       try {
-        stat = fs.statSync(path.join(dir, file));
+        stat = fs.statSync(full);
       } catch {
         continue; // raced with a delete
       }
+      if (stat.isDirectory()) {
+        // A symlinked directory can point at an ancestor; walking it would not
+        // terminate. Symlinked FILES still list, as they always have.
+        if (fs.lstatSync(full).isSymbolicLink()) continue;
+        this._walk(ns, full, `${relative}${name}/`, ctx);
+        continue;
+      }
       if (!stat.isFile()) continue;
-      if (statOnly) {
+      const entryPath = ctx.decode(`${relative}${name}`);
+      if (entryPath == null) continue;
+      if (ctx.prefix && !entryPath.startsWith(ctx.prefix)) continue;
+      if (ctx.statOnly) {
         const { bytes, createdAt, updatedAt } = toFileStat(stat);
-        out.push({ path: entryPath, meta: { createdAt, updatedAt, bytes } });
+        ctx.out.push({ path: entryPath, meta: { createdAt, updatedAt, bytes } });
         continue;
       }
       const entry = this.read(ns, entryPath);
       if (!entry) continue;
-      out.push({
+      ctx.out.push({
         path: entryPath,
         meta: {
           ...entry.meta,
@@ -182,20 +256,19 @@ export class FileSystemBackend implements StorageBackend {
         },
       });
     }
-    return out;
   }
 
-  readAll(ns: string, prefix?: string): Record<string, StoredEntry> {
-    const out: Record<string, StoredEntry> = {};
+  readAll(ns: string, prefix?: string): Map<string, StoredEntry> {
+    const out = new Map<string, StoredEntry>();
     for (const listed of this.list(ns, prefix)) {
       const entry = this.read(ns, listed.path);
-      if (entry) out[listed.path] = entry;
+      if (entry) out.set(listed.path, entry);
     }
     return out;
   }
 
   snapshot(ns: string): Record<string, StoredEntry> {
-    return this.readAll(ns);
+    return Object.fromEntries(this.readAll(ns));
   }
 
   restore(ns: string, data: Record<string, StoredEntry>): void {
@@ -206,7 +279,7 @@ export class FileSystemBackend implements StorageBackend {
   getPhysicalPath(ns: string, entryPath: string): string {
     const layout = this._layout(ns);
     const file = layout.encode ? layout.encode(entryPath) : entryPath;
-    return path.join(this._dir(ns), file);
+    return confine(this._dir(ns), file);
   }
 
   /** Creates the namespace directory if it does not exist yet. */
@@ -237,8 +310,18 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   private _dir(ns: string): string {
-    return this._layout(ns).dir ?? path.join(this.root, ns);
+    const configured = this._layout(ns).dir;
+    if (configured !== undefined) return configured;
+    assertSafeNamespace(ns);
+    return path.join(this.root, ns);
   }
+}
+
+interface WalkContext {
+  decode: (file: string) => string | null;
+  statOnly: boolean;
+  prefix?: string;
+  out: ListedEntry[];
 }
 
 function toFileStat(stat: fs.Stats): FileStat {

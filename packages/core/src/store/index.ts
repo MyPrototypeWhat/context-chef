@@ -36,6 +36,7 @@ export {
   StoreCapabilityError,
   type StoreCleanupOptions,
   type StoreCleanupResult,
+  type StoredEntries,
   type StoredEntry,
   type StoredEntryMeta,
   type StoreEntryMeta,

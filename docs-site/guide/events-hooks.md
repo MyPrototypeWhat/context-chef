@@ -2,7 +2,7 @@
 
 Two surfaces, two jobs. **Events** observe: they fire for logging, metrics and debugging and cannot change what gets compiled. **Slots** participate: a slot handler runs inside the compile pipeline and can veto overflow, inject context, or rewrite the assembled messages.
 
-The 4.1 config hooks (`onBeforeCompile`, `transformContext`, `onBeforeCompress`) are slots now — same code path, registered at construction, and deprecated in favour of the slot names.
+Two of the 4.1 config hooks (`onBeforeCompile`, `transformContext`) are slots now — same code path, registered at construction, and deprecated in favour of the slot names. `JanitorConfig.onBeforeCompress` is not one of them: it stays a runner callback on the Janitor.
 
 ## Slots <Badge type="tip" text="4.2" />
 
@@ -60,10 +60,10 @@ Still supported, still exact, removed in 5.0. Each is registered on the same slo
 |---|---|
 | `ChefConfig.onBeforeCompile` | `chef.use('before-assemble', async (ctx) => ctx.inject(await retrieve(ctx)))` — the returned string is the injection |
 | `ChefConfig.transformContext` | `chef.use('after-assemble', fn)` |
-| `JanitorConfig.onBeforeCompress` | `chef.use('before-overflow', fn)` — the slot sees the runner's real budget |
-| `ChefConfig.transformToolResult` | stays as config: it is a per-message transform in the `transform-tool-results` phase, not a slot |
 
 Alias-equivalence is asserted by tests: the same input produces a byte-identical payload through the old field and the new slot, on all three targets.
+
+Two neighbours look like they belong in that table and do not. `ChefConfig.transformToolResult` stays as config — a per-message transform in the `transform-tool-results` phase, not a slot. `JanitorConfig.onBeforeCompress` stays a runner callback: it fires inside the Janitor once the budget verdict says overflow will run, it may return a replacement `Message[]`, and it works on a standalone `Janitor` that has no slot registry. `before-overflow` is a different boundary with a different contract — chef-level, every compile, `void | false` — so moving a handler from one to the other is not a rename, and a returned array would simply be ignored there.
 
 ## Lifecycle events
 
@@ -119,7 +119,7 @@ chef.on('pipeline:invariant', ({ phase, message }) => {
 });
 ```
 
-- After every `after-assemble` handler: pinned messages still present, tool call/result pairs still paired.
+- Once after the whole `after-assemble` chain: pinned messages still present, tool call/result pairs still paired. The comparison is the list the chain started from against the list it produced, so a violation names the chain rather than the handler that caused it.
 - After the `tail` phase: nothing ahead of the tail insertion point changed, compared byte for byte against a pre-`tail` snapshot.
 
 Violations are **reported, never enforced** — mechanism, not policy. Each goes to `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event; `compile()` never throws because of a check. It costs a snapshot plus a serialization pass per compile, so keep it off in production. Default `false`.

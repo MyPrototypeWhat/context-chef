@@ -161,12 +161,14 @@ interface OverflowInput {
   tokenizer: (m: Message[]) => number;
   pinned: readonly Message[];         // must survive verbatim (turn-scoped)
   window: WindowLineage;
+  forced?: boolean;                   // answering requestNewContext() / new_context
   signal?: AbortSignal;
 }
 
 interface OverflowResult {
   history: Message[];                 // the new in-window history
-  evicted: Message[];                 // what left the window (archive input)
+  evicted: Message[];                 // what left the window
+  span?: Message[];                   // what the summary covers: evicted + re-inserted pinned
   summary?: string;                   // rendered summary text, if the strategy produced one
   meta: { strategy: string; windowId: string; changed: boolean; reason?: string };
 }
@@ -174,6 +176,7 @@ interface OverflowResult {
 interface OverflowStrategy {
   readonly name: string;
   apply(input: OverflowInput): Promise<OverflowResult>;
+  pending?(): boolean;                // a finished off-turn result is waiting to land
   snapshot?(): unknown;               // stateful strategies (anchored, background)
   restore?(state: unknown): void;
 }
@@ -189,6 +192,13 @@ Built-ins (each a factory in `src/overflow/`):
 | `reset(opts)` | new | keeps `pinned` + nothing else from history; everything else → `evicted`; `summary` = window-lineage stub. Safe only with `archive` — documented, not enforced |
 | `chain(...s)` | new | runs the next strategy when the previous returned `changed: false` or is still over budget |
 | `background(s)` | `compressionScheduling: 'background'` | wraps a strategy in the existing BackgroundCompressionJob semantics (content-equivalence staleness) |
+
+`evicted` is what left the window; `span` is what the summary covers, including pinned
+turns the strategy re-inserted verbatim. The runner reads `span ?? evicted` for
+`onCompress`, the archive payload and the citation count, which is what keeps those
+three at the 4.1 numbers. `pending()` is the off-turn hook: the runner asks before
+evaluating the budget, so a `background()` job that finished after the history dropped
+back under the trigger still lands on the next compile.
 
 `archive` becomes strategy-agnostic: after any strategy, `evicted` is archived when
 `overflow.archive` is set. It is no longer a summarize-internal concern. In 4.x the
@@ -246,14 +256,20 @@ the library evicts mechanically.
 **`new_context` tool**: `getNewContextToolDefinition()` (static, no parameters).
 `chef.requestNewContext()` sets a flag; the next compile forces the `overflow` phase
 regardless of budget. Dispatch through `chef.handleTool` (Phase 4b); Phase 3 ships the
-definition + the method.
+definition + the method. Under `summarize()` / `anchored()` a forced pass compresses
+every turn but the most recent one and ignores `preserveRecentMessages` /
+`preserveRatio`; with a single turn it is a no-op. A forced request that cannot run at
+all — server-managed target, or a `before-overflow` veto — is consumed anyway and
+reported through a `pipeline:invariant` event plus a warn-once, never silently.
 
 **Window lineage**: `WindowLineage = { first: string; previous?: string; current: string }`.
 The runner allocates a new id on every overflow that returns `changed: true`, at
 `commit` time (a stale background result never advances the window).
 `OverflowResult.meta.windowId` records the apply-time id (the window acted on);
 `CompileMeta.windowId` is `current` after the overflow phase (the window the payload
-belongs to); `reset()`'s summary stub renders the
+belongs to); `ChefSnapshot.handoffNoticedWindow` carries the once-per-window notice flag
+so a restored session does not re-issue a notice the model already saw;
+`reset()`'s summary stub renders the
 lineage; `anchored()` keys its anchor document by window id; `CompileMeta.windowId`
 exposes it; it survives snapshot/restore. The legacy summary wrapper text is NOT
 changed in 4.x (it would break the anchored golden fixture) — a
@@ -349,8 +365,10 @@ The model must see one vocabulary. Under `tools: 'unified'`:
 - The inline `<update_core_memory>` / `<delete_core_memory>` write path described in
   older TODO notes no longer exists in code (verified in Phase 4c); the surviving legacy
   write path is the `create_memory` / `modify_memory` tool pair, now `@deprecated`.
-- `ai-sdk-middleware` and `tanstack-ai` pass through `tools`, `store`, `overflow`;
-  any auto-dispatch routes via `chef.handleTool`.
+- `ai-sdk-middleware` and `tanstack-ai` pass through `store` and `overflow` only. They
+  build a Janitor pool, not a `ContextChef`, so there is no `tools` mode, no
+  `contextTool` and no `chef.handleTool` on either surface; a host that wants the
+  unified vocabulary drives a `ContextChef` itself.
 - Vocabulary is resolved ONCE in `ContextChef` from `tools` mode into a `Vocabulary`
   object (`src/vocabulary.ts`) and injected into memory shaping, the Offloader
   placeholder, the summary wrapper (lineage line lives here) and the handoff notice;

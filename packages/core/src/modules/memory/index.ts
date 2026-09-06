@@ -301,8 +301,11 @@ export class Memory {
   async getAll(): Promise<MemoryEntry[]> {
     // One bulk read, not a key scan followed by a read per key — on an async
     // store (Redis etc.) that difference is 1+N vs 2N round-trips per compile().
+    // The store's key order is the order entries reach the <memory> block, so
+    // it has to survive the trip: a Map keeps it, a plain object would hoist
+    // integer-like keys ('10' before 'zeta') and change the injected bytes.
     const stored = await this.ns.entries();
-    return Object.entries(stored).map(([key, entry]) => ({
+    return Array.from(stored, ([key, entry]) => ({
       key,
       ...storedToMemoryEntry(entry),
     }));

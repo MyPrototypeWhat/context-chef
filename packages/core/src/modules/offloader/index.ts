@@ -473,6 +473,16 @@ export class Offloader {
   }
 
   /**
+   * The stored filename behind one of this Offloader's URIs, or null when the
+   * address belongs to something else. The inverse of {@link uri}, and the
+   * only way a caller holding a raw address can tell whether it is ours when
+   * `uriScheme` is not the default `context://vfs/`.
+   */
+  public parseUri(uri: string): string | null {
+    return this.vfs.parseUri(uri);
+  }
+
+  /**
    * Reads the full content back from a URI (synchronously).
    * On a hit, updates the entry's accessedAt timestamp; if the URI is not in the index,
    * auto-adopts the file (parses createdAt from filename, seeds bytes from content length).

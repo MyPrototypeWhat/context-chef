@@ -343,3 +343,228 @@ describe('overflow runner', () => {
     expect(applied).toHaveBeenCalledTimes(3);
   });
 });
+
+/**
+ * The v5 adversarial review found seven ways the overflow axis lied about what
+ * it had done. Each one is pinned here.
+ */
+describe('overflow — v5 review fixes', () => {
+  const serverConfig = { edits: [{ type: 'compact_20260112' }] };
+
+  it('janitor.strategy = server() is server-managed, exactly like overflow.strategy', async () => {
+    await expectEquivalent(
+      () => chefWith({ janitor: { ...runnerConfig, strategy: server(serverConfig) } }),
+      () => chefWith({ janitor: runnerConfig, overflow: { strategy: server(serverConfig) } }),
+      // Nothing compresses on the Anthropic target (the provider does it) and
+      // nothing compresses off it either (no fallback), so the history itself
+      // is what both payloads must agree on.
+      { mustContain: (target) => (target === 'anthropic' ? 'compact_20260112' : 'turn-1') },
+    );
+
+    const payload = await chefWith({
+      janitor: { ...runnerConfig, strategy: server(serverConfig) },
+    }).compile({ target: 'anthropic' });
+
+    expect(payload.context_management).toEqual(serverConfig);
+    expect(payload.betas).toEqual(['compact-2026-01-12']);
+  });
+
+  it('warns about a server strategy on an unmanaged target in the janitor spelling too', async () => {
+    const warn = vi.fn();
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: { ...runnerConfig, strategy: server(serverConfig) },
+    }).setHistory(longHistory(9));
+
+    await chef.compile({ target: 'openai' });
+    await chef.compile({ target: 'openai' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('no server-side context management implementation');
+  });
+
+  it('reports a forced overflow the server-managed target dropped', async () => {
+    const warn = vi.fn();
+    const invariants: Array<{ phase: string; message: string }> = [];
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: runnerConfig,
+      overflow: { strategy: server(serverConfig) },
+    }).setHistory(longHistory(9));
+    chef.on('pipeline:invariant', (event) => {
+      invariants.push(event);
+    });
+
+    chef.requestNewContext();
+    await chef.compile({ target: 'anthropic' });
+
+    expect(invariants).toHaveLength(1);
+    expect(invariants[0].phase).toBe('overflow');
+    expect(invariants[0].message).toContain('the compile target is server-managed');
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // Still one-shot: the request was answered, badly, by that compile.
+    chef.requestNewContext();
+    await chef.compile({ target: 'anthropic' });
+    expect(invariants).toHaveLength(2);
+    await chef.compile({ target: 'anthropic' });
+    expect(invariants).toHaveLength(2);
+    // Warned once per kind, not once per compile.
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a forced overflow a before-overflow handler vetoed', async () => {
+    const warn = vi.fn();
+    const invariants: Array<{ phase: string; message: string }> = [];
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: { contextWindow: 1_000_000, tokenizer },
+      overflow: { strategy: summarize({ compressionModel }) },
+    }).setHistory(longHistory(4));
+    chef.on('pipeline:invariant', (event) => {
+      invariants.push(event);
+    });
+    chef.use('before-overflow', () => false);
+
+    chef.requestNewContext();
+    await chef.compile({ target: 'openai' });
+
+    expect(invariants).toHaveLength(1);
+    expect(invariants[0].message).toContain('before-overflow handler vetoed');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns once when nothing can compress: no tokenizer, no model, no strategy', () => {
+    const warn = vi.fn();
+    new ContextChef({ logger: { warn }, janitor: { contextWindow: 1000 } });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('No tokenizer and no compressionModel configured');
+
+    const quiet = vi.fn();
+    new ContextChef({ logger: { warn: quiet }, janitor: { contextWindow: 1000, tokenizer } });
+    new ContextChef({
+      logger: { warn: quiet },
+      janitor: { contextWindow: 1000, compressionModel },
+    });
+    new ContextChef({
+      logger: { warn: quiet },
+      janitor: { contextWindow: 1000, strategy: summarize({ compressionModel }) },
+    });
+    new ContextChef({
+      logger: { warn: quiet },
+      janitor: { contextWindow: 1000 },
+      overflow: { strategy: summarize({ compressionModel }) },
+    });
+
+    expect(quiet).not.toHaveBeenCalled();
+  });
+
+  it('reports and archives the whole compressed span, pinned turns included', async () => {
+    const stored: Array<{ serialized: string; messageCount: number }> = [];
+    const onCompress = vi.fn();
+    const messages = longHistory(9);
+    messages[1] = { ...messages[1], pinned: true };
+
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: summarize({ compressionModel, preserveRatio: 0.3 }),
+        archive: {
+          store: (serialized, meta) => {
+            stored.push({ serialized, messageCount: meta.messageCount });
+            return 'context://vfs/fixed-uri.txt';
+          },
+        },
+      },
+    }).setHistory(messages);
+
+    const payload = await chef.compile({ target: 'openai' });
+
+    // The span is turns 1–8; the pinned turn 2 sits inside it and is
+    // re-inserted verbatim, but it is still part of what the summary covers.
+    const [summary, truncatedCount, details] = onCompress.mock.calls[0];
+    const span = details.compressedMessages as Message[];
+    expect(span.map((m: Message) => m.content)).toEqual(messages.slice(0, 8).map((m) => m.content));
+    expect(span[1].pinned).toBe(true);
+    expect(truncatedCount).toBe(8);
+    expect(JSON.stringify(summary)).toContain('ALIAS EQUIVALENCE');
+
+    // The archived transcript is the same contiguous span — no hole where the
+    // pinned turn was — and the citation the MODEL reads counts it.
+    expect(stored).toHaveLength(1);
+    expect(JSON.parse(stored[0].serialized).messages).toHaveLength(8);
+    expect(stored[0].messageCount).toBe(8);
+    expect(Assembler.stringifyPayload(payload)).toContain(
+      'The 8 compacted messages are archived in full at context://vfs/fixed-uri.txt',
+    );
+    // What LEFT the window is still the 7 unpinned turns: the pinned one is
+    // back in the window, right after the summary.
+    expect(payload.messages[1].content).toBe(messages[1].content);
+    expect(chef.snapshot().history[1].pinned).toBe(true);
+  });
+
+  it('archives a span whose every turn is pinned', async () => {
+    const stored: string[] = [];
+    const messages = longHistory(9).map((m, i) => (i < 8 ? { ...m, pinned: true } : m));
+
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: runnerConfig,
+      overflow: {
+        strategy: summarize({ compressionModel, preserveRatio: 0.3 }),
+        archive: {
+          store: (serialized) => {
+            stored.push(serialized);
+            return 'context://vfs/all-pinned.txt';
+          },
+        },
+      },
+    }).setHistory(messages);
+
+    await chef.compile({ target: 'openai' });
+
+    // Nothing was evicted — and the span the summary stands for is still
+    // stored, exactly as it was before 4.2.
+    expect(stored).toHaveLength(1);
+    expect(JSON.parse(stored[0]).messages).toHaveLength(8);
+  });
+
+  it('a forced overflow folds every turn but the one the request lives in', async () => {
+    for (const strategy of [summarize({ compressionModel }), anchored({ compressionModel })]) {
+      const chef = new ContextChef({
+        logger: silent,
+        janitor: { contextWindow: 1_000_000, tokenizer },
+        overflow: { strategy },
+      }).setHistory(longHistory(21));
+
+      // Twenty-one turns and a million tokens of headroom: the preserve rules
+      // would keep every one of them, which is the case new_context exists for.
+      chef.requestNewContext();
+      const payload = await chef.compile({ target: 'openai' });
+
+      expect(payload.messages).toHaveLength(2);
+      expect(payload.messages[0].content).toContain('ALIAS EQUIVALENCE');
+      expect(payload.messages[1].content).toContain('turn-21');
+    }
+  });
+
+  it('declines a forced overflow that would leave the pending request nothing to sit in', async () => {
+    const compressed: boolean[] = [];
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { contextWindow: 1_000_000, tokenizer },
+      overflow: { strategy: summarize({ compressionModel }) },
+    }).setHistory(longHistory(1));
+    chef.on('compress:end', (event) => {
+      compressed.push(event.compressed);
+    });
+
+    chef.requestNewContext();
+    const payload = await chef.compile({ target: 'openai' });
+
+    expect(payload.messages).toHaveLength(1);
+    expect(compressed).toEqual([false]);
+  });
+});

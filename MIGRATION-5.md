@@ -31,7 +31,7 @@ Every row below still works in 4.x and is removed in 5.0. Each deprecated symbol
 | `ChefConfig.transformContext` | `chef.use('after-assemble', (messages) => messages)` |
 | `MemoryStore` (and `memory.store` taking one) | `StorageBackend` or `Store` — `InMemoryBackend`, `FileSystemBackend`, your own |
 | `VFSStorageAdapter` (and `vfs.adapter`) | `StorageBackend` passed as `vfs.store`, or one shared `ChefConfig.store` |
-| `VFSMemoryStore` | `new FileSystemBackend(dir)` — it *is* the `memory` namespace of one |
+| `VFSMemoryStore` | `new FileSystemBackend(dir)` for a new directory; an existing one keeps loading only through `VFSMemoryStore` itself or `Store.fromMemoryStore(new VFSMemoryStore(dir))` |
 | `FileSystemAdapter` | `FileSystemBackend`, which serves every namespace from one root |
 | `Memory.getToolDefinitions()` | `tools: 'unified'` — `compile()` emits the `context` tool for you |
 | `create_memory` / `modify_memory` tool calls | the `context` tool: `create` / `str_replace` / `delete` under `memory/`, dispatched with `chef.handleTool(call)` |

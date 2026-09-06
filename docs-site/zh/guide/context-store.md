@@ -20,7 +20,7 @@ interface StorageBackend {
   delete(ns: string, path: string): MaybePromise<boolean>;
   list(ns: string, prefix?: string): MaybePromise<ListedEntry[]>;
   // optional capabilities, queried rather than assumed:
-  readAll?(ns: string, prefix?: string): MaybePromise<Record<string, StoredEntry>>;
+  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // Map (backend order) or Record
   exists?(ns: string, path: string): MaybePromise<boolean>;
   append?(ns: string, path: string, content: string): MaybePromise<void>;
   search?(ns: string, query: string): MaybePromise<SearchHit[]>;
@@ -40,7 +40,7 @@ interface StorageBackend {
 | `InMemoryBackend` | 每个命名空间一个 `Map` | 是 —— 临时性的，适合测试 |
 | `FileSystemBackend` | 根目录下每个命名空间一个目录 | 是 —— 落盘的那个 |
 
-`FileSystemBackend` 为每个命名空间保留各自的磁盘布局，因此两种历史格式（扁平的 `vfs_<ts>_<hash>.txt` VFS 文件和 JSON 记忆条目）都能原样往返。
+`FileSystemBackend` 为每个命名空间保留各自的磁盘布局，Offloader 那批扁平的 `vfs_<ts>_<hash>.txt` 文件因此能原样往返 —— 是 Offloader 为 `vfs/` 装上了那套布局。但它**不会**读 `VFSMemoryStore` 的 `<base64url>.mem` 旧文件：那套布局在 `VFSMemoryStore` 内部，裸的 `FileSystemBackend` 写的是 `memory/<key>`，内容是 `{ content, meta }` 信封。把它指向已有的记忆目录之前，先看本页下方的「从 4.1 的存储接口迁移」。
 
 ## 命名空间
 
@@ -49,12 +49,12 @@ interface StorageBackend {
 | `memory/` | 值得跨对话携带的持久事实 | [Memory](/zh/guide/memory)、模型 | 每次编译都注入 |
 | `notes/` | 模型自己的工作草稿空间 | 模型，通过 `context` 工具 | 只有模型去读时才在 |
 | `vfs/` | 大到不能内联的工具输出 | [Offloader](/zh/guide/offloading-vfs) | 只留截断标记 + URI |
-| `archive/` | 被压缩出窗口的片段 | [溢出](/zh/guide/history-compression)的 `archive` | 摘要里的一条引用 |
+| `archive/` | 预留给被压缩出窗口的片段 | 4.x 里没有 —— `overflow.archive` 仍然写进 `vfs/` | 摘要里的一条引用 |
 
 `memory/` 是唯一自动展示给模型的命名空间；其余命名空间在模型主动去读之前都不进窗口。这正是 `notes/` 的意义所在：一个放计划或运行日志的地方，且每轮不产生任何成本。
 
 ::: tip 4.x 里归档仍然写进 `vfs/`
-`overflow.archive` 仍把片段存到 `context://vfs/...` 之下，好让已有的 URI 保持字节一致。专门的 `archive/` 命名空间已经存在、可读，并将在 5.0 成为归档的正式落点。
+`overflow.archive` 仍把片段存到 `context://vfs/...` 之下，好让已有的 URI 保持字节一致。专门的 `archive/` 命名空间是预留且只读的：4.x 里没有任何东西往里写，所以 `context` 工具的描述和存储说明都不提它 —— 模型翻进去只会扑空的命名空间，不值得占那点前缀字节。给它一条 `archive/` 路径仍然读得到，走的是和 `vfs/` 一样的召回渲染。5.0 起它才是归档的正式落点。
 :::
 
 ## `ChefConfig.store`
@@ -127,7 +127,9 @@ Store.parseUri('context://notes/plan.md'); // { ns: 'notes', path: 'plan.md' }
 - **`notes/`** 直达 `store.namespace('notes')` —— 带行号的 `view`、要求唯一匹配的 `str_replace`、0 基的 `insert`，以及在后端没有原生检索时退回「list + get」的 `search`。
 - **`vfs/`** 和 **`archive/`** 默认只读，并通过与 `recall_context` 相同的召回路径渲染。
 
-模型自己的错误从不抛异常。未知路径、缺参数、写只读命名空间、不被允许的 memory key、`onMemoryUpdate` 的否决，都会以 `Error: …` 文本返回，让模型读到并自行纠正。只有 chef 不拥有的工具名会抛异常 —— 那是你循环里的路由 bug，模型修不了。
+**路径在读写之前先被校验。** 命名空间必须是一个普通片段：`.`、`..`、空名字、反斜杠、里面的 `:` 或 `/` 一律拒绝，控制字符也是。路径的每一段同样对待 —— 不许 `.`、不许 `..`、不许空片段（只有末尾那一个空片段例外，它表示「目录」）、不许反斜杠。除此之外嵌套路径是自由的：`notes/dir/file` 就是一个普通的 key，对 `notes/` 做 `view` 会递归列出它。`FileSystemBackend` 在最底层再查一次，任何解析后落到命名空间目录之外的物理路径都会被拒。
+
+模型自己的错误从不抛异常。未知路径、被拒的路径、缺参数、写只读命名空间、不被允许的 memory key、`onMemoryUpdate` 的否决，都会以 `Error: …` 文本返回，让模型读到并自行纠正。只有 chef 不拥有的工具名会抛异常 —— 那是你循环里的路由 bug，模型修不了。
 
 ### 访问策略
 
@@ -214,11 +216,29 @@ chef.registerTools([getContextToolDefinition(), getNewContextToolDefinition()]);
 | `MemoryStore` | `StorageBackend` | 由 `Store.fromMemoryStore` 包装；`MemoryStoreEntry` 与 `StoredEntry.meta` 一一对应 |
 | `VFSStorageAdapter` | `StorageBackend` | 由 `Store.fromVfsAdapter` 包装 |
 | `FileSystemAdapter` | `FileSystemBackend` | 磁盘格式相同 |
-| `VFSMemoryStore` | `FileSystemBackend` + `memory` 命名空间 | 它本来就是 VFS 后端上的 `memory/`；已在新后端上重建，磁盘格式不变 |
+| `VFSMemoryStore` | `FileSystemBackend` + `memory` 命名空间 | 仅限**新**目录。`VFSMemoryStore` 已在 `FileSystemBackend` 上重建，也仍然读得到自己写过的文件，但那套布局是它自己装的 —— 见下文 |
 | `InMemoryStore` | `InMemoryBackend` | 仍然导出、仍然可用 |
 | 各模块各自的 `memory.store` / `vfs.storage` | 一个 `ChefConfig.store` | 设置了模块级 store 时仍以模块级为准 |
 
 `Memory` 与 `Offloader` 三种都接受 —— 遗留 store、`StorageBackend`、或 `Store` —— 且公开 API 未变。它们在 5.0 移除。
+
+### `VFSMemoryStore` 这一行不是换个目录就完事
+
+它的磁盘布局 —— 每个 key 一个 base64url 命名的 `.mem` 文件，里面是裸的 `MemoryStoreEntry` —— 是 `VFSMemoryStore` 自己的构造函数装上去的，不是 `FileSystemBackend` 装的。把裸后端指向 4.1 写出来的 `./.context_memory` 目录，它列不出东西、读出来是 `null`，然后开始在它忽略的那批文件旁边写 `memory/<key>` 信封。想保住这些条目有两条路：
+
+```typescript
+import { ContextChef, Store, VFSMemoryStore } from '@context-chef/core';
+
+// Keep the deprecated store — it still reads and writes its own files.
+new ContextChef({ memory: { store: new VFSMemoryStore('./.context_memory') } });
+
+// Or wrap it: same files, on the new substrate.
+new ContextChef({
+  memory: { store: Store.fromMemoryStore(new VFSMemoryStore('./.context_memory')) },
+});
+```
+
+遗留 store 是单一扁平 keyspace，所以包装之后也只服务 `memory/`。想让一个后端同时撑起 `notes/`、`vfs/` 和 `archive/`，就给 chef 一个指向新根目录的 `FileSystemBackend`，再用 `memory.getAll()` 把条目搬过去。
 
 ## 下一步去哪
 

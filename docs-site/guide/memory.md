@@ -69,7 +69,7 @@ A bare number is turns: `defaultTTL: 20` and `defaultTTL: { turns: 20 }` are the
 
 ## `selector` — deciding what gets injected
 
-Memory is a selection budget like any other: everything in `memory/` is injected on every compile unless you say otherwise. `selector` runs once per compile, after the expiry sweep, on the entries about to be injected.
+Memory is a selection budget like any other: everything in `memory/` is injected on every compile unless you say otherwise. `selector` runs once per compile, after the expiry sweep, on the entries about to be injected. It receives them in the store's own key order — one bulk read preserves it, as in 4.1 — so the `<memory>` block is byte-stable across compiles unless you reorder it yourself.
 
 ```typescript
 const chef = new ContextChef({

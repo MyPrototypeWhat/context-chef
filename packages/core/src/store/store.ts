@@ -12,6 +12,7 @@ import {
   StoreCapabilityError,
   type StoreCleanupOptions,
   type StoreCleanupResult,
+  type StoredEntries,
   type StoredEntry,
   type StoredEntryMeta,
   type StoreEntryMeta,
@@ -150,11 +151,17 @@ export class NamespaceView {
     return requireSync(this.store.backend.list(this.ns, prefix), this.ns, 'list', asyncMessage);
   }
 
-  /** Appends to an entry, creating it when absent. Uses the backend's native append when it has one. */
+  /**
+   * Appends to an entry, creating it when absent. Uses the backend's native
+   * append when it has one — except when the caller supplies `meta`, which
+   * `StorageBackend.append` has no parameter for: applying it needs the
+   * read-modify-write path, and one public method may not mean two different
+   * things depending on which backend is configured.
+   */
   append(path: string, content: string, meta?: Partial<StoredEntryMeta>): MaybePromise<PutResult> {
     const backend = this.store.backend;
     const uri = this.uri(path);
-    if (backend.append && this.supports('append')) {
+    if (backend.append && this.supports('append') && meta === undefined) {
       return chain(backend.append(this.ns, path, content), () =>
         chain(backend.read(this.ns, path), (entry) => {
           this.store.register(this.ns, path, uri, byteLength(entry?.content ?? content));
@@ -162,12 +169,18 @@ export class NamespaceView {
         }),
       );
     }
-    return chain(backend.read(this.ns, path), (existing) =>
-      this._write(path, (existing?.content ?? '') + content, {
-        ...(existing ? { createdAt: existing.meta.createdAt } : {}),
+    return chain(backend.read(this.ns, path), (existing) => {
+      const appended = (existing?.content ?? '') + content;
+      return this._write(path, appended, {
+        // The entry keeps the metadata it had — an append is not a rewrite —
+        // with the caller's fields on top and the two an append invalidates
+        // brought up to date. Same result the native branch produces.
+        ...existing?.meta,
         ...meta,
-      }),
-    );
+        updatedAt: meta?.updatedAt ?? Date.now(),
+        bytes: byteLength(appended),
+      });
+    });
   }
 
   delete(path: string): MaybePromise<boolean> {
@@ -182,21 +195,25 @@ export class NamespaceView {
   }
 
   /**
-   * Full-namespace read in one pass. Falls back to `list()` + `get()` when the
-   * backend has no bulk read.
+   * Full-namespace read in one pass, in the backend's own key order. Falls back
+   * to `list()` + `get()` when the backend has no bulk read.
+   *
+   * A Map, because the caller that renders these entries (`Memory.getAll()` →
+   * the injected `<memory>` block) must see them in store order, and a plain
+   * object would hoist integer-like keys ahead of the rest.
    */
-  entries(prefix?: string): MaybePromise<Record<string, StoredEntry>> {
+  entries(prefix?: string): MaybePromise<Map<string, StoredEntry>> {
     const backend = this.store.backend;
     if (backend.readAll && this.supports('readAll')) {
-      return backend.readAll(this.ns, prefix);
+      return chain(backend.readAll(this.ns, prefix), asEntryMap);
     }
     return chain(backend.list(this.ns, prefix), (listed) => {
       const reads = listed.map((item) => backend.read(this.ns, item.path));
-      const collect = (values: (StoredEntry | null)[]): Record<string, StoredEntry> => {
-        const out: Record<string, StoredEntry> = {};
+      const collect = (values: (StoredEntry | null)[]): Map<string, StoredEntry> => {
+        const out = new Map<string, StoredEntry>();
         for (let i = 0; i < listed.length; i++) {
           const entry = values[i];
-          if (entry) out[listed[i].path] = entry;
+          if (entry) out.set(listed[i].path, entry);
         }
         return out;
       };
@@ -311,6 +328,11 @@ export class NamespaceView {
 
 function byteLength(content: string): number {
   return Buffer.byteLength(content, 'utf8');
+}
+
+/** A backend's bulk read as a Map, whichever shape it chose to return. */
+function asEntryMap(entries: StoredEntries): Map<string, StoredEntry> {
+  return entries instanceof Map ? entries : new Map(Object.entries(entries));
 }
 
 /** Unwraps a backend answer that a synchronous call site cannot await. */

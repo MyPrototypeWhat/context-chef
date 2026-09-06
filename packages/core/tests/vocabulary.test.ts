@@ -13,6 +13,7 @@ import { auditAnthropicCachePlacement } from '../src/adapters/anthropicCacheAudi
 import {
   type ChefConfig,
   ContextChef,
+  getContextToolDefinition,
   InMemoryBackend,
   LEGACY_VOCABULARY,
   Prompts,
@@ -314,6 +315,19 @@ describe("vocabulary: tools 'unified'", () => {
 
   it('keeps the store instruction inside its byte budget', () => {
     expect(new TextEncoder().encode(Prompts.CONTEXT_STORE_INSTRUCTION).length).toBeLessThan(900);
+  });
+
+  it('never points the model at a namespace 4.x does not write', async () => {
+    // The 4.x archive writes into `vfs` (byte-identical URIs, architecture-v5
+    // §4); `context://archive/` is a 5.0 switch. Both strings sit in the
+    // cached prefix, so a model told otherwise cannot be corrected per session.
+    expect(Prompts.CONTEXT_STORE_INSTRUCTION).not.toContain('archive/');
+    expect(getContextToolDefinition().description).not.toContain('archive/');
+
+    const instance = overflowingChef({ tools: 'unified', overflow: { archive: 'vfs' } });
+    const text = payloadText(await instance.compile({ target: 'openai' }));
+    expect(text).toContain('archived in full at context://vfs/');
+    expect(text).not.toContain('context://archive/');
   });
 });
 

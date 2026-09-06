@@ -43,10 +43,11 @@ const CONTEXT_TOOL: ToolDefinition = deepFreeze({
     'conversation window. Addresses look like `context://<namespace>/<path>` (the ' +
     '`context://` prefix is optional, so `notes/plan.md` works too). `memory/` holds durable ' +
     'facts worth carrying between conversations, `notes/` is your own working scratch space, ' +
-    '`vfs/` holds tool output that was too large to keep inline, and `archive/` holds spans of ' +
-    'this conversation that were compacted away. Entries under `memory/` are shown to you ' +
-    'automatically every turn; every other namespace stays out of the window until you read it ' +
-    'with this tool. A namespace root such as `context://notes/` is a directory — `view` lists ' +
+    'and `vfs/` holds tool output that was too large to keep inline. A span of this ' +
+    'conversation that was compacted away stays readable at the address its summary cites. ' +
+    'Entries under `memory/` are shown to you automatically every turn; every other namespace ' +
+    'stays out of the window until you read it with this tool. A namespace root such as ' +
+    '`context://notes/` is a directory — `view` lists ' +
     'it. `memory/` and `notes/` are writable; the rest are read-only unless the host says ' +
     'otherwise. An unknown path, a malformed argument or a write to a read-only namespace ' +
     'comes back as an error message rather than failing the turn — read it and correct the call.',

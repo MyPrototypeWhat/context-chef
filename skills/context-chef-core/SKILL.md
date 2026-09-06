@@ -267,7 +267,7 @@ chef.use("before-assemble", async (ctx) => {
 ```
 `ChefConfig.onBeforeCompile` and `ChefConfig.transformContext` are **(deprecated)** aliases that register on `before-assemble` / `after-assemble` at construction — same code path, same output. Generate `use()` for new code.
 
-For development, `pipelineChecks: true` verifies after every `after-assemble` handler that pinned messages survived and tool pairs are intact, and after the tail phase that nothing ahead of the insertion point changed. Violations go to `logger.warn` + a `'pipeline:invariant'` event and never throw. Keep it off in production (it costs a snapshot + a serialization pass per compile).
+For development, `pipelineChecks: true` verifies once after the whole `after-assemble` chain that pinned messages survived and tool pairs are intact, and once after the tail phase that nothing ahead of the insertion point changed (the assemble check compares the chain's input against its output, so it reports the chain, not a single handler). Violations go to `logger.warn` + a `'pipeline:invariant'` event and never throw. Keep it off in production (it costs a snapshot + a serialization pass per compile).
 
 If they want to try cheaper compression before LLM summarization, recommend the `onBeforeCompress` + `compact()` pattern:
 ```typescript

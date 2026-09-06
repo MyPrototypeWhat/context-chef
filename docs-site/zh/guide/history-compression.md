@@ -52,7 +52,7 @@ const portable = new ContextChef({
 });
 ```
 
-`summarize()` 和 `anchored()` 接受同一组选项 —— `compressionModel`、`compressionGuidelines`、`customCompressionInstructions`、`minShrinkRatio`、`validateCompression`、`preserveRatio`、`preserveRecentMessages`、`toolResultStubThreshold`、`split`。这些正是过去挂在 `JanitorConfig` 上的字段；见本页下方的「4.1 的压缩选项」对照表。
+`summarize()` 和 `anchored()` 接受同一组选项 —— `compressionModel`、`compressionGuidelines`、`customCompressionInstructions`、`minShrinkRatio`、`validateCompression`、`preserveRatio`、`preserveRecentMessages`、`toolResultStubThreshold`、`split`。这些就是你也可以直接写在 `janitor` 上的那组字段；见本页下方的「4.1 的压缩选项」。
 
 ### 切分点落在哪
 
@@ -110,7 +110,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 在 tokenizer 路径下，默认取本地计算值与喂入值中的较大者；`usagePreference` 可切换为 `'feedFirst'`（信任 API 真值）或 `'tokenizerFirst'`（完全忽略喂入值）。没有 `tokenizer` 时取值范围收窄为 `'max' | 'feedFirst'`，TypeScript 在编译期就会拒绝 `'tokenizerFirst'`。
 
-> **注意：** 没有 `compressionModel` 时，`summarize()` 会直接丢弃被驱逐的片段而不做摘要。如果 `tokenizer` 和 `compressionModel` 都没有，构造时会打印一条控制台警告。
+> **注意：** 没有 `compressionModel` 时，`summarize()` 会直接丢弃被驱逐的片段而不做摘要。如果 `tokenizer` 和 `compressionModel` 都没有，构造时会打印一次控制台警告；显式配置了 `overflow.strategy`（或 `janitor.strategy`）则视为你有意为之，不再警告。
 
 ## 质量闸门
 
@@ -220,6 +220,10 @@ for (const call of response.tool_calls) {
 
 `chef.requestNewContext()` 是一次性强制：下一次 `compile()` 不管预算怎么说都会执行策略。「新窗口」意味着什么，取决于你装配的策略 —— `summarize()` 留下一份摘要，`reset()` 留下一条 stub，两种情况下 `archive` 都让片段保持可取回。与 `clearHistory()` 不同，它不会在库背后丢掉任何东西：仍然由策略决定什么留下，`before-overflow` 处理器仍可否决，熔断器仍然生效。无论窗口是否真的变了，这个请求都会被一次编译消耗掉。
 
+**强制溢出在哪里切。** 在 `summarize()` 和 `anchored()` 下，一次强制压缩会压掉除最近一轮之外的所有轮次，`preserveRecentMessages` / `preserveRatio` 不参与 —— 那两条规则是为了把满窗口压到触发线以下，而强制这一趟本来就与预算无关。留下最近一轮，是为了让模型有地方读到回答。窗口里只有一轮时什么都不会发生，结果的 `meta.reason` 会说明原因。
+
+**跑不成的强制溢出绝不会静默。** 有两种编译会直接不做溢出：服务端托管的目标（窗口归提供方管）和 `before-overflow` 的否决。无论哪种，这个请求都已经被消耗掉了 —— 模型已经被告知要开新窗口了，所以这次落空会通过 `pipeline:invariant` 事件上报，并按原因各警告一次，说明是哪一种、以及该怎么办。
+
 ## 窗口谱系 <Badge type="tip" text="4.2" />
 
 每一次落地的溢出都会关掉一个上下文窗口并开启下一个。runner 维护 `{ first, previous?, current }`，并且**只在 commit 时**推进，因此一个过期的后台结果绝不会移动这条链 —— 它记录的是存在过的窗口，不是被考虑过的窗口。
@@ -236,7 +240,7 @@ payload.meta?.windowId;
 
 两个 id，故意不同：`OverflowResult.meta.windowId` 是策略**作用于**的窗口，`CompileMeta.windowId` 是 payload **所属**的窗口。带着同一个 id 的两次 payload 是在同一个窗口上编译的，因此 id 变化就是「模型身后的历史被改写了」的信号。
 
-谱系是让其余部分成立的东西：`anchored()` 按窗口 id 存放它的 anchor 文档（所以恢复快照会带回那个窗口当时真正拥有的 anchor）、handoff 通知每窗口一次、`reset()` 的 stub 会点名它关掉的窗口。它随 `JanitorSnapshot` 和 `ChefSnapshot` 一起往返于 `snapshot()` / `restore()`；`clearHistory()` 开启一条全新的谱系。
+谱系是让其余部分成立的东西：`anchored()` 按窗口 id 存放它的 anchor 文档（所以恢复快照会带回那个窗口当时真正拥有的 anchor）、handoff 通知每窗口一次、`reset()` 的 stub 会点名它关掉的窗口。它随 `JanitorSnapshot` 和 `ChefSnapshot` 一起往返于 `snapshot()` / `restore()`；`clearHistory()` 开启一条全新的谱系。「每窗口一次」这个标记也跟着走，就是 `ChefSnapshot.handoffNoticedWindow`，恢复出来的会话因此不会把模型已经看过的通知再发一遍。
 
 ## 写你自己的策略 <Badge type="tip" text="4.2" />
 
@@ -247,13 +251,18 @@ interface OverflowStrategy {
   readonly name: string;
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // the result actually entered the window
+  pending?(): boolean;                     // a finished result is still waiting to land
   snapshot?(): unknown;                    // serialized into JanitorSnapshot
   restore?(state: unknown): void;
   attach?(runner: OverflowRunner): void;   // the runner installs its breaker + logger
 }
 ```
 
-`OverflowInput` 携带 `history`、`budget`、`tokenizer`、`pinned`（按轮次界定，按引用传递 —— 用 `===` 比较，不要按值比）、`window` 和可选的 `signal`。`OverflowResult` 携带新的 `history`、全部 `evicted`、可选的 `summary`，以及 `meta: { strategy, windowId, changed, reason? }`。
+`OverflowInput` 携带 `history`、`budget`、`tokenizer`、`pinned`（按轮次界定，按引用传递 —— 用 `===` 比较，不要按值比）、`window`、`forced` 和可选的 `signal`。`OverflowResult` 携带新的 `history`、全部 `evicted`、可选的 `span`、可选的 `summary`，以及 `meta: { strategy, windowId, changed, reason? }`。
+
+`evicted` 的意思是「离开了窗口」。`span` 是摘要所覆盖的那一段 —— 同样这批消息，再加上策略原样塞回去、其实并没有离开窗口的 pinned 轮次。runner 读的是 `span ?? evicted`，没有塞回任何东西就不用给。这个数组正是 `onCompress` 拿到的 `details.compressedMessages`、归档存下来的内容，以及引用里数的条数。
+
+`pending()` 是可选的，属于离线执行的策略。runner 在评估预算之前会问一次：`background()` 在有已完成的任务等着落地时返回 `true`，所以一份在历史已经回落到触发线以下之后才算完的摘要，仍然会在下一次编译落地，而不用等窗口重新填满。
 
 ```typescript
 const dropToolResults: OverflowStrategy = {
@@ -301,12 +310,12 @@ const chef = new ContextChef({
 | `tokenizer` | `(msgs: Message[]) => number` | — | 启用 tokenizer 路径，精确计算每条消息的 token 数。 |
 | `usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | `'max'` | 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。 |
 | `onCompress` | `(summary, count, details) => void` | — | 一次溢出落地后触发。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
-| `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | 在策略运行前触发。已废弃 —— 改为注册到 `before-overflow` slot。 |
+| `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | 预算判定认为要执行溢出之后、策略运行之前触发。返回替换后的历史来介入，返回 `null` 则照常继续。未废弃。 |
 | `logger` | `ChefLogger` | — | 降级警告的日志接收器（存储 / 压缩），默认使用 `console`。 |
 
 ## 4.1 的压缩选项
 
-它们全部仍然可用、行为完全不变，并在 5.0 移除。同时设置别名和 `overflow.strategy` 会打印一次警告，且以策略为准。
+这里其实是两组东西，别混为一谈。下面这些**别名**已废弃：它们仍然可用、行为完全不变，并在 5.0 移除。别名和 `overflow.strategy` 同时设置会打印一次警告，且以策略为准。
 
 | 已废弃 | 替代 |
 |---|---|
@@ -315,17 +324,10 @@ const chef = new ContextChef({
 | `janitor.compressionScheduling: 'background'` | 用 `background(...)` 包住策略 |
 | `janitor.archive` | `overflow.archive` |
 | `contextManagement.strategy: 'server'` + `contextManagement.server` | `overflow.strategy = server(config, { fallback })` |
-| `janitor.compressionModel` | `summarize({ compressionModel })` |
-| `janitor.compressionGuidelines` | `summarize({ compressionGuidelines })` |
-| `janitor.customCompressionInstructions` | `summarize({ customCompressionInstructions })` |
-| `janitor.minShrinkRatio` | `summarize({ minShrinkRatio })` |
-| `janitor.validateCompression` | `summarize({ validateCompression })` |
-| `janitor.preserveRatio` | `summarize({ preserveRatio })` |
-| `janitor.preserveRecentMessages` | `summarize({ preserveRecentMessages })` |
-| `janitor.toolResultStubThreshold` | `summarize({ toolResultStubThreshold })` |
-| `janitor.onBeforeCompress` | `chef.use('before-overflow', ...)` |
 
 `contextManagement` 别名会构造出 `server(cfg, { fallback: <默认的客户端策略> })`，这正是 v4 的行为：Anthropic 上走服务端，其他地方走客户端压缩。见[服务端上下文管理](/zh/guide/server-side-context-management)。
+
+另一组是调参选项，它们**没有**被废弃：`janitor.compressionModel`、`compressionGuidelines`、`customCompressionInstructions`、`minShrinkRatio`、`validateCompression`、`preserveRecentMessages`、`preserveRatio` 和 `toolResultStubThreshold`。没有配置 `overflow.strategy` 时，janitor 正是拿这几个字段解析出默认的 `summarize()`，所以它们仍然是不引入工厂函数就配置默认策略的受支持方式。`summarize()` 用的是同样的名字，所以自己组合策略只是把它们搬个地方，不用改名；显式的 `overflow.strategy` 会覆盖它们（并警告一次），但不等于把它们废弃。
 
 ## `chef.reportTokenUsage(tokenCount): this`
 
@@ -338,7 +340,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 ## 在溢出之前介入
 
-`onBeforeCompress`（已废弃）与 `before-overflow` slot 是同一条代码路径。slot 能看到 runner 真实的预算，并且可以通过返回 `false` 直接否决这个阶段：
+`onBeforeCompress` 和 `before-overflow` slot 是两个不同的边界，两者都受支持。`onBeforeCompress` 是 runner 上的回调：只有预算判定认为要执行溢出时才触发，并且可以返回一份替换后的历史，由 runner 重新判定。slot 则在 chef 这一层 —— 每次编译都触发，早于任何判定，能看到 runner 真实的预算，并且可以通过返回 `false` 直接否决这个阶段：
 
 ```typescript
 chef.use('before-overflow', ({ history, budget }) => {

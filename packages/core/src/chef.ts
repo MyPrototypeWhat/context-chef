@@ -6,6 +6,7 @@ import {
   Janitor,
   type JanitorConfig,
   type JanitorSnapshot,
+  NO_COMPRESSION_MODEL_WARNING,
 } from './modules/janitor';
 import {
   Memory,
@@ -162,6 +163,13 @@ export interface ChefSnapshot {
    * empty announcement set.
    */
   readonly announcements?: Announcement[];
+  /**
+   * The window the handoff notice had already been issued for at snapshot
+   * time. The window lineage itself round-trips through the Janitor snapshot,
+   * so without this the restored session is on a window it has already
+   * noticed with the flag cleared, and repeats the notice every turn.
+   */
+  readonly handoffNoticedWindow?: string;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -462,9 +470,13 @@ export interface ChefEvents {
     name: string;
   };
   /**
-   * A `ChefConfig.pipelineChecks` invariant was violated — a slot handler
-   * dropped a pinned message, split a tool pair, or rewrote content ahead of
-   * the tail insertion point. Reported only; compile() continues.
+   * A pipeline invariant was violated: a `ChefConfig.pipelineChecks` finding
+   * (a slot handler dropped a pinned message, split a tool pair, or rewrote
+   * content ahead of the tail insertion point), or a request the pipeline
+   * could not honour — a `requestNewContext()` dropped because the target is
+   * server-managed or a `before-overflow` handler vetoed the compile, which is
+   * reported whatever `pipelineChecks` says. Reported only; compile()
+   * continues.
    */
   'pipeline:invariant': {
     phase: PhaseName;
@@ -496,14 +508,22 @@ function usesOverflowAliases(config: ChefConfig, janitor: JanitorConfig): boolea
 }
 
 /**
- * The `contextManagement` block the pipeline reads. An explicit
- * `overflow.strategy` is the single source of truth for how overflow is
- * handled, so it also decides whether the target is server-managed.
+ * The `contextManagement` block the pipeline reads, derived from the strategy
+ * that was actually installed. The strategy is the single source of truth for
+ * how overflow is handled, so it also decides whether the target is
+ * server-managed — whichever of the three spellings configured it
+ * (`overflow.strategy`, `janitor.strategy`, `contextManagement.strategy`).
  */
-function resolveContextManagement(config: ChefConfig): ChefConfig['contextManagement'] {
-  const strategy = config.overflow?.strategy;
-  if (!strategy) return config.contextManagement;
-  return isServerStrategy(strategy) ? { strategy: 'server', server: strategy.config } : undefined;
+function resolveContextManagement(
+  config: ChefConfig,
+  strategy: OverflowStrategy,
+): ChefConfig['contextManagement'] {
+  if (isServerStrategy(strategy)) return { strategy: 'server', server: strategy.config };
+  // An explicit strategy that is not `server()` says the client owns overflow,
+  // whatever a leftover `contextManagement` block next to it says.
+  return (config.overflow?.strategy ?? config.janitor?.strategy)
+    ? undefined
+    : config.contextManagement;
 }
 
 export class ContextChef {
@@ -670,8 +690,20 @@ export class ContextChef {
     // `server()` as the overflow strategy says the same thing to the pipeline
     // as `contextManagement: { strategy: 'server' }`: the start phase resolves
     // the server-managed target from it, the adapt phase reads the edits
-    // config out of it. One source, whichever way it was configured.
-    this.contextManagement = resolveContextManagement(config);
+    // config out of it. One source, whichever way it was configured — read off
+    // the resolved strategy so `janitor.strategy` is not a third opinion.
+    this.contextManagement = resolveContextManagement(config, strategy);
+    // The Janitor's own version of this diagnostic can never fire for a
+    // chef-built runner — it is always handed a resolved strategy — so the
+    // call is made here, against the config the user actually wrote.
+    if (
+      !janitorConfig.tokenizer &&
+      !janitorConfig.compressionModel &&
+      !config.overflow?.strategy &&
+      !janitorConfig.strategy
+    ) {
+      this._warnOnce('no-compression-model', NO_COMPRESSION_MODEL_WARNING);
+    }
     // The 'vfs' archive shorthand stores evicted spans in this chef's VFS.
     // Substituted here because only the facade holds the Offloader.
     const configuredArchive = config.overflow?.archive ?? janitorConfig.archive;
@@ -1629,6 +1661,7 @@ export class ContextChef {
         ? structuredClone(this._guardrailOptions)
         : undefined,
       announcements: [...this._announcements.values()].map((a) => ({ ...a })),
+      handoffNoticedWindow: this._handoffNoticedWindow,
       label,
       createdAt: Date.now(),
     };
@@ -1661,6 +1694,9 @@ export class ContextChef {
         { ...a },
       ]),
     );
+    // Restored together with the lineage the flag is compared against: a
+    // snapshot from before this field simply had not noticed anything yet.
+    this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);

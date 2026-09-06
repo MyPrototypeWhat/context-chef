@@ -198,6 +198,134 @@ describe('FileSystemBackend', () => {
     );
     expect(backend.list('notes').map((e) => e.path)).toEqual(['a.md']);
   });
+
+  // Regression: "FileSystemBackend has no path confinement; backslash traversal
+  // escapes the store root on Windows". The dispatcher's '/'-based `..` guard
+  // cannot see a Windows separator, so containment has to live here too.
+  describe('path confinement', () => {
+    const escapes = [
+      ['a backslash-separated traversal', '..\\..\\evil.txt'],
+      ['a plain backslash', 'notes\\evil.txt'],
+      ['a posix traversal', '../evil.txt'],
+      ['a nested traversal', 'sub/../../evil.txt'],
+      ['an absolute path', path.join(TMP_ROOT, 'evil.txt')],
+    ] as const;
+
+    it.each(escapes)('refuses to name a file outside the namespace directory: %s', (_why, key) => {
+      const backend = new FileSystemBackend(makeDir());
+      expect(() => backend.getPhysicalPath('notes', key)).toThrow(/FileSystemBackend/);
+    });
+
+    it.each(escapes)('refuses to write, read or delete through one: %s', (_why, key) => {
+      const backend = new FileSystemBackend(makeDir());
+      expect(() => backend.write('notes', key, entry('pwned'))).toThrow(/FileSystemBackend/);
+      expect(() => backend.read('notes', key)).toThrow(/FileSystemBackend/);
+      expect(() => backend.delete('notes', key)).toThrow(/FileSystemBackend/);
+      expect(() => backend.exists('notes', key)).toThrow(/FileSystemBackend/);
+    });
+
+    it('leaves nothing on disk when a traversing write is refused', () => {
+      const dir = makeDir();
+      const backend = new FileSystemBackend(dir);
+      expect(() => backend.write('notes', '..\\..\\evil.txt', entry('pwned'))).toThrow();
+
+      expect(fs.existsSync(path.join(path.dirname(dir), 'evil.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'notes'))).toBe(false);
+    });
+
+    it('refuses a namespace that is not a single path segment', () => {
+      const backend = new FileSystemBackend(makeDir());
+      for (const ns of ['..', '.', '', 'a/b', 'a\\b']) {
+        expect(() => backend.list(ns)).toThrow(/not a usable namespace/);
+      }
+    });
+
+    it('still accepts ordinary keys with spaces, dots and unicode', () => {
+      const dir = makeDir();
+      const backend = new FileSystemBackend(dir);
+      for (const key of ['my note.md', 'v1.2.3.json', '笔记.md', 'a..b.md']) {
+        backend.write('notes', key, entry('ok'));
+        expect(backend.read('notes', key)?.content).toBe('ok');
+      }
+    });
+  });
+
+  // Regression: "Entries with '/' in the path are written but invisible to
+  // list/readAll" — write() creates the nested directory, so the walk has to
+  // find its way back out again.
+  describe('nested paths', () => {
+    it('lists an entry whose key contains a slash', () => {
+      const backend = new FileSystemBackend(makeDir());
+      backend.write('memory', 'flat', entry('A'));
+      backend.write('memory', 'notes/todo', entry('B'));
+      backend.write('memory', 'notes/deep/er', entry('C'));
+
+      expect(
+        backend
+          .list('memory')
+          .map((e) => e.path)
+          .sort(),
+      ).toEqual(['flat', 'notes/deep/er', 'notes/todo']);
+      expect([...backend.readAll('memory').keys()].sort()).toEqual([
+        'flat',
+        'notes/deep/er',
+        'notes/todo',
+      ]);
+      expect(Object.keys(backend.snapshot('memory')).sort()).toEqual([
+        'flat',
+        'notes/deep/er',
+        'notes/todo',
+      ]);
+    });
+
+    it('a nested path round-trips through list', () => {
+      const backend = new FileSystemBackend(makeDir());
+      backend.write('notes', 'dir/file.md', entry('nested'));
+
+      const [listed] = backend.list('notes');
+      expect(listed.path).toBe('dir/file.md');
+      expect(backend.read('notes', listed.path)?.content).toBe('nested');
+    });
+
+    it('scopes a prefix to the nested path', () => {
+      const backend = new FileSystemBackend(makeDir());
+      backend.write('notes', 'dir/a.md', entry('a'));
+      backend.write('notes', 'other/b.md', entry('b'));
+
+      expect(backend.list('notes', 'dir/').map((e) => e.path)).toEqual(['dir/a.md']);
+    });
+
+    it('restore clears nested entries too', () => {
+      const backend = new FileSystemBackend(makeDir());
+      backend.write('notes', 'dir/gone.md', entry('gone'));
+      backend.restore('notes', { 'kept.md': entry('kept') });
+
+      expect(backend.list('notes').map((e) => e.path)).toEqual(['kept.md']);
+      expect(backend.read('notes', 'dir/gone.md')).toBeNull();
+    });
+
+    it('a flat layout still ignores files under a subdirectory it does not own', () => {
+      const dir = makeDir();
+      const backend = new FileSystemBackend(dir, {
+        layouts: {
+          vfs: { format: 'raw', dir, decode: (f) => (f.startsWith('vfs_') ? f : null) },
+        },
+      });
+      backend.write('vfs', 'vfs_1.txt', entry('a'));
+      backend.write('notes', 'vfs_lookalike.txt', entry('not ours'));
+
+      expect(backend.list('vfs').map((e) => e.path)).toEqual(['vfs_1.txt']);
+    });
+
+    it('never walks into a symlinked directory', () => {
+      const dir = makeDir();
+      const backend = new FileSystemBackend(dir);
+      backend.write('notes', 'a.md', entry('a'));
+      fs.symlinkSync(path.join(dir, 'notes'), path.join(dir, 'notes', 'loop'), 'dir');
+
+      expect(backend.list('notes').map((e) => e.path)).toEqual(['a.md']);
+    });
+  });
 });
 
 describe('InMemoryBackend', () => {

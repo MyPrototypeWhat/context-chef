@@ -20,7 +20,7 @@ interface StorageBackend {
   delete(ns: string, path: string): MaybePromise<boolean>;
   list(ns: string, prefix?: string): MaybePromise<ListedEntry[]>;
   // optional capabilities, queried rather than assumed:
-  readAll?(ns: string, prefix?: string): MaybePromise<Record<string, StoredEntry>>;
+  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // Map (backend order) or Record
   exists?(ns: string, path: string): MaybePromise<boolean>;
   append?(ns: string, path: string, content: string): MaybePromise<void>;
   search?(ns: string, query: string): MaybePromise<SearchHit[]>;
@@ -40,7 +40,7 @@ Two backends ship with the library:
 | `InMemoryBackend` | a `Map` per namespace | yes — ephemeral, ideal for tests |
 | `FileSystemBackend` | one directory per namespace under a root | yes — the on-disk one |
 
-`FileSystemBackend` keeps a per-namespace on-disk layout, so both legacy formats (the flat `vfs_<ts>_<hash>.txt` VFS files and the JSON memory entries) round-trip unchanged.
+`FileSystemBackend` keeps a per-namespace on-disk layout, which is how the Offloader's flat `vfs_<ts>_<hash>.txt` files round-trip unchanged — the Offloader installs that layout for `vfs/`. It does **not** read `VFSMemoryStore`'s legacy `<base64url>.mem` files: that layout lives inside `VFSMemoryStore`, and a bare `FileSystemBackend` writes `memory/<key>` with a `{ content, meta }` envelope instead. See [migrating](#migrating-from-the-4-1-storage-interfaces) before pointing one at an existing memory directory.
 
 ## Namespaces
 
@@ -49,12 +49,12 @@ Two backends ship with the library:
 | `memory/` | durable facts worth carrying between conversations | [Memory](/guide/memory), the model | injected into every compile |
 | `notes/` | the model's own working scratch space | the model, via the `context` tool | only when the model reads it |
 | `vfs/` | tool output too large to keep inline | [the Offloader](/guide/offloading-vfs) | a truncation marker plus a URI |
-| `archive/` | spans compacted out of the window | [overflow](/guide/history-compression) `archive` | a citation in the summary |
+| `archive/` | reserved for spans compacted out of the window | nothing in 4.x — `overflow.archive` still writes into `vfs/` | a citation in the summary |
 
 `memory/` is the only namespace that is shown to the model automatically; everything else stays out of the window until the model asks for it. That is the whole point of `notes/`: a place to put a plan or a running log that costs nothing per turn.
 
 ::: tip Archive still writes into `vfs/` in 4.x
-`overflow.archive` keeps storing spans under `context://vfs/...` so existing URIs stay byte-identical. The dedicated `archive/` namespace exists, is readable, and becomes the archive's home in 5.0.
+`overflow.archive` keeps storing spans under `context://vfs/...` so existing URIs stay byte-identical. The dedicated `archive/` namespace is reserved and read-only: nothing writes into it in 4.x, so neither the `context` tool description nor the store instruction mentions it — a namespace the model would find empty is not worth the prefix bytes. An `archive/` path it is given still resolves, through the same recall rendering as `vfs/`. It becomes the archive's home in 5.0.
 :::
 
 ## `ChefConfig.store`
@@ -127,7 +127,9 @@ Behaviour is per-namespace, and each namespace keeps its module's semantics:
 - **`notes/`** goes straight to `store.namespace('notes')` — line-numbered `view`, single-occurrence `str_replace`, 0-based `insert`, and a `search` that falls back to list-plus-get when the backend has no native search.
 - **`vfs/`** and **`archive/`** are view-only by default and render through the same recall path as `recall_context`.
 
-Model-facing mistakes never throw. An unknown path, a missing argument, a write to a read-only namespace, a rejected memory key and a veto from `onMemoryUpdate` all come back as `Error: …` text the model can read and correct. Only a tool name the chef does not own throws — that is a routing bug in your loop, not something the model can fix.
+**Paths are validated before anything is read or written.** A namespace is one plain segment: `.`, `..`, an empty name, a backslash, a `:` or a `/` inside it are all rejected, as are control characters. Every path segment gets the same treatment — no `.`, no `..`, no empty segment except the single trailing one that means "directory", no backslash. Nested paths are otherwise free: `notes/dir/file` is an ordinary key, and `view` on `notes/` lists it recursively. `FileSystemBackend` re-checks at the bottom of the stack and refuses any physical path that resolves outside its namespace directory.
+
+Model-facing mistakes never throw. An unknown path, a rejected one, a missing argument, a write to a read-only namespace, a rejected memory key and a veto from `onMemoryUpdate` all come back as `Error: …` text the model can read and correct. Only a tool name the chef does not own throws — that is a routing bug in your loop, not something the model can fix.
 
 ### Access policy
 
@@ -214,11 +216,29 @@ Nothing breaks. The old interfaces are deprecated wrappers over the new substrat
 | `MemoryStore` | `StorageBackend` | wrapped by `Store.fromMemoryStore`; `MemoryStoreEntry` maps 1:1 onto `StoredEntry.meta` |
 | `VFSStorageAdapter` | `StorageBackend` | wrapped by `Store.fromVfsAdapter` |
 | `FileSystemAdapter` | `FileSystemBackend` | same on-disk format |
-| `VFSMemoryStore` | `FileSystemBackend` + `memory` namespace | it always *was* `memory/` on the VFS backend; rebuilt on the new backend with the same on-disk format |
+| `VFSMemoryStore` | `FileSystemBackend` + `memory` namespace | for a **new** directory. `VFSMemoryStore` is rebuilt on `FileSystemBackend` and still reads the files it wrote, but it installs that layout itself — see below |
 | `InMemoryStore` | `InMemoryBackend` | still exported and still works |
 | `memory.store` / `vfs.storage` per module | one `ChefConfig.store` | per-module stores still win when set |
 
 `Memory` and `Offloader` accept all of these — a legacy store, a `StorageBackend`, or a `Store` — and their public APIs are unchanged. They are removed in 5.0.
+
+### `VFSMemoryStore` is the one row that is not a directory swap
+
+Its on-disk layout — one base64url-named `.mem` file per key, holding a bare `MemoryStoreEntry` — is installed by `VFSMemoryStore`'s own constructor, not by `FileSystemBackend`. Point a plain backend at a `./.context_memory` directory written by 4.1 and it lists nothing, reads `null`, and starts writing `memory/<key>` envelopes beside the files it ignored. Two ways to keep the entries:
+
+```typescript
+import { ContextChef, Store, VFSMemoryStore } from '@context-chef/core';
+
+// Keep the deprecated store — it still reads and writes its own files.
+new ContextChef({ memory: { store: new VFSMemoryStore('./.context_memory') } });
+
+// Or wrap it: same files, on the new substrate.
+new ContextChef({
+  memory: { store: Store.fromMemoryStore(new VFSMemoryStore('./.context_memory')) },
+});
+```
+
+A legacy store is a single flat keyspace, so the wrapper serves only `memory/`. Give the chef a `FileSystemBackend` for a fresh root when you want one backend behind `notes/`, `vfs/` and `archive/` too, and migrate the entries across with `memory.getAll()`.
 
 ## Where to go next
 

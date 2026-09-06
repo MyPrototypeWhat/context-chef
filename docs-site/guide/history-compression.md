@@ -52,7 +52,7 @@ const portable = new ContextChef({
 });
 ```
 
-`summarize()` and `anchored()` take the same options — `compressionModel`, `compressionGuidelines`, `customCompressionInstructions`, `minShrinkRatio`, `validateCompression`, `preserveRatio`, `preserveRecentMessages`, `toolResultStubThreshold`, `split`. These are the fields that used to live on `JanitorConfig`; see [the deprecation table](#the-4-1-compression-options).
+`summarize()` and `anchored()` take the same options — `compressionModel`, `compressionGuidelines`, `customCompressionInstructions`, `minShrinkRatio`, `validateCompression`, `preserveRatio`, `preserveRecentMessages`, `toolResultStubThreshold`, `split`. These are the same fields you can set directly on `janitor`; see [the 4.1 compression options](#the-4-1-compression-options).
 
 ### Where the split lands
 
@@ -110,7 +110,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 In the tokenizer path the default is to take the higher of the local calculation and the fed value; `usagePreference` switches to `'feedFirst'` (trust the API truth) or `'tokenizerFirst'` (ignore fed entirely). Without a `tokenizer` the union narrows to `'max' | 'feedFirst'` and TypeScript rejects `'tokenizerFirst'` at compile time.
 
-> **Note:** without a `compressionModel`, `summarize()` drops the evicted span instead of summarizing it. A console warning is printed at construction if neither `tokenizer` nor `compressionModel` is provided.
+> **Note:** without a `compressionModel`, `summarize()` drops the evicted span instead of summarizing it. A console warning is printed once at construction if neither `tokenizer` nor `compressionModel` is provided, unless an explicit `overflow.strategy` (or `janitor.strategy`) says you meant it.
 
 ## Quality gates
 
@@ -220,6 +220,10 @@ Under `tools: 'unified'` the tool is emitted automatically when `overflow.handof
 
 `chef.requestNewContext()` is a one-shot force: the next `compile()` applies the strategy whatever the budget says. What "new window" means is whatever the installed strategy does — `summarize()` leaves a summary, `reset()` leaves a stub, `archive` keeps the span retrievable either way. Unlike `clearHistory()`, nothing is discarded behind the library's back: the strategy still decides what survives, a `before-overflow` handler can still veto, and the circuit breaker still applies. The request is consumed by one compile whether or not the window actually changed.
 
+**Where a forced overflow cuts.** Under `summarize()` and `anchored()` a forced pass compresses every turn but the most recent one, and `preserveRecentMessages` / `preserveRatio` do not apply — those rules exist to keep a full window under the trigger, and a forced pass is not about the budget. The turn the request arrived in is held back so the model has somewhere to read the answer. With only one turn in the window nothing happens, and the result says so in `meta.reason`.
+
+**A forced overflow that cannot run is never silent.** Two compiles decline overflow outright: a server-managed target (the provider owns the window) and a `before-overflow` veto. The request is consumed either way — the model was told a new window was starting, so the drop is reported through a `pipeline:invariant` event and one warning per cause, naming which of the two it was and what to do about it.
+
 ## Window lineage <Badge type="tip" text="4.2" />
 
 Every overflow that lands closes one context window and opens the next. The runner keeps `{ first, previous?, current }` and advances it **at commit time only**, so a background result that went stale never moves the chain — it records windows that existed, not windows that were considered.
@@ -236,7 +240,7 @@ payload.meta?.windowId;
 
 Two ids, deliberately different: `OverflowResult.meta.windowId` is the window the strategy **acted on**, and `CompileMeta.windowId` is the window the payload **belongs to**. Two payloads carrying the same id were compiled against the same window, so a change is your signal that the history behind the model was rewritten.
 
-The lineage is what makes the rest work: `anchored()` keys its anchor document by window id (so a restored snapshot brings back the anchor that window actually had), the handoff notice is once-per-window, and `reset()`'s stub names the window it closed. It rides `JanitorSnapshot` and `ChefSnapshot` and round-trips through `snapshot()` / `restore()`; `clearHistory()` starts a fresh lineage.
+The lineage is what makes the rest work: `anchored()` keys its anchor document by window id (so a restored snapshot brings back the anchor that window actually had), the handoff notice is once-per-window, and `reset()`'s stub names the window it closed. It rides `JanitorSnapshot` and `ChefSnapshot` and round-trips through `snapshot()` / `restore()`; `clearHistory()` starts a fresh lineage. The once-per-window flag travels with it as `ChefSnapshot.handoffNoticedWindow`, so a restored session does not re-issue a notice the model has already seen.
 
 ## Writing your own strategy <Badge type="tip" text="4.2" />
 
@@ -247,13 +251,18 @@ interface OverflowStrategy {
   readonly name: string;
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // the result actually entered the window
+  pending?(): boolean;                     // a finished result is still waiting to land
   snapshot?(): unknown;                    // serialized into JanitorSnapshot
   restore?(state: unknown): void;
   attach?(runner: OverflowRunner): void;   // the runner installs its breaker + logger
 }
 ```
 
-`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window` and an optional `signal`. `OverflowResult` carries the new `history`, everything `evicted`, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
+`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window`, `forced` and an optional `signal`. `OverflowResult` carries the new `history`, everything `evicted`, an optional `span`, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
+
+`evicted` means "left the window". `span` is the range the summary covers — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. The runner reads `span ?? evicted`, so omit it when nothing was re-inserted; that array is what `onCompress` gets as `details.compressedMessages`, what the archive stores, and what the citation counts.
+
+`pending()` is optional and belongs to off-turn strategies. The runner asks before evaluating the budget: `background()` answers `true` while a finished job is waiting, so a summary that completed after the history dropped back under the trigger still lands on the next compile rather than waiting for the window to fill again.
 
 ```typescript
 const dropToolResults: OverflowStrategy = {
@@ -301,12 +310,12 @@ These stay on the Janitor. They are budget and lifecycle concerns, not policy.
 | `tokenizer` | `(msgs: Message[]) => number` | — | Enables the tokenizer path for precise per-message token calculation. |
 | `usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | `'max'` | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. |
 | `onCompress` | `(summary, count, details) => void` | — | Fires after an overflow lands. `details.compressedMessages` is the exact slice of history the summary replaced. |
-| `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | Fires before the strategy runs. Deprecated — register on the `before-overflow` slot instead. |
+| `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | Fires once the budget verdict says overflow will run, before the strategy. Return a replacement history to intervene, `null` to proceed. Not deprecated. |
 | `logger` | `ChefLogger` | — | Sink for degradation warnings (storage / compaction); defaults to `console`. |
 
 ## The 4.1 compression options
 
-Every one of them still works, keeps its exact behavior, and is removed in 5.0. Setting both an alias and `overflow.strategy` logs a warning once and the strategy wins.
+Two groups, and they are not the same thing. The **aliases** below are deprecated: each still works, keeps its exact behavior, and is removed in 5.0. Setting one alongside `overflow.strategy` logs a warning once and the strategy wins.
 
 | Deprecated | Replacement |
 |---|---|
@@ -315,17 +324,10 @@ Every one of them still works, keeps its exact behavior, and is removed in 5.0. 
 | `janitor.compressionScheduling: 'background'` | wrap the strategy in `background(...)` |
 | `janitor.archive` | `overflow.archive` |
 | `contextManagement.strategy: 'server'` + `contextManagement.server` | `overflow.strategy = server(config, { fallback })` |
-| `janitor.compressionModel` | `summarize({ compressionModel })` |
-| `janitor.compressionGuidelines` | `summarize({ compressionGuidelines })` |
-| `janitor.customCompressionInstructions` | `summarize({ customCompressionInstructions })` |
-| `janitor.minShrinkRatio` | `summarize({ minShrinkRatio })` |
-| `janitor.validateCompression` | `summarize({ validateCompression })` |
-| `janitor.preserveRatio` | `summarize({ preserveRatio })` |
-| `janitor.preserveRecentMessages` | `summarize({ preserveRecentMessages })` |
-| `janitor.toolResultStubThreshold` | `summarize({ toolResultStubThreshold })` |
-| `janitor.onBeforeCompress` | `chef.use('before-overflow', ...)` |
 
 The `contextManagement` alias builds `server(cfg, { fallback: <the default client strategy> })`, which is exactly the v4 behavior: server-side on Anthropic, client-side compression everywhere else. See [Server-side context management](/guide/server-side-context-management).
+
+The tuning options are the other group, and they are **not** deprecated: `janitor.compressionModel`, `compressionGuidelines`, `customCompressionInstructions`, `minShrinkRatio`, `validateCompression`, `preserveRecentMessages`, `preserveRatio` and `toolResultStubThreshold`. With no `overflow.strategy` configured the janitor resolves exactly those fields into the default `summarize()`, so they stay the supported way to configure it without importing a factory. `summarize()` uses the same names, so composing the strategy yourself is a move rather than a rename — and an explicit `overflow.strategy` supersedes them (with one warning), it does not deprecate them.
 
 ## `chef.reportTokenUsage(tokenCount): this`
 
@@ -338,7 +340,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 ## Intervening before overflow
 
-`onBeforeCompress` (deprecated) and the `before-overflow` slot are the same code path. The slot sees the runner's real budget and can veto the phase entirely by returning `false`:
+`onBeforeCompress` and the `before-overflow` slot are two different boundaries, and both are supported. `onBeforeCompress` is a runner callback: it fires only once the budget verdict says overflow will run, and it may return a replacement history that the runner then re-evaluates. The slot is chef-level — it fires on every compile, before any verdict, sees the runner's real budget, and can veto the phase entirely by returning `false`:
 
 ```typescript
 chef.use('before-overflow', ({ history, budget }) => {

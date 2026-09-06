@@ -64,6 +64,9 @@ export function reset(options: ResetOptions = {}): OverflowStrategy {
       return {
         history: [renderSummaryMessage(notice), ...kept],
         evicted,
+        // Nothing was compressed around the pinned messages — the notice
+        // stands for exactly what left.
+        span: evicted,
         summary: notice,
         meta: { strategy: 'reset', windowId: input.window.current, changed: true },
       };

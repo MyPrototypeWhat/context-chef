@@ -225,6 +225,29 @@ describe('ownsTool / handleTool', () => {
       'x'.repeat(5000),
     );
   });
+
+  // Regression: "recall_context through chef.handleTool is broken for any
+  // custom vfs.uriScheme". MIGRATION-5 tells hosts to replace their own
+  // `recall_context` branch (chef.resolveRecall, scheme-agnostic) with
+  // handleTool — the swap must not lose recall.
+  it('reads back offloaded content under a custom vfs.uriScheme', async () => {
+    const instance = chef({ vfs: { threshold: 20, uriScheme: 'memfs://' } });
+    const marker = await instance.offloadAsync('A'.repeat(500), {
+      threshold: 20,
+      headChars: 5,
+      tailChars: 5,
+    });
+    const uri = marker.match(/memfs:\/\/\S+?\.txt/)?.[0];
+
+    expect(uri).toBeDefined();
+    expect(await instance.resolveRecall(uri as string)).toBe('A'.repeat(500));
+    expect(await instance.handleTool({ name: 'recall_context', arguments: { uri } })).toBe(
+      'A'.repeat(500),
+    );
+    expect(
+      await instance.handleTool({ name: 'context', arguments: { command: 'view', path: uri } }),
+    ).toBe('A'.repeat(500));
+  });
 });
 
 describe('ChefConfig.store', () => {

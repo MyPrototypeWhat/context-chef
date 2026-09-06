@@ -47,6 +47,22 @@ export type {
 const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
 
 /**
+ * The diagnostic for the library's most damaging silent-failure mode: with
+ * neither a tokenizer nor a compression model, the `feedTokenUsage` path drops
+ * the oldest span behind a placeholder summary instead of compressing it.
+ *
+ * Shared with `ContextChef`, which builds its Janitor with a resolved strategy
+ * always set and so has to make the same call itself, on the config the user
+ * actually wrote.
+ *
+ * @internal
+ */
+export const NO_COMPRESSION_MODEL_WARNING =
+  '[Janitor] Warning: No tokenizer and no compressionModel configured. ' +
+  'In the feedTokenUsage path, compression without a compressionModel will discard old messages ' +
+  'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.';
+
+/**
  * Compression triggers at this fraction of `contextWindow` by default.
  * "Pre-rot": model quality degrades well before the hard window limit, so
  * compressing early keeps the model in its reliable range. Set
@@ -551,13 +567,12 @@ export class Janitor {
   private readonly _vocabulary: Vocabulary;
 
   constructor(private config: JanitorConfig) {
-    // Warn if feedTokenUsage path is likely used without a compressionModel
+    // The feedTokenUsage path with nothing to compress with. ContextChef
+    // always installs a resolved strategy, so this only ever fires for a
+    // standalone Janitor — the chef makes the same call itself, against the
+    // strategy the USER supplied rather than the resolved one.
     if (!config.tokenizer && !config.compressionModel && !config.strategy) {
-      (config.logger ?? console).warn(
-        '[Janitor] Warning: No tokenizer and no compressionModel configured. ' +
-          'In the feedTokenUsage path, compression without a compressionModel will discard old messages ' +
-          'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.',
-      );
+      (config.logger ?? console).warn(NO_COMPRESSION_MODEL_WARNING);
     }
     if (config.archive === 'vfs') {
       (config.logger ?? console).warn(
@@ -622,7 +637,7 @@ export class Janitor {
    * @internal
    */
   public get _pendingBackground(): { settled: boolean } | undefined {
-    return (this._strategy as Partial<BackgroundOverflowStrategy>).pending;
+    return (this._strategy as Partial<BackgroundOverflowStrategy>).pendingJob;
   }
 
   public snapshotState(): JanitorSnapshot {
@@ -770,15 +785,27 @@ export class Janitor {
       },
     });
 
+    // A background job that finished is offered the window whatever the budget
+    // says: it was over budget when the job started, the summary is already
+    // paid for, and holding it means the model keeps paying for the span it
+    // replaces. Asked before the circuit breaker, as it was before 4.2 — the
+    // breaker is there to stop a broken model being hammered, not to hold back
+    // a result that already succeeded.
+    const pendingSwap = history.length > 0 && this._strategy.pending?.() === true;
+
     // Circuit breaker: bail out if compression is consistently failing.
-    if (this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
+    if (!pendingSwap && this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
       return idle(
         `circuit breaker open after ${MAX_CONSECUTIVE_COMPRESSION_FAILURES} consecutive compression failures`,
       );
     }
 
     const prepared = await this._prepareOverflow(history, force);
-    if (!prepared.budget) {
+    // The swap-in path runs under a plain reading: `_prepareOverflow` declined
+    // to overflow, and the strategy is being called only to let the finished
+    // job in.
+    const budget = prepared.budget ?? (pendingSwap ? this.readBudget(prepared.history) : null);
+    if (!budget) {
       return idle(
         force ? 'nothing to overflow — history is empty' : 'within budget',
         prepared.history,
@@ -787,10 +814,11 @@ export class Janitor {
 
     const result = await this._strategy.apply({
       history: prepared.history,
-      budget: prepared.budget,
+      budget,
       tokenizer: this.config.tokenizer ?? estimateObject,
       pinned: extractPinnedMessages(prepared.history),
       window: this._window,
+      forced: force,
       signal,
     });
     if (!result.meta.changed) return result;
@@ -804,18 +832,20 @@ export class Janitor {
     advanceWindow(this._window);
     this._strategy.commit?.(result);
 
-    // Archive is strategy-agnostic: whatever left the window is what gets
-    // stored, and the citation goes back into the summary that replaced it.
+    // Archive is strategy-agnostic: whatever the strategy compressed is what
+    // gets stored, and the citation goes back into the summary that replaced it.
     const archived = await this._landResult(result);
+    // `span` over `evicted`: the boundary the hook is told about is the span
+    // the summary replaced, pinned messages included. They stayed in the
+    // window, but they are part of what the summary now stands for, and a sink
+    // persisting `compressedMessages` must not lose them.
+    const span = archived.span ?? archived.evicted;
     await this._fireOnCompress(
       archived.summary === undefined
-        ? {
-            role: 'system',
-            content: Prompts.getFallbackCompressionSummary(archived.evicted.length),
-          }
+        ? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) }
         : archived.history[0],
-      archived.evicted.length,
-      { compressedMessages: archived.evicted },
+      span.length,
+      { compressedMessages: span },
     );
     this._suppressNextCompression = true;
     return archived;
@@ -907,20 +937,24 @@ export class Janitor {
   }
 
   /**
-   * Reversible compression: stores the evicted span and returns the citation
-   * line to append to the summary that replaced it. Best-effort — a failing
-   * store logs a warning and the compression proceeds without a citation.
+   * Reversible compression: stores the compressed span and returns the
+   * citation line to append to the summary that replaced it. Best-effort — a
+   * failing store logs a warning and the compression proceeds without a
+   * citation.
    */
   private async _archiveEvicted(result: OverflowResult): Promise<string> {
     const archive = this._archive;
-    if (!archive || result.evicted.length === 0) return '';
+    // The stored span is the one the summary replaced, so a pinned turn inside
+    // it is archived with its neighbours and the transcript stays contiguous.
+    const span = result.span ?? result.evicted;
+    if (!archive || span.length === 0) return '';
 
     try {
-      const serialized = JSON.stringify({ version: 1, messages: result.evicted });
-      const uri = await archive.store(serialized, { messageCount: result.evicted.length });
+      const serialized = JSON.stringify({ version: 1, messages: span });
+      const uri = await archive.store(serialized, { messageCount: span.length });
       // Nothing to cite it in — the strategy evicted without summarizing.
       if (result.summary === undefined) return '';
-      return `\n\n${Prompts.getArchiveCitation(uri, result.evicted.length)}`;
+      return `\n\n${Prompts.getArchiveCitation(uri, span.length)}`;
     } catch (error) {
       this._logger.warn(
         '[context-chef] compression archive store failed — proceeding without a citation',

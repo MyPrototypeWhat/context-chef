@@ -155,6 +155,48 @@ describe('summarize()', () => {
     expect(thrownRunner.failures[0]).toContain('compression model failed');
   });
 
+  it('spans the whole compressed range, pinned messages included', async () => {
+    const messages = history(5);
+    messages[1] = { ...messages[1], pinned: true };
+    const [strategy] = attached(
+      summarize({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: 1 }),
+    );
+
+    const result = await strategy.apply(makeInput({ history: messages, pinned: [messages[1]] }));
+
+    // `evicted` is what LEFT; `span` is what the summary now stands for.
+    expect(result.evicted).toHaveLength(3);
+    expect(result.span).toEqual(messages.slice(0, 4));
+    expect(result.span).toContain(messages[1]);
+  });
+
+  it('folds every turn but the last one when the overflow was forced', async () => {
+    const [strategy] = attached(
+      // A preserve budget that would keep the whole history: a forced overflow
+      // ignores it — the request is the model saying the work is finished.
+      summarize({ compressionModel: model, split: 'ratio', preserveRatio: 100 }),
+    );
+
+    const idle = await strategy.apply(makeInput());
+    expect(idle.meta.changed).toBe(false);
+
+    const forced = await strategy.apply(makeInput({ forced: true }));
+
+    expect(forced.meta.changed).toBe(true);
+    expect(forced.history).toHaveLength(2);
+    expect(forced.history.at(-1)?.content).toBe('msg-5');
+    expect(forced.span).toHaveLength(4);
+  });
+
+  it('declines a forced overflow with only the pending turn in the window', async () => {
+    const [strategy] = attached(summarize({ compressionModel: model }));
+
+    const result = await strategy.apply(makeInput({ history: history(1), forced: true }));
+
+    expect(result.meta.changed).toBe(false);
+    expect(result.meta.reason).toContain('forced overflow');
+  });
+
   it('changes nothing when the preserved tail already covers the whole history', async () => {
     const [strategy] = attached(
       summarize({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: 10 }),
@@ -366,12 +408,38 @@ describe('chain()', () => {
     expect(later).not.toHaveBeenCalled();
     expect(result.history).toHaveLength(2);
   });
+
+  it('unions the spans of every step that ran', async () => {
+    const messages = history(5);
+    messages[1] = { ...messages[1], pinned: true };
+    const strategy = chain(
+      summarize({
+        compressionModel: async () => '<summary>S</summary>',
+        split: 'recent-turns',
+        preserveRecentMessages: 2,
+      }),
+      reset(),
+    );
+    const [attachedChain] = attached(strategy);
+
+    const result = await attachedChain.apply(
+      makeInput({ history: messages, pinned: [messages[1]] }),
+    );
+
+    // The pinned message survived both steps, so it never shows up in
+    // `evicted` — but the summary and then the reset notice both stand for it.
+    expect(result.evicted).not.toContain(messages[1]);
+    expect(result.span).toContain(messages[1]);
+    expect(result.span?.slice(0, 3)).toEqual(messages.slice(0, 3));
+    // Every message is counted once, however many steps compressed it.
+    expect(new Set(result.span).size).toBe(result.span?.length);
+  });
 });
 
 describe('background()', () => {
   const settled = (strategy: BackgroundOverflowStrategy) =>
     vi.waitFor(() => {
-      if (!strategy.pending?.settled) throw new Error('not settled');
+      if (!strategy.pendingJob?.settled) throw new Error('not settled');
     });
 
   const inner = () =>
@@ -420,7 +488,7 @@ describe('background()', () => {
 
     expect(result.meta.changed).toBe(false);
     expect(result.history).toBe(edited);
-    expect(strategy.pending).toBeDefined();
+    expect(strategy.pendingJob).toBeDefined();
   });
 
   it('never lets a discarded job touch the anchor document', async () => {
@@ -474,9 +542,9 @@ describe('background()', () => {
     attached(strategy);
 
     await strategy.apply(makeInput());
-    expect(strategy.pending).toBeDefined();
+    expect(strategy.pendingJob).toBeDefined();
 
     strategy.restore?.(undefined);
-    expect(strategy.pending).toBeUndefined();
+    expect(strategy.pendingJob).toBeUndefined();
   });
 });

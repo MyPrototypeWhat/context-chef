@@ -63,6 +63,7 @@ export function server(
       return fallback.apply(input);
     },
     commit: (result) => fallback?.commit?.(result),
+    pending: () => fallback?.pending?.() === true,
     snapshot: () => fallback?.snapshot?.(),
     restore: (state) => fallback?.restore?.(state),
     attach: (runner) => fallback?.attach?.(runner),

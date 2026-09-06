@@ -251,7 +251,7 @@ interface ChefConfig {
 `src/pipeline/phases/<name>.ts`:
 
 ```
-start → transform-tool-results → overflow → handoff → inject → memory
+start → transform-tool-results → handoff → overflow → inject → memory
       → skill → assemble → tail → adapt → audit → done
 ```
 
@@ -451,12 +451,14 @@ interface OverflowInput {
   tokenizer: (m: Message[]) => number;
   pinned: readonly Message[];       // must survive verbatim (turn-scoped)
   window: WindowLineage;            // { first, previous?, current }
+  forced?: boolean;                 // answering requestNewContext() / new_context
   signal?: AbortSignal;
 }
 
 interface OverflowResult {
   history: Message[];               // the new in-window history
-  evicted: Message[];               // what left (archive input)
+  evicted: Message[];               // what left the window
+  span?: Message[];                 // what the summary covers: evicted + re-inserted pinned
   summary?: string;                 // rendered summary text, if any
   meta: { strategy: string; windowId: string; changed: boolean; reason?: string };
 }
@@ -465,6 +467,7 @@ interface OverflowStrategy {
   readonly name: string;
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // only fires when a result lands
+  pending?(): boolean;                     // a finished off-turn result is waiting to land
   attach?(runner: OverflowRunner): void;   // breaker + logger
   snapshot?(): unknown;
   restore?(state: unknown): void;
@@ -616,7 +619,7 @@ interface StorageBackend {
   list(ns: string, prefix?: string): ListedEntry[] | Promise<ListedEntry[]>;
   // Optional, capability-queried — a missing one throws StoreCapabilityError
   // only where it is actually required:
-  readAll?(ns: string): Record<string, StoredEntry> | Promise<Record<string, StoredEntry>>;
+  readAll?(ns: string, prefix?: string): StoredEntries | Promise<StoredEntries>; // Map<string, StoredEntry> (backend order) | Record
   append?(ns: string, path: string, content: string): void | Promise<void>;
   search?(ns: string, query: string): SearchHit[] | Promise<SearchHit[]>;
   snapshot?(ns: string): Record<string, StoredEntry>;
@@ -927,7 +930,7 @@ Note: Pruner's two-layer architecture (namespaces + toolkits) is deliberately tw
 | `updateMemory(key, value, description?)` | `Promise<MemoryEntry \| null>` | null if not found/vetoed |
 | `deleteMemory(key)` | `Promise<boolean>` | false if not found/vetoed |
 
-**Direct methods** (developer use — bypass validation hooks): `set(key, value, options?)`, `get(key)`, `getEntry(key)`, `getAll()`, `delete(key)`.
+**Direct methods** (developer use — bypass validation hooks): `set(key, value, options?)`, `get(key)`, `getEntry(key)`, `getAll()`, `delete(key)`. `getAll()` is one bulk read and preserves the store's own key order, which is the order entries reach the `<memory>` block — same as 4.1.
 
 **Compile-path** (v4): `compileArtifacts()` performs the single store read per compile (sweep expired → selector once → XML + tool defs from the same read); `toXml(entries?)` and `getToolDefinitions(existingKeys?)` accept pre-fetched data.
 
@@ -964,7 +967,7 @@ v4: concurrent `compile()` calls on one instance are serialized (queued); a fail
 
 | Method | Description |
 |---|---|
-| `snapshot(label?): ChefSnapshot` | Full state: history, dynamic state, guardrail options, janitor (incl. anchor doc + breaker), memory, pruner, active skill name + instructions |
+| `snapshot(label?): ChefSnapshot` | Full state: history, dynamic state, guardrail options, janitor (incl. anchor doc + breaker), memory, pruner, active skill name + instructions, and `handoffNoticedWindow` (the window the handoff notice was already issued for) |
 | `restore(snapshot): this` | Roll back everything. Skills re-resolve by name against the CURRENT registry; persisted instructions survive even with an empty registry. Pending background compressions are dropped. |
 
 ### Events
