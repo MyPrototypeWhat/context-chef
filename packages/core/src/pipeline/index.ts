@@ -8,8 +8,6 @@
 
 export {
   CompileContext,
-  type CompileWindow,
-  createWindowId,
   type Phase,
   type PhaseName,
   type PipelineHost,
@@ -19,6 +17,7 @@ export { adaptPhase } from './phases/adapt';
 export { assemblePhase } from './phases/assemble';
 export { auditPhase } from './phases/audit';
 export { donePhase } from './phases/done';
+export { HANDOFF_ANNOUNCEMENT_ID, handoffPhase } from './phases/handoff';
 export { injectPhase } from './phases/inject';
 export { memoryPhase } from './phases/memory';
 export { overflowPhase } from './phases/overflow';
@@ -40,6 +39,7 @@ import { adaptPhase } from './phases/adapt';
 import { assemblePhase } from './phases/assemble';
 import { auditPhase } from './phases/audit';
 import { donePhase } from './phases/done';
+import { handoffPhase } from './phases/handoff';
 import { injectPhase } from './phases/inject';
 import { memoryPhase } from './phases/memory';
 import { overflowPhase } from './phases/overflow';
@@ -52,6 +52,7 @@ import { transformToolResultsPhase } from './phases/transformToolResults';
 export const COMPILE_PHASES: readonly Phase[] = [
   startPhase,
   transformToolResultsPhase,
+  handoffPhase,
   overflowPhase,
   injectPhase,
   memoryPhase,
@@ -68,7 +69,8 @@ export const COMPILE_PHASES: readonly Phase[] = [
  * the boundaries that existed before the pipeline refactor — every one of them
  * follows an await that can take arbitrarily long (compression model, memory
  * store, user hooks). `start` and `transform-tool-results` check inside the
- * phase instead, where the original code did.
+ * phase instead, where the original code did; `handoff` awaits nothing at all
+ * (a budget reading and a string), with `overflow`'s check right behind it.
  */
 export const ABORT_AFTER_PHASE: ReadonlySet<PhaseName> = new Set<PhaseName>([
   'overflow',

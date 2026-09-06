@@ -14,11 +14,22 @@ import type { Phase } from '../context';
  * compacts — client-side overflow is skipped entirely (mechanical `compact()`
  * and every other module remain available). Non-server-managed targets fall
  * back to the strategy's own client-side policy.
+ *
+ * A pending `chef.requestNewContext()` makes the runner apply the strategy
+ * whatever the budget says. It does not override the two ways a compile can
+ * decline to overflow at all — a server-managed target and a `before-overflow`
+ * veto — because both are statements about who owns this window, not about
+ * whether it is full.
  */
 export const overflowPhase: Phase = {
   name: 'overflow',
   async run(ctx, host) {
     const before = ctx.history;
+    // Read-and-clear: a `requestNewContext()` is answered by exactly one
+    // compile — including one that ends up skipping overflow, because the
+    // answer "not this time" is still an answer and re-asking is the caller's
+    // call, not the pipeline's.
+    const forced = host.takeForcedOverflow();
     let skipped = ctx.target.serverManaged;
 
     const beforeHandlers = host.slots.get('before-overflow');
@@ -33,9 +44,12 @@ export const overflowPhase: Phase = {
 
     let result: OverflowResult | null = null;
     if (!skipped) {
-      result = await host.overflow(before, ctx.window, ctx.signal);
+      result = await host.overflow(before, ctx.signal, forced);
       ctx.history = result.history;
     }
+    // Read after the runner ran: a landed overflow closed the window this
+    // compile started in, and the payload belongs to the one it opened.
+    ctx.meta.windowId = ctx.window.current;
     await host.emit('compress:end', { compressed: ctx.history !== before }, ctx.signal);
 
     for (const handler of host.slots.get('after-overflow')) {

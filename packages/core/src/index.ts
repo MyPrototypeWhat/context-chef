@@ -125,6 +125,8 @@ export {
   type BudgetInfo,
   background,
   chain,
+  getNewContextToolDefinition,
+  HANDOFF_REMAINING_PLACEHOLDER,
   type HandoffConfig,
   isServerStrategy,
   type OverflowAliasConfig,
@@ -132,8 +134,8 @@ export {
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
-  type OverflowWindow,
   type ResetOptions,
+  renderHandoffNotice,
   renderSummaryMessage,
   reset,
   resolveOverflowStrategy,
@@ -142,6 +144,8 @@ export {
   type SummarizeOptions,
   server,
   summarize,
+  validateHandoffConfig,
+  type WindowLineage,
 } from './overflow';
 export type {
   BeforeAssembleContext,

@@ -1,8 +1,8 @@
-import type { ChefConfig, ChefEvents, SkillPlacement } from '../chef';
+import type { Announcement, ChefConfig, ChefEvents, SkillPlacement } from '../chef';
 import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
 import type { Memory } from '../modules/memory';
-import type { BudgetInfo, OverflowResult, OverflowWindow } from '../overflow/types';
+import type { BudgetInfo, HandoffConfig, OverflowResult, WindowLineage } from '../overflow/types';
 import type {
   CompileMeta,
   CompileOptions,
@@ -20,6 +20,7 @@ import type { SlotRegistry } from './slots';
 export type PhaseName =
   | 'start'
   | 'transform-tool-results'
+  | 'handoff'
   | 'overflow'
   | 'inject'
   | 'memory'
@@ -45,17 +46,6 @@ export interface ResolvedTarget {
   serverManaged: boolean;
 }
 
-export { createWindowId } from '../overflow/types';
-
-/**
- * Window lineage stub. Phase 3 turns this into the full `WindowLineage`
- * (`previous` + a fresh id per overflow); Phase 1 allocates one id per chef
- * instance so slot handlers and `OverflowResult.meta` already have a stable
- * key to hang on to. The overflow axis owns the shape — strategies key their
- * state by it.
- */
-export type CompileWindow = OverflowWindow;
-
 /**
  * @internal
  *
@@ -69,7 +59,12 @@ export type CompileWindow = OverflowWindow;
 export class CompileContext {
   readonly options: CompileOptions;
   readonly signal?: AbortSignal;
-  readonly window: CompileWindow;
+  /**
+   * The runner's live window lineage — the same object the Janitor advances,
+   * so `current` read late in the pipeline is the window this payload belongs
+   * to, not the one the compile started in.
+   */
+  readonly window: WindowLineage;
 
   /** Working history: chef history → transformed tool results → post-overflow. */
   history: Message[];
@@ -95,6 +90,15 @@ export class CompileContext {
   /** Tail stitch parts, in the fixed order the tail phase composes them. */
   tailParts: string[] = [];
 
+  /**
+   * The handoff notice for THIS compile, rendered by the `handoff` phase and
+   * delivered by `tail` through the announcement channel. It lives on the
+   * compile rather than on the chef so it cannot outlive the payload it was
+   * written for: no leakage into `getAnnouncements()`, into a snapshot, or
+   * into the next compile.
+   */
+  handoffNotice?: Announcement;
+
   payload?: TargetPayload;
   readonly meta: CompileMeta;
 
@@ -104,7 +108,7 @@ export class CompileContext {
     options: CompileOptions;
     signal?: AbortSignal;
     history: Message[];
-    window: CompileWindow;
+    window: WindowLineage;
   }) {
     this.options = init.options;
     this.signal = init.signal;
@@ -172,19 +176,40 @@ export interface PipelineHost {
     payload: ChefEvents[K],
     signal?: AbortSignal,
   ): Promise<void>;
-  /** One overflow pass through the Janitor runner (client-side overflow). */
-  overflow(
-    history: Message[],
-    window: CompileWindow,
-    signal?: AbortSignal,
-  ): Promise<OverflowResult>;
+  /** The runner's window lineage, live (see {@link CompileContext.window}). */
+  readonly window: WindowLineage;
+  /** The validated handoff budget, when one is configured. */
+  readonly handoff?: Required<HandoffConfig>;
+
+  /**
+   * One overflow pass through the Janitor runner (client-side overflow).
+   * `force` applies the strategy whatever the budget says.
+   */
+  overflow(history: Message[], signal?: AbortSignal, force?: boolean): Promise<OverflowResult>;
   /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
   readBudget(history: Message[]): BudgetInfo;
+  /**
+   * Reads and clears the pending `requestNewContext()` flag. Read-and-clear
+   * because the request belongs to exactly one compile, whatever that compile
+   * then does with it.
+   */
+  takeForcedOverflow(): boolean;
+  /** The window the handoff notice was last issued for, if any. */
+  handoffNoticedWindow(): string | undefined;
+  /** Records that the handoff notice has been issued for `windowId`. */
+  markHandoffNoticed(windowId: string): void;
   shapeMemoryParts(
     dataXml: string,
     injectedMemoryKeys: string[],
   ): { topMessages: Message[]; tailDataXml: string };
-  resolveAnnouncementChannels(isAnthropicTarget: boolean): { systemXml: string; tailXml: string };
+  /**
+   * Standing announcements split by channel, with `extra` (the handoff notice)
+   * appended for this compile only.
+   */
+  resolveAnnouncementChannels(
+    isAnthropicTarget: boolean,
+    extra?: readonly Announcement[],
+  ): { systemXml: string; tailXml: string };
   prunerTools(): ToolDefinition[];
   /** Logs `message` the first time `kind` is seen on this chef instance. */
   warnOnce(kind: string, message: string): void;

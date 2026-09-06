@@ -18,7 +18,7 @@ import {
   server,
   summarize,
 } from '../src/index';
-import type { ChefLogger, Message } from '../src/types';
+import type { ChefLogger, Message, TargetPayload } from '../src/types';
 
 /** Alias conflicts and no-tokenizer paths warn by design; keep the output clean. */
 const silent: ChefLogger = { warn: () => {} };
@@ -38,6 +38,17 @@ const longHistory = (n: number): Message[] =>
   }));
 
 const TARGETS = ['openai', 'anthropic', 'gemini'] as const;
+
+/**
+ * The wire payload, serialized. `meta` is compile-time observability — memory
+ * keys, the active skill, the window id — and the window id is unique per
+ * chef, so comparing two instances' payloads means comparing what actually
+ * goes to the provider.
+ */
+const wire = (payload: TargetPayload): string => {
+  const { meta: _meta, ...rest } = payload;
+  return Assembler.stringifyPayload(rest);
+};
 
 const chefWith = (config: ChefConfig): ContextChef =>
   new ContextChef({ logger: silent, ...config })
@@ -64,8 +75,8 @@ async function expectEquivalent(
     let legacyPayload = '';
     let modernPayload = '';
     for (let i = 0; i < compiles; i++) {
-      legacyPayload = Assembler.stringifyPayload(await a.compile({ target }));
-      modernPayload = Assembler.stringifyPayload(await b.compile({ target }));
+      legacyPayload = wire(await a.compile({ target }));
+      modernPayload = wire(await b.compile({ target }));
       await flush();
     }
     expect(modernPayload).toBe(legacyPayload);

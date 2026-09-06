@@ -32,13 +32,12 @@ import {
   type OverflowStrategy,
   resolveOverflowStrategy,
   server,
+  validateHandoffConfig,
 } from './overflow';
 import {
   ABORT_AFTER_PHASE,
   COMPILE_PHASES,
   CompileContext,
-  type CompileWindow,
-  createWindowId,
   type PhaseName,
   type PipelineHost,
   type SlotHandlers,
@@ -331,7 +330,13 @@ export interface ChefConfig {
   overflow?: {
     strategy?: OverflowStrategy;
     archive?: 'vfs' | CompressionArchiveConfig;
-    /** Reserved — accepted and ignored until the handoff phase ships. */
+    /**
+     * Tokens reserved above the compression trigger for a handoff notice: when
+     * the headroom drops into that band, one compile carries a notice in its
+     * tail telling the model its window is about to be cut, so state worth
+     * keeping can be written to memory/notes while the conversation is still
+     * there to write from. Once per window. Validated at construction.
+     */
     handoff?: HandoffConfig;
   };
 }
@@ -451,11 +456,16 @@ export class ContextChef {
   private _warnedOnce = new Set<string>();
   /** Slot handlers, including the ones the legacy config hooks register. */
   private readonly _slots = new SlotRegistry();
+  /** The validated handoff budget, or undefined when none is configured. */
+  private readonly _handoff?: Required<HandoffConfig>;
   /**
-   * Window lineage stub — one id per chef instance. Phase 3 allocates a fresh
-   * id per overflow and records the previous one; nothing depends on it yet.
+   * The window the handoff notice has already been issued for. Compared by id
+   * rather than counted, so the "once" resets exactly when the window the
+   * notice talked about is gone.
    */
-  private readonly _window: CompileWindow;
+  private _handoffNoticedWindow?: string;
+  /** A pending {@link requestNewContext}, consumed by the next compile. */
+  private _forceOverflow = false;
   /** The pipeline's view of this chef, built once (see {@link PipelineHost}). */
   private readonly _host: PipelineHost;
   /**
@@ -520,8 +530,11 @@ export class ContextChef {
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
     this.skillPlacement = config.skillPlacement ?? 'after_system';
-    const windowId = createWindowId();
-    this._window = { first: windowId, current: windowId };
+    // Before anything is wired: a handoff budget that cannot work is a config
+    // error, and it should surface at the line that wrote it.
+    this._handoff = config.overflow?.handoff
+      ? validateHandoffConfig(config.overflow.handoff)
+      : undefined;
 
     // Legacy lifecycle hooks are slot registrations — one code path, no second
     // idiom. Registering here puts them ahead of anything the caller adds
@@ -735,17 +748,34 @@ export class ContextChef {
       emit(event, payload, signal) {
         return chef.emitter.emit(event, payload, signal);
       },
-      overflow(history, window, signal) {
-        return chef.janitor.overflow(history, window, signal);
+      get window() {
+        return chef.janitor.window;
+      },
+      get handoff() {
+        return chef._handoff;
+      },
+      overflow(history, signal, force) {
+        return chef.janitor.overflow(history, { signal, force });
       },
       readBudget(history) {
         return chef.janitor.readBudget(history);
       },
+      takeForcedOverflow() {
+        const forced = chef._forceOverflow;
+        chef._forceOverflow = false;
+        return forced;
+      },
+      handoffNoticedWindow() {
+        return chef._handoffNoticedWindow;
+      },
+      markHandoffNoticed(windowId) {
+        chef._handoffNoticedWindow = windowId;
+      },
       shapeMemoryParts(dataXml, injectedMemoryKeys) {
         return chef._shapeMemorySandwichParts(dataXml, injectedMemoryKeys);
       },
-      resolveAnnouncementChannels(isAnthropicTarget) {
-        return chef._resolveAnnouncementChannels(isAnthropicTarget);
+      resolveAnnouncementChannels(isAnthropicTarget, extra) {
+        return chef._resolveAnnouncementChannels(isAnthropicTarget, extra);
       },
       prunerTools() {
         return chef._getPrunerTools();
@@ -1145,11 +1175,16 @@ export class ContextChef {
    * support (Sonnet 5) must therefore pass `channel: 'user_tail'` explicitly —
    * mechanism, not policy.
    */
-  private _resolveAnnouncementChannels(isAnthropicTarget: boolean): {
+  private _resolveAnnouncementChannels(
+    isAnthropicTarget: boolean,
+    extra: readonly Announcement[] = [],
+  ): {
     systemXml: string;
     tailXml: string;
   } {
-    const all = [...this._announcements.values()];
+    // `extra` is this compile's own (the handoff notice) — rendered last, and
+    // never part of the standing set.
+    const all = [...this._announcements.values(), ...extra];
     const autoChannel: Exclude<AnnouncementChannel, 'auto'> = isAnthropicTarget
       ? 'system'
       : 'user_tail';
@@ -1286,6 +1321,31 @@ export class ContextChef {
     const { tools } = this.pruner.compile();
     if (tools.length > 0) return tools;
     return this.pruner.getAllTools();
+  }
+
+  /**
+   * Requests a new context window: the next `compile()` applies the overflow
+   * strategy whatever the budget says, instead of waiting for the trigger.
+   *
+   * This is the model-facing side of the overflow axis — dispatch a
+   * `new_context` tool call (see `getNewContextToolDefinition()`) here when
+   * the model decides a chunk of work is finished and its details no longer
+   * need to be in front of it.
+   *
+   * What "new window" means is whatever the installed strategy does:
+   * `summarize()` leaves a summary, `reset()` leaves a stub, `archive` keeps
+   * the span retrievable either way. Unlike {@link clearHistory} this does not
+   * discard the conversation behind the library's back — the strategy is still
+   * the one deciding what survives, and a `before-overflow` handler can still
+   * veto it.
+   *
+   * The request is consumed by one compile, whether or not the window actually
+   * changed (a strategy may decline; the circuit breaker may be open). Call it
+   * again if it must be retried.
+   */
+  public requestNewContext(): this {
+    this._forceOverflow = true;
+    return this;
   }
 
   /**
@@ -1479,7 +1539,9 @@ export class ContextChef {
         options: options ?? {},
         signal,
         history: this.history,
-        window: this._window,
+        // The runner's lineage, by reference: an overflow inside this compile
+        // moves it, and the phases after `overflow` must see where it moved to.
+        window: this.janitor.window,
       });
       for (const phase of COMPILE_PHASES) {
         await phase.run(ctx, this._host);

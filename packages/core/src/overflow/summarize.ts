@@ -18,6 +18,7 @@ import {
   type OverflowRunner,
   type OverflowStrategy,
   unchanged,
+  type WindowLineage,
 } from './types';
 
 const DEFAULT_PRESERVE_RATIO = 0.8;
@@ -112,12 +113,84 @@ export interface SummarizeOptions {
 }
 
 /**
+ * How many windows' anchors are kept. One is enough to run — the anchor of the
+ * window in effect — but a `restore()` puts an older window back in effect,
+ * and an anchor that was dropped in the meantime would silently restart the
+ * document from nothing. A handful of generations covers realistic rollbacks
+ * without letting a long session accumulate anchors forever.
+ */
+const ANCHOR_WINDOW_LIMIT = 8;
+
+/**
  * The anchor document of `anchored()`: a summary that is merged into, rather
  * than rewritten, on every compression. Its own object so the summarizing
  * engine can treat "no anchor" as absence rather than a mode flag.
+ *
+ * Anchors are keyed by window id. Each compression writes the anchor of the
+ * window it opens, and the next one reads it back under that same id, so the
+ * document accumulates along the window lineage — and a snapshot restored to
+ * an earlier window brings back the anchor that window actually had, instead
+ * of whatever the session had drifted to since.
  */
 export class AnchorDocument {
-  value: string | null = null;
+  /** windowId → anchor text, in write order (oldest first). */
+  private readonly byWindow = new Map<string, string>();
+  /**
+   * An anchor restored from a pre-4.2 snapshot, which carried no window id.
+   * The first window to ask for an anchor adopts it — it is the document that
+   * session was building, and the alternative is throwing it away.
+   */
+  private unkeyed: string | null = null;
+
+  /** The anchor `windowId` builds on, or null when it starts from nothing. */
+  read(windowId: string): string | null {
+    const own = this.byWindow.get(windowId);
+    if (own !== undefined) return own;
+    if (this.unkeyed === null) return null;
+    const adopted = this.unkeyed;
+    this.unkeyed = null;
+    this.write(windowId, adopted);
+    return adopted;
+  }
+
+  write(windowId: string, value: string): void {
+    // Re-inserted rather than overwritten so map order stays write order,
+    // which is what the eviction below trims from.
+    this.byWindow.delete(windowId);
+    this.byWindow.set(windowId, value);
+    for (const stale of [...this.byWindow.keys()].slice(0, -ANCHOR_WINDOW_LIMIT)) {
+      this.byWindow.delete(stale);
+    }
+  }
+
+  /** The most recently written anchor, whichever window it belongs to. */
+  get latest(): string | null {
+    let last = this.unkeyed;
+    for (const value of this.byWindow.values()) last = value;
+    return last;
+  }
+
+  /**
+   * `anchorDoc` is the deprecated flat field pre-4.2 snapshots (and
+   * `Janitor.getAnchorDoc()`) read; `anchors` is the per-window state.
+   */
+  snapshot(): { anchorDoc: string | null; anchors: Record<string, string> } {
+    return { anchorDoc: this.latest, anchors: Object.fromEntries(this.byWindow) };
+  }
+
+  restore(state: unknown): void {
+    const { anchorDoc, anchors } = (state ?? {}) as {
+      anchorDoc?: string | null;
+      anchors?: Record<string, string>;
+    };
+    this.byWindow.clear();
+    for (const [windowId, value] of Object.entries(anchors ?? {})) {
+      if (typeof value === 'string') this.byWindow.set(windowId, value);
+    }
+    // Only a snapshot without the per-window map can leave an unkeyed anchor:
+    // from 4.2 on, `anchorDoc` is a projection of a value already in `anchors`.
+    this.unkeyed = anchors === undefined && typeof anchorDoc === 'string' ? anchorDoc : null;
+  }
 }
 
 /**
@@ -132,7 +205,10 @@ export class SummarizingStrategy implements OverflowStrategy {
    * background job may never enter the window, and one that doesn't must
    * leave the anchor untouched.
    */
-  private readonly pendingAnchor = new WeakMap<OverflowResult, string>();
+  private readonly pendingAnchor = new WeakMap<
+    OverflowResult,
+    { summary: string; window: WindowLineage }
+  >();
 
   constructor(
     readonly name: string,
@@ -146,18 +222,18 @@ export class SummarizingStrategy implements OverflowStrategy {
   }
 
   commit(result: OverflowResult): void {
-    const anchorUpdate = this.pendingAnchor.get(result);
-    if (anchorUpdate !== undefined && this.anchor) this.anchor.value = anchorUpdate;
+    const pending = this.pendingAnchor.get(result);
+    // The runner has already advanced the lineage, so `current` is the window
+    // this result opens — the one the next compression reads the anchor for.
+    if (pending && this.anchor) this.anchor.write(pending.window.current, pending.summary);
   }
 
   snapshot(): unknown {
-    return this.anchor ? { anchorDoc: this.anchor.value } : undefined;
+    return this.anchor ? this.anchor.snapshot() : undefined;
   }
 
   restore(state: unknown): void {
-    if (!this.anchor) return;
-    const anchorDoc = (state as { anchorDoc?: string | null } | undefined)?.anchorDoc;
-    this.anchor.value = anchorDoc ?? null;
+    this.anchor?.restore(state);
   }
 
   async apply(input: OverflowInput): Promise<OverflowResult> {
@@ -185,7 +261,7 @@ export class SummarizingStrategy implements OverflowStrategy {
       return { history: [...pinnedInSpan, ...toKeep], evicted, meta };
     }
 
-    const summary = await this.summarizeSpan(toCompress, toKeep);
+    const summary = await this.summarizeSpan(toCompress, toKeep, input.window.current);
     if (summary === null) {
       return unchanged(input, this.name, 'compression rejected — history left unchanged');
     }
@@ -199,7 +275,7 @@ export class SummarizingStrategy implements OverflowStrategy {
     // The anchor moves in `commit`, not here: a background job discarded as
     // stale computed this summary but never put it in the window, and it must
     // not pollute the anchor the next compression builds on.
-    if (this.anchor) this.pendingAnchor.set(result, summary);
+    if (this.anchor) this.pendingAnchor.set(result, { summary, window: input.window });
     return result;
   }
 
@@ -277,10 +353,14 @@ export class SummarizingStrategy implements OverflowStrategy {
    * dropping the span with a bare notice applied only to the model-throw path
    * and made a bad situation worse).
    */
-  private async summarizeSpan(toCompress: Message[], toKeep: Message[]): Promise<string | null> {
+  private async summarizeSpan(
+    toCompress: Message[],
+    toKeep: Message[],
+    windowId: string,
+  ): Promise<string | null> {
     const compressionModel = this.options.compressionModel;
     if (!compressionModel) return null;
-    const anchor = this.anchor;
+    const anchor = this.anchor?.read(windowId) ?? null;
 
     // ── Model call
     let summaryText: string;
@@ -289,9 +369,7 @@ export class SummarizingStrategy implements OverflowStrategy {
         customCompressionInstructions: this.options.customCompressionInstructions,
         toolResultStubThreshold: this.options.toolResultStubThreshold,
         compressionGuidelines: this.options.compressionGuidelines,
-        baseInstruction: anchor
-          ? Prompts.getAnchoredCompactionInstruction(anchor.value)
-          : undefined,
+        baseInstruction: this.anchor ? Prompts.getAnchoredCompactionInstruction(anchor) : undefined,
       });
     } catch (error) {
       this.runner.fail('compression model failed', error);
@@ -319,12 +397,12 @@ export class SummarizingStrategy implements OverflowStrategy {
         0,
       );
       const allowance = (1 - minShrink) * spanChars;
-      const effectiveSize = anchor
-        ? summaryText.length - (anchor.value?.length ?? 0)
+      const effectiveSize = this.anchor
+        ? summaryText.length - (anchor?.length ?? 0)
         : summaryText.length;
       if (spanChars >= MIN_SHRINK_GUARD_SPAN_CHARS && effectiveSize > allowance) {
         this.runner.fail(
-          `compression result failed the shrink guard (${anchor ? 'anchor growth' : 'summary'} ` +
+          `compression result failed the shrink guard (${this.anchor ? 'anchor growth' : 'summary'} ` +
             `${effectiveSize} chars vs span ${spanChars} chars, minShrinkRatio ${minShrink})`,
         );
         return null;

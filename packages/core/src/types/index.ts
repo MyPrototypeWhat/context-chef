@@ -334,6 +334,13 @@ export interface CompileMeta {
   memoryExpiredKeys: string[];
   /** Name of the active skill at compile time, if any was activated. */
   activeSkillName?: string;
+  /**
+   * The context window this payload belongs to (`WindowLineage.current`). It
+   * changes exactly when an overflow lands, so two payloads carrying the same
+   * id were compiled against the same window and a change is the signal that
+   * history behind the model was rewritten.
+   */
+  windowId?: string;
 }
 
 // ─── Per-provider payload types ───

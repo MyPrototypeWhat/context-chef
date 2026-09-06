@@ -259,6 +259,22 @@ Continue the conversation from where it left off without asking the user any fur
 `.trim(),
 
   /**
+   * The handoff notice: injected once per context window, through the tail
+   * channel, when the remaining headroom drops into the configured handoff
+   * budget (`overflow.handoff`). Every `{n_remaining}` is replaced with the
+   * tokens left before the compression trigger.
+   *
+   * Deliberately a statement of state with one suggestion attached. The model
+   * is mid-task when it reads this, and an imperative here would compete with
+   * the system prompt for the turn it still owes the user.
+   */
+  HANDOFF_NOTICE_TEMPLATE:
+    'Your context window is nearly exhausted — about {n_remaining} tokens remain before older ' +
+    'messages are compressed or reset. State that has to outlive this window (decisions taken, ' +
+    'the current plan, file paths and identifiers in play) is worth persisting now with the ' +
+    'tools you have for it; the rest may only survive as a summary.',
+
+  /**
    * Used by Adapters (like OpenAI) that don't support native prefill.
    * Forces the model to start its response with specific text using a system instruction.
    */

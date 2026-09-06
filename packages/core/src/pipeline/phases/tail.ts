@@ -15,7 +15,12 @@ export const tailPhase: Phase = {
   name: 'tail',
   async run(ctx, host) {
     const { isAnthropicTarget } = ctx.target;
-    const announcementXml = host.resolveAnnouncementChannels(isAnthropicTarget);
+    // The handoff notice rides along as an announcement of this compile only —
+    // same rendering, same channel resolution, no standing state.
+    const announcementXml = host.resolveAnnouncementChannels(
+      isAnthropicTarget,
+      ctx.handoffNotice && [ctx.handoffNotice],
+    );
     const tailParts = ctx.tailParts;
 
     // skillPlacement 'tail': standing mode instructions lead the stitch, so

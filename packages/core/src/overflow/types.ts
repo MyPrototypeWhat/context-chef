@@ -30,19 +30,48 @@ export interface BudgetInfo {
 }
 
 /**
- * Lineage of the context window an overflow operates on. Phase 1 allocates one
- * id per chef; Phase 3 turns this into a real chain (`previous` recorded on
- * every overflow that changed the window).
+ * Lineage of the context window an overflow operates on.
+ *
+ * The runner ({@link Janitor}) owns exactly one of these per session and moves
+ * it forward whenever an overflow result actually enters the window: the id
+ * that was `current` becomes `previous`, and a fresh id takes its place. A
+ * result computed speculatively and then discarded (a stale `background()`
+ * job) never moves it — the chain records windows that existed, not windows
+ * that were considered.
+ *
+ * Strategies key their per-window state by `current` (see `anchored()`), and
+ * `CompileMeta.windowId` reports it, so the same id identifies a window in
+ * strategy state, compile metadata and the `reset()` notice.
  */
-export interface OverflowWindow {
+export interface WindowLineage {
+  /** The first window of this lineage. Fixed for the life of the lineage. */
   readonly first: string;
-  current: string;
+  /** The window `current` replaced. Absent until the first overflow lands. */
   previous?: string;
+  /** The window in effect right now. */
+  current: string;
 }
 
 /** Opaque, sortable-enough id for one context window. */
 export function createWindowId(): string {
   return `w_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** A lineage at its first window. */
+export function createWindowLineage(): WindowLineage {
+  const id = createWindowId();
+  return { first: id, current: id };
+}
+
+/**
+ * Closes the current window and opens the next one, IN PLACE — everything
+ * holding the lineage (the compile context, a strategy that captured it from
+ * its input) sees the new id without being handed a new object.
+ */
+export function advanceWindow(window: WindowLineage): WindowLineage {
+  window.previous = window.current;
+  window.current = createWindowId();
+  return window;
 }
 
 /** Everything a strategy needs to decide what leaves the window. */
@@ -59,7 +88,7 @@ export interface OverflowInput {
    * order, by reference — compare with `===`/a `Set`, not by value.
    */
   pinned: readonly Message[];
-  window: OverflowWindow;
+  window: WindowLineage;
   signal?: AbortSignal;
 }
 
@@ -84,6 +113,12 @@ export interface OverflowResult {
   meta: {
     /** Name of the strategy that produced this result. */
     strategy: string;
+    /**
+     * The window this overflow ACTED ON — `input.window.current`, read while
+     * the strategy ran. The window it opens does not exist yet at that point:
+     * the runner allocates it only once the result lands, and reports it as
+     * `CompileMeta.windowId`.
+     */
     windowId: string;
     /** False when the window is untouched — `history` is then the input array. */
     changed: boolean;
@@ -134,6 +169,10 @@ export interface OverflowStrategy {
    * and drops the result when it goes stale — so state a strategy derives
    * from its own output (an `anchored()` anchor document) is published here,
    * never inside `apply`.
+   *
+   * The runner has already advanced the lineage by then: reading
+   * `input.window.current` inside `commit` gives the id of the window this
+   * result OPENS, which is the key a per-window strategy state belongs under.
    */
   commit?(result: OverflowResult): void;
   /** Serializable state, for `Janitor.snapshotState()`. Stateless strategies omit it. */
@@ -154,17 +193,23 @@ export interface CompressionArchiveConfig {
 }
 
 /**
- * Reserved for the handoff budget (`docs/architecture-v5.md` §5): tokens held
- * back above the trigger so the model gets one turn to persist state into the
- * context store before the library evicts mechanically.
+ * The handoff budget: tokens held back above the trigger so the model gets one
+ * turn to persist state into the context store before the library evicts
+ * mechanically.
  *
- * Declared now so the 4.2 config shape is final. The field is accepted and
- * IGNORED until the handoff phase ships.
+ * While the remaining headroom sits inside this band, the compile pipeline
+ * delivers one notice through the tail channel — once per window, so a long
+ * stretch near the trigger does not repeat it every turn. Validated at chef
+ * construction by {@link validateHandoffConfig}.
  */
 export interface HandoffConfig {
-  /** Tokens reserved above the trigger. Must be > 0. */
-  budgetTokens?: number;
-  /** Notice template; `{n_remaining}` is substituted. Defaults to a built-in prompt. */
+  /** Tokens reserved above the trigger. A positive integer. */
+  budgetTokens: number;
+  /**
+   * Notice template. Every `{n_remaining}` is replaced with the headroom left
+   * before the trigger. At most 2000 UTF-8 bytes; defaults to
+   * {@link Prompts.HANDOFF_NOTICE_TEMPLATE}.
+   */
   prompt?: string;
 }
 

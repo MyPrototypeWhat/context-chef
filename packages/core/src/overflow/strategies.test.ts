@@ -192,7 +192,12 @@ describe('anchored()', () => {
 
     expect(instructions[0]).toContain('No anchor document exists yet');
     expect(instructions[1]).toContain('ANCHOR-v1');
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: 'ANCHOR-v2' });
+    // Both commits landed on the same fixture window, so the lineage holds one
+    // anchor; `anchorDoc` is the flat projection the Janitor snapshot keeps.
+    expect(strategy.snapshot?.()).toEqual({
+      anchorDoc: 'ANCHOR-v2',
+      anchors: { w_first: 'ANCHOR-v2' },
+    });
   });
 
   it('leaves the anchor untouched until the result is committed', async () => {
@@ -201,7 +206,7 @@ describe('anchored()', () => {
 
     await strategy.apply(makeInput());
 
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null });
+    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null, anchors: {} });
   });
 
   it('round-trips the anchor through snapshot/restore and clears on restore(undefined)', async () => {
@@ -212,10 +217,30 @@ describe('anchored()', () => {
     const state = strategy.snapshot?.();
 
     strategy.restore?.(undefined);
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null });
+    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null, anchors: {} });
 
     strategy.restore?.(state);
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: 'KEEP ME' });
+    expect(strategy.snapshot?.()).toEqual({
+      anchorDoc: 'KEEP ME',
+      anchors: { w_first: 'KEEP ME' },
+    });
+  });
+
+  it('keys the anchor by window, and adopts a pre-4.2 anchor into the live window', async () => {
+    const { instructions, model } = capturingModel(() => '<summary>NEXT</summary>');
+    const [strategy] = attached(anchored({ compressionModel: model, split: 'recent-turns' }));
+
+    // A snapshot written before window ids existed carries a bare anchor.
+    strategy.restore?.({ anchorDoc: 'LEGACY' });
+    await strategy.apply(makeInput({ window: { first: 'w_a', current: 'w_b', previous: 'w_a' } }));
+
+    expect(instructions[0]).toContain('LEGACY');
+    expect(strategy.snapshot?.()).toEqual({ anchorDoc: 'LEGACY', anchors: { w_b: 'LEGACY' } });
+
+    // A window with no anchor of its own starts from nothing — the adopted
+    // legacy document belongs to w_b now.
+    await strategy.apply(makeInput({ window: { first: 'w_a', current: 'w_c' } }));
+    expect(instructions[1]).toContain('No anchor document exists yet');
   });
 });
 
@@ -232,7 +257,31 @@ describe('reset()', () => {
     expect(result.history[0].content).toContain('Context window reset');
     expect(result.history[1]).toBe(messages[1]);
     expect(result.evicted).toHaveLength(4);
-    expect(result.summary).toBe('Context window reset. Earlier conversation was archived.');
+    // The notice names the window it closed — there is no previous one here.
+    expect(result.summary).toBe(
+      'Context window reset (window w_first). Earlier conversation was archived.',
+    );
+  });
+
+  it('names the closed window and its predecessor in the notice', async () => {
+    const [strategy] = attached(reset());
+
+    const result = await strategy.apply(
+      makeInput({ window: { first: 'w_a', previous: 'w_a', current: 'w_b' } }),
+    );
+
+    expect(result.summary).toBe(
+      'Context window reset (window w_b; previous w_a). Earlier conversation was archived.',
+    );
+    expect(result.meta.windowId).toBe('w_b');
+  });
+
+  it('uses a caller notice verbatim', async () => {
+    const [strategy] = attached(reset({ notice: 'Starting over.' }));
+
+    const result = await strategy.apply(makeInput());
+
+    expect(result.summary).toBe('Starting over.');
   });
 
   it('changes nothing when there is nothing but pinned messages', async () => {
@@ -387,13 +436,13 @@ describe('background()', () => {
 
     await strategy.apply(makeInput({ history: history(5) }));
     await settled(strategy);
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null });
+    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null, anchors: {} });
 
     const edited = history(5);
     edited[0] = { ...edited[0], content: 'edited-msg-1' };
     await strategy.apply(makeInput({ history: edited }));
 
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null });
+    expect(strategy.snapshot?.()).toEqual({ anchorDoc: null, anchors: {} });
   });
 
   it('commits the inner strategy only for the result that entered the window', async () => {
@@ -412,7 +461,10 @@ describe('background()', () => {
     const swapped: OverflowResult = await strategy.apply(makeInput({ history: messages }));
     strategy.commit?.(swapped);
 
-    expect(strategy.snapshot?.()).toEqual({ anchorDoc: 'APPLIED' });
+    expect(strategy.snapshot?.()).toEqual({
+      anchorDoc: 'APPLIED',
+      anchors: { w_first: 'APPLIED' },
+    });
   });
 
   it('drops a pending job on restore', async () => {

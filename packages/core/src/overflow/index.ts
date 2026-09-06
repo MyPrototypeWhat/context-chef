@@ -10,6 +10,12 @@
 export { type AnchoredOptions, anchored } from './anchored';
 export { type BackgroundOverflowStrategy, background } from './background';
 export { chain } from './chain';
+export {
+  HANDOFF_REMAINING_PLACEHOLDER,
+  renderHandoffNotice,
+  validateHandoffConfig,
+} from './handoff';
+export { getNewContextToolDefinition } from './newContextTool';
 export { type ResetOptions, reset } from './reset';
 export { type OverflowAliasConfig, resolveOverflowStrategy } from './resolve';
 export { isServerStrategy, type ServerOverflowStrategy, server } from './server';
@@ -22,13 +28,15 @@ export {
   type Turn,
 } from './turns';
 export {
+  advanceWindow,
   type BudgetInfo,
   type CompressionArchiveConfig,
   createWindowId,
+  createWindowLineage,
   type HandoffConfig,
   type OverflowInput,
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
-  type OverflowWindow,
+  type WindowLineage,
 } from './types';

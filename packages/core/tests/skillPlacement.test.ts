@@ -146,7 +146,10 @@ describe("skillPlacement default 'after_system'", () => {
         .setSystemPrompt([{ role: 'system', content: 'sys' }])
         .setHistory(history())
         .activateSkill(planning);
-      return JSON.stringify(await chef.compile({ target: 'anthropic' }));
+      const { meta: _meta, ...wire } = await chef.compile({ target: 'anthropic' });
+      // `meta` carries the window id, which is unique per chef instance —
+      // what has to be bit-identical is the payload the provider sees.
+      return JSON.stringify(wire);
     };
 
     expect(await build()).toBe(await build('after_system'));

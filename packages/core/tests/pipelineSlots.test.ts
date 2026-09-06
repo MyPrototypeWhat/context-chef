@@ -3,6 +3,16 @@ import { z } from 'zod';
 import { Assembler, type BudgetInfo, ContextChef, type OverflowResult } from '../src/index';
 import type { Message, TargetPayload } from '../src/types';
 
+/**
+ * The wire payload, serialized. `meta` is compile-time observability (memory
+ * keys, active skill, window id) and the window id is unique per chef, so two
+ * instances are compared on what actually reaches the provider.
+ */
+const wire = (payload: TargetPayload): string => {
+  const { meta: _meta, ...rest } = payload;
+  return Assembler.stringifyPayload(rest);
+};
+
 const makeTokenizer =
   (tokensPerMsg: number) =>
   (messages: Message[]): number =>
@@ -267,8 +277,8 @@ describe('pipeline slots — legacy hook equivalence', () => {
     for (const target of ['openai', 'anthropic', 'gemini'] as const) {
       const a = await legacy.compile({ target });
       const b = await modern.compile({ target });
-      expect(Assembler.stringifyPayload(b)).toBe(Assembler.stringifyPayload(a));
-      expect(Assembler.stringifyPayload(a)).toContain('implicit_context');
+      expect(wire(b)).toBe(wire(a));
+      expect(wire(a)).toContain('implicit_context');
     }
   });
 
@@ -282,8 +292,8 @@ describe('pipeline slots — legacy hook equivalence', () => {
     for (const target of ['openai', 'anthropic', 'gemini'] as const) {
       const a = await legacy.compile({ target });
       const b = await modern.compile({ target });
-      expect(Assembler.stringifyPayload(b)).toBe(Assembler.stringifyPayload(a));
-      expect(Assembler.stringifyPayload(a)).not.toContain('Sure.');
+      expect(wire(b)).toBe(wire(a));
+      expect(wire(a)).not.toContain('Sure.');
     }
   });
 

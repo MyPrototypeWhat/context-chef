@@ -8,14 +8,15 @@ import {
   extractPinnedMessages,
 } from '../../overflow/turns';
 import {
+  advanceWindow,
   type BudgetInfo,
   type CompressionArchiveConfig,
-  createWindowId,
+  createWindowLineage,
   type OverflowInput,
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
-  type OverflowWindow,
+  type WindowLineage,
 } from '../../overflow/types';
 import { Prompts } from '../../prompts';
 import type { ChefLogger, CompactOptions, Message } from '../../types';
@@ -39,6 +40,7 @@ export type {
   OverflowInput,
   OverflowResult,
   OverflowStrategy,
+  WindowLineage,
 };
 
 const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
@@ -407,6 +409,11 @@ export interface JanitorSnapshot {
    * structured-clonable: consumers persist whole snapshots.
    */
   strategy?: unknown;
+  /**
+   * The window lineage at snapshot time. Absent in snapshots taken before
+   * 4.2 — those restore onto a fresh lineage.
+   */
+  window?: WindowLineage;
 }
 
 /**
@@ -525,10 +532,11 @@ export class Janitor {
   /** The installed overflow policy. */
   private readonly _strategy: OverflowStrategy;
   /**
-   * Window lineage for a Janitor used outside the compile pipeline. Under
-   * ContextChef the pipeline passes its own — Phase 3 makes it a real chain.
+   * The window lineage of this session. The runner owns it because the runner
+   * is what decides that an overflow actually landed: it moves forward at
+   * commit time, never on a result that was computed and then discarded.
    */
-  private readonly _window: OverflowWindow;
+  private _window: WindowLineage;
 
   constructor(private config: JanitorConfig) {
     // Warn if feedTokenUsage path is likely used without a compressionModel
@@ -549,8 +557,15 @@ export class Janitor {
 
     this._strategy = config.strategy ?? resolveOverflowStrategy(config);
     this._strategy.attach?.(this._createRunner());
-    const windowId = createWindowId();
-    this._window = { first: windowId, current: windowId };
+    this._window = createWindowLineage();
+  }
+
+  /**
+   * The window lineage this runner is on. Live — `current` moves as overflows
+   * land, so hold the object rather than a copy of `current`.
+   */
+  public get window(): WindowLineage {
+    return this._window;
   }
 
   /** Resolved archive config — the 'vfs' shorthand is only usable via ContextChef wiring. */
@@ -604,6 +619,9 @@ export class Janitor {
       suppressNextCompression: this._suppressNextCompression,
       consecutiveFailures: this._consecutiveFailures,
       anchorDoc: readAnchorDoc(strategy),
+      // Copied: the lineage keeps moving after the snapshot is taken, and a
+      // snapshot that moved with it would restore the wrong window.
+      window: { ...this._window },
     };
     if (strategy !== undefined) snapshot.strategy = strategy;
     return snapshot;
@@ -613,6 +631,10 @@ export class Janitor {
     this._externalTokenUsage = state.externalTokenUsage;
     this._suppressNextCompression = state.suppressNextCompression;
     this._consecutiveFailures = state.consecutiveFailures ?? 0;
+    // A snapshot taken before 4.2 has no lineage. Restoring one starts a fresh
+    // one rather than keeping this runner's: the restored history is not the
+    // history the current window was built from.
+    this._window = state.window ? { ...state.window } : createWindowLineage();
     // Pre-4.2 snapshots carry only the anchor document; from 4.2 the strategy
     // round-trips its own opaque state. A pending background job belongs to
     // the pre-restore timeline — the strategy drops it.
@@ -629,6 +651,9 @@ export class Janitor {
     this._externalTokenUsage = null;
     this._suppressNextCompression = false;
     this._consecutiveFailures = 0;
+    // A cleared history is a new conversation, not a continuation of the old
+    // window chain — the lineage starts over with it.
+    this._window = createWindowLineage();
     // `restore(undefined)` is the strategies' "back to initial" contract.
     this._strategy.restore?.(undefined);
   }
@@ -688,9 +713,12 @@ export class Janitor {
    * Compresses the rolling history when the token budget is exceeded.
    *
    * {@link overflow} without the reporting — kept as the 4.x entry point.
+   *
+   * @param options `force: true` applies the strategy whatever the budget says
+   *   (`chef.requestNewContext()` / the `new_context` tool).
    */
-  public async compress(history: Message[]): Promise<Message[]> {
-    return (await this.overflow(history)).history;
+  public async compress(history: Message[], options: { force?: boolean } = {}): Promise<Message[]> {
+    return (await this.overflow(history, options)).history;
   }
 
   /**
@@ -705,16 +733,28 @@ export class Janitor {
    *   circuit breaker; after MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive
    *   failures this becomes a no-op until the next success or an explicit
    *   reset()/restoreState().
+   * - The window lineage moves forward exactly when a result lands, so
+   *   `windowId` identifies a window that really existed.
+   *
+   * @param options `force: true` skips the budget test (and the one-shot
+   *   post-compression suppression) and applies the strategy regardless — the
+   *   `new_context` path. The circuit breaker still applies: a strategy that
+   *   just failed three times in a row does not get hammered on request.
    */
   public async overflow(
     history: Message[],
-    window: OverflowWindow = this._window,
-    signal?: AbortSignal,
+    options: { signal?: AbortSignal; force?: boolean } = {},
   ): Promise<OverflowResult> {
+    const { signal, force = false } = options;
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
       evicted: [],
-      meta: { strategy: this._strategy.name, windowId: window.current, changed: false, reason },
+      meta: {
+        strategy: this._strategy.name,
+        windowId: this._window.current,
+        changed: false,
+        reason,
+      },
     });
 
     // Circuit breaker: bail out if compression is consistently failing.
@@ -724,21 +764,31 @@ export class Janitor {
       );
     }
 
-    const prepared = await this._prepareOverflow(history);
-    if (!prepared.budget) return idle('within budget', prepared.history);
+    const prepared = await this._prepareOverflow(history, force);
+    if (!prepared.budget) {
+      return idle(
+        force ? 'nothing to overflow — history is empty' : 'within budget',
+        prepared.history,
+      );
+    }
 
     const result = await this._strategy.apply({
       history: prepared.history,
       budget: prepared.budget,
       tokenizer: this.config.tokenizer ?? estimateObject,
       pinned: extractPinnedMessages(prepared.history),
-      window,
+      window: this._window,
       signal,
     });
     if (!result.meta.changed) return result;
 
-    // The result is entering the window — the strategy may now publish the
-    // state it derived from it (an anchor document, say).
+    // This result is entering the window: it closes the window the strategy
+    // worked on and opens the next one. Advanced before `commit` so state the
+    // strategy derives from its own output (an anchor document) is filed under
+    // the window that will read it back — and only ever for a result that
+    // landed, since a stale background job reports `changed: false` and never
+    // reaches this line.
+    advanceWindow(this._window);
     this._strategy.commit?.(result);
 
     // Archive is strategy-agnostic: whatever left the window is what gets
@@ -765,8 +815,9 @@ export class Janitor {
    */
   private async _prepareOverflow(
     history: Message[],
+    force: boolean,
   ): Promise<{ history: Message[]; budget: BudgetInfo | null }> {
-    const budget = this._evaluateBudget(history);
+    const budget = this._evaluateBudget(history, force);
     if (!budget) return { history, budget: null };
 
     const hook = this.config.onBeforeCompress;
@@ -790,7 +841,7 @@ export class Janitor {
     if (modified == null) return { history, budget };
 
     // Re-evaluate with the developer-modified history
-    return { history: modified, budget: this._evaluateBudget(modified) };
+    return { history: modified, budget: this._evaluateBudget(modified, force) };
   }
 
   /**
@@ -802,19 +853,24 @@ export class Janitor {
    * (default 0.7 — "pre-rot"), which is also what the strategies size their
    * preserved tail against, so post-compression usage lands safely below the
    * trigger point (no compress-every-turn thrash).
+   *
+   * `force` skips the verdict, not the reading: the strategy still needs a
+   * budget to size its preserved tail against. An empty history is the one
+   * case force cannot override — there is nothing to overflow.
    */
-  private _evaluateBudget(history: Message[]): BudgetInfo | null {
+  private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
     if (history.length === 0) return null;
 
-    // E10: Skip check once after a successful compression to avoid cascading re-compression.
-    if (this._suppressNextCompression) {
-      this._suppressNextCompression = false;
-      return null;
-    }
+    // E10: Skip check once after a successful compression to avoid cascading
+    // re-compression. The one-shot flag is consumed either way — a forced
+    // overflow answers for this turn, so the suppression has done its job.
+    const suppressed = this._suppressNextCompression;
+    this._suppressNextCompression = false;
+    if (suppressed && !force) return null;
 
     const budget = this.readBudget(history);
     this._externalTokenUsage = null;
-    return budget.remaining < 0 ? budget : null;
+    return force || budget.remaining < 0 ? budget : null;
   }
 
   /**

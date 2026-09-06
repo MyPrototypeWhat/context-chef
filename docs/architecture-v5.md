@@ -249,8 +249,11 @@ regardless of budget. Dispatch through `chef.handleTool` (Phase 4b); Phase 3 shi
 definition + the method.
 
 **Window lineage**: `WindowLineage = { first: string; previous?: string; current: string }`.
-The runner allocates a new id on every overflow that returns `changed: true`.
-`OverflowResult.meta.windowId` records it; `reset()`'s summary stub renders the
+The runner allocates a new id on every overflow that returns `changed: true`, at
+`commit` time (a stale background result never advances the window).
+`OverflowResult.meta.windowId` records the apply-time id (the window acted on);
+`CompileMeta.windowId` is `current` after the overflow phase (the window the payload
+belongs to); `reset()`'s summary stub renders the
 lineage; `anchored()` keys its anchor document by window id; `CompileMeta.windowId`
 exposes it; it survives snapshot/restore. The legacy summary wrapper text is NOT
 changed in 4.x (it would break the anchored golden fixture) — a

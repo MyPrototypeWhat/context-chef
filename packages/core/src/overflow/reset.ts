@@ -3,16 +3,36 @@
  */
 
 import { renderSummaryMessage } from './summary';
-import { type OverflowInput, type OverflowResult, type OverflowStrategy, unchanged } from './types';
+import {
+  type OverflowInput,
+  type OverflowResult,
+  type OverflowStrategy,
+  unchanged,
+  type WindowLineage,
+} from './types';
 
-/** The stub that stands in for the evicted conversation. */
-const DEFAULT_NOTICE = 'Context window reset. Earlier conversation was archived.';
+/**
+ * The stub that stands in for the evicted conversation.
+ *
+ * The ids name the window that was just reset and the one before it — the
+ * runner opens the next window only once this result lands, so at the moment
+ * the notice is written the newest id in existence is the one being closed.
+ * That is also the id the archive entry belongs to, which is what makes the
+ * pair worth printing: it ties the stub to the span it stands for.
+ */
+function defaultNotice(window: WindowLineage): string {
+  const lineage = window.previous
+    ? `window ${window.current}; previous ${window.previous}`
+    : `window ${window.current}`;
+  return `Context window reset (${lineage}). Earlier conversation was archived.`;
+}
 
 export interface ResetOptions {
   /**
    * Text of the stub summary left behind, before the continuation wrapper.
-   * It goes through the same wrapper as a real summary, so the runner's
-   * archive citation lands on it exactly like it lands on `summarize()`.
+   * Used verbatim, in place of the default window-lineage notice. It goes
+   * through the same wrapper as a real summary, so the runner's archive
+   * citation lands on it exactly like it lands on `summarize()`.
    */
   notice?: string;
 }
@@ -30,7 +50,6 @@ export interface ResetOptions {
  * when summarization keeps failing.
  */
 export function reset(options: ResetOptions = {}): OverflowStrategy {
-  const notice = options.notice ?? DEFAULT_NOTICE;
   return {
     name: 'reset',
     async apply(input: OverflowInput): Promise<OverflowResult> {
@@ -39,6 +58,7 @@ export function reset(options: ResetOptions = {}): OverflowStrategy {
       if (evicted.length === 0) {
         return unchanged(input, 'reset', 'history holds nothing but pinned messages');
       }
+      const notice = options.notice ?? defaultNotice(input.window);
       // input.pinned is already turn-scoped and in original order.
       const kept = input.pinned.filter((m) => input.history.includes(m));
       return {
