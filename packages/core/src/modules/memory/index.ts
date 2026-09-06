@@ -525,6 +525,15 @@ export class Memory {
    * across calls (that identity is what keeps `payload.tools` deep-equal
    * between compiles); clone one before editing it.
    *
+   * @deprecated Under `ChefConfig.tools: 'unified'` these two tools are
+   *   replaced by the single `context` tool, which writes the same entries at
+   *   `context://memory/<key>` through the same validation. They keep working
+   *   unchanged in 4.x — `tools: 'legacy'` is still the default — and are
+   *   removed in 5.0. Every historical inline write path (the
+   *   `<update_core_memory>` / `<delete_core_memory>` response tags of the
+   *   pre-4.0 Memory module) is likewise superseded by that tool; nothing in
+   *   this module parses them any more.
+   *
    * @param existingKeys @deprecated Ignored — the schema is static since 4.1.
    *   Still accepted for backward compatibility.
    */

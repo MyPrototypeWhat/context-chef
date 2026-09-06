@@ -59,6 +59,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     tokenizer: options.tokenizer,
     onCompress: options.onCompress,
     onBeforeCompress: options.onBeforeCompress,
+    overflow: options.overflow,
     toHostMessages: toAISDK,
     // In-flight-without-persistence footgun: the summary is discarded each
     // call and history re-expands, so the payload grows unbounded (and

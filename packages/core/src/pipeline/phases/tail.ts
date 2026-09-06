@@ -50,12 +50,14 @@ export const tailPhase: Phase = {
         dynamicTailAdded = true;
       }
       // The anchor refers specifically to dynamic state / implicit context /
-      // announcements. Memory data already self-introduces via
-      // `Prompts.MEMORY_BLOCK_HEADER` ("You recall the following from previous
-      // conversations:"), and skill instructions are self-describing inside
+      // announcements. Memory data already self-introduces via the active
+      // vocabulary's `memoryBlockHeader` (legacy: "You recall the following
+      // from previous conversations:"; unified: "Memory (context://memory/*)
+      // currently holds:"), and skill instructions are self-describing inside
       // their own tag, so an anchor for those alone is redundant and reads as
-      // noise to the model. If `MEMORY_BLOCK_HEADER` is ever changed or
-      // removed in `prompts.ts`, this suppression rule needs re-evaluating.
+      // noise to the model. Every Vocabulary must keep a self-introducing
+      // header — the cache audit derives its memory markers from the same
+      // field, so the two stay in step by construction.
       if (dynamicTailAdded) {
         tailParts.push('Above is the current system state. Use it to guide your next action.');
       }

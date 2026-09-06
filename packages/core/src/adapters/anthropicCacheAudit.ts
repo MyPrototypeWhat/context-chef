@@ -1,4 +1,5 @@
 import type { AnthropicPayload } from '../types';
+import { LEGACY_VOCABULARY, UNIFIED_VOCABULARY } from '../vocabulary';
 
 /** One problem found by {@link auditAnthropicCachePlacement}. */
 export interface CacheAuditIssue {
@@ -36,11 +37,14 @@ const VOLATILE_MARKERS: Array<{
    */
   breakpointTailAlt?: string;
 }> = [
-  {
-    marker: 'You recall the following',
+  // One marker per vocabulary: the injected memory block always opens with the
+  // header of the session's own vocabulary, and only one vocabulary is in
+  // effect at a time — so both headers are listed and the match stays exact.
+  ...[LEGACY_VOCABULARY, UNIFIED_VOCABULARY].map((vocabulary) => ({
+    marker: vocabulary.memoryBlockHeader,
     source: 'memory data block',
     fix: "set memory config `memoryPlacement: 'before_history_tail'` so memory changes stop rewriting the cached prefix",
-  },
+  })),
   {
     marker: '<dynamic_state>',
     source: 'dynamic state',

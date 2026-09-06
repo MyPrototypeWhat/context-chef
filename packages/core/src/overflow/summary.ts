@@ -6,6 +6,7 @@
 
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
+import { LEGACY_VOCABULARY, type SummaryLineage, type Vocabulary } from '../vocabulary';
 import { buildToolNameMap } from './turns';
 
 /**
@@ -142,9 +143,19 @@ export async function summarizeHistory(
 /**
  * Renders a summary into the message that replaces the compressed span.
  *
- * One place builds this message so the runner's archive post-step can
- * re-render it with a citation appended and produce byte-identical output.
+ * One place builds this message so the runner can re-render it once the
+ * result has landed — with the archive citation appended and the window
+ * lineage it now knows — and produce the same bytes a strategy would have.
+ *
+ * `vocabulary` and `lineage` default to the 4.x rendering: the legacy
+ * vocabulary ignores the lineage, and a strategy that renders speculatively
+ * has no landed window to name yet.
  */
-export function renderSummaryMessage(summary: string, citation = ''): Message {
-  return { role: 'user', content: Prompts.getCompactSummaryWrapper(summary + citation) };
+export function renderSummaryMessage(
+  summary: string,
+  citation = '',
+  vocabulary: Vocabulary = LEGACY_VOCABULARY,
+  lineage?: SummaryLineage,
+): Message {
+  return { role: 'user', content: vocabulary.summaryWrapper(summary + citation, lineage) };
 }

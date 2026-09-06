@@ -21,6 +21,7 @@ import {
 import { Prompts } from '../../prompts';
 import type { ChefLogger, CompactOptions, Message } from '../../types';
 import { estimateObject } from '../../utils/tokenUtils';
+import { LEGACY_VOCABULARY, type Vocabulary } from '../../vocabulary';
 
 /**
  * Turn grouping, pinning and the summarization primitives live in
@@ -347,6 +348,15 @@ interface JanitorConfigBase {
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
+
+  /**
+   * The wording the summary that replaces a compressed span is written in.
+   * `ContextChef` passes the vocabulary it resolved from `ChefConfig.tools`;
+   * a standalone Janitor leaves it unset and keeps the 4.x wrapper.
+   *
+   * @internal
+   */
+  vocabulary?: Vocabulary;
 }
 
 /**
@@ -537,6 +547,8 @@ export class Janitor {
    * commit time, never on a result that was computed and then discarded.
    */
   private _window: WindowLineage;
+  /** The wording landed summaries are rendered in. */
+  private readonly _vocabulary: Vocabulary;
 
   constructor(private config: JanitorConfig) {
     // Warn if feedTokenUsage path is likely used without a compressionModel
@@ -555,6 +567,7 @@ export class Janitor {
       );
     }
 
+    this._vocabulary = config.vocabulary ?? LEGACY_VOCABULARY;
     this._strategy = config.strategy ?? resolveOverflowStrategy(config);
     this._strategy.attach?.(this._createRunner());
     this._window = createWindowLineage();
@@ -793,7 +806,7 @@ export class Janitor {
 
     // Archive is strategy-agnostic: whatever left the window is what gets
     // stored, and the citation goes back into the summary that replaced it.
-    const archived = await this._archiveEvicted(result);
+    const archived = await this._landResult(result);
     await this._fireOnCompress(
       archived.summary === undefined
         ? {
@@ -874,35 +887,47 @@ export class Janitor {
   }
 
   /**
-   * Reversible compression: store the evicted span and cite the URI in the
-   * summary that replaced it. Best-effort — a failing store logs a warning and
-   * the compression proceeds without a citation.
+   * Finishes a result that is entering the window: archive the evicted span,
+   * then re-render the summary message with everything only the runner knows —
+   * the archive citation, and the window lineage the result just moved.
+   *
+   * A strategy renders its summary speculatively (a `background()` job may
+   * never land), so the final wording is settled here. Under the legacy
+   * vocabulary with nothing to cite there is nothing to settle, and the
+   * strategy's own message is kept.
    */
-  private async _archiveEvicted(result: OverflowResult): Promise<OverflowResult> {
-    const archive = this._archive;
-    if (!archive || result.evicted.length === 0) return result;
+  private async _landResult(result: OverflowResult): Promise<OverflowResult> {
+    const citation = await this._archiveEvicted(result);
+    if (result.summary === undefined) return result;
+    if (citation === '' && this._vocabulary.mode === 'legacy') return result;
 
-    let uri: string;
+    const history = [...result.history];
+    history[0] = renderSummaryMessage(result.summary, citation, this._vocabulary, this._window);
+    return { ...result, history };
+  }
+
+  /**
+   * Reversible compression: stores the evicted span and returns the citation
+   * line to append to the summary that replaced it. Best-effort — a failing
+   * store logs a warning and the compression proceeds without a citation.
+   */
+  private async _archiveEvicted(result: OverflowResult): Promise<string> {
+    const archive = this._archive;
+    if (!archive || result.evicted.length === 0) return '';
+
     try {
       const serialized = JSON.stringify({ version: 1, messages: result.evicted });
-      uri = await archive.store(serialized, { messageCount: result.evicted.length });
+      const uri = await archive.store(serialized, { messageCount: result.evicted.length });
+      // Nothing to cite it in — the strategy evicted without summarizing.
+      if (result.summary === undefined) return '';
+      return `\n\n${Prompts.getArchiveCitation(uri, result.evicted.length)}`;
     } catch (error) {
       this._logger.warn(
         '[context-chef] compression archive store failed — proceeding without a citation',
         error,
       );
-      return result;
+      return '';
     }
-
-    // Nothing to cite it in — the strategy evicted without summarizing.
-    if (result.summary === undefined) return result;
-
-    const history = [...result.history];
-    history[0] = renderSummaryMessage(
-      result.summary,
-      `\n\n${Prompts.getArchiveCitation(uri, result.evicted.length)}`,
-    );
-    return { ...result, history };
   }
 
   /**

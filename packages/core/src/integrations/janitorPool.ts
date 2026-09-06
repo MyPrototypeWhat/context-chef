@@ -5,6 +5,7 @@ import {
   type UsagePreferenceWithoutTokenizer,
   type UsagePreferenceWithTokenizer,
 } from '../modules/janitor';
+import type { CompressionArchiveConfig, OverflowStrategy } from '../overflow/types';
 import type { ChefLogger, Message } from '../types';
 import { dedupeConstructionWarnings, SessionPool } from '../utils/sessionPool';
 
@@ -63,13 +64,36 @@ export interface JanitorPoolConfig<THostMessages> {
   logger: ChefLogger;
   /** Cap on concurrently pooled sessions. Default: 256. */
   maxSessions?: number;
+  /**
+   * The overflow axis, as `ChefConfig.overflow` exposes it minus the pieces
+   * that need a compile pipeline: an explicit strategy replaces the one the
+   * `compress` options describe, and an archive keeps the evicted span
+   * retrievable. `handoff` is not offered — the notice rides the tail channel,
+   * which only `ContextChef.compile()` has.
+   */
+  overflow?: IntegrationOverflowOptions;
+}
+
+/** The overflow options a framework integration can forward to its Janitor. */
+export interface IntegrationOverflowOptions {
+  /**
+   * Replaces the policy the `compress` options describe. When set, those
+   * options are ignored — two descriptions of one thing would disagree.
+   */
+  strategy?: OverflowStrategy;
+  /**
+   * Where evicted spans are stored so the summary can cite them. Takes the
+   * explicit `{ store }` form only: the `'vfs'` shorthand substitutes a
+   * ContextChef-owned Offloader, which an integration does not have.
+   */
+  archive?: CompressionArchiveConfig;
 }
 
 /**
  * Builds the per-session Janitor pool shared by the framework integrations.
  *
  * Returns `null` for configurations with no compression intent (`compress` /
- * `onCompress` / `onBeforeCompress` all absent): those need no budget check,
+ * `onCompress` / `onBeforeCompress` / `overflow.strategy` all absent): those need no budget check,
  * no token-usage capture, and none of the Janitor's missing-tokenizer
  * warnings. Throws when compression IS configured without a `contextWindow` —
  * the budget check has nothing to compare against.
@@ -83,14 +107,16 @@ export interface JanitorPoolConfig<THostMessages> {
 export function createJanitorPool<THostMessages>(
   config: JanitorPoolConfig<THostMessages>,
 ): SessionPool<Janitor> | null {
-  const budgeting = Boolean(config.compress || config.onCompress || config.onBeforeCompress);
+  const budgeting = Boolean(
+    config.compress || config.onCompress || config.onBeforeCompress || config.overflow?.strategy,
+  );
   if (!budgeting) return null;
 
   const { contextWindow } = config;
   if (contextWindow == null) {
     throw new Error(
       '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
-        '`onCompress`, `onBeforeCompress`) is configured — the budget ' +
+        '`onCompress`, `onBeforeCompress`, `overflow.strategy`) is configured — the budget ' +
         'check has nothing to compare against without it.',
     );
   }
@@ -149,6 +175,8 @@ function buildJanitor<THostMessages>(
   const { onCompress, toHostMessages } = config;
   const sharedJanitorConfig = {
     contextWindow,
+    strategy: config.overflow?.strategy,
+    archive: config.overflow?.archive,
     triggerRatio: config.compress?.triggerRatio,
     minShrinkRatio: config.compress?.minShrinkRatio,
     toolResultStubThreshold: config.compress?.toolResultStubThreshold,

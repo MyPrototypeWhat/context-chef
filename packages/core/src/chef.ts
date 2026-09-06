@@ -46,7 +46,6 @@ import {
   SlotRegistry,
 } from './pipeline';
 import { escapeXmlAttribute } from './pipeline/xml';
-import { Prompts } from './prompts';
 import { Store } from './store/store';
 import type { StorageBackend } from './store/types';
 import { getContextToolDefinition } from './tools/contextTool';
@@ -75,6 +74,7 @@ import type {
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 import { objectToXml } from './utils/xmlGenerator';
+import { resolveVocabulary, type Vocabulary } from './vocabulary';
 
 /**
  * Delivery channel for an announcement (see {@link ContextChef.announce}).
@@ -175,6 +175,12 @@ export interface ChefSnapshot {
  * - `'unified'`: one `context` tool covering every namespace, plus
  *   `new_context` when `overflow.handoff` is configured. The legacy memory
  *   tools are not emitted; the two sets never co-exist in one payload.
+ *
+ * The mode also picks the session's {@link Vocabulary}: under `'unified'`
+ * every string the model reads — the memory instruction and memory block, the
+ * offload truncation marker, the summary wrapper, the default handoff
+ * notice — is written in `context://` addressing and names the `context` tool,
+ * so the prompt never mentions a tool the payload does not carry.
  *
  * Tool names are dispatch keys in your agent loop, so the default cannot flip
  * in a minor release. It becomes `'unified'` in 5.0.
@@ -535,6 +541,13 @@ export class ContextChef {
   /** The shared context store from `ChefConfig.store`, if one was passed. */
   private readonly _store?: Store;
   private readonly _toolsMode: ToolsMode;
+  /**
+   * The model-facing wording of this session, resolved once from
+   * {@link _toolsMode} and handed to every module that renders: memory
+   * shaping, the Offloader's truncation marker, the Janitor's summary
+   * wrapper, and the handoff notice.
+   */
+  private readonly _vocabulary: Vocabulary;
   private readonly _contextToolPolicy: ContextToolPolicy;
   /**
    * The `tools: 'unified'` definitions, built once. Frozen and
@@ -599,7 +612,14 @@ export class ContextChef {
     this.emitter = new TypedEventEmitter<ChefEvents>(config.logger);
     this.assembler = new Assembler();
     this._store = config.store ? Store.from(config.store) : undefined;
-    this.offloader = new Offloader(this._resolveVfsConfig(config));
+    // The tools mode picks the vocabulary, and the vocabulary is what every
+    // module below renders in — so both are settled before anything is built.
+    this._toolsMode = config.tools ?? 'legacy';
+    this._vocabulary = resolveVocabulary(this._toolsMode);
+    this.offloader = new Offloader({
+      ...this._resolveVfsConfig(config),
+      vocabulary: this._vocabulary,
+    });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
     this.transformToolResult = config.transformToolResult;
@@ -608,12 +628,16 @@ export class ContextChef {
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
     this.skillPlacement = config.skillPlacement ?? 'after_system';
-    this._toolsMode = config.tools ?? 'legacy';
     this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
     // Before anything is wired: a handoff budget that cannot work is a config
-    // error, and it should surface at the line that wrote it.
+    // error, and it should surface at the line that wrote it. An unset prompt
+    // takes the vocabulary's notice rather than the legacy constant.
     this._handoff = config.overflow?.handoff
-      ? validateHandoffConfig(config.overflow.handoff)
+      ? validateHandoffConfig(
+          config.overflow.handoff.prompt === undefined
+            ? { ...config.overflow.handoff, prompt: this._vocabulary.handoffNotice }
+            : config.overflow.handoff,
+        )
       : undefined;
 
     // Legacy lifecycle hooks are slot registrations — one code path, no second
@@ -673,6 +697,7 @@ export class ContextChef {
     this.janitor = new Janitor({
       logger: config.logger,
       ...janitorConfig,
+      vocabulary: this._vocabulary,
       archive,
       strategy,
       onCompress: async (summary, truncatedCount, details) => {
@@ -1487,6 +1512,11 @@ export class ContextChef {
    *   Assembler to append to the last user message. The volatile text never
    *   enters the top-level system parameter on Anthropic/Gemini, so cache
    *   breakpoints earlier in the message stream survive memory mutations.
+   *
+   * The wording of both parts comes from the session's {@link Vocabulary}:
+   * under `tools: 'unified'` memory is one namespace of the context store, so
+   * the instruction describes the store and the block addresses its keys as
+   * `context://memory/<key>`.
    */
   private _shapeMemorySandwichParts(
     dataXml: string,
@@ -1500,21 +1530,20 @@ export class ContextChef {
     // under 'after_system' — rewrite the top system block on mutations the
     // selector deliberately never injects, re-introducing the cache
     // invalidation this placement exists to avoid. Keys a selector hides
-    // stay modifiable anyway: modify_memory validates at dispatch time.
+    // stay modifiable anyway: the dispatcher validates at call time.
+    const instruction = this._vocabulary.memoryInstruction;
     const dataBlock = dataXml
-      ? Prompts.getMemoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
+      ? this._vocabulary.memoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
       : '';
 
     if (this.memory.placement === 'after_system') {
-      const content = dataBlock
-        ? `${Prompts.MEMORY_INSTRUCTION}\n\n${dataBlock}`
-        : Prompts.MEMORY_INSTRUCTION;
+      const content = dataBlock ? `${instruction}\n\n${dataBlock}` : instruction;
       return { topMessages: [{ role: 'system', content }], tailDataXml: '' };
     }
 
     // 'before_history_tail': instruction at top, volatile data at tail
     return {
-      topMessages: [{ role: 'system', content: Prompts.MEMORY_INSTRUCTION }],
+      topMessages: [{ role: 'system', content: instruction }],
       tailDataXml: dataBlock,
     };
   }

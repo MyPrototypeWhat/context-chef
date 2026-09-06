@@ -43,6 +43,7 @@ export {
 export {
   createJanitorPool,
   type IntegrationCompressOptions,
+  type IntegrationOverflowOptions,
   type JanitorPoolConfig,
 } from './integrations/janitorPool';
 export { Assembler } from './modules/assembler';
@@ -174,3 +175,12 @@ export {
 export { createTokenizerAdapter } from './utils/tokenizerAdapter';
 export { estimate, estimateObject } from './utils/tokenUtils';
 export { objectToXml } from './utils/xmlGenerator';
+export {
+  LEGACY_VOCABULARY,
+  type OffloadPlaceholderArgs,
+  resolveVocabulary,
+  type SummaryLineage,
+  UNIFIED_VOCABULARY,
+  type Vocabulary,
+  type VocabularyMode,
+} from './vocabulary';

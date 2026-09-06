@@ -86,6 +86,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     tokenizer: options.tokenizer,
     onCompress: options.onCompress,
     onBeforeCompress: options.onBeforeCompress,
+    overflow: options.overflow,
     toHostMessages: toTanStackAI,
     // In-flight-without-persistence footgun: the summary is discarded when
     // the run ends and the caller's history re-expands on the next chat().

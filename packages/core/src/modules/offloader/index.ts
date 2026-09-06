@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Prompts } from '../../prompts';
 import { FileSystemBackend, type FileSystemNamespaceLayout } from '../../store/backends/fileSystem';
 import { fromVfsAdapter } from '../../store/legacy';
 import { type NamespaceView, Store } from '../../store/store';
@@ -13,6 +12,7 @@ import {
   VFS_NAMESPACE,
 } from '../../store/types';
 import type { ChefLogger } from '../../types';
+import { LEGACY_VOCABULARY, type Vocabulary } from '../../vocabulary';
 
 /**
  * @deprecated Implement {@link StorageBackend} and pass it as `vfs.store`.
@@ -190,6 +190,14 @@ export interface VFSConfig {
   onVFSEvicted?: (entry: VFSEntryMeta, reason: VFSEvictionReason) => void | Promise<void>;
   /** Sink for degradation warnings. Defaults to `console`. */
   logger?: ChefLogger;
+  /**
+   * The wording the truncation marker is written in. `ContextChef` passes the
+   * vocabulary it resolved from `ChefConfig.tools`; a standalone Offloader
+   * leaves it unset and keeps the 4.x marker.
+   *
+   * @internal
+   */
+  vocabulary?: Vocabulary;
 }
 
 export interface VFSResult {
@@ -240,6 +248,7 @@ export class Offloader {
   readonly store: Store;
   private readonly vfs: NamespaceView;
   private readonly logger: ChefLogger;
+  private readonly vocabulary: Vocabulary;
   private _cleanupInFlight: Promise<VFSCleanupResult> | null = null;
 
   constructor(config: Partial<VFSConfig> = {}) {
@@ -265,6 +274,7 @@ export class Offloader {
     };
 
     this.logger = config.logger ?? console;
+    this.vocabulary = config.vocabulary ?? LEGACY_VOCABULARY;
 
     const eviction = {
       [VFS_NAMESPACE]: {
@@ -336,14 +346,14 @@ export class Offloader {
     const headStr = headEnd > 0 ? content.slice(0, headEnd) : '';
     const tailStr = tailStart < content.length ? content.slice(tailStart) : '';
 
-    return Prompts.getVFSOffloadReminder(
+    return this.vocabulary.offloadPlaceholder({
       uri,
       totalLines,
       totalChars,
-      headStr,
-      tailStr,
+      head: headStr,
+      tail: tailStr,
       physicalPath,
-    );
+    });
   }
 
   /**
