@@ -33,10 +33,12 @@ export {
   type BeforeCompileContext,
   type ChefConfig,
   type ChefEvents,
+  type ChefMemoryConfig,
   type ChefSnapshot,
   ContextChef,
   type SkillPlacement,
   type ToolCallCheckResult,
+  type ToolsMode,
 } from './chef';
 export {
   createJanitorPool,
@@ -159,6 +161,7 @@ export type {
 } from './pipeline';
 export * from './prompts';
 export * from './store';
+export * from './tools';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';

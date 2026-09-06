@@ -1,4 +1,4 @@
-import type { Announcement, ChefConfig, ChefEvents, SkillPlacement } from '../chef';
+import type { Announcement, ChefConfig, ChefEvents, SkillPlacement, ToolsMode } from '../chef';
 import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
 import type { Memory } from '../modules/memory';
@@ -211,6 +211,13 @@ export interface PipelineHost {
     extra?: readonly Announcement[],
   ): { systemXml: string; tailXml: string };
   prunerTools(): ToolDefinition[];
+  /** Which library-owned tool set the `adapt` phase emits. */
+  readonly toolsMode: ToolsMode;
+  /**
+   * The unified tool definitions: `context`, plus `new_context` when a handoff
+   * budget is configured. Fresh array, reference-stable definition objects.
+   */
+  contextTools(): ToolDefinition[];
   /** Logs `message` the first time `kind` is seen on this chef instance. */
   warnOnce(kind: string, message: string): void;
   /** Whether `kind` has already been warned — lets a phase skip the scan that produces the message. */

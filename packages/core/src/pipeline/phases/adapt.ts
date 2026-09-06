@@ -13,7 +13,16 @@ export const adaptPhase: Phase = {
     }
 
     const adapterPayload = ctx.target.adapter.compile(ctx.messages);
-    const tools = [...host.prunerTools(), ...ctx.memoryTools];
+    // The two library-owned tool sets never co-exist in one payload: they
+    // describe the same operations in two vocabularies, and a model handed
+    // both has to guess which one the host actually dispatches.
+    //
+    // @deprecated The `legacy` branch emits Memory's `create_memory` /
+    //   `modify_memory`. Set `tools: 'unified'` for the `context` tool, which
+    //   reaches `notes/`, `vfs/` and `archive/` as well. `legacy` is removed
+    //   in 5.0, when `'unified'` becomes the default.
+    const libraryTools = host.toolsMode === 'unified' ? host.contextTools() : ctx.memoryTools;
+    const tools = [...host.prunerTools(), ...libraryTools];
 
     const payload: TargetPayload = { ...adapterPayload, meta: ctx.meta };
     if (tools.length > 0) payload.tools = tools;

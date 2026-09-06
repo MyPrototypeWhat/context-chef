@@ -27,6 +27,7 @@ import {
 import type { Skill } from './modules/skill';
 import {
   type CompressionArchiveConfig,
+  getNewContextToolDefinition,
   type HandoffConfig,
   isServerStrategy,
   type OverflowStrategy,
@@ -46,6 +47,20 @@ import {
 } from './pipeline';
 import { escapeXmlAttribute } from './pipeline/xml';
 import { Prompts } from './prompts';
+import { Store } from './store/store';
+import type { StorageBackend } from './store/types';
+import { getContextToolDefinition } from './tools/contextTool';
+import {
+  type ContextToolCall,
+  type ContextToolHost,
+  dispatchContextTool,
+  isContextToolName,
+} from './tools/dispatch';
+import {
+  type ContextToolPolicy,
+  type ContextToolPolicyConfig,
+  resolveContextToolPolicy,
+} from './tools/policy';
 import type {
   AnthropicPayload,
   ChefLogger,
@@ -151,6 +166,27 @@ export interface ChefSnapshot {
   readonly createdAt: number;
 }
 
+/**
+ * Which library-owned tool set `compile()` puts in `payload.tools`.
+ *
+ * - `'legacy'` (default in 4.x): the Memory module's `create_memory` /
+ *   `modify_memory`. `recall_context` and `new_context` stay opt-in — register
+ *   them yourself.
+ * - `'unified'`: one `context` tool covering every namespace, plus
+ *   `new_context` when `overflow.handoff` is configured. The legacy memory
+ *   tools are not emitted; the two sets never co-exist in one payload.
+ *
+ * Tool names are dispatch keys in your agent loop, so the default cannot flip
+ * in a minor release. It becomes `'unified'` in 5.0.
+ */
+export type ToolsMode = 'legacy' | 'unified';
+
+/**
+ * {@link MemoryConfig} with `store` optional: at the chef level a shared
+ * {@link ChefConfig.store} can supply it instead.
+ */
+export type ChefMemoryConfig = Omit<MemoryConfig, 'store'> & { store?: MemoryConfig['store'] };
+
 export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
   janitor?: JanitorConfig;
@@ -160,7 +196,37 @@ export interface ChefConfig {
    */
   logger?: ChefLogger;
   pruner?: PrunerConfig;
-  memory?: MemoryConfig;
+  memory?: ChefMemoryConfig;
+  /**
+   * One storage substrate for every namespace: `memory` (Memory), `vfs` and
+   * `archive` (Offloader + overflow), `notes` (the model's own scratch space).
+   * Pass a {@link StorageBackend} — `InMemoryBackend`, `FileSystemBackend`, or
+   * your own — or a pre-built {@link Store} when you want per-namespace
+   * eviction or URI schemes.
+   *
+   * It fills in what nothing else specifies: an explicit `memory.store` wins
+   * for memory, and an explicit `vfs.store` / `vfs.adapter` / `vfs.storageDir`
+   * wins for the VFS. With neither set, today's defaults apply unchanged.
+   *
+   * @example
+   * const backend = new InMemoryBackend();
+   * new ContextChef({ store: backend, memory: {}, tools: 'unified' });
+   */
+  store?: StorageBackend | Store;
+  /**
+   * Which library-owned tools `compile()` emits. Defaults to `'legacy'` —
+   * see {@link ToolsMode}.
+   */
+  tools?: ToolsMode;
+  /**
+   * Access policy for the unified `context` tool. Reading is always allowed;
+   * `writable` lists the namespaces the model may change. Defaults to
+   * `['memory', 'notes']`.
+   *
+   * Enforced when a call is dispatched, never in the store: the same store may
+   * be written freely from your own code.
+   */
+  contextTool?: ContextToolPolicyConfig;
   /**
    * Where the active skill's instructions land. Defaults to `'after_system'`,
    * which is bit-for-bit compatible with pre-hot-plug behavior.
@@ -466,6 +532,17 @@ export class ContextChef {
   private _handoffNoticedWindow?: string;
   /** A pending {@link requestNewContext}, consumed by the next compile. */
   private _forceOverflow = false;
+  /** The shared context store from `ChefConfig.store`, if one was passed. */
+  private readonly _store?: Store;
+  private readonly _toolsMode: ToolsMode;
+  private readonly _contextToolPolicy: ContextToolPolicy;
+  /**
+   * The `tools: 'unified'` definitions, built once. Frozen and
+   * reference-stable, so `payload.tools` stays deep-equal across compiles.
+   */
+  private readonly _unifiedTools: readonly ToolDefinition[];
+  /** The dispatcher's view of this chef, built once (see {@link ContextToolHost}). */
+  private readonly _contextToolHost: ContextToolHost;
   /** The pipeline's view of this chef, built once (see {@link PipelineHost}). */
   private readonly _host: PipelineHost;
   /**
@@ -521,7 +598,8 @@ export class ContextChef {
   constructor(config: ChefConfig = {}) {
     this.emitter = new TypedEventEmitter<ChefEvents>(config.logger);
     this.assembler = new Assembler();
-    this.offloader = new Offloader({ logger: config.logger, ...config.vfs });
+    this._store = config.store ? Store.from(config.store) : undefined;
+    this.offloader = new Offloader(this._resolveVfsConfig(config));
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
     this.transformToolResult = config.transformToolResult;
@@ -530,6 +608,8 @@ export class ContextChef {
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
     this.skillPlacement = config.skillPlacement ?? 'after_system';
+    this._toolsMode = config.tools ?? 'legacy';
+    this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
     // Before anything is wired: a handoff budget that cannot work is a config
     // error, and it should surface at the line that wrote it.
     this._handoff = config.overflow?.handoff
@@ -621,8 +701,16 @@ export class ContextChef {
     if (config.memory) {
       const userOnChanged = config.memory.onMemoryChanged;
       const userOnExpired = config.memory.onMemoryExpired;
+      const memoryStore = config.memory.store ?? this._store;
+      if (!memoryStore) {
+        throw new Error(
+          '[context-chef] memory is configured without a store. Pass `memory: { store }`, ' +
+            'or a shared `store` on ChefConfig for memory, the VFS and the archive to share.',
+        );
+      }
       this.memory = new Memory({
         ...config.memory,
+        store: memoryStore,
         onMemoryChanged: async (event) => {
           if (userOnChanged) await userOnChanged(event);
           await this.emitter.emit('memory:changed', event, this._currentSignal);
@@ -636,7 +724,28 @@ export class ContextChef {
       this.memory = null;
     }
 
+    // `new_context` only makes sense when something is watching the budget for
+    // the model; the handoff notice is that something.
+    this._unifiedTools = Object.freeze(
+      this._handoff
+        ? [getContextToolDefinition(), getNewContextToolDefinition()]
+        : [getContextToolDefinition()],
+    );
+    this._contextToolHost = this._createContextToolHost();
     this._host = this._createPipelineHost();
+  }
+
+  /**
+   * The VFS config the Offloader is built from. An explicit `vfs.store`,
+   * `vfs.adapter` or `vfs.storageDir` is a deliberate choice of storage for
+   * offloaded content and wins; otherwise a shared `ChefConfig.store` backs
+   * the `vfs` (and, in 4.x, archive) namespace too.
+   */
+  private _resolveVfsConfig(config: ChefConfig): Partial<VFSConfig> {
+    const vfs: Partial<VFSConfig> = { logger: config.logger, ...config.vfs };
+    const explicit = config.vfs?.store ?? config.vfs?.adapter ?? config.vfs?.storageDir;
+    if (this._store && !explicit) vfs.store = this._store;
+    return vfs;
   }
 
   /**
@@ -678,6 +787,31 @@ export class ContextChef {
     if (this._warnedOnce.has(kind)) return;
     this._warnedOnce.add(kind);
     (this.logger ?? console).warn(message);
+  }
+
+  /**
+   * The dispatcher's view of this chef. Same shape as {@link _createPipelineHost}:
+   * live accessors over private fields, one stable object.
+   */
+  private _createContextToolHost(): ContextToolHost {
+    const chef = this;
+    return {
+      get memory() {
+        return chef.memory;
+      },
+      get offloader() {
+        return chef.offloader;
+      },
+      get store() {
+        return chef.getStore();
+      },
+      get policy() {
+        return chef._contextToolPolicy;
+      },
+      requestNewContext() {
+        chef.requestNewContext();
+      },
+    };
   }
 
   /**
@@ -779,6 +913,14 @@ export class ContextChef {
       },
       prunerTools() {
         return chef._getPrunerTools();
+      },
+      get toolsMode() {
+        return chef._toolsMode;
+      },
+      contextTools() {
+        // Fresh array, same frozen definition objects — the caller may reorder
+        // its copy without the payload's identity drifting between compiles.
+        return [...chef._unifiedTools];
       },
       warnOnce(kind, message) {
         chef._warnOnce(kind, message);
@@ -1029,6 +1171,55 @@ export class ContextChef {
     return { allowed: true };
   }
 
+  // ─── Library-owned tools ───────────────────────────────────────────────
+
+  /**
+   * Whether `name` is a tool this chef dispatches: `context`, `new_context`,
+   * and the legacy `create_memory` / `modify_memory` / `recall_context`.
+   *
+   * Independent of `ChefConfig.tools` — the mode decides what `compile()`
+   * EMITS, not what `handleTool` understands. A migration that emits `context`
+   * while the model still occasionally reaches for a legacy name works, and so
+   * does the reverse.
+   *
+   * @example
+   * for (const call of response.tool_calls) {
+   *   if (chef.ownsTool(call.function.name)) {
+   *     const content = await chef.handleTool({
+   *       name: call.function.name,
+   *       arguments: call.function.arguments,
+   *     });
+   *     history.push({ role: 'tool', tool_call_id: call.id, content });
+   *     continue;
+   *   }
+   *   // ... your own tools
+   * }
+   */
+  public ownsTool(name: string): boolean {
+    return typeof name === 'string' && isContextToolName(name);
+  }
+
+  /**
+   * Runs one library-owned tool call and returns the text to hand back as the
+   * tool result. `arguments` may be the JSON string the OpenAI and Anthropic
+   * SDKs produce or an already-parsed object (Anthropic `input`, Gemini
+   * `args`) — both are accepted.
+   *
+   * Model-facing mistakes never throw: an unknown path, a missing argument, a
+   * write to a read-only namespace and a veto from `onMemoryUpdate` all come
+   * back as `Error: …` text the model can read and correct. Only a tool name
+   * this chef does not own throws — guard with {@link ownsTool}.
+   */
+  public handleTool(call: ContextToolCall): Promise<string> {
+    if (!this.ownsTool(call?.name)) {
+      throw new Error(
+        `[context-chef] chef.handleTool('${call?.name}') — this chef does not own that tool. ` +
+          'Guard the call with chef.ownsTool(name) and dispatch the rest yourself.',
+      );
+    }
+    return dispatchContextTool(this._contextToolHost, call);
+  }
+
   // ─── Skill API ─────────────────────────────────────────────────────────
   //
   // Skill is fully decoupled from Pruner. None of these methods touch
@@ -1224,6 +1415,21 @@ export class ContextChef {
    */
   public getOffloader(): Offloader {
     return this.offloader;
+  }
+
+  /**
+   * The context store every namespace is addressed through — the shared
+   * `ChefConfig.store` when one was passed, otherwise the Offloader's own.
+   *
+   * This is where the `context` tool reads and writes `notes/` and anything
+   * else outside `memory/`; use it to seed notes before a run, or to inspect
+   * what the model wrote after one.
+   *
+   * @example
+   * await chef.getStore().namespace('notes').put('plan.md', '# Plan\n');
+   */
+  public getStore(): Store {
+    return this._store ?? this.offloader.store;
   }
 
   /**

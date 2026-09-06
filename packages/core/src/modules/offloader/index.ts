@@ -453,6 +453,16 @@ export class Offloader {
   }
 
   /**
+   * This Offloader's address for a stored filename, under the configured
+   * `uriScheme` (`context://vfs/` by default). The inverse of what
+   * {@link resolve} accepts — a caller holding a path rather than a cited URI
+   * needs it to ask for the content back.
+   */
+  public uri(filename: string): string {
+    return this.vfs.uri(filename);
+  }
+
+  /**
    * Reads the full content back from a URI (synchronously).
    * On a hit, updates the entry's accessedAt timestamp; if the URI is not in the index,
    * auto-adopts the file (parses createdAt from filename, seeds bytes from content length).
