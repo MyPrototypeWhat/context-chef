@@ -121,7 +121,7 @@ import { summarize, anchored, background, chain, reset, server } from "@context-
 
 overflow: {
   strategy: anchored({ compressionModel }),   // or summarize / reset / chain / background / server
-  archive: 'vfs',                             // whatever a strategy evicts is stored
+  archive: 'vfs',                             // the span a strategy compressed is stored
   handoff: { budgetTokens: 8000 },            // warn the model before its window is cut
 }
 ```

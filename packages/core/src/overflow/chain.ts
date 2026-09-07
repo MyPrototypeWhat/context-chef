@@ -45,7 +45,7 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
         contributions.push([strategy, result]);
         history = result.history;
         evicted.push(...result.evicted);
-        for (const message of result.span ?? result.evicted) span.add(message);
+        for (const message of result.span) span.add(message);
         summary = result.summary;
         // Pinned messages that are still in the window stay protected for the
         // strategies that come after this one.

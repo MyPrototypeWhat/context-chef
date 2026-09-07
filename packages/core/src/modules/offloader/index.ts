@@ -157,7 +157,14 @@ export interface VFSConfig {
   threshold: number;
   /** Directory to store offloaded files (used by default FileSystemAdapter). Ignored if adapter is provided. */
   storageDir?: string;
-  /** Custom URI prefix scheme, e.g. 'context://' */
+  /**
+   * Custom URI prefix scheme, e.g. 'context://'
+   *
+   * @deprecated A second address syntax over one store is what the `context://`
+   *   scheme exists to avoid. Drop it and let offloaded output be addressed as
+   *   `context://vfs/<id>`; removed in 5.0, along with the dispatcher's adapter
+   *   for parsing the alternate spelling.
+   */
   uriScheme?: string;
   /**
    * The context store backing the `vfs` namespace. Pass a {@link Store} to share

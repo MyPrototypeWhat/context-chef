@@ -130,7 +130,7 @@ A failure — a model that threw, a summary that failed the shrink guard, a vali
 
 ## Archive — overflow you can undo <Badge type="tip" text="4.2" />
 
-`overflow.archive` is strategy-agnostic: whatever the installed strategy evicted is serialized and stored, and the URI is cited in the summary that replaced it, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032). It applies to `reset()` exactly as it applies to `summarize()`.
+`overflow.archive` is strategy-agnostic: the span the installed strategy compressed is serialized and stored (`OverflowResult.span`, so a pinned turn re-inserted into the window is archived with its neighbours), and the URI is cited in the summary that replaced it, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032). It applies to `reset()` exactly as it applies to `summarize()`.
 
 ```typescript
 const chef = new ContextChef({
@@ -258,9 +258,9 @@ interface OverflowStrategy {
 }
 ```
 
-`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window`, `forced` and an optional `signal`. `OverflowResult` carries the new `history`, everything `evicted`, an optional `span`, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
+`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window`, `forced` and an optional `signal`. `OverflowResult` carries the new `history`, everything `evicted`, the `span` the summary covers, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
 
-`evicted` means "left the window". `span` is the range the summary covers — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. The runner reads `span ?? evicted`, so omit it when nothing was re-inserted; that array is what `onCompress` gets as `details.compressedMessages`, what the archive stores, and what the citation counts.
+`evicted` means "left the window". `span` is the range the summary covers — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. Both are required: a strategy that re-inserts nothing repeats `evicted`, and a result that changed nothing declares both empty. `span` is what `onCompress` gets as `details.compressedMessages`, what the archive stores, and what the citation counts.
 
 `pending()` is optional and belongs to off-turn strategies. The runner asks before evaluating the budget: `background()` answers `true` while a finished job is waiting, so a summary that completed after the history dropped back under the trigger still lands on the next compile rather than waiting for the window to fill again.
 
@@ -274,6 +274,7 @@ const dropToolResults: OverflowStrategy = {
       return {
         history: input.history,
         evicted: [],
+        span: [],
         meta: {
           strategy: 'drop-tool-results',
           windowId: input.window.current,
@@ -286,6 +287,7 @@ const dropToolResults: OverflowStrategy = {
     return {
       history: input.history.filter((m) => !dropped.has(m)),
       evicted,
+      span: evicted,
       meta: { strategy: 'drop-tool-results', windowId: input.window.current, changed: true },
     };
   },

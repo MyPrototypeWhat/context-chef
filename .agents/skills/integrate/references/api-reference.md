@@ -165,9 +165,10 @@ interface OverflowStrategy {
   restore?(state: unknown): void;
 }
 // OverflowInput  = { history, budget, tokenizer, pinned, window, forced?, signal? }
-// OverflowResult = { history, evicted, span?, summary?, meta: { strategy, windowId, changed, reason? } }
-// `evicted` left the window; `span` is what the summary covers (evicted + re-inserted
-// pinned turns). The runner reads `span ?? evicted` for onCompress, archive and citation.
+// OverflowResult = { history, evicted, span, summary?, meta: { strategy, windowId, changed, reason? } }
+// Both are required. `evicted` left the window; `span` is what the summary covers
+// (evicted + re-inserted pinned turns); a no-op result declares both empty. onCompress,
+// the archive payload and the citation count all read `span`.
 ```
 
 | Factory | What it does |
@@ -179,7 +180,7 @@ interface OverflowStrategy {
 | `chain(...s)` | escalates when a strategy returned `changed: false` or is still over budget |
 | `background(s)` | first over-budget compile returns unchanged, a later one swaps the finished result in if the span is still a prefix |
 
-`archive` is strategy-agnostic: whatever a strategy evicts is stored and the URI is cited in the summary. `handoff` reserves headroom above the trigger and delivers one tail notice per window telling the model to write state into `memory/` / `notes/` first. `getNewContextToolDefinition()` + `chef.requestNewContext()` let the model close a window deliberately.
+`archive` is strategy-agnostic: the span a strategy compressed is stored (pinned turns it re-inserted included) and the URI is cited in the summary. `handoff` reserves headroom above the trigger and delivers one tail notice per window telling the model to write state into `memory/` / `notes/` first. `getNewContextToolDefinition()` + `chef.requestNewContext()` let the model close a window deliberately.
 
 ## Pipeline slots (4.2)
 
@@ -215,7 +216,8 @@ interface StorageBackend {
   delete(ns, path): boolean | Promise<boolean>;
   list(ns, prefix?): ListedEntry[] | Promise<ListedEntry[]>;
   // Optional, capability-queried:
-  readAll?(ns); append?(ns, path, content); search?(ns, query);
+  readAll?(ns, prefix?): StoredEntries;   // Map<string, StoredEntry>, backend key order
+  append?(ns, path, content); search?(ns, query);
   snapshot?(ns); restore?(ns, data); getPhysicalPath?(ns, path);
 }
 ```

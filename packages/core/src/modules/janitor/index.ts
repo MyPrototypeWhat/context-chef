@@ -237,7 +237,7 @@ interface JanitorConfigBase {
    *   UNCHANGED and starts summarization in the background; a later
    *   `compress()` call swaps the finished summary in, but only if the
    *   compressed span is still a prefix of the current history (checked by
-   *   message identity) — otherwise the result is discarded and the budget
+   *   content equivalence) — otherwise the result is discarded and the budget
    *   is re-evaluated fresh. Background state does not survive
    *   snapshot()/restore().
    *
@@ -777,6 +777,7 @@ export class Janitor {
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
       evicted: [],
+      span: [],
       meta: {
         strategy: this._strategy.name,
         windowId: this._window.current,
@@ -839,7 +840,7 @@ export class Janitor {
     // the summary replaced, pinned messages included. They stayed in the
     // window, but they are part of what the summary now stands for, and a sink
     // persisting `compressedMessages` must not lose them.
-    const span = archived.span ?? archived.evicted;
+    const span = archived.span;
     await this._fireOnCompress(
       archived.summary === undefined
         ? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) }
@@ -946,7 +947,7 @@ export class Janitor {
     const archive = this._archive;
     // The stored span is the one the summary replaced, so a pinned turn inside
     // it is archived with its neighbours and the transcript stays contiguous.
-    const span = result.span ?? result.evicted;
+    const span = result.span;
     if (!archive || span.length === 0) return '';
 
     try {

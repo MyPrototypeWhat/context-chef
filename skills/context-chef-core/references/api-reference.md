@@ -360,7 +360,7 @@ interface JanitorConfigBase {
    * - 'blocking' (default): compress() awaits summarization.
    * - 'background': first over-budget compile returns history UNCHANGED and
    *   summarizes in the background; a later compress() swaps the result in
-   *   only if the span is still a prefix (message identity check) — stale
+   *   only if the span is still a prefix (content-equivalence check) — stale
    *   results are discarded. onCompress fires at application time.
    *   Background state is NOT snapshotted.
    */
@@ -458,7 +458,7 @@ interface OverflowInput {
 interface OverflowResult {
   history: Message[];               // the new in-window history
   evicted: Message[];               // what left the window
-  span?: Message[];                 // what the summary covers: evicted + re-inserted pinned
+  span: Message[];                  // what the summary covers: evicted + re-inserted pinned
   summary?: string;                 // rendered summary text, if any
   meta: { strategy: string; windowId: string; changed: boolean; reason?: string };
 }
@@ -619,7 +619,7 @@ interface StorageBackend {
   list(ns: string, prefix?: string): ListedEntry[] | Promise<ListedEntry[]>;
   // Optional, capability-queried — a missing one throws StoreCapabilityError
   // only where it is actually required:
-  readAll?(ns: string, prefix?: string): StoredEntries | Promise<StoredEntries>; // Map<string, StoredEntry> (backend order) | Record
+  readAll?(ns: string, prefix?: string): StoredEntries | Promise<StoredEntries>; // StoredEntries = Map<string, StoredEntry>, backend key order
   append?(ns: string, path: string, content: string): void | Promise<void>;
   search?(ns: string, query: string): SearchHit[] | Promise<SearchHit[]>;
   snapshot?(ns: string): Record<string, StoredEntry>;
@@ -772,7 +772,7 @@ interface MemoryChangeEvent {
 interface VFSConfig {
   threshold: number;            // char limit before offload (ChefConfig.vfs default: 5000)
   storageDir?: string;          // default '.context_vfs'
-  uriScheme?: string;           // custom URI prefix
+  uriScheme?: string;           // (deprecated) custom URI prefix → use the default context://vfs/
   store?: Store | StorageBackend;  // 4.2 — takes precedence over adapter/storageDir
   adapter?: VFSStorageAdapter;  // (deprecated) wrapped with Store.fromVfsAdapter
   maxAge?: number;              // ms since createdAt before cleanup eligibility

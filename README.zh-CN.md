@@ -546,7 +546,7 @@ const chef = new ContextChef({
   janitor: { contextWindow: 200_000, tokenizer },   // runner：预算、触发线、熔断
   overflow: {
     strategy: chain(summarize({ compressionModel: callGpt4oMini }), reset()),
-    archive: "vfs",                                  // 被驱逐的内容仍然可取回
+    archive: "vfs",                                  // 被压缩掉的那一段仍然可取回
     handoff: { budgetTokens: 2_000 },                // 挨刀之前的一次预警
   },
 });
@@ -609,6 +609,7 @@ const dropToolResults: OverflowStrategy = {
     return {
       history: history.filter((m) => !evicted.includes(m)),
       evicted,
+      span: evicted,
       meta: { strategy: "drop-tool-results", windowId: window.current, changed: evicted.length > 0 },
     };
   },
@@ -619,7 +620,7 @@ const dropToolResults: OverflowStrategy = {
 
 #### 可逆归档 —— `overflow.archive`
 
-4.2 起归档与策略无关：不管哪个策略驱逐了什么，被驱逐的内容都会被序列化、存储，并在替换它的摘要里以 URI 引用，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。
+4.2 起归档与策略无关：不管哪个策略压缩了哪一段，被压缩的这一段都会被序列化、存储，并在替换它的摘要里以 URI 引用，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。
 
 ```typescript
 overflow: { strategy: reset(), archive: "vfs" }               // 片段存进本 chef 的 VFS

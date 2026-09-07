@@ -169,6 +169,7 @@ describe('new_context', () => {
           return {
             history: input.history.slice(1),
             evicted: input.history.slice(0, 1),
+            span: input.history.slice(0, 1),
             meta: { strategy: 'spy', windowId: input.window.current, changed: true },
           };
         },

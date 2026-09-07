@@ -430,9 +430,9 @@ describe('chain()', () => {
     // `evicted` — but the summary and then the reset notice both stand for it.
     expect(result.evicted).not.toContain(messages[1]);
     expect(result.span).toContain(messages[1]);
-    expect(result.span?.slice(0, 3)).toEqual(messages.slice(0, 3));
+    expect(result.span.slice(0, 3)).toEqual(messages.slice(0, 3));
     // Every message is counted once, however many steps compressed it.
-    expect(new Set(result.span).size).toBe(result.span?.length);
+    expect(new Set(result.span).size).toBe(result.span.length);
   });
 });
 

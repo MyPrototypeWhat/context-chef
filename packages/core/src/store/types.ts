@@ -35,11 +35,12 @@ export interface ListedEntry {
 }
 
 /**
- * A whole namespace in one value. A Map preserves the backend's key order; a
- * plain object is accepted so a backend written against the documented
- * `Record` shape keeps compiling, and is read in `Object.keys` order.
+ * A whole namespace in one value. A Map rather than an object because the
+ * backend's key order is what `Memory.getAll()` renders into the injected
+ * `<memory>` block, and an object hoists integer-like keys ('10' before
+ * 'zeta') into an order the backend never had.
  */
-export type StoredEntries = Map<string, StoredEntry> | Record<string, StoredEntry>;
+export type StoredEntries = Map<string, StoredEntry>;
 
 export interface SearchHit {
   path: string;
@@ -82,10 +83,9 @@ export interface StorageBackend {
    * instead of `list()` plus one `read()` per path — the difference between
    * 1+N and 2N round-trips on a network-backed store.
    *
-   * Return a Map to keep this namespace's own key order: a plain object hoists
-   * integer-like keys ('10' before 'zeta'), and callers that render entries in
-   * store order — `Memory.getAll()` → the injected `<memory>` block — would
-   * emit them in an order the backend never had.
+   * The Map keeps this namespace's own key order, which callers that render
+   * entries in store order — `Memory.getAll()` → the injected `<memory>`
+   * block — depend on.
    */
   readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>;
   /**

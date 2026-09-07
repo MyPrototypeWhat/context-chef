@@ -1,4 +1,4 @@
-import type { ListedEntry, StorageBackend, StoredEntry } from '../types';
+import type { ListedEntry, StorageBackend, StoredEntries, StoredEntry } from '../types';
 
 /**
  * Process-lifetime backend. The default for every namespace when no other
@@ -57,7 +57,7 @@ export class InMemoryBackend implements StorageBackend {
     return out;
   }
 
-  readAll(ns: string, prefix?: string): Map<string, StoredEntry> {
+  readAll(ns: string, prefix?: string): StoredEntries {
     const out = new Map<string, StoredEntry>();
     const bucket = this.namespaces.get(ns);
     if (!bucket) return out;

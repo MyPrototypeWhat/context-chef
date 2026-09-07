@@ -13,6 +13,7 @@ import {
   type ChefConfig,
   ContextChef,
   type JanitorConfig,
+  type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
   server,
@@ -322,6 +323,7 @@ describe('overflow runner', () => {
         return {
           history: input.history,
           evicted: [],
+          span: [],
           meta: {
             strategy: 'flaky',
             windowId: input.window.current,
@@ -503,6 +505,47 @@ describe('overflow — v5 review fixes', () => {
     // back in the window, right after the summary.
     expect(payload.messages[1].content).toBe(messages[1].content);
     expect(chef.snapshot().history[1].pinned).toBe(true);
+  });
+
+  it('carries the pinned turn in `span` but not in `evicted`', async () => {
+    const onCompress = vi.fn();
+    const stored: number[] = [];
+    const messages = longHistory(9);
+    messages[1] = { ...messages[1], pinned: true };
+    const inner = summarize({ compressionModel, preserveRatio: 0.3 });
+    let captured: OverflowResult | undefined;
+
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: {
+          name: 'capture',
+          apply: async (input) => {
+            captured = await inner.apply(input);
+            return captured;
+          },
+        },
+        archive: {
+          store: (_serialized, meta) => {
+            stored.push(meta.messageCount);
+            return 'context://vfs/pinned-span.txt';
+          },
+        },
+      },
+    }).setHistory(messages);
+
+    await chef.compile({ target: 'openai' });
+
+    if (!captured) throw new Error('the strategy never ran');
+    const contents = (list: Message[]): string[] => list.map((m) => m.content as string);
+    expect(contents(captured.span)).toContain(messages[1].content);
+    expect(contents(captured.evicted)).not.toContain(messages[1].content);
+    expect(captured.evicted).toHaveLength(captured.span.length - 1);
+
+    // Everything downstream counts the span, never `evicted`.
+    expect(onCompress.mock.calls[0][1]).toBe(captured.span.length);
+    expect(stored).toEqual([captured.span.length]);
   });
 
   it('archives a span whose every turn is pinned', async () => {

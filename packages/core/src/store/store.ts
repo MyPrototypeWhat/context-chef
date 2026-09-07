@@ -12,7 +12,6 @@ import {
   StoreCapabilityError,
   type StoreCleanupOptions,
   type StoreCleanupResult,
-  type StoredEntries,
   type StoredEntry,
   type StoredEntryMeta,
   type StoreEntryMeta,
@@ -205,7 +204,7 @@ export class NamespaceView {
   entries(prefix?: string): MaybePromise<Map<string, StoredEntry>> {
     const backend = this.store.backend;
     if (backend.readAll && this.supports('readAll')) {
-      return chain(backend.readAll(this.ns, prefix), asEntryMap);
+      return backend.readAll(this.ns, prefix);
     }
     return chain(backend.list(this.ns, prefix), (listed) => {
       const reads = listed.map((item) => backend.read(this.ns, item.path));
@@ -328,11 +327,6 @@ export class NamespaceView {
 
 function byteLength(content: string): number {
   return Buffer.byteLength(content, 'utf8');
-}
-
-/** A backend's bulk read as a Map, whichever shape it chose to return. */
-function asEntryMap(entries: StoredEntries): Map<string, StoredEntry> {
-  return entries instanceof Map ? entries : new Map(Object.entries(entries));
 }
 
 /** Unwraps a backend answer that a synchronous call site cannot await. */

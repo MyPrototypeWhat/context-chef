@@ -208,6 +208,21 @@ describe('VFSMemoryStore', () => {
       expect(readIndex()).toEqual(['new']);
     });
 
+    it('picks up a key another writer added to the directory', () => {
+      const store = new VFSMemoryStore(testDir);
+      store.set('mine', makeEntry('1'));
+
+      // A 4.1 process writing the same directory, behind this instance's back.
+      fs.writeFileSync(
+        path.join(testDir, `${Buffer.from('theirs').toString('base64url')}.mem`),
+        JSON.stringify(makeEntry('from the other writer')),
+        'utf-8',
+      );
+      store.set('mine', makeEntry('2'));
+
+      expect(readIndex().sort()).toEqual(['mine', 'theirs']);
+    });
+
     it('a foreign .mem file does not break the listing', () => {
       fs.mkdirSync(testDir, { recursive: true });
       fs.writeFileSync(
@@ -219,6 +234,24 @@ describe('VFSMemoryStore', () => {
       const store = new VFSMemoryStore(testDir);
       store.set('a', makeEntry('1'));
       expect(store.keys()).toEqual(['a']);
+      // The index is what a 4.1 process answers keys() from, so it must not
+      // pick up a name this store would never have written.
+      expect(readIndex()).toEqual(['a']);
+    });
+
+    it('a leftover .tmp_ scratch file is not indexed as a key', () => {
+      fs.mkdirSync(testDir, { recursive: true });
+      // What a crash between write and rename leaves in the directory.
+      fs.writeFileSync(
+        path.join(testDir, `.tmp_1234_${Buffer.from('a').toString('base64url')}.mem`),
+        JSON.stringify(makeEntry('half-written')),
+        'utf-8',
+      );
+
+      const store = new VFSMemoryStore(testDir);
+      store.set('a', makeEntry('1'));
+      expect(store.keys()).toEqual(['a']);
+      expect(readIndex()).toEqual(['a']);
     });
   });
 

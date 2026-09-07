@@ -546,7 +546,7 @@ const chef = new ContextChef({
   janitor: { contextWindow: 200_000, tokenizer },   // runner: budget, trigger, breaker
   overflow: {
     strategy: chain(summarize({ compressionModel: callGpt4oMini }), reset()),
-    archive: "vfs",                                  // whatever is evicted stays retrievable
+    archive: "vfs",                                  // the compressed span stays retrievable
     handoff: { budgetTokens: 2_000 },                // one warning before the cut
   },
 });
@@ -609,6 +609,7 @@ const dropToolResults: OverflowStrategy = {
     return {
       history: history.filter((m) => !evicted.includes(m)),
       evicted,
+      span: evicted,
       meta: { strategy: "drop-tool-results", windowId: window.current, changed: evicted.length > 0 },
     };
   },
@@ -619,7 +620,7 @@ Optional `commit(result)`, `snapshot()` and `restore(state)` round out the inter
 
 #### Reversible archive — `overflow.archive`
 
-Archiving is strategy-agnostic since 4.2: whatever a strategy evicts is serialized, stored, and cited by URI in the summary that replaced it, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032).
+Archiving is strategy-agnostic since 4.2: whatever span a strategy compressed is serialized, stored, and cited by URI in the summary that replaced it, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032).
 
 ```typescript
 overflow: { strategy: reset(), archive: "vfs" }               // store spans in this chef's VFS

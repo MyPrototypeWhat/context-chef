@@ -197,7 +197,13 @@ What changes:
 - URIs already written into persisted summaries keep pointing at `context://vfs/…`. Those entries are still where they were; keep the old VFS store around, or re-key it, if you have durable history citing them.
 - Code that lists the `vfs` namespace to enumerate archives must list `archive` instead. Per-namespace eviction policy (`maxAge` / `maxFiles` / `maxBytes`) starts applying to the two namespaces separately.
 
-### 4. `durableCompaction` speaks the unified vocabulary
+### 4. `vfs.uriScheme` is removed
+
+`vfs.uriScheme` lets the Offloader mint its own address syntax — `myscheme://<id>` in place of `context://vfs/<id>` — which puts two spellings on one store and contradicts the single addressing scheme the persistence axis settled on. 4.x keeps it working, and the read path carries an adapter for it: the dispatcher asks the Offloader to parse an address under its own scheme before falling back to `context://` parsing. That adapter exists only to serve the alternate syntax, so it goes when the option goes.
+
+In 5.0 every address is `context://`. A host that set `uriScheme` drops the option and reads the default `context://vfs/<id>` addresses instead. URIs already written into persisted summaries keep their old spelling, and — unlike the `archive/` switch, where the old `context://vfs/…` addresses still resolve — those addresses stop resolving once the parse adapter goes: `myscheme://<id>` then reaches `context://` parsing, which rejects `myscheme:` as a namespace. The entries are still in `vfs/`; they have to be re-cited (or looked up) as `context://vfs/<id>`.
+
+### 5. `durableCompaction` speaks the unified vocabulary
 
 `planCompaction` / `compactHistory` in `packages/core/src/modules/janitor/durableCompaction.ts` are standalone — no chef, so no resolved `Vocabulary` — and today they call `Prompts.getCompactSummaryWrapper` directly, which is the legacy wrapper. In 5.0 they take the unified wrapper, so the summary message a durable compaction writes into your store changes wording (and gains the window-lineage line where a lineage is available).
 
@@ -214,4 +220,5 @@ Because durable compaction writes into a store the caller owns, that text is per
 5. Replace `MemoryStore` / `VFSStorageAdapter` implementations with one `StorageBackend`, and pass it as `ChefConfig.store` instead of `memory.store` + `vfs.adapter`. Swap `InMemoryStore` → `InMemoryBackend`, `VFSMemoryStore` / `FileSystemAdapter` → `FileSystemBackend`.
 6. Middleware users: `truncate.storage` → `truncate.store`.
 7. If you enumerate or persist `context://vfs/…` archive URIs, decide now whether to migrate those entries or keep the old store readable past the `archive/` switch.
-8. Then adopt what is new where it pays off: `overflow.handoff` + `new_context` so the model can save state before its window is cut, `reset()` / `chain()` for cheap window turnover, `notes/` as the model's own scratch space, and `pipelineChecks: true` in development.
+8. If you set `vfs.uriScheme`, drop it and let the Offloader address offloaded output as `context://vfs/<id>` — and decide what to do about summaries that already cite the old spelling.
+9. Then adopt what is new where it pays off: `overflow.handoff` + `new_context` so the model can save state before its window is cut, `reset()` / `chain()` for cheap window turnover, `notes/` as the model's own scratch space, and `pipelineChecks: true` in development.

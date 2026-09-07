@@ -3,9 +3,11 @@ import type { VFSStorageAdapter } from '../modules/offloader';
 import { chain } from './maybe';
 import {
   type ListedEntry,
+  type MaybePromise,
   type StorageBackend,
   type StoreCapability,
   StoreCapabilityError,
+  type StoredEntries,
   type StoredEntry,
 } from './types';
 
@@ -40,12 +42,7 @@ export function fromMemoryStore(legacy: MemoryStore): StorageBackend {
   if (legacy.snapshot) capabilities.add('snapshot');
   if (legacy.restore) capabilities.add('restore');
 
-  // A Map, not a plain object: `legacy.keys()` order is the store's own, and
-  // an object would reorder integer-like keys ('10' ahead of 'zeta').
-  const readAll = (
-    _ns: string,
-    prefix?: string,
-  ): Map<string, StoredEntry> | Promise<Map<string, StoredEntry>> =>
+  const readAll = (_ns: string, prefix?: string): MaybePromise<StoredEntries> =>
     chain(legacy.keys(), (keys) => {
       const selected = prefix ? keys.filter((key) => key.startsWith(prefix)) : keys;
       const reads = selected.map((key) => legacy.get(key));

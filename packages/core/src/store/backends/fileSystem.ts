@@ -4,6 +4,7 @@ import {
   ARCHIVE_NAMESPACE,
   type ListedEntry,
   type StorageBackend,
+  type StoredEntries,
   type StoredEntry,
   type StoredEntryMeta,
   VFS_NAMESPACE,
@@ -258,7 +259,7 @@ export class FileSystemBackend implements StorageBackend {
     }
   }
 
-  readAll(ns: string, prefix?: string): Map<string, StoredEntry> {
+  readAll(ns: string, prefix?: string): StoredEntries {
     const out = new Map<string, StoredEntry>();
     for (const listed of this.list(ns, prefix)) {
       const entry = this.read(ns, listed.path);

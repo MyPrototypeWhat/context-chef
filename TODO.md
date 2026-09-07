@@ -753,7 +753,7 @@ scheduled; 5.0 lands when there is a reason for it beyond the removals.
   tool's `view`.
 - `TruncateOptions.storage` in ai-sdk-middleware and tanstack-ai → `TruncateOptions.store`.
 
-**Two behavioral switches that are not alias removals.**
+**Three behavioral switches that are not alias removals.**
 
 - **`archive/` namespace**: in 4.x the archive writes into the `vfs` namespace so
   `context://vfs/<id>` URIs stay byte-identical (a golden fixture asserts it). 5.0 writes
@@ -761,6 +761,17 @@ scheduled; 5.0 lands when there is a reason for it beyond the removals.
   namespace today, so it must learn `archive` with the switch (the `context` tool's `view`
   already reads both). URIs cited in already-persisted summaries keep pointing at
   `context://vfs/…`, and per-namespace eviction starts applying to the two separately.
+- **`vfs.uriScheme` goes away**: it lets the Offloader mint a second address syntax
+  alongside `context://<ns>/<path>`, which is one store with two spellings — the opposite
+  of what the persistence axis is for. 4.x keeps it working, and the read path carries an
+  adapter for it: the dispatcher asks the Offloader to parse an address under its own
+  scheme before falling back to `context://` parsing. That adapter exists only to serve
+  the alternate syntax, so both go together in 5.0, where every address is `context://`.
+  A host that set it drops it and reads the default `context://vfs/<id>` addresses; URIs
+  already written into persisted summaries keep their old spelling, and unlike the
+  `archive/` switch above they stop resolving when the adapter goes — `myscheme:` is not a
+  namespace `context://` parsing accepts. The entries stay in `vfs/`, but they have to be
+  re-cited as `context://vfs/<id>`.
 - **`durableCompaction` speaks the unified vocabulary**:
   `packages/core/src/modules/janitor/durableCompaction.ts` calls
   `Prompts.getCompactSummaryWrapper` directly — it is standalone, with no chef and so no

@@ -127,7 +127,7 @@ import { summarize, anchored, background, chain, reset, server } from "@context-
 
 overflow: {
   strategy: anchored({ compressionModel }),  // or summarize(...) / reset() / server(...)
-  archive: 'vfs',                            // strategy-agnostic: whatever is evicted is stored
+  archive: 'vfs',                            // strategy-agnostic: the compressed span is stored
 }
 ```
 

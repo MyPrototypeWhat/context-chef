@@ -20,7 +20,7 @@ interface StorageBackend {
   delete(ns: string, path: string): MaybePromise<boolean>;
   list(ns: string, prefix?: string): MaybePromise<ListedEntry[]>;
   // optional capabilities, queried rather than assumed:
-  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // Map (backend order) or Record
+  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // StoredEntries = Map<string, StoredEntry>
   exists?(ns: string, path: string): MaybePromise<boolean>;
   append?(ns: string, path: string, content: string): MaybePromise<void>;
   search?(ns: string, query: string): MaybePromise<SearchHit[]>;
@@ -30,6 +30,8 @@ interface StorageBackend {
   supports?(capability: StoreCapability, ns?: string): boolean;
 }
 ```
+
+`StoredEntries` is a `Map<string, StoredEntry>`, and `NamespaceView.entries()` hands the same `Map` back. The key order is load-bearing: it is the order `Memory.getAll()` renders into the `<memory>` block, and a plain object would hoist integer-like keys to the front. `snapshot()` returns a `Record` because it has the opposite job — a serializable blob, where order is nobody's business.
 
 Every method may be sync or async and the `Store` passes that choice straight through, so a synchronous backend keeps synchronous call sites (`chef.offload`, `memory.snapshot`) synchronous. Asking a namespace for something its backend cannot do throws `StoreCapabilityError` naming the missing capability — the `context` tool turns that into an error message the model can read instead of a failed turn.
 

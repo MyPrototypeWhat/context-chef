@@ -130,7 +130,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 ## 归档 —— 可撤销的溢出 <Badge type="tip" text="4.2" />
 
-`overflow.archive` 与策略无关：无论装配的策略驱逐了什么，都会被序列化存储，URI 则被取代它的摘要引用，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。它对 `reset()` 的作用和对 `summarize()` 完全一样。
+`overflow.archive` 与策略无关：装配的策略压缩掉的那一段会被序列化存储（`OverflowResult.span`，因此被重新插回窗口的固定消息也会连同上下文一起归档），URI 则被取代它的摘要引用，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。它对 `reset()` 的作用和对 `summarize()` 完全一样。
 
 ```typescript
 const chef = new ContextChef({
@@ -258,9 +258,9 @@ interface OverflowStrategy {
 }
 ```
 
-`OverflowInput` 携带 `history`、`budget`、`tokenizer`、`pinned`（按轮次界定，按引用传递 —— 用 `===` 比较，不要按值比）、`window`、`forced` 和可选的 `signal`。`OverflowResult` 携带新的 `history`、全部 `evicted`、可选的 `span`、可选的 `summary`，以及 `meta: { strategy, windowId, changed, reason? }`。
+`OverflowInput` 携带 `history`、`budget`、`tokenizer`、`pinned`（按轮次界定，按引用传递 —— 用 `===` 比较，不要按值比）、`window`、`forced` 和可选的 `signal`。`OverflowResult` 携带新的 `history`、全部 `evicted`、摘要所覆盖的 `span`、可选的 `summary`，以及 `meta: { strategy, windowId, changed, reason? }`。
 
-`evicted` 的意思是「离开了窗口」。`span` 是摘要所覆盖的那一段 —— 同样这批消息，再加上策略原样塞回去、其实并没有离开窗口的 pinned 轮次。runner 读的是 `span ?? evicted`，没有塞回任何东西就不用给。这个数组正是 `onCompress` 拿到的 `details.compressedMessages`、归档存下来的内容，以及引用里数的条数。
+`evicted` 的意思是「离开了窗口」。`span` 是摘要所覆盖的那一段 —— 同样这批消息，再加上策略原样塞回去、其实并没有离开窗口的 pinned 轮次。两个字段都是必填的：没有塞回任何东西的策略就把 `evicted` 原样再给一遍，什么都没改变的结果则两者都置空。`onCompress` 拿到的 `details.compressedMessages`、归档存下来的内容，以及引用里数的条数，读的都是 `span`。
 
 `pending()` 是可选的，属于离线执行的策略。runner 在评估预算之前会问一次：`background()` 在有已完成的任务等着落地时返回 `true`，所以一份在历史已经回落到触发线以下之后才算完的摘要，仍然会在下一次编译落地，而不用等窗口重新填满。
 
@@ -274,6 +274,7 @@ const dropToolResults: OverflowStrategy = {
       return {
         history: input.history,
         evicted: [],
+        span: [],
         meta: {
           strategy: 'drop-tool-results',
           windowId: input.window.current,
@@ -286,6 +287,7 @@ const dropToolResults: OverflowStrategy = {
     return {
       history: input.history.filter((m) => !dropped.has(m)),
       evicted,
+      span: evicted,
       meta: { strategy: 'drop-tool-results', windowId: input.window.current, changed: true },
     };
   },

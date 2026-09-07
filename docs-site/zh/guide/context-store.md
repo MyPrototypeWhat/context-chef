@@ -20,7 +20,7 @@ interface StorageBackend {
   delete(ns: string, path: string): MaybePromise<boolean>;
   list(ns: string, prefix?: string): MaybePromise<ListedEntry[]>;
   // optional capabilities, queried rather than assumed:
-  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // Map (backend order) or Record
+  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // StoredEntries = Map<string, StoredEntry>
   exists?(ns: string, path: string): MaybePromise<boolean>;
   append?(ns: string, path: string, content: string): MaybePromise<void>;
   search?(ns: string, query: string): MaybePromise<SearchHit[]>;
@@ -30,6 +30,8 @@ interface StorageBackend {
   supports?(capability: StoreCapability, ns?: string): boolean;
 }
 ```
+
+`StoredEntries` 就是 `Map<string, StoredEntry>`，`NamespaceView.entries()` 返回的也是同一个 `Map`。键的顺序是有意义的：`Memory.getAll()` 就按这个顺序渲染 `<memory>` 块，而普通对象会把形如整数的键提到最前面。`snapshot()` 返回 `Record`，因为它干的是反过来的活 —— 一个可序列化的快照，顺序在那里无关紧要。
 
 每个方法都可以是同步或异步的，`Store` 会把这个选择原样透传下去，所以同步后端能让同步调用点（`chef.offload`、`memory.snapshot`）继续保持同步。向某个命名空间要它的后端做不到的能力会抛 `StoreCapabilityError`，并写明缺哪个能力 —— `context` 工具会把它转成模型能读懂的错误文本，而不是让这一轮失败。
 

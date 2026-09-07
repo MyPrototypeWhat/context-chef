@@ -118,10 +118,11 @@ export interface OverflowResult {
    * consumer persisting `compressedMessages` must not silently lose the pinned
    * turns that sat inside it.
    *
-   * Omitted when it is the same array as `evicted` is built from — the runner
-   * reads `span ?? evicted`.
+   * Required, so every strategy states what its result stands for: a superset
+   * of `evicted` whenever pinned messages were re-inserted, equal to it
+   * otherwise, and empty — like `evicted` — in a result that changed nothing.
    */
-  span?: Message[];
+  span: Message[];
   /**
    * The summary text the strategy produced, WITHOUT the continuation wrapper.
    *
@@ -247,6 +248,7 @@ export function unchanged(input: OverflowInput, strategy: string, reason: string
   return {
     history: input.history,
     evicted: [],
+    span: [],
     meta: { strategy, windowId: input.window.current, changed: false, reason },
   };
 }

@@ -421,7 +421,7 @@ interface OverflowInput {
 interface OverflowResult {
   history: Message[];
   evicted: Message[]; // what left the window
-  span?: Message[];   // what the summary covers — `evicted` plus any pinned message re-inserted
+  span: Message[];    // what the summary covers — `evicted` plus any pinned message re-inserted
   summary?: string;   // raw summary text, without the continuation wrapper
   meta: { strategy: string; windowId: string; changed: boolean; reason?: string };
 }
@@ -440,19 +440,21 @@ const dropOldestTurn: OverflowStrategy = {
       return {
         history: input.history,
         evicted: [],
+        span: [],
         meta: { ...meta, changed: false, reason: "only pinned messages left" },
       };
     }
     return {
       history: input.history.filter((_, i) => i !== index),
       evicted: [input.history[index]],
+      span: [input.history[index]],
       meta: { ...meta, changed: true },
     };
   },
 };
 ```
 
-`evicted` and `span` answer different questions. `evicted` is what left the window; `span` is what the summary is *about* — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. The runner reads `span ?? evicted`, so a strategy that re-inserts nothing can omit it. That one array is what `onCompress` receives as `details.compressedMessages`, what the archive stores, and what the citation counts — keeping those three at the 4.1 numbers even when a pinned turn sits inside the compressed range.
+`evicted` and `span` answer different questions, and every strategy declares both. `evicted` is what left the window; `span` is what the summary is *about* — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. A result that changed nothing declares both empty. `span` is the array `onCompress` receives as `details.compressedMessages`, the array the archive stores, and the one the citation counts — keeping those three at the 4.1 numbers even when a pinned turn sits inside the compressed range.
 
 `pending()` is how an off-turn strategy says a finished result is still waiting. The runner asks before it evaluates the budget, so a `background()` summary that completed after the history dropped back under the trigger still lands on the next compile instead of waiting for the window to fill again — it is already paid for, and holding it means the model keeps paying for the span it replaces.
 
@@ -892,7 +894,7 @@ interface StorageBackend {
   delete(ns: string, path: string): MaybePromise<boolean>;
   list(ns: string, prefix?: string): MaybePromise<ListedEntry[]>;
 
-  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // Map (backend order) or Record
+  readAll?(ns: string, prefix?: string): MaybePromise<StoredEntries>; // StoredEntries = Map<string, StoredEntry>
   exists?(ns: string, path: string): MaybePromise<boolean>;
   append?(ns: string, path: string, content: string): MaybePromise<void>;
   search?(ns: string, query: string): MaybePromise<SearchHit[]>;
@@ -908,6 +910,8 @@ interface StoredEntry {
   meta: { createdAt: number; updatedAt: number; bytes?: number } & Record<string, unknown>;
 }
 ```
+
+`StoredEntries` is a `Map<string, StoredEntry>`, and `NamespaceView.entries()` hands the same `Map` back. The key order is load-bearing: it is the order `Memory.getAll()` renders into the `<memory>` block, and a plain object would hoist integer-like keys to the front. `snapshot()` returns a `Record` because it has the opposite job — a serializable blob, where order is nobody's business.
 
 Every method may be sync or async, and the `Store` passes that choice straight through — a synchronous backend keeps synchronous call sites (`chef.offload`, `memory.snapshot`) working. Asking a namespace for something its backend cannot do throws `StoreCapabilityError` naming the missing capability, instead of failing quietly.
 
@@ -928,7 +932,7 @@ const { uri } = await notes.put("scratch"); // auto-id write → context://notes
 await notes.append("plan.md", "- step 2\n");
 await notes.get("plan.md");
 await notes.list("2026-");                   // prefix filter
-await notes.entries();                       // whole namespace in one pass when the backend has readAll
+await notes.entries();                       // Map of the whole namespace in one pass, when the backend has readAll
 await notes.delete("plan.md");
 
 Store.uri("notes", "plan.md");               // 'context://notes/plan.md'

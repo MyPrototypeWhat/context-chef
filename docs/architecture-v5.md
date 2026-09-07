@@ -168,7 +168,7 @@ interface OverflowInput {
 interface OverflowResult {
   history: Message[];                 // the new in-window history
   evicted: Message[];                 // what left the window
-  span?: Message[];                   // what the summary covers: evicted + re-inserted pinned
+  span: Message[];                    // what the summary covers: evicted + re-inserted pinned
   summary?: string;                   // rendered summary text, if the strategy produced one
   meta: { strategy: string; windowId: string; changed: boolean; reason?: string };
 }
@@ -194,9 +194,9 @@ Built-ins (each a factory in `src/overflow/`):
 | `background(s)` | `compressionScheduling: 'background'` | wraps a strategy in the existing BackgroundCompressionJob semantics (content-equivalence staleness) |
 
 `evicted` is what left the window; `span` is what the summary covers, including pinned
-turns the strategy re-inserted verbatim. The runner reads `span ?? evicted` for
-`onCompress`, the archive payload and the citation count, which is what keeps those
-three at the 4.1 numbers. `pending()` is the off-turn hook: the runner asks before
+turns the strategy re-inserted verbatim. Every strategy declares both, and a result that
+changed nothing declares both empty. `onCompress`, the archive payload and the citation
+count all read `span`, which is what keeps those three at the 4.1 numbers. `pending()` is the off-turn hook: the runner asks before
 evaluating the budget, so a `background()` job that finished after the history dropped
 back under the trigger still lands on the next compile.
 

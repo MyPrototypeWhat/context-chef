@@ -508,22 +508,14 @@ function usesOverflowAliases(config: ChefConfig, janitor: JanitorConfig): boolea
 }
 
 /**
- * The `contextManagement` block the pipeline reads, derived from the strategy
- * that was actually installed. The strategy is the single source of truth for
- * how overflow is handled, so it also decides whether the target is
- * server-managed — whichever of the three spellings configured it
- * (`overflow.strategy`, `janitor.strategy`, `contextManagement.strategy`).
+ * The `contextManagement` block the pipeline reads, projected from the
+ * strategy that was actually installed. The installed strategy IS the answer
+ * to "who manages this window" — whichever of the three spellings configured
+ * it (`overflow.strategy`, `janitor.strategy`, `contextManagement.strategy`),
+ * they all resolve into it first, so there is nothing left to ask afterwards.
  */
-function resolveContextManagement(
-  config: ChefConfig,
-  strategy: OverflowStrategy,
-): ChefConfig['contextManagement'] {
-  if (isServerStrategy(strategy)) return { strategy: 'server', server: strategy.config };
-  // An explicit strategy that is not `server()` says the client owns overflow,
-  // whatever a leftover `contextManagement` block next to it says.
-  return (config.overflow?.strategy ?? config.janitor?.strategy)
-    ? undefined
-    : config.contextManagement;
+function resolveContextManagement(strategy: OverflowStrategy): ChefConfig['contextManagement'] {
+  return isServerStrategy(strategy) ? { strategy: 'server', server: strategy.config } : undefined;
 }
 
 export class ContextChef {
@@ -692,7 +684,7 @@ export class ContextChef {
     // the server-managed target from it, the adapt phase reads the edits
     // config out of it. One source, whichever way it was configured — read off
     // the resolved strategy so `janitor.strategy` is not a third opinion.
-    this.contextManagement = resolveContextManagement(config, strategy);
+    this.contextManagement = resolveContextManagement(strategy);
     // The Janitor's own version of this diagnostic can never fire for a
     // chef-built runner — it is always handed a resolved strategy — so the
     // call is made here, against the config the user actually wrote.

@@ -10,12 +10,18 @@ const EXT = '.mem';
 /** The key list 4.1 kept beside the entries and answered `keys()` from. */
 const INDEX_FILE = '_index.json';
 
+/** The layout below always names both codecs; `_saveIndex` reuses them. */
+type MemoryFileLayout = FileSystemNamespaceLayout & {
+  encode: (key: string) => string;
+  decode: (file: string) => string | null;
+};
+
 /**
  * The on-disk shape this store has always used: one base64url-named `.mem`
  * file per key, holding the JSON-serialized entry. Kept byte-for-byte so
  * existing storage directories keep loading.
  */
-function memoryFileLayout(dir: string): FileSystemNamespaceLayout {
+function memoryFileLayout(dir: string): MemoryFileLayout {
   return {
     dir,
     encode: (key) => `${Buffer.from(key).toString('base64url')}${EXT}`,
@@ -57,12 +63,13 @@ export class VFSMemoryStore implements MemoryStore {
   private readonly ns: NamespaceView;
   private readonly dir: string;
   private readonly indexPath: string;
-  /** Lazily built from the directory, then kept in step with every mutation. */
-  private keyIndex: Set<string> | null = null;
+  /** The same layout the backend reads with, so there is one naming rule. */
+  private readonly layout: MemoryFileLayout;
 
   constructor(storageDir = '.context_memory') {
+    this.layout = memoryFileLayout(storageDir);
     const backend = new FileSystemBackend(storageDir, {
-      layouts: { [MEMORY_NAMESPACE]: memoryFileLayout(storageDir) },
+      layouts: { [MEMORY_NAMESPACE]: this.layout },
     });
     this.ns = new Store(backend).namespace(MEMORY_NAMESPACE);
     this.dir = storageDir;
@@ -77,12 +84,12 @@ export class VFSMemoryStore implements MemoryStore {
   set(key: string, entry: MemoryStoreEntry): void {
     const stored = memoryEntryToStored(entry);
     this.ns.putSync(key, stored.content, stored.meta);
-    this._writeIndex((index) => index.add(key));
+    this._saveIndex();
   }
 
   delete(key: string): boolean {
     const deleted = this.ns.deleteSync(key);
-    if (deleted) this._writeIndex((index) => index.delete(key));
+    if (deleted) this._saveIndex();
     return deleted;
   }
 
@@ -94,13 +101,11 @@ export class VFSMemoryStore implements MemoryStore {
   keys(): string[] {
     const keys = this.ns.listSync().map((entry) => entry.path);
     if (fs.existsSync(this.dir) && !fs.existsSync(this.indexPath)) {
-      this.keyIndex = new Set(keys);
-      // Best-effort: a read must not start throwing because the directory
-      // turned out to be read-only. Mutations report their failures.
       try {
         this._saveIndex();
       } catch {
-        this.keyIndex = null;
+        // Best-effort: a read must not start throwing because the directory
+        // turned out to be read-only. Mutations report their failures.
       }
     }
     return keys;
@@ -112,19 +117,32 @@ export class VFSMemoryStore implements MemoryStore {
 
   restore(data: Record<string, MemoryStoreEntry>): void {
     this.ns.restore(mapRecord<MemoryStoreEntry, StoredEntry>(data, memoryEntryToStored));
-    this.keyIndex = new Set(Object.keys(data));
     this._saveIndex();
   }
 
-  private _writeIndex(mutate: (index: Set<string>) => void): void {
-    this.keyIndex ??= new Set(this.ns.listSync().map((entry) => entry.path));
-    mutate(this.keyIndex);
-    this._saveIndex();
-  }
-
-  /** 4.1's format exactly: a JSON array of keys beside the `.mem` files. */
+  /**
+   * 4.1's format exactly: a JSON array of keys beside the `.mem` files.
+   *
+   * Recomputed from the directory on every write rather than tracked in
+   * memory, because a second process sharing the directory is the whole reason
+   * the file exists — a key list this process maintained would not know about
+   * that process's entries and would drop them from the index. `readdirSync`
+   * and not `ns.listSync()`: the memory layout deserializes, so a listing
+   * reads and parses every `.mem` file, turning each write into O(n) reads.
+   *
+   * `decode` only strips the extension, so a name this store never wrote
+   * (`not-ours.mem`, a `.tmp_…` scratch file a crashed write left behind)
+   * base64url-decodes to mojibake rather than being rejected. Requiring the
+   * key to encode back to the same filename drops those without reading them,
+   * which keeps the index agreeing with `keys()`.
+   */
   private _saveIndex(): void {
     fs.mkdirSync(this.dir, { recursive: true });
-    fs.writeFileSync(this.indexPath, JSON.stringify([...(this.keyIndex ?? [])]), 'utf-8');
+    const keys: string[] = [];
+    for (const file of fs.readdirSync(this.dir)) {
+      const key = this.layout.decode(file);
+      if (key !== null && this.layout.encode(key) === file) keys.push(key);
+    }
+    fs.writeFileSync(this.indexPath, JSON.stringify(keys), 'utf-8');
   }
 }
