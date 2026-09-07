@@ -1,5 +1,14 @@
 # @context-chef/core
 
+## 4.2.1
+
+### Patch Changes
+
+- [#55](https://github.com/MyPrototypeWhat/context-chef/pull/55) [`953491e`](https://github.com/MyPrototypeWhat/context-chef/commit/953491e84b5e849e9d811e779e0697b408c0a662) Thanks [@MyPrototypeWhat](https://github.com/MyPrototypeWhat)! - Two overflow fixes.
+
+  - The overflow runner now resets its circuit breaker on any successful overflow, whichever strategy did the work. Before, only the summarizing strategies (`summarize()` / `anchored()`) reported success, so `chain(summarize(), reset())` — where `reset()` rescues a failed summary — still counted every rescued failure, and after three the open breaker stopped calling the strategy at all: `reset()` never ran again and the window stayed over budget for the rest of the session.
+  - `reset()`'s default notice no longer tells the model the earlier conversation "was archived". Archiving is opt-in; the runner's citation line already says so, with the address, when an archive is configured. Hosts that pass their own `ResetOptions.notice` are unaffected.
+
 ## 4.2.0
 
 ### Minor Changes
