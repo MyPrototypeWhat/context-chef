@@ -111,6 +111,20 @@ describe('summarize()', () => {
     expect(result.history.map((m) => m.content)).toEqual(['msg-5']);
   });
 
+  it('leaves the breaker accounting to the runner on success', async () => {
+    // The runner clears the count for any result that lands, so a successful
+    // summary reports nothing — see Janitor.overflow().
+    const [strategy, runner] = attached(
+      summarize({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: 1 }),
+    );
+
+    const result = await strategy.apply(makeInput());
+
+    expect(result.meta.changed).toBe(true);
+    expect(runner.successes).toBe(0);
+    expect(runner.failures).toEqual([]);
+  });
+
   it('reports a non-shrinking summary to the runner and leaves history alone', async () => {
     const long = [
       { role: 'user' as const, content: 'x'.repeat(3000) },
@@ -299,23 +313,9 @@ describe('reset()', () => {
     expect(result.history[0].content).toContain('Context window reset');
     expect(result.history[1]).toBe(messages[1]);
     expect(result.evicted).toHaveLength(4);
-    // The notice names the window it closed — there is no previous one here.
-    expect(result.summary).toBe(
-      'Context window reset (window w_first). Earlier conversation was archived.',
-    );
-  });
-
-  it('names the closed window and its predecessor in the notice', async () => {
-    const [strategy] = attached(reset());
-
-    const result = await strategy.apply(
-      makeInput({ window: { first: 'w_a', previous: 'w_a', current: 'w_b' } }),
-    );
-
-    expect(result.summary).toBe(
-      'Context window reset (window w_b; previous w_a). Earlier conversation was archived.',
-    );
-    expect(result.meta.windowId).toBe('w_b');
+    // The result names the window the strategy worked on; what the notice
+    // says about it is reset.test.ts's contract.
+    expect(result.meta.windowId).toBe('w_first');
   });
 
   it('uses a caller notice verbatim', async () => {

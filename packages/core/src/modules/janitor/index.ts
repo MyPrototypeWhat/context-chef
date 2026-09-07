@@ -759,8 +759,12 @@ export class Janitor {
    *   summary and never evict them.
    * - A rejected compression leaves history UNCHANGED and counts toward the
    *   circuit breaker; after MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive
-   *   failures this becomes a no-op until the next success or an explicit
-   *   reset()/restoreState().
+   *   failures this becomes a no-op until an explicit reset()/restoreState(),
+   *   or a finished background job landing — the one path that bypasses an
+   *   open breaker, since a blocking strategy is never applied while it is
+   *   open and so can never earn its way out. The breaker counts the overflow,
+   *   not the step: a chain whose fallback rescues the window has succeeded,
+   *   however loudly its first strategy failed.
    * - The window lineage moves forward exactly when a result lands, so
    *   `windowId` identifies a window that really existed.
    *
@@ -823,6 +827,12 @@ export class Janitor {
       signal,
     });
     if (!result.meta.changed) return result;
+
+    // The overflow as a whole succeeded, so the breaker's count goes back to
+    // zero — whichever step of a chain did the work. A summarize() that threw
+    // still warns and still counted, but a reset() that rescued the window
+    // behind it must not be locked out three failures later.
+    this._consecutiveFailures = 0;
 
     // This result is entering the window: it closes the window the strategy
     // worked on and opens the next one. Advanced before `commit` so state the
