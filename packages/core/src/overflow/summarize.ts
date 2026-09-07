@@ -453,9 +453,6 @@ export class SummarizingStrategy implements OverflowStrategy {
       }
     }
 
-    // Success is a model-health signal — a later stale discard doesn't change
-    // that the model succeeded.
-    this.runner.succeed();
     return summaryText;
   }
 }

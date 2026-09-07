@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ContextChef } from '../../index';
+import {
+  background,
+  ContextChef,
+  chain,
+  type OverflowStrategy,
+  reset,
+  summarize,
+} from '../../index';
 import type { Message } from '../../types';
 import { getRecallToolDefinition } from '../offloader/recallTool';
 import { compactMessages, Janitor } from '.';
@@ -926,5 +933,159 @@ describe('Janitor — review fixes', () => {
 
     expect(twice[1]).toBe(once[1]); // same object — no reference churn
     expect(twice[1].content).toBe('[Old tool result content cleared]');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Circuit breaker vs. the overflow as a whole
+// ═══════════════════════════════════════════════════════
+
+describe('Janitor — the breaker counts the overflow, not the step', () => {
+  /** Seeds a failure count without going through three real failures. */
+  const seedFailures = (janitor: Janitor, count: number): void => {
+    janitor.restoreState({ ...janitor.snapshotState(), consecutiveFailures: count });
+  };
+
+  it('chain(summarize, reset) keeps rescuing the window past three model failures', async () => {
+    const throwingModel = vi.fn().mockRejectedValue(new Error('API down'));
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      logger: { warn: vi.fn() },
+      strategy: chain(summarize({ compressionModel: throwingModel }), reset()),
+    });
+
+    for (let round = 0; round < 4; round++) {
+      // E10 suppression consumes the call right after a successful overflow.
+      if (round > 0) await janitor.overflow(buildLongHistory(5));
+
+      const result = await janitor.overflow(buildLongHistory(5));
+
+      expect(result.meta.changed).toBe(true);
+      expect(result.history).toHaveLength(1);
+      expect(result.history[0].content).toContain('Context window reset');
+      expect(janitor.snapshotState().consecutiveFailures).toBe(0);
+    }
+
+    expect(throwingModel).toHaveBeenCalledTimes(4);
+  });
+
+  it('a summarize() success clears a failure count the strategy never reports', async () => {
+    let shouldFail = true;
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      logger: { warn: vi.fn() },
+      compressionModel: async () => {
+        if (shouldFail) throw new Error('API down');
+        return '<summary>S</summary>';
+      },
+    });
+
+    await janitor.overflow(buildLongHistory(5));
+    await janitor.overflow(buildLongHistory(5));
+    expect(janitor['_consecutiveFailures']).toBe(2);
+
+    shouldFail = false;
+    const result = await janitor.overflow(buildLongHistory(5));
+
+    expect(result.meta.changed).toBe(true);
+    expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  it('a strategy that never calls succeed() still clears the count when its result lands', async () => {
+    const stub: OverflowStrategy = {
+      name: 'stub',
+      async apply(input) {
+        return {
+          history: input.history.slice(-1),
+          evicted: input.history.slice(0, -1),
+          span: input.history.slice(0, -1),
+          meta: { strategy: 'stub', windowId: input.window.current, changed: true },
+        };
+      },
+    };
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      strategy: stub,
+    });
+    seedFailures(janitor, 2);
+
+    const result = await janitor.overflow(buildLongHistory(5));
+
+    expect(result.meta.changed).toBe(true);
+    expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  describe('background()', () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it('clears the count on the swap-in, not on the "started" result', async () => {
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        preserveRatio: 0.3,
+        strategy: background(summarize({ compressionModel: async () => '<summary>S</summary>' })),
+      });
+      seedFailures(janitor, 2);
+      const history = buildLongHistory(5);
+
+      const started = await janitor.overflow(history);
+      expect(started.meta.changed).toBe(false);
+      expect(janitor['_consecutiveFailures']).toBe(2);
+
+      await settle();
+      const swapped = await janitor.overflow(history);
+
+      expect(swapped.meta.changed).toBe(true);
+      expect(janitor['_consecutiveFailures']).toBe(0);
+    });
+
+    it('credits a job whose summary succeeded but whose history moved under it', async () => {
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        preserveRatio: 0.3,
+        strategy: background(summarize({ compressionModel: async () => '<summary>S</summary>' })),
+      });
+      seedFailures(janitor, 2);
+
+      await janitor.overflow(buildLongHistory(5));
+      await settle();
+      // A different conversation entirely — the finished job no longer applies.
+      const discarded = await janitor.overflow(buildLongHistory(5, 1600));
+
+      expect(discarded.meta.changed).toBe(false);
+      expect(janitor['_consecutiveFailures']).toBe(0);
+    });
+
+    it('a job that fails off-turn still counts toward the breaker', async () => {
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        preserveRatio: 0.3,
+        logger: { warn: vi.fn() },
+        strategy: background(
+          summarize({ compressionModel: async () => Promise.reject(new Error('API down')) }),
+        ),
+      });
+      seedFailures(janitor, 2);
+
+      await janitor.overflow(buildLongHistory(5));
+      await settle();
+
+      expect(janitor['_consecutiveFailures']).toBe(3);
+      const blocked = await janitor.overflow(buildLongHistory(5));
+      expect(blocked.meta.reason).toContain('circuit breaker open');
+    });
   });
 });

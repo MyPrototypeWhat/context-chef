@@ -17,14 +17,19 @@ import {
  * The ids name the window that was just reset and the one before it — the
  * runner opens the next window only once this result lands, so at the moment
  * the notice is written the newest id in existence is the one being closed.
- * That is also the id the archive entry belongs to, which is what makes the
- * pair worth printing: it ties the stub to the span it stands for.
+ * That pair is what ties the stub to the span it stands for.
+ *
+ * It says nothing about where the span went: archiving is opt-in and lives in
+ * the runner, so a strategy claiming the conversation was archived would be
+ * lying to the model whenever no archive is configured. When one is, the
+ * runner appends its citation to this notice — that line carries the archive
+ * fact, and the address to go with it.
  */
 function defaultNotice(window: WindowLineage): string {
   const lineage = window.previous
     ? `window ${window.current}; previous ${window.previous}`
     : `window ${window.current}`;
-  return `Context window reset (${lineage}). Earlier conversation was archived.`;
+  return `Context window reset (${lineage}). Earlier conversation was cleared from the window.`;
 }
 
 export interface ResetOptions {

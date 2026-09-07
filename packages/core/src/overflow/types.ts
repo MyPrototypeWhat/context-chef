@@ -160,9 +160,21 @@ export interface OverflowRunner {
   /**
    * Records a failed compression attempt: warns with the shared "history left
    * unchanged" wording and counts it toward the circuit breaker.
+   *
+   * The count is provisional. A later step of a chain may still change the
+   * window, and the runner then clears it — the breaker only advances when the
+   * whole overflow leaves history unchanged, so a warning is a report on one
+   * step, not a verdict on the overflow it belongs to.
    */
   fail(reason: string, ...details: unknown[]): void;
-  /** Records a usable result — resets the circuit breaker. */
+  /**
+   * Resets the circuit breaker.
+   *
+   * Rarely needed: the runner already clears the count whenever an overflow
+   * returns `changed: true`, so a strategy that lands a result is credited
+   * without asking. Call it for a success that never reaches the window —
+   * and note that a detached strategy has no breaker to reset.
+   */
   succeed(): void;
   readonly logger: ChefLogger;
 }

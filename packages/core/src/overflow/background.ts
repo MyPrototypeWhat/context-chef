@@ -129,6 +129,11 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
         job = undefined;
         const swapped = swapIn(finished, input);
         if (swapped) return swapped;
+        // The model did its work off-turn; the history simply moved under it.
+        // The runner credits a result that lands, and this one never will, so
+        // without this a flaky model interleaved with fast-moving history
+        // would walk the breaker open on jobs that all succeeded.
+        if (finished.result?.meta.changed) runner.succeed();
         // Failed or stale — discard it and evaluate fresh, unless the window
         // is not over the trigger: the runner then called in only to give the
         // finished job its chance, and starting another one would buy a
