@@ -9,18 +9,23 @@ import type { TruncateOptions } from './types';
 
 /**
  * Truncates tool-result content within an AI SDK prompt when it exceeds the configured threshold.
- * When a storage adapter is provided, original content is persisted and a URI is included in the output.
+ * When a `store` (or a legacy `storage` adapter) is provided, original content
+ * is persisted and a `context://vfs/` URI is included in the output.
  */
 export async function truncateToolResults(
   prompt: LanguageModelV4Prompt,
   options: TruncateOptions,
   logger: ChefLogger = console,
 ): Promise<LanguageModelV4Prompt> {
-  const { threshold, headChars = 0, tailChars = 1000, storage } = options;
+  const { threshold, headChars = 0, tailChars = 1000, storage, store } = options;
 
-  const offloader = storage
-    ? new Offloader({ threshold, adapter: storage, storageDir: '', logger })
-    : null;
+  // `store` is the 4.2 substrate and wins; `storage` stays accepted and is
+  // wrapped by the Offloader with `Store.fromVfsAdapter`.
+  const offloader = store
+    ? new Offloader({ threshold, store, storageDir: '', logger })
+    : storage
+      ? new Offloader({ threshold, adapter: storage, storageDir: '', logger })
+      : null;
   const policy = buildPolicyMap(options.perTool);
 
   const result: LanguageModelV4Prompt = [];

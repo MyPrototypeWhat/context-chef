@@ -1,8 +1,15 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../../index';
+import { FileSystemBackend } from '../../store/backends/fileSystem';
+import { InMemoryBackend } from '../../store/backends/inMemory';
 import type { ToolDefinition } from '../../types';
-import { Memory } from '.';
+import { Memory, type MemoryConfig } from '.';
 import { InMemoryStore } from './inMemoryStore';
+
+const memoryTmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'context-chef-memory-'));
 
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
@@ -203,6 +210,52 @@ describe('Memory', () => {
     expect(xml).toContain('always lint');
     expect(xml).toContain('<entry key="rule2"');
     expect(xml).toContain('use strict');
+  });
+
+  // Regression: "getAll() no longer preserves store key order — integer-like
+  // memory keys are hoisted and renumbered". getAll() feeds compileArtifacts()
+  // and the <memory> block, so a reordering here changes the payload bytes.
+  describe('getAll() preserves the store key order', () => {
+    const insertion = ['zeta', '10', 'alpha', '2'];
+
+    const stores: [string, () => MemoryConfig['store']][] = [
+      ['legacy MemoryStore', () => new InMemoryStore()],
+      ['InMemoryBackend', () => new InMemoryBackend()],
+      ['FileSystemBackend', () => new FileSystemBackend(memoryTmpDir())],
+    ];
+
+    it.each(stores)('%s', async (_name, make) => {
+      const store = make();
+      const mem = new Memory({ store });
+      for (const key of insertion) await mem.set(key, key);
+
+      // Whatever order this backend lists in is the order getAll() reports —
+      // never the object-key order, which hoists '2' and '10' to the front.
+      const expected = (await mem.store.namespace('memory').list()).map((e) => e.path);
+      expect(new Set(expected)).toEqual(new Set(insertion));
+      expect((await mem.getAll()).map((e) => e.key)).toEqual(expected);
+    });
+
+    it('legacy MemoryStore order is the insertion order it reports', async () => {
+      const legacy = new InMemoryStore();
+      const mem = new Memory({ store: legacy });
+      for (const key of insertion) await mem.set(key, key);
+
+      expect(legacy.keys()).toEqual(insertion);
+      expect((await mem.getAll()).map((e) => e.key)).toEqual(insertion);
+    });
+  });
+
+  // Regression: "Entries with '/' in the path are written but invisible to
+  // list/readAll — memory keys silently stop being injected". A key the tool
+  // accepts and stores must reach the <memory> block and the TTL sweep.
+  it('getAll() sees a memory key that contains a slash', async () => {
+    const mem = new Memory({ store: new FileSystemBackend(memoryTmpDir()) });
+    await mem.set('flat', 'A');
+    await mem.set('notes/todo', 'B');
+
+    expect((await mem.getAll()).map((e) => e.key).sort()).toEqual(['flat', 'notes/todo']);
+    expect(await mem.toXml()).toContain('notes/todo');
   });
 
   it('getAll() returns entries with full metadata', async () => {

@@ -131,6 +131,30 @@ for (const toolCall of response.tool_calls) {
 
 一个标志，两个消费方。Claude 通过 tool search 按需发现 deferred 工具；在 `mid-conversation-tool-changes` beta 下，deferred 工具还会一直被扣住，直到对话中途出现 `tool_addition` 块把它放出来。deferred 定义会在计算 cache key 之前被剥离，所以新增它们永远不会让已有的缓存条目失效。chef 只原样透传该标志 —— 转换成 provider 的线上字段（`defer_loading`）和定义的其余部分一样，属于你的工具转换步骤；`tool_addition` / `tool_removal` 内容块不做透传（chef 的 IR 以文本内容为基础）。想用*文字*告诉模型工具集合变了，用下面的 announcements。
 
+## 库自己的工具 <Badge type="tip" text="4.2" />
+
+`payload.tools` 里并非每一项都来自你的注册表。ContextChef 会加上它自己的：默认 `tools: 'legacy'` 下是 Memory 的 `create_memory` / `modify_memory`，`tools: 'unified'` 下则是单个 `context` 工具 —— 以及配置了 `overflow.handoff` 时的 `new_context`。两套永远不会同时出现在一个 payload 里。
+
+它们在裁剪**之后**追加，因此 Pruner 永远不会把它们裁掉；它们通过 `chef.ownsTool(name)` / `chef.handleTool(call)` 分发，而不是走你自己的路由：
+
+```typescript
+for (const call of response.tool_calls) {
+  if (chef.ownsTool(call.function.name)) {
+    const content = await chef.handleTool({
+      name: call.function.name,
+      arguments: call.function.arguments,
+    });
+    history.push({ role: 'tool', tool_call_id: call.id, content });
+    continue;
+  }
+  await executeYourOwnTool(call);
+}
+```
+
+它们的 schema 刻意保持静态 —— 没有任何 enum 会随实时状态变化 —— 因此可以和你的工具一起待在缓存前缀里而不使其失效。命令列表、访问策略和 `tools` 模式开关见[上下文存储](/zh/guide/context-store)。
+
+`new_context` 在这一页值得单独提一句。热插一套工具包，通常意味着**任务**也变了，而铺垫到此的那些轮次往往已是负担。`new_context` 让模型能把这件事说出口：`chef.requestNewContext()` 会让下一次编译不管预算怎么说都执行溢出策略，于是模型带着一份摘要而不是一份逐字记录进入新阶段。见[溢出](/zh/guide/history-compression)。
+
 ## Announcements —— 告诉模型发生了什么变化 <Badge type="tip" text="4.1" />
 
 会话中途能力会变：权限被授予、toolkit 被加载、限流把 `web_search` 撤下。payload 的形状变了，却没有任何东西告诉模型*到底变了什么* —— 于是它继续调用已经消失的工具，或者对刚上线的工具视而不见。`announce()` 把这个变化说出来，并且一直说下去，直到你撤回。

@@ -1,12 +1,75 @@
-# History Compression (Janitor)
+# Overflow
 
-Janitor keeps a long conversation inside the model's context window: it watches token usage and, when the budget is exceeded, summarizes old messages with a cheap model while preserving the recent ones. This page covers the two compression paths, every `JanitorConfig` option, the v4 "pipeline v2" quality gates, and the zero-LLM-cost `compact()` utility.
+When a conversation outgrows the window, something has to leave. That is overflow: information moving from the window into the [context store](/guide/context-store), kept reachable through the `context` tool. It is axis ① → ③ → ④ of the [five-axis architecture](/guide/architecture), and it is one decision split cleanly in two.
 
-Janitor provides two compression paths. Choose the one that fits your setup:
+**The Janitor is the runner.** It reads the token budget, decides when the trigger is crossed, holds the circuit breaker, archives what left, emits `compress:*`, and runs durable compaction. **The strategy is the policy.** It is handed the in-window history plus the budget that was blown, and returns the new window contents together with everything that left it.
 
-## Path 1: Tokenizer (precise control)
+```typescript
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer },      // the runner
+  overflow: {
+    strategy: chain(summarize({ compressionModel: callGpt4oMini }), reset()), // the policy
+    archive: 'vfs',
+  },
+});
+```
 
-Provide your own token counting function for precise per-message calculation. Janitor preserves recent messages that fit within `contextWindow × preserveRatio` and compresses the rest.
+Everything on this page below the strategies section applies whatever strategy you install.
+
+## Strategies <Badge type="tip" text="4.2" />
+
+Six built-ins, each a factory in `@context-chef/core`. Four are policies; two are combinators.
+
+| Factory | What leaves the window | Cost | Use it when |
+|---|---|---|---|
+| `summarize(opts)` | old turns, replaced by one LLM summary | one model call per overflow | the default — you want the conversation's substance to survive |
+| `anchored(opts)` | old turns, merged into a persistent anchor document | one model call per overflow, over a smaller span | long sessions where rewriting the whole summary every time is wasteful and drifts |
+| `server(config, { fallback })` | nothing client-side on a provider that compacts for you | zero extra model calls on Anthropic | you target Anthropic and want exact token accounting; `fallback` keeps the config portable |
+| `reset(opts)` | everything except pinned messages, replaced by a stub | zero | the escalation step of a `chain`, or a hard boundary between sub-tasks. Lossy without `archive` |
+| `chain(...strategies)` | whatever the first strategy that succeeds evicts | that strategy's cost | you want a fallback: try to summarize, and when the summarizer is down, still get the window back |
+| `background(strategy)` | the same as `strategy`, one compile later | the same, off the hot path | compression latency is hurting your turn time |
+
+`chain` moves on when a strategy changed nothing **or** left the history still above the trigger, and stops at the first one that brings the window back under budget. `background` returns the over-budget history unchanged from the first compile and swaps the finished result in later — only while it still applies, checked by content equivalence, so a span that was rewritten in the meantime discards the job rather than corrupting the window.
+
+```typescript
+import { anchored, background, ContextChef, server, summarize } from '@context-chef/core';
+
+// Anchored, off the hot path.
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer },
+  overflow: { strategy: background(anchored({ compressionModel: callGpt4oMini })) },
+});
+
+// Server-side on Anthropic, client-side everywhere else — one portable config.
+const portable = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer },
+  overflow: {
+    strategy: server(
+      { edits: [{ type: 'compact_20260112' }] },
+      { fallback: summarize({ compressionModel: callGpt4oMini }) },
+    ),
+  },
+});
+```
+
+`summarize()` and `anchored()` take the same options — `compressionModel`, `compressionGuidelines`, `customCompressionInstructions`, `minShrinkRatio`, `validateCompression`, `preserveRatio`, `preserveRecentMessages`, `toolResultStubThreshold`, `split`. These are the same fields you can set directly on `janitor`; see [the 4.1 compression options](#the-4-1-compression-options).
+
+### Where the split lands
+
+Both summarizing strategies cut on turn boundaries — an assistant message and its tool results never separate — and only the size of the preserved tail differs:
+
+- `split: 'ratio'` keeps as many recent turns as fit in `budget.trigger × preserveRatio` (default `0.8`). Meaningful only with a real tokenizer.
+- `split: 'recent-turns'` keeps the last `preserveRecentMessages` turns (default `1`), whatever they cost. The right choice when token counts come from the provider rather than a local tokenizer.
+
+The default is `'recent-turns'` when `preserveRecentMessages` is the only preserve option you gave, and `'ratio'` otherwise.
+
+## Knowing the budget
+
+The runner needs to know how full the window is. Two paths, pick one.
+
+### Path 1: `tokenizer` (precise)
+
+Provide your own counting function and Janitor computes per-message.
 
 ```typescript
 const chef = new ContextChef({
@@ -14,26 +77,29 @@ const chef = new ContextChef({
     contextWindow: 200000,
     tokenizer: (msgs) =>
       msgs.reduce((sum, m) => sum + encode(m.content).length, 0),
-    preserveRatio: 0.8, // keep 80% of contextWindow for recent messages (default)
-    compressionModel: async (msgs) => callGpt4oMini(msgs),
     onCompress: async (summary, count, details) => {
       // details.compressedMessages — the exact slice of history the summary replaced
       await db.saveCompression(sessionId, summary, count);
     },
   },
+  overflow: {
+    strategy: summarize({ compressionModel: async (msgs) => callGpt4oMini(msgs), preserveRatio: 0.8 }),
+  },
 });
 ```
 
-## Path 2: reportTokenUsage (simple, no tokenizer needed)
+### Path 2: `reportTokenUsage` (no tokenizer needed)
 
-Most LLM APIs return token usage in their response. Feed that value back — when it exceeds `contextWindow`, Janitor compresses everything except the last N messages.
+Most LLM APIs return token usage in their response. Feed that value back.
 
 ```typescript
 const chef = new ContextChef({
-  janitor: {
-    contextWindow: 200000,
-    preserveRecentMessages: 1,       // keep last 1 message on compression (default)
-    compressionModel: async (msgs) => callGpt4oMini(msgs),
+  janitor: { contextWindow: 200000 },
+  overflow: {
+    strategy: summarize({
+      compressionModel: async (msgs) => callGpt4oMini(msgs),
+      preserveRecentMessages: 1,
+    }),
   },
 });
 
@@ -42,73 +108,47 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-> **Note:** Without a `compressionModel`, old messages are discarded with no summary. A console warning is printed at construction time if neither `tokenizer` nor `compressionModel` is provided.
+In the tokenizer path the default is to take the higher of the local calculation and the fed value; `usagePreference` switches to `'feedFirst'` (trust the API truth) or `'tokenizerFirst'` (ignore fed entirely). Without a `tokenizer` the union narrows to `'max' | 'feedFirst'` and TypeScript rejects `'tokenizerFirst'` at compile time.
 
-## `JanitorConfig`
+> **Note:** without a `compressionModel`, `summarize()` drops the evicted span instead of summarizing it. A console warning is printed once at construction if neither `tokenizer` nor `compressionModel` is provided, unless an explicit `overflow.strategy` (or `janitor.strategy`) says you meant it.
 
-| Option                          | Type                                        | Default    | Description                                                                                  |
-| ------------------------------- | ------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
-| `contextWindow`                 | `number`                                    | _required_ | Model's context window size (tokens). Compression triggers when usage exceeds `contextWindow × triggerRatio`. |
-| `triggerRatio`                  | `number`                                    | `0.7`      | Fraction of `contextWindow` at which compression fires ("pre-rot"). Set `1` to restore the pre-4.0 trigger-at-window behavior. |
-| `tokenizer`                     | `(msgs: Message[]) => number`               | —          | Enables the tokenizer path for precise per-message token calculation.                        |
-| `preserveRatio`                 | `number`                                    | `0.8`      | [Tokenizer path] Ratio of the effective budget (`contextWindow × triggerRatio`) to preserve for recent messages. |
-| `preserveRecentMessages`        | `number`                                    | `1`        | [reportTokenUsage path] Number of recent turns to keep when compressing.                     |
-| `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`    | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. Without `tokenizer`, the value union narrows to `'max' \| 'feedFirst'` — TypeScript rejects `'tokenizerFirst'` at compile time. |
-| `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —          | Async hook to summarize old messages via a low-cost LLM.                                     |
-| `customCompressionInstructions` | `string`                                    | —          | Additional focused instructions appended to the default compression prompt (additive, not replacement). |
-| `compressionGuidelines`         | `string[]`                                  | —          | Numbered domain guidelines injected into the compression prompt, before `customCompressionInstructions`. |
-| `toolResultStubThreshold`       | `number`                                    | —          | Replace tool-result content longer than this many chars with a one-line metadata stub before summarizing (saves summarizer tokens). |
-| `minShrinkRatio`                | `number`                                    | `0.5`      | Quality gate: a summary must shrink the compressed span by at least this ratio (spans ≥ 2000 chars only); otherwise the compression fails and history is unchanged. `0` disables. |
-| `validateCompression`           | `(summary, { compressed, kept }) => boolean \| Promise<boolean>` | — | Post-summarization gate. Return `false` (or throw) to reject the summary — history unchanged, circuit breaker incremented. |
-| `archive`                       | `CompressionArchiveConfig \| 'vfs'`         | —          | Reversible compression: store the full pre-compression span, cite its URI in the summary. See [Compression pipeline v2](#compression-pipeline-v2-v4). |
-| `compressionMode`               | `'rewrite' \| 'incremental-anchored'`       | `'rewrite'`| Anchored mode keeps a persistent anchor document and merges only the newly evicted span into it on each compression. |
-| `compressionScheduling`         | `'blocking' \| 'background'`                | `'blocking'` | Background mode runs summarization off-turn; the over-budget compile returns history unchanged and the result is swapped in later if still valid. |
-| `onCompress`                    | `(summary, count, details) => void`         | —          | Fires after compression with the summary message and truncated count. `details.compressedMessages` is the exact slice of history the summary replaced. |
-| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before LLM compression. Return modified history to intervene, or null to proceed normally. |
-| `logger`                        | `ChefLogger`                                | —          | Sink for degradation warnings (storage/compaction); defaults to `console`. |
+## Quality gates
 
-**Compression output contract.** Janitor's default prompt instructs the compression model to produce an `<analysis>` scratchpad (stripped from the final output) followed by a structured `<summary>` block with 5 domain-agnostic sections (Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve). Raw output is piped through `Prompts.formatCompactSummary` before injection. See the [core package README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/core) for the full contract and `customCompressionInstructions` usage.
+One rule: a bad summary must never replace good history.
 
-**Failure semantics (changed in 4.0).** A compression-model failure — a throw, a summary that fails `minShrinkRatio`, or a `validateCompression` rejection — leaves history **unchanged** (pre-4.0 truncated it with a placeholder) and increments the circuit breaker. If three consecutive `compress()` calls fail, `compress()` becomes a no-op until the next successful compression or an explicit `janitor.reset()` / `chef.clearHistory()`. The failure counter is preserved by `chef.snapshot()` / `chef.restore()`.
+- **Pre-rot trigger — `triggerRatio` (default `0.7`)**: overflow fires at `contextWindow × 0.7` rather than at the hard limit, because model quality degrades well before the window is full. `triggerRatio: 1` restores the pre-4.0 behavior.
+- **Constraint pinning — `pinned: true`**: pinned messages survive every strategy verbatim (re-inserted after the summary, in order) and are never cleared by `compact()`. Pinning any message of an atomic turn protects the whole turn. Use it for policy and constraint text — compaction that drops policy text raises violation rates from 0% to 30%+ (arXiv:2606.22528).
+- **Shrink guard — `minShrinkRatio` (default `0.5`)**: a summary that doesn't shrink the compressed span by ≥ 50% (character length; spans ≥ 2000 chars only) is a failed overflow — history unchanged, circuit breaker incremented. Prevents compression death loops. `0` disables.
+- **`validateCompression`**: post-summarization gate `(summary, { compressed, kept }) => boolean | Promise<boolean>` — return `false` or throw to reject the result.
+- **Circuit breaker (runner-owned)**: three consecutive failures of *whatever strategy is installed* and overflow becomes a no-op until the next success or an explicit `janitor.reset()` / `chef.clearHistory()`. The counter survives `chef.snapshot()` / `chef.restore()`.
 
-**Standalone summarization.** `summarizeHistory(messages, compress, opts?): Promise<string>` is the provider-agnostic primitive behind this path — call it directly to compress a slice in your own store. Empty slice → `''`; stateless and **throws** if `compress` throws; the `compress` callback **must role-flatten** `tool` roles. Options include `customCompressionInstructions`, `toolResultStubThreshold`, `compressionGuidelines`, and `baseInstruction`. See [Durable compaction](/guide/durable-compaction) for the higher-level helpers.
+A failure — a model that threw, a summary that failed the shrink guard, a validator that said no — leaves history **unchanged** (pre-4.0 truncated it with a placeholder).
 
-## Compression pipeline v2 (v4)
+**Compression output contract.** The default prompt asks the compression model for an `<analysis>` scratchpad (stripped from the final output) followed by a structured `<summary>` block with five domain-agnostic sections (Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve). Raw output is piped through `Prompts.formatCompactSummary` before injection.
 
-v4 rebuilds the compression path around one rule: a bad summary must never replace good history.
+**Standalone summarization.** `summarizeHistory(messages, compress, opts?): Promise<string>` is the provider-agnostic primitive behind this path — call it directly to compress a slice in your own store. Empty slice → `''`; stateless and **throws** if `compress` throws; the `compress` callback **must role-flatten** `tool` roles. See [Durable compaction](/guide/durable-compaction) for the higher-level helpers.
 
-- **Pre-rot trigger — `triggerRatio` (default `0.7`)**: compression fires at `contextWindow × 0.7` instead of at the hard limit — model quality degrades well before the window is full. `preserveRatio` applies to this effective budget. `triggerRatio: 1` restores the pre-4.0 behavior.
-- **Constraint pinning — `pinned: true`**: pinned messages survive `compress()` verbatim (re-inserted after the summary, in order) and are never cleared by `compact()`. Pinning any message of an atomic turn protects the whole turn. Use it for policy and constraint text — compaction that drops policy text raises violation rates from 0% to 30%+ (arXiv:2606.22528).
-- **Shrink guard — `minShrinkRatio` (default `0.5`)**: a summary that doesn't shrink the compressed span by ≥ 50% (character length; spans ≥ 2000 chars only) is a failed compression — history unchanged, circuit breaker incremented. Prevents compression death loops. `0` disables.
-- **`validateCompression`**: post-summarization gate `(summary, { compressed, kept }) => boolean | Promise<boolean>` — return `false` or throw to reject the result (history unchanged, breaker incremented).
-- **Reversible archive — `archive`**: the compressed span is serialized and stored via `store(serialized, { messageCount }) => uri`, and the summary cites the URI, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032). `archive: 'vfs'` stores in the chef's VFS. Best-effort: a store failure logs a warning and skips the citation.
-- **`compressionGuidelines`**: numbered domain guidelines injected into the compression prompt, before `customCompressionInstructions`.
-- **Incremental-anchored mode — `compressionMode: 'incremental-anchored'`**: keeps a persistent anchor document; each compression merges only the newly evicted span into it instead of rewriting the whole summary (Factory.ai pattern). Read it via `janitor.getAnchorDoc()`; it is part of `JanitorSnapshot` and cleared by `reset()`.
-- **Background scheduling — `compressionScheduling: 'background'`**: the first over-budget `compile()` returns history unchanged and starts summarization in the background; a later `compress()` swaps the result in only if the summarized span is still a prefix of the current history (stale results are discarded; `onCompress` fires at application time). Keeps compression latency off the hot path (arXiv:2605.08580). Background state is not snapshotted.
+## Archive — overflow you can undo <Badge type="tip" text="4.2" />
+
+`overflow.archive` is strategy-agnostic: the span the installed strategy compressed is serialized and stored (`OverflowResult.span`, so a pinned turn re-inserted into the window is archived with its neighbours), and the URI is cited in the summary that replaced it, so exact details stay retrievable instead of being guessed at by importance scoring (arXiv:2607.25066, arXiv:2607.08032). It applies to `reset()` exactly as it applies to `summarize()`.
 
 ```typescript
 const chef = new ContextChef({
-  janitor: {
-    contextWindow: 200_000,
-    compressionModel: async (msgs) => callGpt4oMini(msgs),
-    triggerRatio: 0.7,       // default — compress "pre-rot"
-    minShrinkRatio: 0.5,     // default — reject summaries that barely shrink
-    archive: "vfs",          // reversible: full span stored, summary cites a context:// URI
-    compressionGuidelines: ["Preserve ticket IDs and SKUs verbatim."],
+  janitor: { contextWindow: 200_000, tokenizer },
+  overflow: {
+    strategy: reset(),
+    archive: 'vfs', // or { store: (serialized, { messageCount }) => uri }
   },
-});
-
-// Pin constraint text — survives compress() verbatim, never cleared by compact()
-history.push({
-  role: "user",
-  content: "NEVER touch prod. Deploy only from CI.",
-  pinned: true,
 });
 ```
 
-### Recall tool recipe
+`'vfs'` stores spans in this chef's VFS, under `context://vfs/...`. Archiving is best-effort: a store failure logs a warning and skips the citation rather than failing the overflow.
 
-With `archive` (or VFS offloading) enabled, register the built-in `recall_context` tool so the model can pull archived content back on demand:
+::: warning `reset()` without `archive` is lossy
+Everything but the pinned messages is gone — no summary, no URI. That combination is documented, not enforced: mechanism, not policy. Pair `reset()` with an archive unless you genuinely mean to discard.
+:::
+
+Register the built-in `recall_context` tool so the model can pull archived content back on demand:
 
 ```typescript
 import { getRecallToolDefinition } from "@context-chef/core";
@@ -119,47 +159,203 @@ chef.registerTools([getRecallToolDefinition()]);
 if (call.function.name === "recall_context") {
   const { uri } = JSON.parse(call.function.arguments);
   const content = await chef.resolveRecall(uri); // full stored content, or null
-  history.push({
-    role: "tool",
-    tool_call_id: call.id,
-    content: content ?? "[not found]",
-  });
+  history.push({ role: "tool", tool_call_id: call.id, content: content ?? "[not found]" });
 }
 ```
 
+Under `tools: 'unified'` this is the `context` tool's `view` command instead, and `chef.handleTool` dispatches it for you — see [Context store](/guide/context-store).
+
+## Handoff budget <Badge type="tip" text="4.2" />
+
+Overflow is mechanical. Whatever a strategy evicts is gone from the window whether or not the model was ready for it — and the model is the only party that knows which half of the conversation still matters.
+
+The handoff budget reserves a slice of headroom *above* the trigger and spends it on one notice: your window is about to be cut, write down what matters.
+
+```typescript
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer },
+  overflow: {
+    strategy: summarize({ compressionModel: callGpt4oMini }),
+    archive: 'vfs',
+    handoff: {
+      budgetTokens: 4000,
+      prompt:
+        'About {n_remaining} tokens remain before this conversation is compacted. ' +
+        'Write anything worth keeping to context://notes/ or context://memory/ now.',
+    },
+  },
+  tools: 'unified',
+});
+```
+
+- The notice fires when `budget.remaining <= budgetTokens`, **once per window** — a long stretch near the trigger does not repeat it every turn. The flag resets when the window id changes.
+- It is delivered through the announcement tail channel (`channel: 'auto'`, so it goes to a mid-conversation system message on Anthropic and the user tail elsewhere), and it never persists: it is not in `getAnnouncements()`, never enters your history, and is skipped entirely on server-managed compiles.
+- `{n_remaining}` is replaced everywhere it appears, rounded and clamped at 0.
+- `budgetTokens` must be a positive integer and `prompt` at most 2000 UTF-8 bytes; both are validated at construction, not silently ignored at compile time. Omit `prompt` to get `Prompts.HANDOFF_NOTICE_TEMPLATE` (or its `context://` variant under `tools: 'unified'`).
+
+Pair it with the context store: the notice is only useful if the model has somewhere to write. `notes/` costs nothing per turn until it is read back.
+
+## `new_context` — letting the model close a window <Badge type="tip" text="4.2" />
+
+Sometimes the model knows a chunk of work is finished long before the budget says so. `new_context` is a static, parameterless tool that says exactly that.
+
+```typescript
+import { getNewContextToolDefinition } from '@context-chef/core';
+
+chef.registerTools([getNewContextToolDefinition()]);
+
+for (const call of response.tool_calls) {
+  if (call.function.name === 'new_context') {
+    chef.requestNewContext();
+    history.push({
+      role: 'tool',
+      tool_call_id: call.id,
+      content: 'Starting a new context window.',
+    });
+  }
+}
+```
+
+Under `tools: 'unified'` the tool is emitted automatically when `overflow.handoff` is configured, and `chef.handleTool` dispatches it.
+
+`chef.requestNewContext()` is a one-shot force: the next `compile()` applies the strategy whatever the budget says. What "new window" means is whatever the installed strategy does — `summarize()` leaves a summary, `reset()` leaves a stub, `archive` keeps the span retrievable either way. Unlike `clearHistory()`, nothing is discarded behind the library's back: the strategy still decides what survives, a `before-overflow` handler can still veto, and the circuit breaker still applies. The request is consumed by one compile whether or not the window actually changed.
+
+**Where a forced overflow cuts.** Under `summarize()` and `anchored()` a forced pass compresses every turn but the most recent one, and `preserveRecentMessages` / `preserveRatio` do not apply — those rules exist to keep a full window under the trigger, and a forced pass is not about the budget. The turn the request arrived in is held back so the model has somewhere to read the answer. With only one turn in the window nothing happens, and the result says so in `meta.reason`.
+
+**A forced overflow that cannot run is never silent.** Two compiles decline overflow outright: a server-managed target (the provider owns the window) and a `before-overflow` veto. The request is consumed either way — the model was told a new window was starting, so the drop is reported through a `pipeline:invariant` event and one warning per cause, naming which of the two it was and what to do about it.
+
+## Window lineage <Badge type="tip" text="4.2" />
+
+Every overflow that lands closes one context window and opens the next. The runner keeps `{ first, previous?, current }` and advances it **at commit time only**, so a background result that went stale never moves the chain — it records windows that existed, not windows that were considered.
+
+```typescript
+chef.use('after-overflow', ({ result }) => {
+  if (!result?.meta.changed) return;
+  logger.info('overflow', result.meta.strategy, result.meta.windowId, result.evicted.length);
+});
+
+const payload = await chef.compile({ target: 'openai' });
+payload.meta?.windowId;
+```
+
+Two ids, deliberately different: `OverflowResult.meta.windowId` is the window the strategy **acted on**, and `CompileMeta.windowId` is the window the payload **belongs to**. Two payloads carrying the same id were compiled against the same window, so a change is your signal that the history behind the model was rewritten.
+
+The lineage is what makes the rest work: `anchored()` keys its anchor document by window id (so a restored snapshot brings back the anchor that window actually had), the handoff notice is once-per-window, and `reset()`'s stub names the window it closed. It rides `JanitorSnapshot` and `ChefSnapshot` and round-trips through `snapshot()` / `restore()`; `clearHistory()` starts a fresh lineage. The once-per-window flag travels with it as `ChefSnapshot.handoffNoticedWindow`, so a restored session does not re-issue a notice the model has already seen.
+
+## Writing your own strategy <Badge type="tip" text="4.2" />
+
+Anything with an `apply` of this shape can be passed as `overflow.strategy`:
+
+```typescript
+interface OverflowStrategy {
+  readonly name: string;
+  apply(input: OverflowInput): Promise<OverflowResult>;
+  commit?(result: OverflowResult): void;   // the result actually entered the window
+  pending?(): boolean;                     // a finished result is still waiting to land
+  snapshot?(): unknown;                    // serialized into JanitorSnapshot
+  restore?(state: unknown): void;
+  attach?(runner: OverflowRunner): void;   // the runner installs its breaker + logger
+}
+```
+
+`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window`, `forced` and an optional `signal`. `OverflowResult` carries the new `history`, everything `evicted`, the `span` the summary covers, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
+
+`evicted` means "left the window". `span` is the range the summary covers — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. Both are required: a strategy that re-inserts nothing repeats `evicted`, and a result that changed nothing declares both empty. `span` is what `onCompress` gets as `details.compressedMessages`, what the archive stores, and what the citation counts.
+
+`pending()` is optional and belongs to off-turn strategies. The runner asks before evaluating the budget: `background()` answers `true` while a finished job is waiting, so a summary that completed after the history dropped back under the trigger still lands on the next compile rather than waiting for the window to fill again.
+
+```typescript
+const dropToolResults: OverflowStrategy = {
+  name: 'drop-tool-results',
+  async apply(input: OverflowInput): Promise<OverflowResult> {
+    const pinned = new Set(input.pinned);
+    const evicted = input.history.filter((m) => m.role === 'tool' && !pinned.has(m));
+    if (evicted.length === 0) {
+      return {
+        history: input.history,
+        evicted: [],
+        span: [],
+        meta: {
+          strategy: 'drop-tool-results',
+          windowId: input.window.current,
+          changed: false,
+          reason: 'no unpinned tool results left',
+        },
+      };
+    }
+    const dropped = new Set(evicted);
+    return {
+      history: input.history.filter((m) => !dropped.has(m)),
+      evicted,
+      span: evicted,
+      meta: { strategy: 'drop-tool-results', windowId: input.window.current, changed: true },
+    };
+  },
+};
+
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer },
+  overflow: { strategy: chain(dropToolResults, summarize({ compressionModel: callGpt4oMini })) },
+});
+```
+
+Two rules. Never drop a message in `input.pinned` — the `pipelineChecks` invariants exist to catch it when you do. And publish state you derive from your own output in `commit`, not in `apply`: `apply` may run speculatively (that is exactly what `background()` does) and a result that never landed must not pollute your state.
+
+## `JanitorConfig` — the runner's options
+
+These stay on the Janitor. They are budget and lifecycle concerns, not policy.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `contextWindow` | `number` | _required_ | Model's context window size (tokens). Overflow triggers above `contextWindow × triggerRatio`. |
+| `triggerRatio` | `number` | `0.7` | Fraction of `contextWindow` at which overflow fires ("pre-rot"). Set `1` to restore the pre-4.0 trigger-at-window behavior. |
+| `tokenizer` | `(msgs: Message[]) => number` | — | Enables the tokenizer path for precise per-message token calculation. |
+| `usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | `'max'` | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. |
+| `onCompress` | `(summary, count, details) => void` | — | Fires after an overflow lands. `details.compressedMessages` is the exact slice of history the summary replaced. |
+| `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | Fires once the budget verdict says overflow will run, before the strategy. Return a replacement history to intervene, `null` to proceed. Not deprecated. |
+| `logger` | `ChefLogger` | — | Sink for degradation warnings (storage / compaction); defaults to `console`. |
+
+## The 4.1 compression options
+
+Two groups, and they are not the same thing. The **aliases** below are deprecated: each still works, keeps its exact behavior, and is removed in 5.0. Setting one alongside `overflow.strategy` logs a warning once and the strategy wins.
+
+| Deprecated | Replacement |
+|---|---|
+| `janitor.compressionMode: 'rewrite'` | `overflow.strategy = summarize(...)` |
+| `janitor.compressionMode: 'incremental-anchored'` | `overflow.strategy = anchored(...)` |
+| `janitor.compressionScheduling: 'background'` | wrap the strategy in `background(...)` |
+| `janitor.archive` | `overflow.archive` |
+| `contextManagement.strategy: 'server'` + `contextManagement.server` | `overflow.strategy = server(config, { fallback })` |
+
+The `contextManagement` alias builds `server(cfg, { fallback: <the default client strategy> })`, which is exactly the v4 behavior: server-side on Anthropic, client-side compression everywhere else. See [Server-side context management](/guide/server-side-context-management).
+
+The tuning options are the other group, and they are **not** deprecated: `janitor.compressionModel`, `compressionGuidelines`, `customCompressionInstructions`, `minShrinkRatio`, `validateCompression`, `preserveRecentMessages`, `preserveRatio` and `toolResultStubThreshold`. With no `overflow.strategy` configured the janitor resolves exactly those fields into the default `summarize()`, so they stay the supported way to configure it without importing a factory. `summarize()` uses the same names, so composing the strategy yourself is a move rather than a rename — and an explicit `overflow.strategy` supersedes them (with one warning), it does not deprecate them.
+
 ## `chef.reportTokenUsage(tokenCount): this`
 
-Feed the API-reported token count. On the next `compile()`, if this value exceeds `contextWindow`, compression is triggered. In the tokenizer path, the default is to take the higher of the local calculation and the fed value; switch via `usagePreference` if you want `'feedFirst'` (trust the API truth) or `'tokenizerFirst'` (ignore fed entirely).
+Feed the API-reported token count. On the next `compile()`, if this value exceeds the trigger, overflow runs.
 
 ```typescript
 const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-## `onBeforeCompress` hook
+## Intervening before overflow
 
-Fires when the token budget is exceeded, **before** LLM compression. Return a modified `Message[]` to replace the history, or return `null` to let default compression proceed.
+`onBeforeCompress` and the `before-overflow` slot are two different boundaries, and both are supported. `onBeforeCompress` is a runner callback: it fires only once the budget verdict says overflow will run, and it may return a replacement history that the runner then re-evaluates. The slot is chef-level — it fires on every compile, before any verdict, sees the runner's real budget, and can veto the phase entirely by returning `false`:
 
 ```typescript
-const chef = new ContextChef({
-  janitor: {
-    contextWindow: 200000,
-    tokenizer: (msgs) => countTokens(msgs),
-    onBeforeCompress: (history, { currentTokens, limit }) => {
-      // Example: offload large tool results to VFS before compression
-      return history.map((msg) =>
-        msg.role === "tool" && msg.content.length > 5000
-          ? { ...msg, content: pointer.offload(msg.content).content }
-          : msg,
-      );
-    },
-  },
+chef.use('before-overflow', ({ history, budget }) => {
+  logger.info(`over budget by ${-budget.remaining} tokens, ${history.length} messages in window`);
+  if (streamingInProgress) return false; // don't rewrite history mid-stream
 });
 ```
 
-## Mechanical Compaction (`compact`)
+See [Events & Hooks](/guide/events-hooks) for the full slot list.
 
-Strip content from history at zero LLM cost. Use proactively in your agent loop to keep context lean.
+## Mechanical compaction (`compact`)
+
+Strip content from history at zero LLM cost. Independent of overflow — use it proactively in your agent loop to keep the window lean and delay the trigger.
 
 ```typescript
 // Clear all tool results and thinking blocks
@@ -206,4 +402,4 @@ chef.setHistory(safeHistory);
 
 ## `chef.clearHistory(): this`
 
-Explicitly clear history and reset Janitor state when switching topics or completing sub-tasks.
+Explicitly clear history and reset the runner's state — circuit breaker, strategy state, and the window lineage — when switching topics or completing sub-tasks. Announcements survive; retract them explicitly.

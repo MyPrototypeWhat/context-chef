@@ -1,15 +1,13 @@
 import {
   type ChefLogger,
-  type CompressionDetails,
   compactMessages as clearMessages,
-  dedupeConstructionWarnings,
+  createJanitorPool,
   flattenForCompression,
-  Janitor,
+  type Janitor,
   type Message,
   normalizeSessionKey,
   objectToXml,
   Prompts,
-  SessionPool,
 } from '@context-chef/core';
 import {
   type AnyTextAdapter,
@@ -26,16 +24,6 @@ import { fromTanStackAI, toTanStackAI } from './adapter';
 import { compactMessages } from './compact';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
-
-/**
- * After this many compressions fire without an `onCompress` persistence hook,
- * warn once. The middleware compresses the engine's in-flight state only — it
- * never mutates the caller's message store — so without write-back the history
- * re-expands every chat() call and the outgoing payload grows unbounded. A
- * couple of fires is a transient spike (fine); repeated fires signal a
- * sustained over-budget conversation that needs durable persistence.
- */
-const COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD = 3;
 
 /**
  * Creates a TanStack AI ChatMiddleware that transparently applies
@@ -80,67 +68,38 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
   const logger: ChefLogger = options.logger ?? console;
   let usageWarned = false;
 
-  // Budget-dependent features: compression and its hooks. Any of them
-  // signals compression intent and needs a Janitor — and therefore a
-  // `contextWindow`. Truncate/compact/clear/skill/dynamicState-only
-  // configurations get no Janitor at all: no budget checks, no token-usage
-  // capture, and none of the Janitor's missing-tokenizer warnings.
-  const budgeting = Boolean(options.compress || options.onCompress || options.onBeforeCompress);
-
-  if (budgeting && options.contextWindow == null) {
-    throw new Error(
-      '[context-chef] `contextWindow` is required when a compression option (`compress`, ' +
-        '`onCompress`, `onBeforeCompress`) is configured — the budget ' +
-        'check has nothing to compare against without it.',
-    );
-  }
-
-  // Surface the in-flight-without-persistence footgun: if compression keeps
-  // firing but no `onCompress` is configured, the summary is discarded when
-  // the run ends and the caller's history re-expands on the next chat() call.
-  let compressionsFired = 0;
-  let persistenceWarned = false;
-  const onCompressionFired = () => {
-    compressionsFired++;
-    if (
-      persistenceWarned ||
-      options.onCompress ||
-      compressionsFired < COMPRESS_WITHOUT_PERSISTENCE_WARN_THRESHOLD
-    ) {
-      return;
-    }
-    persistenceWarned = true;
-    logger.warn(
-      `[context-chef] compress has fired ${compressionsFired}× but no \`onCompress\` is ` +
-        'configured. In-flight compression only rewrites the outgoing request — the summary is ' +
-        'not persisted, so your message history re-expands on the next chat() call and the ' +
-        'payload grows unbounded (eventually overflowing the context window). For sustained ' +
-        'compression, persist the summary via `onCompress` (replace the compressed slice in ' +
-        'your own store), or use `compactTanStackMessages` for durable compaction.',
-    );
-  };
-
   // One Janitor per conversation. A middleware instance is usually created
   // once and reused across chat() calls for many conversations — sharing one
   // Janitor would leak token-usage feeds, compression suppression, and
   // circuit-breaker counts across them. TanStack AI supplies the conversation
   // identity via ctx.threadId (auto-generated per run when the caller passes
   // none — pass an explicit `threadId` to chat() for cross-call continuity).
-  // Construction-time config nags are deduped across conversations — the
-  // config is identical for every pooled Janitor.
-  const janitors = budgeting
-    ? new SessionPool(
-        dedupeConstructionWarnings(logger, (constructionLogger) =>
-          createJanitor(
-            options,
-            options.contextWindow as number,
-            constructionLogger,
-            onCompressionFired,
-          ),
-        ),
-        { maxSize: options.maxSessions },
-      )
-    : null;
+  // Null for truncate/compact/clear/skill/dynamicState-only configurations:
+  // no budget checks, no token-usage capture, and none of the Janitor's
+  // missing-tokenizer warnings.
+  const janitors = createJanitorPool({
+    contextWindow: options.contextWindow,
+    compress: options.compress,
+    compressionModel: options.compress?.adapter
+      ? createCompressionAdapter(options.compress.adapter)
+      : undefined,
+    tokenizer: options.tokenizer,
+    onCompress: options.onCompress,
+    onBeforeCompress: options.onBeforeCompress,
+    overflow: options.overflow,
+    toHostMessages: toTanStackAI,
+    // In-flight-without-persistence footgun: the summary is discarded when
+    // the run ends and the caller's history re-expands on the next chat().
+    persistenceWarning: (firedCount) =>
+      `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
+      'configured. In-flight compression only rewrites the outgoing request — the summary is ' +
+      'not persisted, so your message history re-expands on the next chat() call and the ' +
+      'payload grows unbounded (eventually overflowing the context window). For sustained ' +
+      'compression, persist the summary via `onCompress` (replace the compressed slice in ' +
+      'your own store), or use `compactTanStackMessages` for durable compaction.',
+    logger,
+    maxSessions: options.maxSessions,
+  });
 
   let invalidThreadIdWarned = false;
   const flagInvalidThreadId = (raw: unknown) => {
@@ -276,65 +235,6 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       }
     },
   };
-}
-
-/**
- * Builds the stateful Janitor for budget-dependent configurations.
- *
- * The Janitor config is a discriminated union on `tokenizer`. Build the two
- * branches separately so the literal type matches one of the union members
- * exactly — a single literal carrying `tokenizer: Fn | undefined` would not
- * narrow to either branch.
- */
-function createJanitor(
-  options: ContextChefOptions,
-  contextWindow: number,
-  logger: ChefLogger,
-  onCompressionFired: () => void,
-): Janitor {
-  const userOnCompress = options.onCompress;
-  const sharedJanitorConfig = {
-    contextWindow,
-    triggerRatio: options.compress?.triggerRatio,
-    minShrinkRatio: options.compress?.minShrinkRatio,
-    toolResultStubThreshold: options.compress?.toolResultStubThreshold,
-    compressionModel: options.compress?.adapter
-      ? createCompressionAdapter(options.compress.adapter)
-      : undefined,
-    // Always installed so every compression is counted for the persistence
-    // warning; the user's hook is forwarded when configured.
-    onCompress: (summary: Message, count: number, details: CompressionDetails) => {
-      onCompressionFired();
-      userOnCompress?.(summary.content, count, {
-        compressedMessages: toTanStackAI(details.compressedMessages),
-      });
-    },
-    onBeforeCompress: options.onBeforeCompress,
-    logger,
-  };
-
-  let usagePreference = options.compress?.usagePreference;
-  if (usagePreference === 'tokenizerFirst' && !options.tokenizer) {
-    logger.warn(
-      "[context-chef] compress.usagePreference: 'tokenizerFirst' requires a tokenizer. " +
-        "Falling back to 'max'.",
-    );
-    usagePreference = 'max';
-  }
-
-  return options.tokenizer
-    ? new Janitor({
-        ...sharedJanitorConfig,
-        tokenizer: (msgs: Message[]) => options.tokenizer?.(msgs) ?? 0,
-        preserveRatio: options.compress?.preserveRatio ?? 0.8,
-        usagePreference,
-      })
-    : new Janitor({
-        ...sharedJanitorConfig,
-        // 'tokenizerFirst' has been sanitized above; the cast narrows the
-        // remaining values to the no-tokenizer branch.
-        usagePreference: usagePreference as 'max' | 'feedFirst' | undefined,
-      });
 }
 
 /**

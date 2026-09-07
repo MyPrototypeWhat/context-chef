@@ -1,3 +1,47 @@
+/**
+ * The truncation marker's shared shape: visible head, the `<persisted-output>`
+ * block, visible tail. Only the retrieval handle differs between the legacy
+ * and the unified vocabulary, so only that is passed in.
+ */
+function renderOffloadMarker(
+  headStr: string,
+  tailStr: string,
+  totalLines: number,
+  totalChars: number,
+  handleLines: string,
+): string {
+  const parts: string[] = [];
+
+  if (headStr) {
+    parts.push(headStr);
+  }
+
+  // Use the *actual* slice lengths (post line-snap), not the requested
+  // headChars/tailChars — they can differ when snapping rounds inward.
+  const showsHead = headStr.length > 0;
+  const showsTail = tailStr.length > 0;
+  let descriptor: string;
+  if (showsHead && showsTail) {
+    descriptor = `; first ${headStr.length} chars shown above, last ${tailStr.length} chars shown below`;
+  } else if (showsHead) {
+    descriptor = `; first ${headStr.length} chars shown above, rest omitted`;
+  } else if (showsTail) {
+    descriptor = `; preceding content omitted, last ${tailStr.length} chars shown below`;
+  } else {
+    descriptor = '; preview omitted';
+  }
+
+  parts.push(
+    `\n<persisted-output>\noutput truncated (${totalLines} lines, ${totalChars} chars total${descriptor})\n${handleLines}\n</persisted-output>\n`,
+  );
+
+  if (tailStr) {
+    parts.push(tailStr);
+  }
+
+  return parts.join('\n').trim();
+}
+
 export const Prompts = {
   /**
    * Used by Guardrail to enforce strict XML output and behavior.
@@ -46,42 +90,41 @@ You are acting as an automated system component. Your final output MUST be machi
     headStr: string,
     tailStr: string,
     physicalPath: string | null = null,
-  ) => {
-    const parts: string[] = [];
+  ) =>
+    renderOffloadMarker(
+      headStr,
+      tailStr,
+      totalLines,
+      totalChars,
+      physicalPath
+        ? `Full output saved to: ${physicalPath}\nURI (alternative): ${uri}`
+        : `Full output: ${uri}`,
+    ),
 
-    if (headStr) {
-      parts.push(headStr);
-    }
-
-    // Use the *actual* slice lengths (post line-snap), not the requested
-    // headChars/tailChars — they can differ when snapping rounds inward.
-    const showsHead = headStr.length > 0;
-    const showsTail = tailStr.length > 0;
-    let descriptor: string;
-    if (showsHead && showsTail) {
-      descriptor = `; first ${headStr.length} chars shown above, last ${tailStr.length} chars shown below`;
-    } else if (showsHead) {
-      descriptor = `; first ${headStr.length} chars shown above, rest omitted`;
-    } else if (showsTail) {
-      descriptor = `; preceding content omitted, last ${tailStr.length} chars shown below`;
-    } else {
-      descriptor = '; preview omitted';
-    }
-
-    const handleLines = physicalPath
-      ? `Full output saved to: ${physicalPath}\nURI (alternative): ${uri}`
-      : `Full output: ${uri}`;
-
-    parts.push(
-      `\n<persisted-output>\noutput truncated (${totalLines} lines, ${totalChars} chars total${descriptor})\n${handleLines}\n</persisted-output>\n`,
-    );
-
-    if (tailStr) {
-      parts.push(tailStr);
-    }
-
-    return parts.join('\n').trim();
-  },
+  /**
+   * The `tools: 'unified'` truncation marker — same block, same descriptor, a
+   * retrieval handle written in the one vocabulary the model has.
+   *
+   * The `context` tool reads every namespace, so the store address leads and
+   * the on-disk path follows as a second handle for agents that also hold a
+   * file-read tool (and disappears entirely for backends without one).
+   */
+  getContextOffloadReminder: (
+    uri: string,
+    totalLines: number,
+    totalChars: number,
+    headStr: string,
+    tailStr: string,
+    physicalPath: string | null = null,
+  ) =>
+    renderOffloadMarker(
+      headStr,
+      tailStr,
+      totalLines,
+      totalChars,
+      `Full output: ${uri} — read it with the context tool: view ${uri}` +
+        (physicalPath ? `\nOn disk: ${physicalPath}` : ''),
+    ),
 
   /**
    * Used by Janitor as the default instruction for compressing rolling history.
@@ -247,6 +290,25 @@ ${summary}
 Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.`.trim(),
 
   /**
+   * The `tools: 'unified'` summary wrapper: the same continuation framing, with
+   * the window the summary belongs to named above it.
+   *
+   * The lineage line is what lets a model tie a summary to the archive entry
+   * the same overflow wrote (under `context://vfs/` in 4.x), so it only appears when the caller has a
+   * lineage to state — a standalone `summarizeHistory` result has none.
+   */
+  getContextSummaryWrapper: (
+    summary: string,
+    lineage?: { current: string; previous?: string },
+  ): string => {
+    if (!lineage) return Prompts.getCompactSummaryWrapper(summary);
+    const previous = lineage.previous ? ` (previous: ${lineage.previous})` : '';
+    return Prompts.getCompactSummaryWrapper(
+      `Context window: ${lineage.current}${previous}\n\n${summary}`,
+    );
+  },
+
+  /**
    * Used by Janitor when compression fails or no model is provided.
    */
   getFallbackCompressionSummary: (truncatedCount: number) =>
@@ -257,6 +319,32 @@ Continue the conversation from where it left off without asking the user any fur
 </ephemeral_message>
 </history_summary>
 `.trim(),
+
+  /**
+   * The handoff notice: injected once per context window, through the tail
+   * channel, when the remaining headroom drops into the configured handoff
+   * budget (`overflow.handoff`). Every `{n_remaining}` is replaced with the
+   * tokens left before the compression trigger.
+   *
+   * Deliberately a statement of state with one suggestion attached. The model
+   * is mid-task when it reads this, and an imperative here would compete with
+   * the system prompt for the turn it still owes the user.
+   */
+  HANDOFF_NOTICE_TEMPLATE:
+    'Your context window is nearly exhausted — about {n_remaining} tokens remain before older ' +
+    'messages are compressed or reset. State that has to outlive this window (decisions taken, ' +
+    'the current plan, file paths and identifiers in play) is worth persisting now with the ' +
+    'tools you have for it; the rest may only survive as a summary.',
+
+  /**
+   * The `tools: 'unified'` handoff notice. Same statement of state, with the
+   * one handle the model actually has named instead of "the tools you have".
+   */
+  CONTEXT_HANDOFF_NOTICE_TEMPLATE:
+    'Your context window is nearly exhausted — about {n_remaining} tokens remain before older ' +
+    'messages are compressed or reset. State that has to outlive this window (decisions taken, ' +
+    'the current plan, file paths and identifiers in play) is worth persisting now with the ' +
+    'context tool under context://notes/ or context://memory/; the rest may only survive as a summary.',
 
   /**
    * Used by Adapters (like OpenAI) that don't support native prefill.
@@ -354,6 +442,57 @@ Only remember things genuinely worth persisting.
       block += `\n\nAllowed memory keys: ${allowedKeys.join(', ')}. You may ONLY update or delete these keys. Any other key will be rejected.`;
     } else if (existingKeys.length > 0) {
       block += `\n\nExisting memory keys: ${existingKeys.join(', ')}. Prefer updating these keys over creating new ones to maintain consistency.`;
+    }
+
+    return block;
+  },
+
+  /**
+   * The `tools: 'unified'` replacement for {@link Prompts.MEMORY_INSTRUCTION}:
+   * the whole context store in one paragraph, since under `unified` memory is
+   * no longer a separate feature with its own tools but one namespace of the
+   * store the `context` tool addresses.
+   *
+   * Kept under 900 bytes — it sits in the cacheable prefix of every request,
+   * and the tool's own description already carries the per-command detail.
+   */
+  CONTEXT_STORE_INSTRUCTION: `
+The context store holds addressed content that lives outside this conversation window. Addresses look like context://<namespace>/<path>.
+
+- context://memory/ — durable facts, shown to you automatically below. They persist across conversations.
+- context://notes/ — your own scratchpad, read on demand. It survives a context reset.
+- context://vfs/ — tool output that was too large to keep inline. Read-only.
+
+The context tool reads and writes these: view, create, str_replace, insert, delete, rename, search.
+The new_context tool, where it is available, starts a fresh window; earlier content is compressed or archived per configuration.
+`.trim(),
+
+  /**
+   * Self-anchoring prefix for the `<memory>` data block under
+   * `tools: 'unified'`. Same contract as {@link Prompts.MEMORY_BLOCK_HEADER} —
+   * the block introduces itself, so `compile()` can suppress its anchor line —
+   * written as an address rather than as a claim about recall. Both headers
+   * are markers in `auditAnthropicCachePlacement`.
+   */
+  CONTEXT_MEMORY_BLOCK_HEADER: 'Memory (context://memory/*) currently holds:',
+
+  /**
+   * The `tools: 'unified'` memory block. Same structure and the same
+   * `existingKeys` / `allowedKeys` semantics as {@link Prompts.getMemoryBlock};
+   * the key guidance points at the address each key is edited under instead of
+   * at the legacy memory tools.
+   */
+  getContextMemoryBlock: (
+    coreMemoryXml: string,
+    existingKeys: string[],
+    allowedKeys?: string[],
+  ): string => {
+    let block = `${Prompts.CONTEXT_MEMORY_BLOCK_HEADER}\n${coreMemoryXml}`;
+
+    if (allowedKeys && allowedKeys.length > 0) {
+      block += `\n\nWritable memory keys: ${allowedKeys.join(', ')}. Only these may be created, updated or deleted at context://memory/<key>. Any other key is rejected.`;
+    } else if (existingKeys.length > 0) {
+      block += `\n\nExisting memory keys: ${existingKeys.join(', ')}. Each one is editable at context://memory/<key> with the context tool — prefer updating an existing key over creating a new one.`;
     }
 
     return block;

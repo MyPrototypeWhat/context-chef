@@ -12,6 +12,8 @@ export {
 export {
   AnthropicAdapter,
   type AnthropicAdapterOptions,
+  type AnthropicServerContextManagement,
+  anthropicServerContextManagement,
   fromAnthropic,
 } from './adapters/anthropicAdapter';
 export {
@@ -31,11 +33,19 @@ export {
   type BeforeCompileContext,
   type ChefConfig,
   type ChefEvents,
+  type ChefMemoryConfig,
   type ChefSnapshot,
   ContextChef,
   type SkillPlacement,
   type ToolCallCheckResult,
+  type ToolsMode,
 } from './chef';
+export {
+  createJanitorPool,
+  type IntegrationCompressOptions,
+  type IntegrationOverflowOptions,
+  type JanitorPoolConfig,
+} from './integrations/janitorPool';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
@@ -87,7 +97,12 @@ export {
   type VFSResult,
   type VFSStorageAdapter,
 } from './modules/offloader';
-export { getRecallToolDefinition } from './modules/offloader/recallTool';
+export {
+  getRecallToolDefinition,
+  type RecallFormat,
+  type ResolveRecallOptions,
+  renderRecalledContent,
+} from './modules/offloader/recallTool';
 export {
   Pruner,
   type PrunerConfig,
@@ -106,7 +121,48 @@ export {
   type Skill,
   type SkillLoadResult,
 } from './modules/skill';
+export {
+  type AnchoredOptions,
+  anchored,
+  type BackgroundOverflowStrategy,
+  type BudgetInfo,
+  background,
+  chain,
+  getNewContextToolDefinition,
+  HANDOFF_REMAINING_PLACEHOLDER,
+  type HandoffConfig,
+  isServerStrategy,
+  type OverflowAliasConfig,
+  type OverflowInput,
+  type OverflowResult,
+  type OverflowRunner,
+  type OverflowStrategy,
+  type ResetOptions,
+  renderHandoffNotice,
+  renderSummaryMessage,
+  reset,
+  resolveOverflowStrategy,
+  type ServerOverflowStrategy,
+  type SplitMode,
+  type SummarizeOptions,
+  server,
+  summarize,
+  validateHandoffConfig,
+  type WindowLineage,
+} from './overflow';
+export type {
+  BeforeAssembleContext,
+  CompileContext,
+  Phase,
+  PhaseName,
+  PipelineHost,
+  ResolvedTarget,
+  SlotHandlers,
+  SlotName,
+} from './pipeline';
 export * from './prompts';
+export * from './store';
+export * from './tools';
 export * from './types';
 export { ensureValidHistory } from './utils/ensureValidHistory';
 export { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
@@ -119,3 +175,12 @@ export {
 export { createTokenizerAdapter } from './utils/tokenizerAdapter';
 export { estimate, estimateObject } from './utils/tokenUtils';
 export { objectToXml } from './utils/xmlGenerator';
+export {
+  LEGACY_VOCABULARY,
+  type OffloadPlaceholderArgs,
+  resolveVocabulary,
+  type SummaryLineage,
+  UNIFIED_VOCABULARY,
+  type Vocabulary,
+  type VocabularyMode,
+} from './vocabulary';

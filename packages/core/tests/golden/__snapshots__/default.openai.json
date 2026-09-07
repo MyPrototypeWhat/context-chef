@@ -1,0 +1,35 @@
+{
+  "messages": [
+    {
+      "content": "You are a careful engineering assistant.",
+      "role": "system"
+    },
+    {
+      "content": "How do I read a file in Node?",
+      "role": "user"
+    },
+    {
+      "content": "Use node:fs/promises readFile.",
+      "role": "assistant"
+    },
+    {
+      "content": "And write one?",
+      "role": "user"
+    }
+  ],
+  "tools": [
+    {
+      "description": "Read a file from disk.",
+      "name": "read_file",
+      "parameters": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"],
+        "type": "object"
+      }
+    }
+  ]
+}

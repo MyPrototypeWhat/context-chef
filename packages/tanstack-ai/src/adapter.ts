@@ -12,15 +12,12 @@ import type { ContentPart, ModelMessage, ToolCall } from '@tanstack/ai';
  * `_original` holds the source ModelMessage by reference; `toTanStackAI`
  * re-emits its fields verbatim for every aspect (content / tool calls /
  * thinking) the pipeline did not modify, so multimodal parts, tool-call
- * `metadata`, `id`, and `createdAt` survive untouched.
- *
- * `_originalText` / `_originalThinkingText` cache the extracted projections
- * so modification by Janitor/compact/clear can be detected per aspect.
+ * `metadata`, `id`, and `createdAt` survive untouched. Modification is
+ * detected per aspect by re-deriving the projection from `_original` and
+ * comparing it against the IR field.
  */
 export interface TanStackAIMessage extends Message {
   _original?: ModelMessage;
-  _originalText?: string;
-  _originalThinkingText?: string;
 }
 
 /**
@@ -55,12 +52,10 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
 
   for (const msg of messages) {
     if (msg.role === 'user') {
-      const text = extractTextContent(msg.content);
       const m: TanStackAIMessage = {
         role: 'user',
-        content: text,
+        content: extractTextContent(msg.content),
         _original: msg,
-        _originalText: text,
         ...(msg.name ? { name: msg.name } : {}),
       };
       const attachments = extractAttachments(msg.content);
@@ -70,24 +65,20 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
     }
 
     if (msg.role === 'assistant') {
-      const text = extractTextContent(msg.content);
       const m: TanStackAIMessage = {
         role: 'assistant',
-        content: text,
+        content: extractTextContent(msg.content),
         _original: msg,
-        _originalText: text,
         ...(msg.name ? { name: msg.name } : {}),
       };
       if (msg.toolCalls?.length) {
         m.tool_calls = msg.toolCalls.map(convertToolCall);
       }
       if (msg.thinking?.length) {
-        const thinkingText = joinThinking(msg.thinking);
         m.thinking = {
-          thinking: thinkingText,
+          thinking: joinThinking(msg.thinking),
           ...(msg.thinking[0]?.signature ? { signature: msg.thinking[0].signature } : {}),
         };
-        m._originalThinkingText = thinkingText;
       }
       const attachments = extractAttachments(msg.content);
       if (attachments.length) m.attachments = attachments;
@@ -96,13 +87,11 @@ export function fromTanStackAI(messages: ModelMessage[]): TanStackAIMessage[] {
     }
 
     if (msg.role === 'tool') {
-      const text = extractTextContent(msg.content);
       result.push({
         role: 'tool',
-        content: text,
+        content: extractTextContent(msg.content),
         tool_call_id: msg.toolCallId ?? '',
         _original: msg,
-        _originalText: text,
         ...(msg.name ? { name: msg.name } : {}),
       });
     }
@@ -137,9 +126,13 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
   const result: ModelMessage[] = [];
 
   for (const msg of messages) {
-    const ext = msg as TanStackAIMessage;
-    const original = ext._original;
-    const contentModified = ext._originalText !== undefined && ext._originalText !== msg.content;
+    const original = (msg as TanStackAIMessage)._original;
+    // Re-emit the original content (multimodal parts included) while it still
+    // projects to exactly the IR text; a pipeline rewrite falls back to the IR.
+    const content =
+      original !== undefined && extractTextContent(original.content) === msg.content
+        ? original.content
+        : msg.content;
 
     if (msg.role === 'system') {
       // Defensive: TanStack AI ModelMessage has no 'system' role.
@@ -151,7 +144,7 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
       result.push({
         ...(original ? passthroughFields(original) : {}),
         role: 'user' as const,
-        content: !contentModified && original ? original.content : msg.content,
+        content,
         ...(msg.name ? { name: msg.name } : {}),
       });
       continue;
@@ -161,7 +154,7 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
       const m: ModelMessage = {
         ...(original ? passthroughFields(original) : {}),
         role: 'assistant' as const,
-        content: !contentModified && original ? original.content : msg.content,
+        content,
         ...(msg.name ? { name: msg.name } : {}),
       };
       if (msg.tool_calls?.length) {
@@ -179,12 +172,10 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
             );
       }
       if (msg.thinking?.thinking) {
-        const thinkingModified =
-          ext._originalThinkingText === undefined ||
-          ext._originalThinkingText !== msg.thinking.thinking;
+        const originalThinking = original?.thinking?.length ? original.thinking : undefined;
         m.thinking =
-          !thinkingModified && original?.thinking
-            ? original.thinking
+          originalThinking && joinThinking(originalThinking) === msg.thinking.thinking
+            ? originalThinking
             : [
                 {
                   content: msg.thinking.thinking,
@@ -200,7 +191,7 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
       result.push({
         ...(original ? passthroughFields(original) : {}),
         role: 'tool' as const,
-        content: !contentModified && original ? original.content : msg.content,
+        content,
         toolCallId: msg.tool_call_id ?? '',
         ...(msg.name ? { name: msg.name } : {}),
       });

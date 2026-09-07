@@ -2,8 +2,11 @@ import type { LanguageModelV4, LanguageModelV4Prompt } from '@ai-sdk/provider';
 import type {
   ChefLogger,
   ClearTarget,
+  IntegrationOverflowOptions,
   Message,
   Skill,
+  StorageBackend,
+  Store,
   VFSStorageAdapter,
 } from '@context-chef/core';
 
@@ -19,8 +22,21 @@ export interface TruncateOptions {
    * Can be a FileSystemAdapter, database adapter, or any custom implementation.
    * When provided, truncated output includes a `context://vfs/` URI for retrieval.
    * When omitted, original content is discarded after truncation.
+   *
+   * @deprecated Pass `store` instead — one backend serves `vfs`, `archive`,
+   *   `memory` and `notes`. A legacy adapter still works: it is wrapped with
+   *   `Store.fromVfsAdapter`.
    */
   storage?: VFSStorageAdapter;
+  /**
+   * The context store backing the `vfs` namespace: a `StorageBackend`
+   * (`InMemoryBackend`, `FileSystemBackend`, your own) or a pre-built `Store`
+   * shared with an archive. Takes precedence over `storage`.
+   *
+   * As with `storage`, truncated output carries a `context://vfs/` URI, which
+   * `chef.resolveRecall(uri)` — or the `context` tool's `view` — reads back.
+   */
+  store?: StorageBackend | Store;
   /**
    * Per-tool overrides applied on top of the defaults above.
    *
@@ -295,6 +311,21 @@ export interface ContextChefOptions {
    * underlying Janitor and Offloader.
    */
   logger?: ChefLogger;
+  /**
+   * The overflow axis: an explicit `OverflowStrategy` in place of the policy
+   * `compress` describes (`summarize()`, `anchored()`, `reset()`, `chain()`,
+   * `background()`), and an `archive` that keeps the evicted span retrievable
+   * behind the URI the summary cites.
+   *
+   * `overflow.strategy` REPLACES the `compress` tuning options; the runner
+   * concerns (`contextWindow`, `tokenizer`, `compress.triggerRatio`,
+   * `compress.usagePreference`, `onCompress`, `onBeforeCompress`) keep
+   * applying whatever the strategy is. `contextWindow` is required either way.
+   *
+   * @example
+   * overflow: { strategy: chain(summarize({ compressionModel }), reset()) }
+   */
+  overflow?: IntegrationOverflowOptions;
   /**
    * Cap on concurrently tracked sessions when session isolation is used
    * (see the `providerOptions.contextChef.sessionId` docs on the package

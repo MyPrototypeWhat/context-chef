@@ -6,7 +6,7 @@ ContextChef 解决 AI Agent 开发中最常见的上下文工程问题：对话�
 
 | 包 | 说明 |
 |---|---|
-| [`@context-chef/core`](/zh/packages/core) | 核心上下文编译器 —— 历史压缩、工具裁剪、记忆、VFS 卸载、多 provider 适配 |
+| [`@context-chef/core`](/zh/packages/core) | 核心上下文编译器 —— 溢出策略、工具裁剪、上下文存储、多 provider 适配 |
 | [`@context-chef/ai-sdk-middleware`](/zh/packages/ai-sdk-middleware) | [Vercel AI SDK](https://sdk.vercel.ai) 中间件 —— 即插即用的上下文工程，零代码改动 |
 | [`@context-chef/tanstack-ai`](/zh/packages/tanstack-ai) | [TanStack AI](https://tanstack.com/ai) 中间件 —— 通过 `ChatMiddleware` 提供压缩、截断和动态状态 |
 
@@ -109,14 +109,21 @@ const stream = chat({
 
 ```typescript
 const chef = new ContextChef({
-  vfs?: { threshold?: number, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
-  janitor?: JanitorConfig,
-  pruner?: { strategy?: 'union' | 'intersection' },
+  janitor?: JanitorConfig,                       // the overflow runner: budget, trigger, breaker
+  overflow?: { strategy?, archive?, handoff? },  // the overflow policy
+  store?: StorageBackend | Store,                // one substrate for memory/ notes/ vfs/ archive/
+  tools?: 'legacy' | 'unified',                  // which library-owned tools compile() emits
+  contextTool?: { writable?: string[] },
   memory?: MemoryConfig,
-  transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>,
-  onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>,
+  vfs?: { threshold?: number, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
+  pruner?: { strategy?: 'union' | 'intersection' },
+  transformToolResult?: (content: string, info) => string | Promise<string>,
+  pipelineChecks?: boolean,
+  cacheAudit?: boolean,
 });
 ```
+
+> **组合能力挪到了 slot 上** <Badge type="tip" text="4.2" />**。** `chef.use('before-assemble', ...)` / `chef.use('after-assemble', ...)` 取代了 `onBeforeCompile` 与 `transformContext` 两个配置钩子；后者仍然可用，将在 5.0 移除。见[事件与钩子](/zh/guide/events-hooks)。
 
 > **4.0 移除项** —— 每一项都有直接替代：`TokenUtils` → `estimate` / `estimateObject`，`XmlGenerator` → `objectToXml`，`AdapterFactory` → `getAdapter` / `adapterRegistry`，`JanitorConfig.onBudgetExceeded` → `onBeforeCompress`。完整迁移指南见[迁移到 v4](/zh/migration/v4)。
 
@@ -167,9 +174,10 @@ const payload = await chef.compile({ target: "gemini" }); // GeminiPayload
 
 ## 接下来
 
-- [历史压缩（Janitor）](/zh/guide/history-compression) —— 压缩管道、质量闸门和 v4 压缩管道 v2
+- [架构](/zh/guide/architecture) —— 五条轴、编译管道与 slot
+- [溢出](/zh/guide/history-compression) —— 策略、质量闸门、handoff 预算、`new_context`
+- [上下文存储](/zh/guide/context-store) —— `memory/` / `notes/` / `vfs/` / `archive/` 背后的同一个后端，以及 `context` 工具
 - [工具管理（Pruner）](/zh/guide/tool-management) —— 裁剪、blocklist 和双层 namespace 架构
-- [记忆（Memory）](/zh/guide/memory) —— 跨会话持久化键值记忆
 - [适配器](/zh/guide/adapters) —— OpenAI / Anthropic / Gemini 及自定义 provider 的输入 / 目标适配器
 
 ## 博客系列

@@ -13,6 +13,7 @@ export {
   planCompactionModelMessages,
 } from './compaction';
 export {
+  createCompressionAdapter,
   createMiddleware,
   type SummarizeMessagesOptions,
   summarizeMessages,

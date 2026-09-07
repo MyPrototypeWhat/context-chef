@@ -1,6 +1,8 @@
 # 持久化压缩
 
-在途压缩重写每次外发的 payload，但不会碰你的消息存储 —— 对一段持续超预算的对话，摘要在每次调用时都要重新计算。当消息存储归你管时，把它压缩一次并持久化结果。本页覆盖 core 里的持久化压缩 helper 及其 AI SDK / TanStack AI 移植版。
+在途[溢出](/zh/guide/history-compression)重写每次外发的 payload，但不会碰你的消息存储 —— 对一段持续超预算的对话，摘要在每次调用时都要重新计算。当消息存储归你管时，把它压缩一次并持久化结果。本页覆盖 core 里的持久化压缩 helper 及其 AI SDK / TanStack AI 移植版。
+
+这些 helper 刻意留在溢出轴之外：它们是作用于消息数组的无状态函数，没有 runner、没有策略、没有窗口谱系。存储归你改写时用它们；不归你时用[溢出策略](/zh/guide/history-compression)。
 
 三个 helper 都在原子轮次边界处切分（assistant 消息和它的 tool result 永不分离），摘要旧切片，返回 `[...system, <summary>, ...recent turns]`；no-op 时原样返回输入引用，因此可用 `result === input` 跳过持久化。
 
@@ -105,4 +107,4 @@ if (toSummarize.length > 0) {
 
 ## 不要双重压缩
 
-不要在同一段对话上同时使用持久化压缩和在途压缩（[Janitor](/zh/guide/history-compression) 或 middleware `compress`）—— 那会把同一段历史压缩两次。每段对话选一种策略。完整契约见 [core](/zh/packages/core)、[ai-sdk-middleware](/zh/packages/ai-sdk-middleware) 和 [tanstack-ai](/zh/packages/tanstack-ai) 的包页面。
+不要在同一段对话上同时使用持久化压缩和在途溢出（[Janitor runner 及其策略](/zh/guide/history-compression) 或 middleware `compress`）—— 那会把同一段历史压缩两次。每段对话选一种策略。完整契约见 [core](/zh/packages/core)、[ai-sdk-middleware](/zh/packages/ai-sdk-middleware) 和 [tanstack-ai](/zh/packages/tanstack-ai) 的包页面。

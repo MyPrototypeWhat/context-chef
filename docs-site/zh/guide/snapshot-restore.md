@@ -16,6 +16,7 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 - **Janitor 状态** —— 包括压缩失败计数（熔断器），以及 `'incremental-anchored'` 模式下的持久 anchor 文档。后台压缩状态*不*进快照。
 - **Memory** 条目。
 - **护栏 options** <Badge type="tip" text="v4" /> —— v4 中 `withGuardrails` 是存储态，因此 `ChefSnapshot` 增加了 `guardrailOptions`，快照/恢复完整往返。
+- **handoff 通知标记** <Badge type="tip" text="4.2" /> —— `ChefSnapshot.handoffNoticedWindow` 记录通知已经为哪个窗口发过。窗口谱系本身会随 janitor 状态往返，没有这个字段的话，恢复出来的会话就会停在一个「已经通知过」的窗口上却把标记清空了，于是每一轮都重发一次通知。
 - 快照元数据：你传入的 `label` 和 `createdAt`。
 
 完整的回滚演示见可运行示例 [snapshot-restore](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/snapshot-restore.ts)。

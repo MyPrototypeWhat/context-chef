@@ -688,6 +688,58 @@ describe('Janitor — background compression scheduling', () => {
     expect(janitor['_consecutiveFailures']).toBeGreaterThanOrEqual(1);
   });
 
+  it('swaps a finished job in even after the history drops back under the trigger', async () => {
+    let perMessage = 10;
+    const model = vi.fn().mockResolvedValue('<summary>BG</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: (messages: Message[]) => messages.length * perMessage,
+      preserveRatio: 0.3,
+      compressionModel: model,
+      compressionScheduling: 'background',
+    });
+
+    const history = buildHistory(5);
+    expect(await janitor.compress(history)).toEqual(history); // job started
+    await settled(janitor);
+
+    // The caller trimmed, or the provider reported less: 5 tokens against a
+    // 30-token trigger. The summary is already paid for and must still land —
+    // otherwise the model keeps carrying the span it replaces.
+    perMessage = 1;
+    const swapped = await janitor.compress(history);
+
+    expect(swapped[0].content).toContain('BG');
+    expect(model).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a background job for a window that fits', async () => {
+    let perMessage = 10;
+    const model = vi.fn().mockResolvedValue('<summary>BG</summary>');
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: (messages: Message[]) => messages.length * perMessage,
+      preserveRatio: 0.3,
+      compressionModel: model,
+      compressionScheduling: 'background',
+    });
+
+    await janitor.compress(buildHistory(5));
+    await settled(janitor);
+
+    // A history the finished job no longer applies to, and no reason to
+    // compress it either: the stale result is dropped without a replacement.
+    perMessage = 1;
+    const other = buildHistory(5);
+    other[0] = { ...other[0], content: 'edited-msg-1' };
+    expect(await janitor.compress(other)).toEqual(other);
+
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(janitor['_pendingBackground']).toBeUndefined();
+  });
+
   it('restoreState drops a pending background job', async () => {
     const model = vi.fn(() => new Promise<string>(() => {})); // never resolves
     const janitor = new Janitor({

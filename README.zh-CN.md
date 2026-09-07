@@ -26,7 +26,7 @@ ContextChef 解决 AI Agent 开发中最常见的上下文工程问题：对话�
 
 | 包 | 说明 |
 |---|---|
-| [`@context-chef/core`](./packages/core) | 核心上下文编译器 —— 历史压缩、工具裁剪、记忆、VFS 卸载、多 provider 适配 |
+| [`@context-chef/core`](./packages/core) | 核心上下文编译器 —— 溢出策略、工具裁剪、统一的上下文存储、管道插槽、多 provider 适配 |
 | [`@context-chef/ai-sdk-middleware`](./packages/ai-sdk-middleware) | [Vercel AI SDK](https://sdk.vercel.ai) 中间件 —— 即插即用的上下文工程，零代码改动 |
 | [`@context-chef/tanstack-ai`](./packages/tanstack-ai) | [TanStack AI](https://tanstack.com/ai) 中间件 —— 通过 `ChatMiddleware` 提供压缩、截断和动态状态 |
 
@@ -90,25 +90,65 @@ const stream = chat({
 7. [Provider 适配层——让差异止于编译层](https://myprototypewhat.cn/context-chef-7-adapters)
 8. [编译管道里的五个扩展点](https://myprototypewhat.cn/context-chef-8-hooks)
 
+## 全局地图
+
+ContextChef 把无界的信息编译进有界的窗口。本 README 里的每一个特性都恰好落在五根轴中的一根上 —— 这就是全部的地图：
+
+| 轴 | 回答的问题 | 由谁负责 |
+|---|---|---|
+| **① 选择（Selection）** | 什么进入窗口 | `overflow.strategy`（历史）、`Pruner`（工具）、`memory.selector`（记忆）、`pinned: true`（永远不许被拿走的） |
+| **② 位置（Placement）** | 进入窗口后放在哪 | 三明治结构 —— system 层 → history → 末尾拼接 —— 以及 `memoryPlacement`、`skillPlacement`、`dynamicStatePlacement`、announcement channel 和可缓存前缀 |
+| **③ 持久化（Persistence）** | 离开窗口后住在哪 | 一个 `StorageBackend` + 一个 `Store`，以 `context://<ns>/<path>` 寻址：`memory/`、`notes/`、`vfs/`、`archive/` |
+| **④ 取回（Retrieval）** | 模型怎么伸手够到窗口之外 | 一个 `context` 工具（外加 `new_context`），经 `chef.ownsTool` / `chef.handleTool` 分发 |
+| **⑤ 适配（Adaptation）** | Provider 线缆格式 | target adapter —— OpenAI / Anthropic / Gemini / 你自己的 |
+
+溢出（overflow）不是第六件事：它就是信息从 ① 移动到 ③、并可经 ④ 取回的过程。`summarize` / `anchored` / `reset` 是 ① 的策略，`memory/` / `notes/` / `vfs/` / `archive/` 是 ③ 的命名空间，`view` / `search` / `recall_context` 是 ④ 的把手。找"某个东西住在哪"时，先找它属于哪根轴。
+
+这五根轴上的一切都是**机制而非策略**：不拒绝任何配置组合；那些无法从根上避免的失败类型（前缀被改写、pinned 消息被丢、tool 配对被拆开）通过审计与事件通道**上报**，而不是拦下来。
+
 ## Features
+
+**① 选择 —— 什么留在窗口里**
 
 - **对话太长？** — 自动压缩历史消息，保留近期记忆，老对话交给小模型摘要
 - **压缩把约束弄丢了？** — 约束固定（v4）：`pinned: true` 的消息原文穿过压缩，且永不被 `compact()` 清除
-- **摘要丢了你想找回的细节？** — 可逆的归档 + 召回（v4）：压缩前的完整片段会被存储并在摘要中以 URI 引用；`recall_context` 工具可按需还原
-- **Provider 帮你做压缩？** — 服务端上下文管理（v4）：`contextManagement: { strategy: 'server' }` 把 LLM 压缩交给 Anthropic 服务端 compaction，裁剪/skills/记忆/VFS 仍留在客户端
-- **压缩延迟拖慢主链路？** — 后台压缩（v4）：摘要在轮次之外运行，仅在仍然有效时换入；anchored 模式把被驱逐的片段增量合并进一份持久摘要文档
+- **一种压缩策略不够用？** — 溢出策略（4.2）：`summarize` / `anchored` / `reset`，用 `chain()` 和 `background()` 组合，或者干脆写你自己的 `OverflowStrategy`
+- **Provider 帮你做压缩？** — `server()` 策略把 LLM 压缩交给 Anthropic 服务端 compaction，裁剪/skills/记忆/VFS 仍留在客户端
+- **压缩延迟拖慢主链路？** — `background()` 把摘要放到轮次之外运行，仅在仍然有效时换入；`anchored()` 把被驱逐的片段增量合并进一份持久摘要文档，而不是整份重写
 - **消息存储归你管？** — 持久化压缩：`planCompaction` / `compactHistory`（以及 AI SDK 和 TanStack 移植版）把你的存储压缩一次并持久化结果，而不是每次调用都在途重复压缩
+- **窗口马上要被砍了？** — 交接预算（4.2）：在触发线之上预留一段 token，让模型在机械驱逐发生之前拿到一次通知，把该留的状态写下来
 - **工具太多？** — 按任务动态裁剪工具列表，或用双层架构（稳定分组 + 按需加载）彻底消除工具幻觉
 - **运行时禁用工具？** — Pruner blocklist + `checkToolCall` dispatch 闸门，覆盖权限、环境、限流、沙箱等场景；默认 KV-cache 友好
+
+**② 位置 —— 落在窗口的哪个位置**
+
 - **按阶段切人格？** — `Skill` 原语打包指令 + 工具注解，支持从 `SKILL.md` 文件加载（与 Claude Code / Mastra / OpenCode 同格式）
 - **会话中途能力变了？** — Announcements（4.1）：`announce()` 声明哪些工具/skill 上线或下线，并在每次 compile 时重新渲染，直到你撤回；`skillPlacement: 'tail'` 把 skill instructions 移出可缓存前缀，切换模式再也不会让前缀失效
-- **换模型要重写？** — 同一套 prompt 编译到 OpenAI / Anthropic / Gemini，prefill、cache、tool call 格式自动适配
 - **长程任务跑偏？** — Zod schema 强类型状态注入，每次调用前强制对齐当前任务焦点
 - **输出格式跑偏？** — Guardrail：`withGuardrails` 强制 XML 输出契约并设置 assistant prefill，在不支持原生 prefill 的 provider 上自动降级
-- **终端输出太大？** — 自动截断并卸载到 VFS，保留错误行 + `context://` URI 指针供按需取回
-- **跨会话记不住？** — Memory 让模型通过 tool call 主动持久化关键信息（项目规范、用户偏好），下次会话自动注入
+- **每轮都在击穿 prompt cache？** — `memoryPlacement: 'before_history_tail'` 和 `skillPlacement: 'tail'` 把易变文本移出可缓存前缀；`cacheAudit` 会点名仍然留在里面的内容
+
+**③ 持久化 —— 离开窗口后住在哪**
+
+- **终端输出太大？** — 自动截断并卸载到 `vfs/`，保留错误行 + `context://` URI 指针供按需取回
+- **跨会话记不住？** — `memory/` 让模型持久化关键信息（项目规范、用户偏好），下次会话自动注入
+- **摘要丢了你想找回的细节？** — 可逆归档：溢出前的完整片段被存储，并在替换它的摘要里以 URI 引用
+- **一件事四套存储接口？** — 一个 `StorageBackend` + 一个 `Store`（4.2）：记忆、笔记、卸载的输出和归档的片段，是同一种底料在不同地址上的样子
 - **想回滚怎么办？** — Snapshot & Restore 一键捕获和回滚全部上下文状态，支持分支探索
-- **需要外部上下文？** — `onBeforeCompile` 钩子让你在编译前注入 RAG 检索结果、AST 片段或 MCP 查询
+
+**④ 取回 —— 模型怎么伸手够回来**
+
+- **每个命名空间一个工具？** — 一个 `context` 工具（4.2）覆盖 view / create / str_replace / insert / delete / rename / search，经 `chef.handleTool` 分发；用 `tools: 'unified'` 开启
+- **模型自己知道这段活干完了？** — `new_context` + `chef.requestNewContext()`（4.2）强制下一次 compile 开一个新窗口
+- **需要外部上下文？** — `before-assemble` 插槽（4.2 之前是 `onBeforeCompile` 钩子）让你在编译前注入 RAG 检索结果、AST 片段或 MCP 查询
+
+**⑤ 适配 —— provider 线缆格式**
+
+- **换模型要重写？** — 同一套 prompt 编译到 OpenAI / Anthropic / Gemini，prefill、cache、tool call 格式自动适配
+
+**贯穿整条管道**
+
+- **想往管道里插东西？** — 管道插槽（4.2）：`chef.use('before-overflow' | 'after-overflow' | 'before-assemble' | 'after-assemble' | 'before-adapt' | 'after-adapt', handler)`
 - **需要可观测性？** — 统一事件系统（`chef.on('compress', ...)`）一个入口订阅所有内部模块的日志、指标和调试信息
 
 ## 安装
@@ -167,12 +207,22 @@ const response = await anthropic.messages.create(payload);
 
 ```typescript
 const chef = new ContextChef({
-  vfs?: { threshold?: number, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
-  janitor?: JanitorConfig,
+  janitor?: JanitorConfig,                       // ① 什么时候超预算
+  overflow?: { strategy?: OverflowStrategy, archive?: 'vfs' | CompressionArchiveConfig, handoff?: { budgetTokens: number, prompt?: string } },
   pruner?: { strategy?: 'union' | 'intersection' },
-  memory?: MemoryConfig,
-  transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>,
-  onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>,
+  memory?: MemoryConfig,                         // ③ memory/ 命名空间
+  vfs?: { threshold?: number, store?: StorageBackend | Store, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
+  store?: StorageBackend | Store,                // ③ 一个后端服务所有命名空间
+  tools?: 'legacy' | 'unified',                  // ④ compile() 发出哪套库自带工具
+  contextTool?: { writable?: string[] },         // ④ 模型可写的命名空间
+  skillPlacement?: 'after_system' | 'tail',      // ②
+  defaultTarget?: TargetProvider | ITargetAdapter, // ⑤
+  logger?: ChefLogger,
+  cacheAudit?: boolean,                          // 可缓存前缀里出现易变内容时告警
+  pipelineChecks?: boolean,                      // 开发期不变量，只上报不拦截
+  transformToolResult?: (content: string, info: { toolName: string | null; toolCallId: string | null }) => string | Promise<string>,
+  transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>,   // @deprecated → use('after-assemble')
+  onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>, // @deprecated → use('before-assemble')
 });
 ```
 
@@ -295,30 +345,38 @@ const response = await openai.chat.completions.create({ ... });
 chef.reportTokenUsage(response.usage.prompt_tokens);
 ```
 
-> **注意：** 如果没有提供 `compressionModel`，旧消息将被直接丢弃而不生成摘要。如果同时没有 `tokenizer` 和 `compressionModel`，构造时会打印控制台警告。
+> **注意：** 如果没有提供 `compressionModel`，旧消息将被直接丢弃而不生成摘要。如果同时没有 `tokenizer` 和 `compressionModel`，构造时会打印一次控制台警告；显式配置了 `overflow.strategy`（或 `janitor.strategy`）则视为你有意为之，不再警告。
 
 #### `JanitorConfig`
+
+Runner 选项 —— 什么时候触发压缩、拿什么去量、压缩前后发生什么。这些是 Janitor 自己的事，与装了哪个[溢出策略](#溢出--什么离开窗口42)无关：
 
 | 选项                            | 类型                                        | 默认值 | 说明                                                                     |
 | ------------------------------- | ------------------------------------------- | ------ | ------------------------------------------------------------------------ |
 | `contextWindow`                 | `number`                                    | _必填_ | 模型的上下文窗口大小（token 数）。用量超过 `contextWindow × triggerRatio` 时触发压缩。 |
 | `triggerRatio`                  | `number`                                    | `0.7`  | 触发压缩的 `contextWindow` 占比（"腐烂前"提前压缩）。设为 `1` 可恢复 4.0 之前打满窗口才触发的行为。 |
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                       |
-| `preserveRatio`                 | `number`                                    | `0.8`  | [Tokenizer 路径] 有效预算（`contextWindow × triggerRatio`）中保留给近期消息的比例。 |
-| `preserveRecentMessages`        | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期轮次数量。                       |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`| 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。无 `tokenizer` 时取值范围收窄为 `'max' \| 'feedFirst'`，TypeScript 在编译期拒绝 `'tokenizerFirst'`。完整说明见 [core 包 README](./packages/core)。 |
+| `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
+| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | 预算判定认为要执行溢出之后、策略运行之前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。它没有被废弃，也不是 `before-overflow` 插槽 —— 那个在 chef 这一层，每次 compile 都会触发。 |
+| `logger`                        | `ChefLogger`                                | —      | 降级警告的日志接收器（存储/压缩），默认使用 `console`。 |
+| `strategy`                      | `OverflowStrategy`                          | —      | runner 应用的策略。直接构造 `Janitor` 时用它；经 `ContextChef` 请用 `overflow.strategy`。 |
+
+策略选项 —— 还是原来那些字段，如今是 `summarize()` / `anchored()` 的选项。写在这里（4.1 的写法）就是去构造默认策略；一旦显式配了 `overflow.strategy`，以策略为准并警告一次：
+
+| 选项                            | 类型                                        | 默认值 | 说明                                                                     |
+| ------------------------------- | ------------------------------------------- | ------ | ------------------------------------------------------------------------ |
 | `compressionModel`              | `(msgs: Message[]) => Promise<string>`      | —      | 异步钩子，调用低成本 LLM 对旧消息进行摘要。                              |
 | `customCompressionInstructions` | `string`                                    | —      | 追加到默认压缩 prompt 的额外聚焦指令（追加模式，不替换）。               |
 | `compressionGuidelines`         | `string[]`                                  | —      | 注入压缩 prompt 的带编号领域指南，位于 `customCompressionInstructions` 之前。 |
 | `toolResultStubThreshold`       | `number`                                    | —      | 摘要前把长于该字符数的 tool result 内容替换为一行元数据 stub（节省摘要模型 token）。 |
 | `minShrinkRatio`                | `number`                                    | `0.5`  | 质量闸门：摘要必须让被压缩片段至少缩小该比例（仅对 ≥ 2000 字符的片段生效）；否则本次压缩失败，历史保持不变。`0` 关闭。 |
 | `validateCompression`           | `(summary, { compressed, kept }) => boolean \| Promise<boolean>` | — | 摘要后闸门。返回 `false`（或抛出）即拒绝该摘要 —— 历史不变，熔断计数 +1。 |
-| `archive`                       | `CompressionArchiveConfig \| 'vfs'`         | —      | 可逆压缩：存储压缩前的完整片段，并在摘要中引用其 URI。见[压缩管道 v2](#压缩管道-v2v4)。 |
-| `compressionMode`               | `'rewrite' \| 'incremental-anchored'`       | `'rewrite'`| anchored 模式维护一份持久的 anchor 文档，每次压缩只把新驱逐的片段合并进去。 |
-| `compressionScheduling`         | `'blocking' \| 'background'`                | `'blocking'` | background 模式把摘要放到轮次之外运行；超预算的 compile 先原样返回历史，结果在仍然有效时再换入。 |
-| `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
-| `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | LLM 压缩前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。 |
-| `logger`                        | `ChefLogger`                                | —      | 降级警告的日志接收器（存储/压缩），默认使用 `console`。 |
+| `preserveRatio`                 | `number`                                    | `0.8`  | [Tokenizer 路径] 有效预算（`contextWindow × triggerRatio`）中保留给近期消息的比例。 |
+| `preserveRecentMessages`        | `number`                                    | `1`    | [reportTokenUsage 路径] 压缩时保留的近期轮次数量。                       |
+| `archive`（已废弃）              | `CompressionArchiveConfig \| 'vfs'`         | —      | → `overflow.archive`，现在对所有策略生效。可逆压缩：存储压缩前的完整片段，并在摘要中引用其 URI。 |
+| `compressionMode`（已废弃）      | `'rewrite' \| 'incremental-anchored'`       | `'rewrite'`| → `overflow.strategy: summarize(...)` / `anchored(...)`。 |
+| `compressionScheduling`（已废弃）| `'blocking' \| 'background'`                | `'blocking'` | → `overflow.strategy: background(...)`。 |
 
 **压缩输出契约。** Janitor 默认 prompt 要求压缩模型输出两阶段响应：先在 `<analysis>` 里写草稿推理（会被剥除），再输出结构化的 `<summary>` 块，包含 5 个领域无关的章节（Task Overview / Current State / Important Discoveries / Next Steps / Context to Preserve）。原始输出在注入前会经过 `Prompts.formatCompactSummary` 清洗。完整契约与 `customCompressionInstructions` 用法见 [core 包 README](./packages/core)。
 
@@ -326,18 +384,15 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 
 **独立摘要。** `summarizeHistory(messages, compress, opts?): Promise<string>` 是该路径背后与 provider 无关的原语 —— 可直接调用它压缩你自己存储中的一段切片。空切片返回 `''`；无状态，且 `compress` 抛出时**直接抛出**；`compress` 回调**必须扁平化** `tool` 角色。可选项包括 `customCompressionInstructions`、`toolResultStubThreshold`、`compressionGuidelines` 和 `baseInstruction`。完整契约见 [core 包 README](./packages/core)，更高层的辅助函数见下文[持久化压缩](#持久化压缩)。
 
-#### 压缩管道 v2（v4）
+#### 压缩质量闸门（v4）
 
-v4 围绕一条规则重建了压缩路径：坏摘要永远不能替换好历史。
+v4 围绕一条规则重建了压缩路径：坏摘要永远不能替换好历史。这些闸门属于 runner 和做摘要的策略，因此无论你装的是哪个 `overflow.strategy` 都成立。
 
 - **腐烂前触发 —— `triggerRatio`（默认 `0.7`）**：压缩在 `contextWindow × 0.7` 处触发，而不是等到硬上限 —— 模型质量早在窗口占满之前就开始退化。`preserveRatio` 作用于这个有效预算。`triggerRatio: 1` 恢复 4.0 之前的行为。
-- **约束固定 —— `pinned: true`**：固定的消息原文穿过 `compress()`（按序重新插入到摘要之后），且永不被 `compact()` 清除。固定原子轮次中的任一消息即可保护整个轮次。用于策略与约束文本 —— 压缩丢掉策略文本会把违规率从 0% 拉到 30% 以上（arXiv:2606.22528）。
-- **缩减闸门 —— `minShrinkRatio`（默认 `0.5`）**：摘要若未能让被压缩片段缩小 ≥ 50%（按字符长度；仅对 ≥ 2000 字符的片段生效）即视为压缩失败 —— 历史不变，熔断计数 +1。防止压缩死循环。`0` 关闭。
+- **约束固定 —— `pinned: true`**：固定的消息原文穿过 `compress()`（按序重新插入到摘要之后），且永不被 `compact()` 清除。固定原子轮次中的任一消息即可保护整个轮次。每个策略都会收到这份 pinned 集合，且必须原样交还。用于策略与约束文本 —— 压缩丢掉策略文本会把违规率从 0% 拉到 30% 以上（arXiv:2606.22528）。
+- **缩减闸门 —— `minShrinkRatio`（默认 `0.5`）**：摘要若未能让被压缩片段缩小 ≥ 50%（按字符长度；仅对 ≥ 2000 字符的片段生效）即视为压缩失败 —— 历史不变，熔断计数 +1。防止压缩死循环。`0` 关闭。`anchored()` 下这道闸门比较的是 anchor 的**增量**，而非绝对大小。
 - **`validateCompression`**：摘要后闸门 `(summary, { compressed, kept }) => boolean | Promise<boolean>` —— 返回 `false` 或抛出即拒绝该结果（历史不变，熔断计数 +1）。
-- **可逆归档 —— `archive`**：被压缩片段经 `store(serialized, { messageCount }) => uri` 序列化存储，摘要中引用该 URI，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。`archive: 'vfs'` 存进 chef 的 VFS。尽力而为：存储失败只记一条警告并跳过引用。
 - **`compressionGuidelines`**：注入压缩 prompt 的带编号领域指南，位于 `customCompressionInstructions` 之前。
-- **增量 anchored 模式 —— `compressionMode: 'incremental-anchored'`**：维护一份持久的 anchor 文档；每次压缩只把新驱逐的片段合并进去，而不是重写整份摘要（Factory.ai 模式）。通过 `janitor.getAnchorDoc()` 读取；它是 `JanitorSnapshot` 的一部分，`reset()` 会清除。
-- **后台调度 —— `compressionScheduling: 'background'`**：第一次超预算的 `compile()` 原样返回历史并在后台启动摘要；之后的 `compress()` 仅在被摘要的片段仍是当前历史的前缀时才换入结果（过期结果被丢弃；`onCompress` 在换入时触发）。把压缩延迟移出主链路（arXiv:2605.08580）。后台状态不进快照。
 
 ```typescript
 const chef = new ContextChef({
@@ -346,9 +401,9 @@ const chef = new ContextChef({
     compressionModel: async (msgs) => callGpt4oMini(msgs),
     triggerRatio: 0.7,       // default — compress "pre-rot"
     minShrinkRatio: 0.5,     // default — reject summaries that barely shrink
-    archive: "vfs",          // reversible: full span stored, summary cites a context:// URI
     compressionGuidelines: ["Preserve ticket IDs and SKUs verbatim."],
   },
+  overflow: { archive: "vfs" },   // 可逆：完整片段被存储，摘要引用一个 context:// URI
 });
 
 // Pin constraint text — survives compress() verbatim, never cleared by compact()
@@ -359,24 +414,7 @@ history.push({
 });
 ```
 
-**召回工具配方。** 启用 `archive`（或 VFS 卸载）后，注册内置的 `recall_context` 工具，让模型按需取回归档内容：
-
-```typescript
-import { getRecallToolDefinition } from "@context-chef/core";
-
-chef.registerTools([getRecallToolDefinition()]);
-
-// In your agent loop:
-if (call.function.name === "recall_context") {
-  const { uri } = JSON.parse(call.function.arguments);
-  const content = await chef.resolveRecall(uri); // full stored content, or null
-  history.push({
-    role: "tool",
-    tool_call_id: call.id,
-    content: content ?? "[not found]",
-  });
-}
-```
+原先写在这里的三个策略选择 —— 可逆 `archive`、增量 anchored 模式、后台调度 —— 现在都是策略：见[溢出](#溢出--什么离开窗口42)。把归档片段读回来见[召回](#召回--把归档片段读回来)。
 
 #### 持久化压缩
 
@@ -497,29 +535,342 @@ chef.setHistory(safeHistory);
 
 ---
 
-### 服务端上下文管理（v4）
+### 溢出 —— 什么离开窗口（4.2）
 
-Provider 现在可以在服务端执行 compaction（Anthropic `compact_20260112`、OpenAI `/responses/compact`）—— 少一次模型调用，还有精确的 token 计数。`ChefConfig.contextManagement` 让你把 LLM 压缩交给 provider；服务端不做的一切仍留在客户端：工具裁剪、skills、记忆、VFS 卸载、动态状态。
+Janitor 决定**什么时候**窗口超预算，`OverflowStrategy` 决定**什么离开窗口**。4.2 之前这两件事挤在同一个类里；现在一个是 runner，一个是策略，而策略是你传进来的一个值：
+
+```typescript
+import { ContextChef, chain, summarize, reset } from "@context-chef/core";
+
+const chef = new ContextChef({
+  janitor: { contextWindow: 200_000, tokenizer },   // runner：预算、触发线、熔断
+  overflow: {
+    strategy: chain(summarize({ compressionModel: callGpt4oMini }), reset()),
+    archive: "vfs",                                  // 被压缩掉的那一段仍然可取回
+    handoff: { budgetTokens: 2_000 },                // 挨刀之前的一次预警
+  },
+});
+```
+
+其余什么都没动。`contextWindow`、`tokenizer`、`usagePreference`、`triggerRatio`、`onCompress`、`onBeforeCompress`、`logger`、熔断器、`compress:*` 事件和持久化压缩都是 runner 的事，仍然原样留在 [`JanitorConfig`](#janitorconfig) 上。`overflow.strategy` 取代的是 `janitor.compression*` 系列字段和 `contextManagement` —— 见[已废弃的溢出选项](#已废弃的溢出选项42)，它们仍然可用。
+
+#### 内置策略
+
+每个都是 barrel 里的工厂函数。按你愿意付的代价来选：
+
+| 策略 | 做什么 | 代价 |
+|---|---|---|
+| `summarize(opts)` | 用一段 LLM 摘要替换最老的那些轮次。4.x 的默认行为（`compressionMode: 'rewrite'`）。 | 每次溢出多一次模型调用，且整份摘要每次都重写。摘要没写进去的东西就此离开窗口，除非开了 `archive`。 |
+| `anchored(opts)` | 维护一份持久的 anchor 文档，每次只把新驱逐的片段合并进去，而不是从头重生成摘要（Factory.ai 模式）。 | anchor 单调增长，最终自己也要占预算。它的缩减闸门比较的是 anchor 的**增量**，不是绝对大小。 |
+| `server(config, { fallback })` | 在有服务端上下文管理的 target（目前是 Anthropic）上，客户端根本不压缩 —— 跳过 overflow 阶段，payload 带上 `context_management` + betas。 | 其他 target 无处可托付：跑 `fallback`；没配 fallback 就原样放着不动。 |
+| `reset(opts)` | 保留 pinned 消息，其余全部驱逐，留下一行点名"已关闭窗口"的说明。 | 零次模型调用 —— 但没配 `archive` 就是有损的。这个组合是文档说明，不做拦截。 |
+| `chain(...strategies)` | 上一个策略什么都没改、或改完仍在触发线之上时，接着跑下一个。 | 顺利时不额外花钱；一次完整升级则是所有策略的代价之和。 |
+| `background(strategy)` | 把 `strategy` 挪到轮次之外跑：超预算的那次 compile 原样返回历史，之后的 compile 在被摘要片段仍是当前历史前缀时把结果换入（arXiv:2605.08580）。 | 换入之前会有一到多次 compile 带着超预算的 payload 发出去；过期结果被丢弃；后台状态不进快照。 |
+
+`summarize()` 和 `anchored()` 接受同一组选项 —— 就是原先挂在 `JanitorConfig` 上的那些字段：
+
+```typescript
+summarize({
+  compressionModel: async (msgs) => callGpt4oMini(msgs),
+  compressionGuidelines: ["Preserve ticket IDs and SKUs verbatim."],
+  customCompressionInstructions: "Keep every unresolved question.",
+  minShrinkRatio: 0.5,          // 默认 —— 拒绝几乎没缩小的摘要
+  validateCompression: (summary, { compressed, kept }) => summary.includes("Next Steps"),
+  preserveRatio: 0.8,           // [split: 'ratio'] 触发预算中保留给近期轮次的比例
+  preserveRecentMessages: 1,    // [split: 'recent-turns'] 保留的近期轮次数量
+  toolResultStubThreshold: 5_000,
+  split: "ratio",               // 不传时按你设了哪个 preserve 选项推断
+});
+```
+
+`split` 是唯一的新字段：`'ratio'` 用 runner 的 tokenizer 给保留下来的尾部定价，`'recent-turns'` 只数轮次。不显式配 `overflow.strategy` 时，配了 `tokenizer` 就走 `'ratio'`，否则走 `'recent-turns'` —— 和 Janitor 两条路径一直以来的切分方式完全一致。
+
+`chain` 存在的理由就是"升级"：
+
+```typescript
+// 正常走摘要；摘要模型挂了、或产出持续过不了缩减闸门时，
+// 直接丢掉窗口，而不是让它无限膨胀。
+overflow: {
+  strategy: chain(summarize({ compressionModel }), reset()),
+  archive: "vfs",
+}
+```
+
+策略只是一个对象，所以你自己写的策略是一等公民：
+
+```typescript
+import type { OverflowStrategy } from "@context-chef/core";
+
+const dropToolResults: OverflowStrategy = {
+  name: "drop-tool-results",
+  async apply({ history, pinned, window }) {
+    const keep = new Set(pinned);
+    const evicted = history.filter((m) => m.role === "tool" && !keep.has(m));
+    return {
+      history: history.filter((m) => !evicted.includes(m)),
+      evicted,
+      span: evicted,
+      meta: { strategy: "drop-tool-results", windowId: window.current, changed: evicted.length > 0 },
+    };
+  },
+};
+```
+
+接口另有三个可选方法：`commit(result)`、`snapshot()`、`restore(state)`。`apply` 可能是投机执行的（`background()` 就是这么干的），所以从自己产出里派生的状态 —— 比如 anchor 文档 —— 要在 `commit` 里发布，而 `commit` 只在结果真正进入窗口时才会被调用。
+
+#### 可逆归档 —— `overflow.archive`
+
+4.2 起归档与策略无关：不管哪个策略压缩了哪一段，被压缩的这一段都会被序列化、存储，并在替换它的摘要里以 URI 引用，因此精确细节始终可取回，而不是靠重要性打分去猜（arXiv:2607.25066、arXiv:2607.08032）。
+
+```typescript
+overflow: { strategy: reset(), archive: "vfs" }               // 片段存进本 chef 的 VFS
+overflow: { archive: { store: async (serialized, { messageCount }) => uploadToS3(serialized) } }
+```
+
+尽力而为：存储失败只记一条警告并跳过引用，不会让 compile 失败。4.x 里归档片段仍然落在 `vfs` 命名空间，因此 `context://vfs/...` URI 与 4.1 逐字节一致；独立的 `archive/` 命名空间留给 5.0 切换。配合 [`context` 工具](#context-工具42)（legacy 工具集下则是 `recall_context`）让模型把片段拉回来。
+
+#### 交接预算（4.2）
+
+溢出是机械的：策略驱逐了什么，那些内容就离开了窗口，不管模型准备好了没有。交接预算在触发线**之上**预留一段余量，把它花在一次通知上，让模型趁对话还摆在眼前时，把该留的东西写进上下文存储。
 
 ```typescript
 const chef = new ContextChef({
-  contextManagement: { strategy: "server" }, // 'client' (default) keeps Janitor LLM compression
+  janitor: { contextWindow: 200_000, tokenizer },
+  overflow: {
+    handoff: { budgetTokens: 4_000 },   // 剩余余量 ≤ 4000 时发出通知
+    strategy: reset(),
+    archive: "vfs",
+  },
+});
+```
+
+- 通知**每个窗口只渲染一次** —— 在触发线附近待很久也不会每轮重复 —— 窗口 id 变化时该标记重置。
+- 它和 announcements 走同一条末尾通道（`channel: 'auto'`），且**永不持久化**：不进你的 history，不出现在 `getAnnouncements()` 里，服务端托管的 compile 会跳过它。
+- 默认文案是 `Prompts.HANDOFF_NOTICE_TEMPLATE`。自定义 `prompt` 可以写 `{n_remaining}`，会被替换成触发线之前剩余的余量（取整、下限为 0），文案上限 2000 UTF-8 字节。
+- `budgetTokens` 必须是正整数；它和 prompt 都在构造时校验，而不是等到那次会被静默跳过的 compile。
+
+```typescript
+overflow: {
+  handoff: {
+    budgetTokens: 4_000,
+    prompt:
+      "About {n_remaining} tokens remain before compression. " +
+      "Write anything that must survive to context://notes/handoff.md now.",
+  },
+}
+```
+
+#### `new_context` —— 模型手里的窗口把手（4.2）
+
+`chef.requestNewContext()` 强制下一次 `compile()` 无视预算直接跑溢出策略。和 `clearHistory()` 不同，它不会绕过库把对话丢掉：仍然由安装的策略决定什么活下来，`archive` 照常生效，`before-overflow` 处理器也仍然可以否决。
+
+```typescript
+import { getNewContextToolDefinition } from "@context-chef/core";
+
+chef.registerTools([getNewContextToolDefinition()]);   // 静态、无参数、对缓存安全
+
+// 在你的 agent loop 里：
+if (call.function.name === "new_context") {
+  chef.requestNewContext();
+  history.push({ role: "tool", tool_call_id: call.id, content: "Starting a new context window." });
+}
+```
+
+在 `tools: 'unified'` 下，只要配了 `overflow.handoff`，这个定义会自动出现在 payload 里，并由 `chef.handleTool` 分发 —— 见 [`context` 工具](#context-工具42)。这次请求会被一次 compile 消费掉，无论窗口是否真的换了（策略可能拒绝执行；熔断器可能是打开的），需要重试就再调一次。
+
+在 `summarize()` 和 `anchored()` 下，强制那一趟会压掉除最近一轮之外的所有轮次 —— `preserveRecentMessages` 和 `preserveRatio` 不参与，它们是为了把满窗口压回触发线以下，而这一趟与预算无关。窗口里只有一轮时什么都不会发生。有两种编译会直接不做溢出 —— 服务端托管的目标和 `before-overflow` 的否决 —— 强制请求这样落空时，会通过 `pipeline:invariant` 事件加上按原因各一次的警告上报，绝不静默。
+
+#### 窗口谱系 —— `meta.windowId`（4.2）
+
+每个上下文窗口都有一个 id。runner 只在**提交时**分配新 id —— 也就是溢出结果真正进入窗口的那一刻；被丢弃的过期 `background()` 结果永远不会推进它。
+
+```typescript
+const payload = await chef.compile({ target: "anthropic" });
+payload.meta?.windowId; // 'w_…' —— 只在模型身后的历史被改写时变化
+```
+
+两次 payload 带同一个 id，说明它们是针对同一个窗口编译的；id 变了就是"模型能看到的对话被改写过"的信号 —— 用来让你自己的缓存失效，或往存储里写一条窗口边界。`OverflowResult.meta.windowId` 是策略**作用于**的那个窗口；`CompileMeta.windowId` 是本次 payload 所属的窗口。`anchored()` 按窗口 id 存放 anchor 文档，谱系随 `snapshot()` / `restore()` 往返，`clearHistory()` 从头开始。
+
+#### 服务端上下文管理
+
+Provider 现在可以在服务端执行 compaction（Anthropic `compact_20260112`、OpenAI `/responses/compact`）—— 少一次模型调用，还有精确的 token 计数。`server()` 把 LLM 压缩交给 provider；服务端不做的一切仍留在客户端：工具裁剪、skills、记忆、VFS 卸载、动态状态。
+
+```typescript
+import { server, summarize } from "@context-chef/core";
+
+const chef = new ContextChef({
+  overflow: {
+    // Anthropic → 服务端压缩；其他 target → 本地 summarize。
+    strategy: server(undefined, { fallback: summarize({ compressionModel }) }),
+  },
 });
 
 const payload = await chef.compile({ target: "anthropic" });
-// payload.context_management === { edits: [{ type: "compact_20260112" }] }  (default when `server` omitted)
+// payload.context_management === { edits: [{ type: "compact_20260112" }] }  (default when `config` omitted)
 // payload.betas === ["compact-2026-01-12"]                                  (auto-derived per edit type)
 ```
 
-- `strategy: 'server'` 完全跳过客户端的 LLM 压缩。如果同时配置了 `compressionModel`，构造时会发出警告 —— 二选一。
-- `server` 是按 provider 形状原样透传的 edits 配置，例如 `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` 或 `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`。`payload.betas` 自动推导：compaction 类 edit 对应 `'compact-2026-01-12'`，clear-tool-uses / clear-thinking 类 edit 对应 `'context-management-2025-06-27'`。
+- 在服务端托管的 target 上，客户端的 overflow 阶段被完全跳过；机械 `compact()` 和其他模块照常运行。
+- 第一个参数是按 provider 形状原样透传的 edits 配置，例如 `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` 或 `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`。`payload.betas` 自动推导：compaction 类 edit 对应 `'compact-2026-01-12'`，clear-tool-uses / clear-thinking 类 edit 对应 `'context-management-2025-06-27'`。
 - **compaction 块往返**：`fromAnthropic` 把 API 的 `{ type: 'compaction', content }` 块映射为标记 `pinned: true` 的透传消息，Anthropic adapter 在下次编译时把该块原文重新放在最前面 —— 服务端产出的摘要原样穿过客户端管道。
 
 这是混合定位，不是二选一：LLM 压缩可以交给 provider，同时 ContextChef 继续做服务端不做的部分 —— 裁剪、skills、记忆、VFS 和动态状态。AI SDK 用户有配套防护：middleware 检测到某次调用带 `providerOptions.anthropic.contextManagement` 时，会为该次调用跳过自己的压缩（见 [ai-sdk-middleware README](./packages/ai-sdk-middleware/README.md#anthropic-server-side-context-management)）。
 
+已废弃的 `contextManagement: { strategy: 'server' }` 会替你构造 `server(config, { fallback: <默认的客户端策略> })`，这正是 v4 的行为。
+
+#### 已废弃的溢出选项（4.2）
+
+下面每个字段都仍然可用、行为不变 —— 它们现在只是去**构造**右边那个策略。5.0 移除。同时设置字段和显式的 `overflow.strategy` 会警告一次，并以策略为准。
+
+| 已废弃 | 替代 |
+|---|---|
+| `janitor.compressionMode: 'rewrite'` | `overflow.strategy: summarize(opts)` |
+| `janitor.compressionMode: 'incremental-anchored'` | `overflow.strategy: anchored(opts)` |
+| `janitor.compressionScheduling: 'background'` | `overflow.strategy: background(strategy)` |
+| `janitor.archive` | `overflow.archive`（现在对所有策略生效，不再只是 `summarize` 的内部事） |
+| `contextManagement: { strategy: 'server', server }` | `overflow.strategy: server(server, { fallback })` |
+| `janitor.{compressionModel, compressionGuidelines, customCompressionInstructions, minShrinkRatio, validateCompression, preserveRatio, preserveRecentMessages, toolResultStubThreshold}` | `summarize()` / `anchored()` 的选项 |
+| `JanitorSnapshot.anchorDoc` | `JanitorSnapshot.strategy`（策略的不透明状态；4.2 之前的快照仍能恢复 anchor） |
+
 ---
 
-### 大文本卸载 (Offloader / VFS)
+### 上下文存储（4.2）
+
+ContextChef 放在窗口**之外**的一切，本质是同一种东西的不同地址：跨会话的持久事实、模型自己的工作笔记、大到没法内联的工具输出、被压缩掉的对话片段。4.2 起它们共用一套底料 —— 一个负责搬字节的 `StorageBackend`，外面套一个 `Store` 提供命名空间、`context://` 寻址、访问索引和驱逐。
+
+| 命名空间 | 放什么 | 在窗口里吗 | 模型可写 |
+|---|---|---|---|
+| `memory/` | 值得带到下次会话的持久事实 | 每次 compile 都注入 | 是（默认） |
+| `notes/` | 模型自己的草稿纸 | 从不 —— 这正是它的意义 | 是（默认） |
+| `vfs/` | 被卸载的工具输出，靠留在原地的 URI 寻址 | 只有它读回来的部分 | 否（默认只读） |
+| `archive/` | 预留给摘要引用背后的溢出前片段 —— 4.x 里没有东西往这写，`overflow.archive` 仍然落在 `vfs/` | 只有它读回来的部分 | 否（默认只读） |
+
+```typescript
+import { ContextChef, FileSystemBackend, InMemoryBackend, Store } from "@context-chef/core";
+
+const chef = new ContextChef({
+  store: new FileSystemBackend(".context_store"), // 一个后端服务所有命名空间
+  memory: {},
+  vfs: { threshold: 5_000 },
+});
+
+await chef.getStore().namespace("notes").put("plan.md", "# Plan\n");
+Store.uri("notes", "plan.md");                 // 'context://notes/plan.md'
+Store.parseUri("context://notes/plan.md");     // { ns: 'notes', path: 'plan.md' }
+```
+
+`ChefConfig.store` 只填补没人指定的部分：显式的 `memory.store` 仍然对 memory 优先，显式的 `vfs.store` / `vfs.adapter` / `vfs.storageDir` 仍然对 VFS 优先。两者都不配时，4.1 的默认行为原样不变。
+
+内置后端有 `InMemoryBackend`（进程内，什么都不配时的默认）和 `FileSystemBackend`（单一根目录、按命名空间布局、写入原子）。一个后端就是四个必需方法 —— `read` / `write` / `delete` / `list` —— 外加可选的 `readAll`、`exists`、`append`、`search`、`snapshot`、`restore`、`getPhysicalPath`，每一个都按能力查询：向命名空间要一个后端做不到的能力会抛 `StoreCapabilityError`（经 `context` 工具进来时则变成模型能读懂的错误文本），而不是悄悄失败。
+
+```typescript
+// 需要按命名空间配置驱逐或 URI scheme 时，传一个自己建好的 Store
+const store = new Store(new InMemoryBackend(), {
+  eviction: { vfs: { maxFiles: 200, maxBytes: 50 * 1024 * 1024 } },
+});
+const chef = new ContextChef({ store, memory: {} });
+
+const notes = chef.getStore().namespace("notes");
+await notes.put("plan.md", "# Plan\n", { description: "current plan" });
+await notes.append("plan.md", "- ship 4.2\n");
+notes.uri("plan.md");                       // 'context://notes/plan.md'
+if (notes.supports("search")) await notes.search("ship");
+const { path } = await chef.getStore().namespace("vfs").put("big output"); // 内容寻址的自动 id
+```
+
+`NamespaceView` 的每个方法都跟随后端的同步/异步性质，所以同步后端下同步调用点（`chef.offload`、`memory.snapshot`）照常工作；`getSync` / `putSync` / `deleteSync` / `listSync` 是显式的同步变体，遇到返回 Promise 的后端会抛出带指引的错误，而不是悄悄降级。
+
+**四套老存储接口仍然可用。** 它们是被包装的，不是被重写的，原有测试全部照常通过 —— 但 5.0 会移除：
+
+| 已废弃 | 替代 |
+|---|---|
+| `MemoryStore`（`memory.store`） | `StorageBackend`（或 `Store`）；经 `Store.fromMemoryStore` 包装，`MemoryStoreEntry` 的每个字段一一映射到 `StoredEntry.meta` |
+| `VFSStorageAdapter`（`vfs.adapter`） | 作为 `vfs.store` 的 `StorageBackend`；经 `Store.fromVfsAdapter` 包装，用它那套扁平 keyspace 同时服务 `vfs` 和 `archive` |
+| `VFSMemoryStore(dir)` | `new Store(new FileSystemBackend(dir))` 作为 `memory.store` —— 仅限**新**目录。裸后端读不了 `VFSMemoryStore` 的 `<base64url>.mem` 文件；要接着用已有目录，就留着这个 store，或用 `Store.fromMemoryStore` 包一层 |
+| `FileSystemAdapter(dir)` | `FileSystemBackend(dir)`，一个根目录服务所有命名空间 |
+
+`InMemoryStore` 没有被废弃 —— 测试里它仍然是最省事的临时 `memory.store` —— 只是现在一个 `InMemoryBackend` 就能一次覆盖所有命名空间。
+
+#### Memory —— `memory/` 命名空间
+
+跨会话持久化的键值记忆，每次 compile 都会注入。4.2 没有改动它的任何语义，只是它现在读写的是 `context://memory/<key>`。
+
+```typescript
+import { ContextChef, FileSystemBackend } from "@context-chef/core";
+
+const chef = new ContextChef({
+  store: new FileSystemBackend(".context_store"),
+  memory: {
+    defaultTTL: 20,                          // 裸数字 = 轮次；也接受 { ms } / { turns }
+    allowedKeys: ["persona", "project_rules"],
+    selector: (entries) => entries.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 10),
+    onMemoryUpdate: (key, value, oldValue) => key !== "locked",  // 否决钩子：返回 false 拦下写入
+    onMemoryChanged: (event) => audit.log(event),
+    onMemoryExpired: (entry) => audit.log(entry),
+    memoryPlacement: "before_history_tail",
+  },
+});
+
+// Direct read/write (developer use, bypasses validation hooks)
+await chef.getMemory().set("persona", "You are a senior engineer", {
+  description: "The agent's persona and role",
+});
+const value = await chef.getMemory().get("persona");
+```
+
+`allowedKeys` 限制模型能创建哪些 key，`selector` 在过期条目被清扫之后决定注入什么、怎么排、注入多少，TTL 过期在 `compile()` 期间触发 `memory:expired`，整个命名空间随 `chef.snapshot()` / `chef.restore()` 往返。`compile()` 时已有条目以 `<memory>` 块注入；在默认的 `tools: 'legacy'` 下，`create_memory` / `modify_memory` 两个工具会被加进 `payload.tools`。
+
+`tools: 'legacy'` 下这两个工具由你自己分发，和 4.1 完全一样：
+
+```typescript
+for (const toolCall of response.tool_calls) {
+  if (toolCall.function.name === "create_memory") {
+    const { key, value, description } = JSON.parse(toolCall.function.arguments);
+    await chef.getMemory().createMemory(key, value, description);
+  } else if (toolCall.function.name === "modify_memory") {
+    const { action, key, value, description } = JSON.parse(toolCall.function.arguments);
+    if (action === "update") await chef.getMemory().updateMemory(key, value, description);
+    else await chef.getMemory().deleteMemory(key);
+  }
+}
+```
+
+自 4.1 起，这两个工具定义是**静态**的 —— 无论当前存在哪些 key，每次 compile 都是同一份 schema、同一批对象引用。（此前 `modify_memory` 内嵌一份实时 key 的枚举，且只在存在 key 时出现；而工具位于每个 provider prompt 前缀的最顶部，每次 key 变动都会击穿整个 prompt cache。）现在改由注入的 memory 块向模型呈现当前有哪些 key，未知 key 的调用依然会在 `updateMemory` / `deleteMemory` 处安全失败。不想写这段分支的话，`chef.handleTool` 也能分发它们 —— 见 [`context` 工具](#context-工具42)。
+
+##### Memory 位置 —— `memoryPlacement`
+
+控制易变的 `<memory>` 数据块在编译产物中的落点。默认 `'after_system'`（向后兼容）。如果你在用 **Anthropic prompt caching** 且 cache breakpoint 打在 history 上，切换到 `'before_history_tail'`，这样 memory 变化就不会击穿 history 的缓存了。
+
+| Placement | 三明治顶部 | 最后一条 user 消息 | 适用场景 |
+|---|---|---|---|
+| `'after_system'`（默认） | INSTRUCTION + `<memory>` 数据合并成一条 `role: 'system'` | 不动 | 简单 agent；不依赖 system 参数之后的 cache breakpoint |
+| `'before_history_tail'` | 仅 INSTRUCTION（稳定，可缓存） | 在原 user 内容后追加 `<memory>` 数据块 | 你希望 history（或更靠前的 `system`）上的 cache breakpoint 在每轮 memory 变化时都能命中 |
+
+这个拆分把稳定的使用说明留在三明治顶部享受缓存，把易变的数据块送到对话末尾。Anthropic / Gemini adapter 会把所有 `role: 'system'` 提取到 top-level `system` 参数 —— 选 `'before_history_tail'` 后，数据块改留在 `messages` 里，任何打在消息流更早位置的 cache breakpoint 都不再把变化的 memory 文本算进 hash。
+
+如果动态状态也注入到末尾（`dynamicStatePlacement: 'last_user'`），最后一条 user 消息内部顺序是：原内容 → `<memory>` → `<dynamic_state>` → `<implicit_context>` → 锚定句。如果动态状态走独立 system message（`dynamicStatePlacement: 'system'`），memory 仍然注入到 user 末尾，但不会带锚定句。
+
+##### Anthropic 缓存审计（4.1）
+
+易变内容一旦落在被缓存的 prompt 前缀里，每次变化都会悄无声息地让 prompt caching 失效。这项审计检查的正是编译后的 Anthropic payload 里有没有这类问题 —— memory 数据、动态状态、隐式上下文或护栏指令被放在了最后一个 `cache_control` breakpoint 处或其之前 —— 并针对每个问题给出对应的修复方式：
+
+```typescript
+import { auditAnthropicCachePlacement } from "@context-chef/core";
+
+const payload = await chef.compile({ target: "anthropic" });
+for (const issue of auditAnthropicCachePlacement(payload)) {
+  console.warn(`${issue.location}: ${issue.message}`);
+}
+
+// Or let the chef warn automatically (each distinct issue once per instance):
+const chef = new ContextChef({ cacheAudit: true /* Anthropic targets only */ });
+```
+
+它按**两套**词汇的 header 识别 memory 块，所以在 `tools: 'unified'` 下审计照常工作。
+
+**只做 Anthropic 是有意为之**：它是唯一提供显式、客户端可见 breakpoint 的 provider，因此这项检查完全确定 —— 检查的是 payload 的结构属性，零启发式。OpenAI 的自动前缀缓存和 Gemini 的隐式缓存都没有暴露可供审计的标记，所以不为它们提供等价功能。
+
+#### 大文本卸载 —— `vfs/` 命名空间
 
 ```typescript
 // Offload if content exceeds threshold; preserves last 2000 chars by default
@@ -537,18 +888,11 @@ const safeDoc = chef.offload(largeFileContent, { headChars: 0, tailChars: 0 });
 const safeOutput2 = chef.offload(content, { threshold: 2000, tailChars: 500 });
 ```
 
-注册一个工具让 LLM 按需读取完整内容：
+模型看到的截断标记里带着可以读回完整内容的 URI。读回来这件事属于取回轴：`chef.resolveRecall(uri)`、legacy 工具集下的 `recall_context` 工具，或 `unified` 下 `context` 工具的 `view` 命令。
 
-```typescript
-// In your tool handler:
-import { Offloader } from "@context-chef/core";
-const offloader = new Offloader({ storageDir: ".context_vfs" });
-const fullContent = offloader.resolve(uri);
-```
+##### 清理与生命周期
 
-#### 清理与生命周期
-
-`.context_vfs/` 不会自动收敛 —— 你需要自己配置上限并触发清理，从不自动执行。
+`.context_vfs/`（或你自己存储的根目录）不会自动收敛 —— 你需要自己配置上限并触发清理，从不自动执行。
 
 ```typescript
 const chef = new ContextChef({
@@ -572,16 +916,101 @@ const result = await chef.getOffloader().cleanupAsync();
 await chef.getOffloader().cleanupAsync({ maxFiles: 0 }); // evict all over-age + all
 ```
 
-进程重启后，`reconcile()` 会扫描 adapter，把内存索引外的孤儿文件接管回来，让后续 `cleanup()` 可以看到它们：
+进程重启后，`reconcile()` 会扫描存储，把内存索引外的孤儿文件接管回来，让后续 `cleanup()` 可以看到它们：
 
 ```typescript
 const adopted = await chef.getOffloader().reconcileAsync({ measureBytes: true });
 // createdAt parsed from legacy vfs_<ts>_<hash>.txt names; content-addressed names date from adoption. bytes measured if requested.
 ```
 
-清理是**机制而非策略** —— `compile()` 不会自动触发它。如果你想按轮强制执行，绑到 `compile:done` 事件钩子；否则在 agent loop 或会话结束时主动调用。自定义的 `VFSStorageAdapter` 必须实现可选的 `list()` / `delete()` 才能开启清理；任一缺失时 `cleanup()` 会抛 `VFSCleanupNotSupportedError`（内置 `FileSystemAdapter` 两者都已实现）。
+清理是**机制而非策略** —— `compile()` 不会自动触发它。如果你想按轮强制执行，绑到 `compile:done` 事件钩子；否则在 agent loop 或会话结束时主动调用。4.2 起 LRU 索引和上限本身搬到了 `Store` 上（`eviction: { vfs: { … } }`）；`vfs.maxAge` / `maxFiles` / `maxBytes` 既设置这份策略，也在每次清扫时传入，所以就算你自己建了 `Store`，它们照样生效。后端没有 `list()` / `delete()` 就没法清扫：`cleanup()` 会抛 `VFSCleanupNotSupportedError`（两个内置后端都实现了）。
 
 > **生产实践** —— 见 [`docs/vfs-lifecycle-recipes.zh-CN.md`](./docs/vfs-lifecycle-recipes.zh-CN.md) 获取可运行的 recipe：长跑 server 定时清理、Serverless 冷启动 `reconcile()`、AI SDK middleware 接法、自定义 storage adapter（Redis 示例）、驱逐策略选择。
+
+#### 召回 —— 把归档片段读回来
+
+开了 `overflow.archive`（或 VFS 卸载）之后，摘要背后的完整片段始终可以按 URI 取回：
+
+```typescript
+import { getRecallToolDefinition } from "@context-chef/core";
+
+chef.registerTools([getRecallToolDefinition()]);
+
+// In your agent loop:
+if (call.function.name === "recall_context") {
+  const { uri } = JSON.parse(call.function.arguments);
+  const content = await chef.resolveRecall(uri); // full stored content, or null
+  history.push({ role: "tool", tool_call_id: call.id, content: content ?? "[not found]" });
+}
+```
+
+`resolveRecall(uri, { format: 'text' })` 把存储的消息片段渲染成可读文本，而不是原始 JSON。在 `tools: 'unified'` 下这就是 `context` 工具的 `view`，由 `chef.handleTool` 分发 —— `getRecallToolDefinition()` 留给 legacy 接法。
+
+#### `context` 工具（4.2）
+
+`ChefConfig.tools` 决定 `compile()` 发出哪一套库自带的工具：
+
+```typescript
+const chef = new ContextChef({
+  store: new FileSystemBackend(".context_store"),
+  memory: {},
+  tools: "unified",                            // 默认是 'legacy'
+  contextTool: { writable: ["memory", "notes"] },  // 默认策略
+  overflow: { handoff: { budgetTokens: 2_000 } },
+});
+```
+
+- `'legacy'`（默认）：Memory 模块的 `create_memory` / `modify_memory`。`recall_context` 和 `new_context` 保持可选，自己注册。
+- `'unified'`：一个覆盖所有命名空间的 `context` 工具；配了 `overflow.handoff` 时再加上 `new_context`。legacy 三件套不再发出；两套工具永远不会同时出现在一个 payload 里。
+
+**默认值不可能在小版本里翻转。** 工具名就是你 agent loop 里的分发 key —— payload 一旦开始说 `context`，`if (call.function.name === 'create_memory')` 这一支立刻失配。5.0 起默认切到 `'unified'`。
+
+这个工具是 `memory_20250818` 形状的：一份静态、冻结、引用稳定的定义，整份 schema 里只有一个枚举（`command`），因此没有任何实时 key 列表会进入可缓存前缀。七个命令，按 `context://<ns>/<path>` 寻址（前缀可省，所以 `notes/plan.md` 也行）：
+
+| 命令 | 作用 | 说明 |
+|---|---|---|
+| `view` | 读一个条目，或列出一个命名空间/目录 | `notes/` 带行号；`vfs/` 和 `archive/` 走召回渲染 |
+| `create` | 写入一个新条目 | 已存在则失败 |
+| `str_replace` | 替换 `old_str` 的唯一一次出现 | 匹配不到或有歧义时返回模型能读的错误 |
+| `insert` | 把 `insert_text` 插到 0 基行号 `insert_line` | |
+| `delete` | 删除一个条目 | |
+| `rename` | 在同一命名空间内移动到 `new_path` | 实现为 create + delete |
+| `search` | 在 `path` 之下找匹配 `query` 的条目 | 后端没有原生 `search` 时回退到 list + get |
+
+`memory/` 的所有操作都走 Memory 模块，因此 `allowedKeys`、`onMemoryUpdate` 否决、`onMemoryChanged`、TTL 和更新计数与 legacy 工具下完全一致地生效。`notes/` 直接落到 store。`vfs/` 和 `archive/` 默认只读。
+
+##### 一个分发入口 —— `chef.ownsTool` / `chef.handleTool`
+
+```typescript
+for (const call of response.tool_calls) {
+  if (chef.ownsTool(call.function.name)) {
+    const content = await chef.handleTool({
+      name: call.function.name,
+      arguments: call.function.arguments,   // JSON 字符串或已解析的对象都接受
+    });
+    history.push({ role: "tool", tool_call_id: call.id, content });
+    continue;
+  }
+  await executeYourOwnTool(call);
+}
+```
+
+`ownsTool` 覆盖 `context`、`new_context` **以及** legacy 的 `create_memory` / `modify_memory` / `recall_context`，与 `tools` 模式无关 —— 模式决定 `compile()` 发出什么，而不是分发器听得懂什么，所以迁移期间模型偶尔喊回老名字也照样能工作。模型侧的错误永不抛异常：未知路径、缺参数、往只读命名空间写、被 `onMemoryUpdate` 否决，都会以 `Error: …` 文本返回，让模型自己读了改。只有传进一个本 chef 不拥有的工具名才会抛 —— 那是路由 bug，用 `ownsTool` 先挡一道。
+
+##### 写入策略 —— `contextTool.writable`
+
+读永不受限：存储里的一切本来就是这段对话自己的溢出，能把 `context://` URI 递给模型，就能把 URI 背后的内容递给它。写才受限：
+
+```typescript
+new ContextChef({ contextTool: { writable: ["notes"] } });                  // memory 只读
+new ContextChef({ contextTool: { writable: ["memory", "notes", "vfs"] } }); // 允许改卸载的输出
+```
+
+策略在分发器里执行，不在 store 里 —— store 只搬字节，你自己的代码想写哪个命名空间都可以。
+
+##### 一套词汇
+
+`tools` 同时决定模型读到的措辞。在 `'unified'` 下，memory 使用说明与 memory 块、卸载截断标记、摘要包装（此时会带上 `Context window: … (previous: …)` 的谱系行）以及默认交接通知，全部改写为 `context://` 寻址并指名 `context` 工具 —— 于是 prompt 里永远不会提到 payload 里没有的工具。在 `'legacy'` 下，这些字符串与 4.1 逐字节一致。两套词汇是 `LEGACY_VOCABULARY` / `UNIFIED_VOCABULARY`，每个 chef 只解析一次；不经 chef 单独构造的 `Memory` / `Offloader` / `Janitor` 保持 4.x 措辞。
 
 ---
 
@@ -713,90 +1142,6 @@ for (const toolCall of response.tool_calls) {
 #### 延迟工具加载 —— `deferLoading`（v4）
 
 在 `ToolDefinition` 上设置 `deferLoading: true`，即可将其标注给 Anthropic 服务端的 Tool Search：该标志在 Anthropic target 上原样透传到 `payload.tools`，让 API 按需展示工具的完整 schema，而不是预先全部加载。它只是注解 —— 其他 target 会忽略它。
-
----
-
-### Memory
-
-跨会话持久化的键值记忆。记忆通过 tool call（`create_memory` / `modify_memory`）修改，`compile()` 时自动注入到 payload 中。
-
-自 4.1 起，这两个工具定义是**静态**的 —— 无论当前存在哪些 key，每次 compile 都是同一份 schema、同一批对象引用。（此前 `modify_memory` 内嵌一份实时 key 的枚举，且只在存在 key 时出现；而工具位于每个 provider prompt 前缀的最顶部，每次 key 变动都会击穿整个 prompt cache。）现在改由注入的 memory 块向模型呈现当前有哪些 key，未知 key 的调用依然会在 `updateMemory` / `deleteMemory` 处安全失败。
-
-```typescript
-import { InMemoryStore, VFSMemoryStore } from "@context-chef/core";
-
-const chef = new ContextChef({
-  memory: {
-    store: new InMemoryStore(), // ephemeral (testing)
-    // store: new VFSMemoryStore(dir),   // persistent (production)
-  },
-});
-
-// In your agent loop, intercept memory tool calls:
-for (const toolCall of response.tool_calls) {
-  if (toolCall.function.name === "create_memory") {
-    const { key, value, description } = JSON.parse(toolCall.function.arguments);
-    await chef.getMemory().createMemory(key, value, description);
-  } else if (toolCall.function.name === "modify_memory") {
-    const { action, key, value, description } = JSON.parse(toolCall.function.arguments);
-    if (action === "update") {
-      await chef.getMemory().updateMemory(key, value, description);
-    } else {
-      await chef.getMemory().deleteMemory(key);
-    }
-  }
-}
-
-// Direct read/write (developer use, bypasses validation hooks)
-await chef.getMemory().set("persona", "You are a senior engineer", {
-  description: "The agent's persona and role",
-});
-const value = await chef.getMemory().get("persona");
-
-// On compile():
-// - Memory tools (create_memory, modify_memory) are auto-injected into payload.tools
-// - Existing memories are injected as <memory> XML between systemPrompt and history
-```
-
-#### Memory 位置 —— `memoryPlacement`
-
-控制易变的 `<memory>` 数据块在编译产物中的落点。默认 `'after_system'`（向后兼容）。如果你在用 **Anthropic prompt caching** 且 cache breakpoint 打在 history 上，切换到 `'before_history_tail'`，这样 memory 变化就不会击穿 history 的缓存了。
-
-```typescript
-const chef = new ContextChef({
-  memory: {
-    store: new VFSMemoryStore(dir),
-    memoryPlacement: 'before_history_tail',
-  },
-});
-```
-
-| Placement | 三明治顶部 | 最后一条 user 消息 | 适用场景 |
-|---|---|---|---|
-| `'after_system'`（默认） | INSTRUCTION + `<memory>` 数据合并成一条 `role: 'system'` | 不动 | 简单 agent；不依赖 system 参数之后的 cache breakpoint |
-| `'before_history_tail'` | 仅 INSTRUCTION（稳定，可缓存） | 在原 user 内容后追加 `<memory>` 数据块 | 你希望 history（或更靠前的 `system`）上的 cache breakpoint 在每轮 memory 变化时都能命中 |
-
-这个拆分把稳定的使用说明留在三明治顶部享受缓存，把易变的数据块送到对话末尾。Anthropic / Gemini adapter 会把所有 `role: 'system'` 提取到 top-level `system` 参数 —— 选 `'before_history_tail'` 后，数据块改留在 `messages` 里，任何打在消息流更早位置的 cache breakpoint 都不再把变化的 memory 文本算进 hash。
-
-如果动态状态也注入到末尾（`dynamicStatePlacement: 'last_user'`），最后一条 user 消息内部顺序是：原内容 → `<memory>` → `<dynamic_state>` → `<implicit_context>` → 锚定句。如果动态状态走独立 system message（`dynamicStatePlacement: 'system'`），memory 仍然注入到 user 末尾，但不会带锚定句。
-
-#### Anthropic 缓存审计（4.1）
-
-易变内容一旦落在被缓存的 prompt 前缀里，每次变化都会悄无声息地让 prompt caching 失效。这项审计检查的正是编译后的 Anthropic payload 里有没有这类问题 —— memory 数据、动态状态、隐式上下文或护栏指令被放在了最后一个 `cache_control` breakpoint 处或其之前 —— 并针对每个问题给出对应的修复方式：
-
-```typescript
-import { auditAnthropicCachePlacement } from "@context-chef/core";
-
-const payload = await chef.compile({ target: "anthropic" });
-for (const issue of auditAnthropicCachePlacement(payload)) {
-  console.warn(`${issue.location}: ${issue.message}`);
-}
-
-// Or let the chef warn automatically (each distinct issue once per instance):
-const chef = new ContextChef({ cacheAudit: true /* Anthropic targets only */ });
-```
-
-**只做 Anthropic 是有意为之**：它是唯一提供显式、客户端可见 breakpoint 的 provider，因此这项检查完全确定 —— 检查的是 payload 的结构属性，零启发式。OpenAI 的自动前缀缓存和 Gemini 的隐式缓存都没有暴露可供审计的标记，所以不为它们提供等价功能。
 
 ---
 
@@ -971,7 +1316,7 @@ web_search has been withdrawn; calls to it will be rejected
 | `'system'` | 合并成一条 `_positional` system message，放在对话尾部之后（仍然排在任何 assistant prefill 之前） | 具备 operator 优先级，且缓存前缀完好无损 |
 | `'auto'`（默认） | 按 **target** 路由：Anthropic target 走 `'system'`，其余一律 `'user_tail'` | 见下面的坑 |
 
-channel 是逐条设置的，所以混合设置的一组 announcement 会在同一次 compile 里分走两条投递路径。
+channel 是逐条设置的，所以混合设置的一组 announcement 会在同一次 compile 里分走两条投递路径。[交接通知](#交接预算42)走的是同一套 channel 解析 —— 渲染在最后，只属于那一次 compile，永远不会进入常驻集合。
 
 **auto 路由的坑。** `'auto'` 按 *target* 路由，不按模型——chef 根本看不到你的 model id。对话中途的 `role: "system"` 消息在 Fable 5 / Mythos 5 / Opus 4.8 / Opus 5 上是原生支持的，但 **Sonnet 5 不支持**。如果你编译到 Anthropic target 而实际调用 Sonnet 5，必须显式指定 channel：
 
@@ -1041,6 +1386,63 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 
 ---
 
+### 管道插槽（4.2）
+
+`compile()` 是一串有名字的阶段 —— `start` → `transform-tool-results` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`。插槽就是在这些阶段边界上触发的组合点。和事件不同，插槽 handler **参与**编译：它可以否决溢出、注入上下文、改写已装配的消息。
+
+```typescript
+chef
+  .use("before-assemble", async (ctx) => ctx.inject(await vectorDB.search(ctx.dynamicStateXml)))
+  .use("after-adapt", (payload) => metrics.record(payload));
+
+chef.unuse("after-adapt", handler); // 移除一次注册
+```
+
+| 插槽 | 签名 | 契约 |
+|---|---|---|
+| `before-overflow` | `({ history, budget }) => void \| false` | 返回 `false` 即跳过本次 compile 的 overflow 阶段。`budget` 是 runner 的真实读数：`{ limit, current, trigger, remaining }` |
+| `after-overflow` | `({ history, result }) => void` | 阶段被跳过时 `result` 为 `null`；否则是带 `meta.strategy` / `meta.changed` / `meta.windowId` 的 `OverflowResult` |
+| `before-assemble` | `(ctx) => void` | `ctx` 是 `BeforeCompileContext` 外加 `inject(text)`；注入的块按注册顺序累积进 `<implicit_context>` |
+| `after-assemble` | `(messages) => Message[]` | handler 串联 —— 每个拿到上一个的结果 |
+| `before-adapt` | `(messages) => void` | target adapter 运行前，对最终消息数组的只读观察 |
+| `after-adapt` | `(payload) => void` | `compile:done` 之前，对编译产物的只读观察 |
+
+handler 按**注册顺序**依次 await 执行。旧的 config 钩子在构造时注册到同一个注册表上，所以它们总是最先跑 —— 不存在第二条代码路径：
+
+| 已废弃字段 | 注册为 |
+|---|---|
+| `ChefConfig.onBeforeCompile` | `before-assemble`（返回的字符串等价于 `ctx.inject(...)`） |
+| `ChefConfig.transformContext` | `after-assemble` |
+
+两者行为不变，5.0 移除。`ChefConfig.transformToolResult` **没有**被废弃：它是 `transform-tool-results` 阶段的逐条变换（在压缩之前作用于每条 `role: 'tool'` 消息），不是插槽。`JanitorConfig.onBeforeCompress` 同样没有被废弃：它是 runner 上的回调，在预算判定认为要执行溢出之后于 Janitor 内部触发，可以返回替换后的历史，并且在没有插槽注册表的独立 `Janitor` 上照样能用。
+
+插槽的错误**不做隔离** —— 和事件 handler 不同，抛出的插槽 handler 会让整次 compile 失败，这与它所泛化的那些 config 钩子完全一致。希望失败可存活就自己包 try/catch。
+
+```typescript
+// 用插槽写出 4.1 的那些钩子
+chef.use("before-overflow", ({ history, budget }) => {
+  if (history.length < 4) return false;              // 短对话永不压缩
+  console.log(`over budget by ${-budget.remaining} tokens`);
+});
+
+chef.use("after-overflow", ({ result }) => {
+  if (result?.meta.changed) store.recordWindowBoundary(result.meta.windowId);
+});
+```
+
+#### 开发期不变量 —— `pipelineChecks`
+
+`ChefConfig.pipelineChecks: true` 会在整条 `after-assemble` 链跑完之后校验一次 pinned 消息是否还在、tool call/result 是否仍然配对，并在 tail 阶段之后校验一次插入点之前的内容有没有被改动。装配那次检查比对的是链的输入和链的输出，所以违规报的是整条链，不是某一个 handler。
+
+```typescript
+const chef = new ContextChef({ pipelineChecks: true });
+chef.on("pipeline:invariant", ({ phase, message }) => console.warn(`[${phase}] ${message}`));
+```
+
+违规只**上报，绝不拦截**：每一条都会送到 `ChefConfig.logger`（或 `console`）和 `pipeline:invariant` 事件，`compile()` 绝不会因为一次检查而抛出。它每次 compile 要付一次快照加一次序列化的代价，生产环境请关掉。默认 `false`。
+
+---
+
 ### 生命周期事件
 
 统一的事件系统，一个入口观测所有内部模块。通过 `chef.on()` 订阅，`chef.off()` 取消订阅。
@@ -1073,10 +1475,11 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `compress` | `{ summary, truncatedCount, details }` | Janitor 压缩历史后触发 |
 | `offload:created` | `{ uri }` | 内容被卸载到 VFS（经 `chef.offload` / `offloadAsync` 或压缩归档） |
 | `pruner:tool-blocked` | `{ name }` | `checkToolCall()` 依据 Pruner blocklist 拒绝了一次工具调用 |
+| `pipeline:invariant` | `{ phase, message }` | `pipelineChecks` 不变量被破坏 —— pinned 消息被丢、tool 配对被拆、tail 插入点之前的内容被改写。仅上报 |
 | `memory:changed` | `{ type, key, value, oldValue }` | 任何记忆变更（set、delete、expire）后触发 |
 | `memory:expired` | `MemoryEntry` | `compile()` 期间记忆条目过期时触发 |
 
-事件是**纯观察型**的，不影响控制流。拦截型钩子（`onBeforeCompress`、`onMemoryUpdate`、`onBeforeCompile`、`transformContext`）仍然通过 config 回调配置。
+事件是**纯观察型**的，不影响控制流。凡是参与编译的都是[插槽](#管道插槽42)（`chef.use(...)`，以及 `onBeforeCompile` / `transformContext` 这两个别名）；`onBeforeCompress` 和 `onMemoryUpdate` 仍然是各自模块上的 config 回调。
 
 **Handler 错误隔离（v4）。** 某个事件 handler 抛出或 reject 时只会被记录，其余 handler 照常执行 —— 4.0 之前，一个抛出的 handler 会让整个 `compile()` 失败。
 
@@ -1100,7 +1503,7 @@ try {
   await chef.compile({ target: 'openai', signal: controller.signal });
 } catch (err) {
   if (err instanceof DOMException && err.name === 'AbortError') {
-    // compile was cancelled mid-flight (Janitor / onBeforeCompile / transformContext boundary)
+    // compile was cancelled mid-flight (overflow / inject / memory / assemble boundary)
   }
   throw err;
 }
@@ -1109,7 +1512,7 @@ try {
 两个作用：
 
 1. **透传给 handler** —— `chef.on(event, (payload, signal?) => ...)` 第二个参数即 signal。handler 可把它转给 `fetch`、DB 客户端或任何支持协作取消的 API。
-2. **compile() 阶段边界检查** —— Janitor 压缩后、`onBeforeCompile` 后、`transformContext` 后均会检查；命中即通过 `signal.throwIfAborted()` 抛出。
+2. **compile() 阶段边界检查** —— `overflow`、`inject`、`memory`、`assemble` 四个阶段之后各检查一次（和 4.2 之前是同一批位置：Janitor 压缩、`before-assemble` / `onBeforeCompile`、memory、`after-assemble` / `transformContext`）；命中即通过 `signal.throwIfAborted()` 抛出。
 
 `compile:start` 在第一次 abort 检查之前触发，所以观察者可能收到一个最终抛 AbortError 而没有 `compile:done` 的 compile 调用。从 `memory().set()` / `delete()` 这类**外部**调用触发的 memory 事件，signal 为 `undefined`。
 
@@ -1127,26 +1530,9 @@ app.post('/agent', async (req, res) => {
 });
 ```
 
-如果 memory 需要跨请求共享，把 store 单独提取（`VFSMemoryStore` 或你自己包的 Redis-backed store）传给每请求的 chef —— store 层并发由 store 自己负责，不是 chef 的事。
+如果 memory 需要跨请求共享，把 store 单独提取（共享一个 `FileSystemBackend`，或你自己包的 Redis-backed `StorageBackend`）作为 `store` 传给每请求的 chef —— store 层并发由 store 自己负责，不是 chef 的事。
 
 **同一个 chef 实例上并发 `compile()` 是单线程语义。** 同实例两次 compile 会互相覆盖 `_currentSignal`、双进 memory 轮次、交错读取 skill/history。请按实例串行（`await chef.compile()` 链式），或用上面的 per-request 模式。Snapshot+serialize 防御性方案在 roadmap 里（TODO T2.4.1，低优先级），但 canonical 用法不需要它。
-
----
-
-### `onBeforeCompile` 钩子
-
-在编译前注入外部上下文（RAG、AST 片段、MCP 查询），无需修改消息数组。
-
-```typescript
-const chef = new ContextChef({
-  onBeforeCompile: async (ctx) => {
-    const snippets = await vectorDB.search(ctx.dynamicStateXml);
-    return snippets.map((s) => s.content).join("\n");
-    // Injected as <implicit_context>...</implicit_context> alongside dynamic state
-    // Return null to skip injection
-  },
-});
-```
 
 ---
 

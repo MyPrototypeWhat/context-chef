@@ -8,12 +8,14 @@ function guideSidebar(
     guide: string;
     gettingStarted: string;
     concepts: string;
-    historyCompression: string;
+    architecture: string;
+    overflow: string;
     durableCompaction: string;
     serverSide: string;
+    contextStore: string;
+    memory: string;
     offloading: string;
     toolManagement: string;
-    memory: string;
     skills: string;
     guardrail: string;
     snapshotRestore: string;
@@ -29,12 +31,14 @@ function guideSidebar(
     {
       text: labels.concepts,
       items: [
-        { text: labels.historyCompression, link: `${prefix}/guide/history-compression` },
+        { text: labels.architecture, link: `${prefix}/guide/architecture` },
+        { text: labels.overflow, link: `${prefix}/guide/history-compression` },
         { text: labels.durableCompaction, link: `${prefix}/guide/durable-compaction` },
         { text: labels.serverSide, link: `${prefix}/guide/server-side-context-management` },
+        { text: labels.contextStore, link: `${prefix}/guide/context-store` },
+        { text: labels.memory, link: `${prefix}/guide/memory` },
         { text: labels.offloading, link: `${prefix}/guide/offloading-vfs` },
         { text: labels.toolManagement, link: `${prefix}/guide/tool-management` },
-        { text: labels.memory, link: `${prefix}/guide/memory` },
         { text: labels.skills, link: `${prefix}/guide/skills` },
         { text: labels.guardrail, link: `${prefix}/guide/guardrail` },
         { text: labels.snapshotRestore, link: `${prefix}/guide/snapshot-restore` },
@@ -81,12 +85,14 @@ export default defineConfig({
             guide: 'Guide',
             gettingStarted: 'Getting Started',
             concepts: 'Core Concepts',
-            historyCompression: 'History Compression (Janitor)',
+            architecture: 'Architecture — the five axes',
+            overflow: 'Overflow (history)',
             durableCompaction: 'Durable Compaction',
             serverSide: 'Server-Side Context Management',
+            contextStore: 'Context Store',
+            memory: 'Memory',
             offloading: 'Offloading & VFS',
             toolManagement: 'Tool Management (Pruner)',
-            memory: 'Memory',
             skills: 'Skills',
             guardrail: 'Guardrail',
             snapshotRestore: 'Snapshot & Restore',
@@ -122,12 +128,14 @@ export default defineConfig({
             guide: '指南',
             gettingStarted: '快速开始',
             concepts: '核心概念',
-            historyCompression: '历史压缩（Janitor）',
+            architecture: '架构 —— 五条轴',
+            overflow: '溢出（历史）',
             durableCompaction: '持久化压缩',
             serverSide: '服务端上下文管理',
+            contextStore: '上下文存储',
+            memory: '记忆（Memory）',
             offloading: '卸载与 VFS',
             toolManagement: '工具管理（Pruner）',
-            memory: '记忆（Memory）',
             skills: 'Skill',
             guardrail: '护栏（Guardrail）',
             snapshotRestore: '快照与恢复',

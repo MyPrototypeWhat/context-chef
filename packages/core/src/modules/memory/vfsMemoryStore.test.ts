@@ -150,6 +150,111 @@ describe('VFSMemoryStore', () => {
     expect(store.keys()).toHaveLength(2);
   });
 
+  // Regression: "VFSMemoryStore stopped writing _index.json, so a directory
+  // shared with a 4.1 process desynchronizes". 4.1 answers keys() from that
+  // file; a 4.2 write it never sees is a key that silently disappears.
+  describe('legacy _index.json', () => {
+    const indexPath = path.join(testDir, '_index.json');
+    const readIndex = (): string[] => JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+
+    it('set writes the key through to the index a 4.1 process reads', () => {
+      const store = new VFSMemoryStore(testDir);
+      store.set('a', makeEntry('1'));
+
+      expect(fs.existsSync(indexPath)).toBe(true);
+      expect(readIndex()).toEqual(['a']);
+    });
+
+    it('delete takes the key back out of it', () => {
+      const store = new VFSMemoryStore(testDir);
+      store.set('a', makeEntry('1'));
+      store.set('b', makeEntry('2'));
+      store.delete('a');
+
+      expect(readIndex()).toEqual(['b']);
+    });
+
+    it('restore rewrites it from the snapshot', () => {
+      const store = new VFSMemoryStore(testDir);
+      store.set('old', makeEntry('1'));
+      store.restore({ new1: makeEntry('2') });
+
+      expect(readIndex()).toEqual(['new1']);
+    });
+
+    it('rebuilds a missing index from the directory on first use', () => {
+      const store = new VFSMemoryStore(testDir);
+      store.set('a', makeEntry('1'));
+      fs.rmSync(indexPath);
+
+      expect(store.keys()).toEqual(['a']);
+      expect(readIndex()).toEqual(['a']);
+    });
+
+    it('keeps reading a directory a 4.1 process wrote', () => {
+      fs.mkdirSync(testDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(testDir, `${Buffer.from('old').toString('base64url')}.mem`),
+        JSON.stringify(makeEntry('from 4.1')),
+        'utf-8',
+      );
+      fs.writeFileSync(indexPath, JSON.stringify(['old']), 'utf-8');
+
+      const store = new VFSMemoryStore(testDir);
+      expect(store.get('old')?.value).toBe('from 4.1');
+
+      store.set('new', makeEntry('from 4.2'));
+      store.delete('old');
+      expect(readIndex()).toEqual(['new']);
+    });
+
+    it('picks up a key another writer added to the directory', () => {
+      const store = new VFSMemoryStore(testDir);
+      store.set('mine', makeEntry('1'));
+
+      // A 4.1 process writing the same directory, behind this instance's back.
+      fs.writeFileSync(
+        path.join(testDir, `${Buffer.from('theirs').toString('base64url')}.mem`),
+        JSON.stringify(makeEntry('from the other writer')),
+        'utf-8',
+      );
+      store.set('mine', makeEntry('2'));
+
+      expect(readIndex().sort()).toEqual(['mine', 'theirs']);
+    });
+
+    it('a foreign .mem file does not break the listing', () => {
+      fs.mkdirSync(testDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(testDir, 'not-ours.mem'),
+        JSON.stringify({ other: true }),
+        'utf-8',
+      );
+
+      const store = new VFSMemoryStore(testDir);
+      store.set('a', makeEntry('1'));
+      expect(store.keys()).toEqual(['a']);
+      // The index is what a 4.1 process answers keys() from, so it must not
+      // pick up a name this store would never have written.
+      expect(readIndex()).toEqual(['a']);
+    });
+
+    it('a leftover .tmp_ scratch file is not indexed as a key', () => {
+      fs.mkdirSync(testDir, { recursive: true });
+      // What a crash between write and rename leaves in the directory.
+      fs.writeFileSync(
+        path.join(testDir, `.tmp_1234_${Buffer.from('a').toString('base64url')}.mem`),
+        JSON.stringify(makeEntry('half-written')),
+        'utf-8',
+      );
+
+      const store = new VFSMemoryStore(testDir);
+      store.set('a', makeEntry('1'));
+      expect(store.keys()).toEqual(['a']);
+      expect(readIndex()).toEqual(['a']);
+    });
+  });
+
   it('snapshot + restore round-trips correctly', () => {
     const store = new VFSMemoryStore(testDir);
     store.set('x', makeEntry('original'));

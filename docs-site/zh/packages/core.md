@@ -57,16 +57,18 @@ const response = await anthropic.messages.create(payload);
 
 | 模块 | 指南页面 |
 |---|---|
-| Janitor —— 历史压缩、`compact()`、`ensureValidHistory` | [历史压缩](/zh/guide/history-compression) |
+| 五条轴、编译管道、slot | [架构](/zh/guide/architecture) |
+| 溢出策略、Janitor runner、`compact()`、`ensureValidHistory` | [溢出](/zh/guide/history-compression) |
 | `planCompaction` / `compactHistory` / `summarizeHistory` | [持久化压缩](/zh/guide/durable-compaction) |
-| `contextManagement: { strategy: 'server' }` | [服务端上下文管理](/zh/guide/server-side-context-management) |
+| `server()` 策略、`contextManagement: { strategy: 'server' }` | [服务端上下文管理](/zh/guide/server-side-context-management) |
+| `StorageBackend` / `Store`、`context` 工具、`tools` 模式 | [上下文存储](/zh/guide/context-store) |
+| Memory —— TTL、`selector`、`allowedKeys`、`memoryPlacement` | [记忆](/zh/guide/memory) |
 | Offloader / VFS —— `offload`、`cleanupAsync`、`reconcileAsync` | [卸载与 VFS](/zh/guide/offloading-vfs) |
 | Pruner —— 扁平模式、blocklist、namespace、`deferLoading` | [工具管理](/zh/guide/tool-management) |
-| Memory —— store、记忆工具、`memoryPlacement` | [记忆](/zh/guide/memory) |
 | Skill —— `SKILL.md` 加载、`renderSkill`、交付模型 | [Skill](/zh/guide/skills) |
 | `withGuardrails` —— XML 契约 + prefill | [护栏](/zh/guide/guardrail) |
 | `snapshot()` / `restore()` | [快照与恢复](/zh/guide/snapshot-restore) |
-| 事件、`compile({ signal })`、并发、`onBeforeCompile` | [事件与钩子](/zh/guide/events-hooks) |
+| slot、事件、`compile({ signal })`、并发 | [事件与钩子](/zh/guide/events-hooks) |
 | 输入/目标适配器、`adapterRegistry`、`openai-responses` | [适配器](/zh/guide/adapters) |
 
 ## 工具函数

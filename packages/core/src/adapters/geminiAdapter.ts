@@ -16,6 +16,7 @@ import type {
 } from '../types';
 import { ensureValidHistory } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
+import { createThinkingTextifier, type ThinkingTextifier } from './thinkingText';
 
 // Re-export Gemini-specific types for consumers who want strong typing without importing the SDK
 export type GeminiTextPart = SDKTextPart;
@@ -185,9 +186,11 @@ export interface GeminiAdapterOptions {
 }
 
 export class GeminiAdapter implements ITargetAdapter {
-  private _redactedWarned = false;
+  private readonly textifyThinking: ThinkingTextifier;
 
-  constructor(private readonly options: GeminiAdapterOptions = {}) {}
+  constructor(private readonly options: GeminiAdapterOptions = {}) {
+    this.textifyThinking = createThinkingTextifier('Gemini', options.logger);
+  }
 
   compile(messages: Message[]): GeminiPayload {
     const systemParts: SDKTextPart[] = [];
@@ -234,16 +237,7 @@ export class GeminiAdapter implements ITargetAdapter {
         // multi-turn thinking is maintained via thoughtSignature on parts.
         let content = msg.content;
         if (this.options.preserveThinkingAsText) {
-          if (msg.thinking?.thinking) {
-            content = `<thinking>\n${msg.thinking.thinking}\n</thinking>\n\n${content ?? ''}`;
-          }
-          if (msg.redacted_thinking && !this._redactedWarned) {
-            this._redactedWarned = true;
-            (this.options.logger ?? console).warn(
-              '[context-chef] redacted_thinking is an opaque encrypted blob and cannot be ' +
-                'preserved as text — dropped on the Gemini target (warned once).',
-            );
-          }
+          content = this.textifyThinking(content, msg);
         }
 
         // Degrade an Anthropic server-side compaction to a marked summary

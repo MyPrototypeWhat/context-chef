@@ -6,7 +6,7 @@ ContextChef solves the most common context engineering problems in AI agent deve
 
 | Package | Description |
 |---|---|
-| [`@context-chef/core`](/packages/core) | Core context compiler — history compression, tool pruning, memory, VFS offloading, multi-provider adapters |
+| [`@context-chef/core`](/packages/core) | Core context compiler — overflow strategies, tool pruning, the context store, multi-provider adapters |
 | [`@context-chef/ai-sdk-middleware`](/packages/ai-sdk-middleware) | [Vercel AI SDK](https://sdk.vercel.ai) middleware — drop-in context engineering with zero code changes |
 | [`@context-chef/tanstack-ai`](/packages/tanstack-ai) | [TanStack AI](https://tanstack.com/ai) middleware — compression, truncation, and dynamic state via `ChatMiddleware` |
 
@@ -109,14 +109,21 @@ For direct control over the compilation pipeline — dynamic state injection, to
 
 ```typescript
 const chef = new ContextChef({
-  vfs?: { threshold?: number, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
-  janitor?: JanitorConfig,
-  pruner?: { strategy?: 'union' | 'intersection' },
+  janitor?: JanitorConfig,                       // the overflow runner: budget, trigger, breaker
+  overflow?: { strategy?, archive?, handoff? },  // the overflow policy
+  store?: StorageBackend | Store,                // one substrate for memory/ notes/ vfs/ archive/
+  tools?: 'legacy' | 'unified',                  // which library-owned tools compile() emits
+  contextTool?: { writable?: string[] },
   memory?: MemoryConfig,
-  transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>,
-  onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>,
+  vfs?: { threshold?: number, storageDir?: string, maxAge?: number, maxFiles?: number, maxBytes?: number, onVFSEvicted?: (entry, reason) => void },
+  pruner?: { strategy?: 'union' | 'intersection' },
+  transformToolResult?: (content: string, info) => string | Promise<string>,
+  pipelineChecks?: boolean,
+  cacheAudit?: boolean,
 });
 ```
+
+> **Composition lives on slots** <Badge type="tip" text="4.2" />**.** `chef.use('before-assemble', ...)` / `chef.use('after-assemble', ...)` replace the `onBeforeCompile` and `transformContext` config hooks, which still work and are removed in 5.0. See [Events & Hooks](/guide/events-hooks#slots).
 
 > **Removed in 4.0** — each has a direct replacement: `TokenUtils` → `estimate` / `estimateObject`, `XmlGenerator` → `objectToXml`, `AdapterFactory` → `getAdapter` / `adapterRegistry`, `JanitorConfig.onBudgetExceeded` → `onBeforeCompress`. See the [migration guide](/migration/v4).
 
@@ -167,9 +174,10 @@ const payload = await chef.compile({ target: "gemini" }); // GeminiPayload
 
 ## Where to go next
 
-- [History Compression (Janitor)](/guide/history-compression) — the compression pipeline, quality gates, and the v4 pipeline v2
+- [Architecture](/guide/architecture) — the five axes, the compile pipeline, and the slots
+- [Overflow](/guide/history-compression) — strategies, quality gates, the handoff budget, `new_context`
+- [Context store](/guide/context-store) — one backend behind `memory/`, `notes/`, `vfs/` and `archive/`, and the `context` tool
 - [Tool Management (Pruner)](/guide/tool-management) — pruning, blocklists, and the two-layer namespace architecture
-- [Memory](/guide/memory) — persistent cross-session key-value memory
 - [Adapters](/guide/adapters) — input and target adapters for OpenAI / Anthropic / Gemini and beyond
 
 ## Blog series

@@ -1,7 +1,11 @@
 import type { MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import type { AnthropicPayload, Message } from '../types';
-import { AnthropicAdapter, fromAnthropic } from './anthropicAdapter';
+import {
+  AnthropicAdapter,
+  anthropicServerContextManagement,
+  fromAnthropic,
+} from './anthropicAdapter';
 
 interface AnthropicBlock {
   type: string;
@@ -687,5 +691,50 @@ describe('AnthropicAdapter — positional system messages', () => {
     expect(result.system).toBeUndefined();
     expect(result.messages[3].role).toBe('system');
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('anthropicServerContextManagement', () => {
+  it('defaults to a single compact_20260112 edit with its beta', () => {
+    expect(anthropicServerContextManagement()).toEqual({
+      context_management: { edits: [{ type: 'compact_20260112' }] },
+      betas: ['compact-2026-01-12'],
+    });
+  });
+
+  it('returns a fresh default object per call (callers may mutate the payload)', () => {
+    const a = anthropicServerContextManagement().context_management;
+    const b = anthropicServerContextManagement().context_management;
+    expect(a).not.toBe(b);
+  });
+
+  it('passes an explicit config through verbatim', () => {
+    const config = { edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens' } }] };
+    const result = anthropicServerContextManagement(config);
+    expect(result.context_management).toBe(config);
+    expect(result.betas).toEqual(['compact-2026-01-12']);
+  });
+
+  it('maps non-compact edit types to the context-management beta', () => {
+    const result = anthropicServerContextManagement({
+      edits: [{ type: 'clear_tool_uses_20250919' }],
+    });
+    expect(result.betas).toEqual(['context-management-2025-06-27']);
+  });
+
+  it('dedupes betas across edits and ignores type-less entries', () => {
+    const result = anthropicServerContextManagement({
+      edits: [
+        { type: 'compact_20260112' },
+        { type: 'clear_tool_uses_20250919' },
+        { type: 'clear_thinking_20251015' },
+        {},
+      ],
+    });
+    expect(result.betas).toEqual(['compact-2026-01-12', 'context-management-2025-06-27']);
+  });
+
+  it('yields no betas for a config without edits', () => {
+    expect(anthropicServerContextManagement({}).betas).toEqual([]);
   });
 });

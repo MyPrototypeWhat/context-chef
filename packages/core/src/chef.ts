@@ -1,15 +1,12 @@
 import type { z } from 'zod';
-import { adapterRegistry } from './adapters/adapterRegistry';
-import { AnthropicAdapter } from './adapters/anthropicAdapter';
-import { auditAnthropicCachePlacement } from './adapters/anthropicCacheAudit';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
 import {
-  buildToolNameMap,
   type CompressionDetails,
   Janitor,
   type JanitorConfig,
   type JanitorSnapshot,
+  NO_COMPRESSION_MODEL_WARNING,
 } from './modules/janitor';
 import {
   Memory,
@@ -19,6 +16,7 @@ import {
   type MemorySnapshot,
 } from './modules/memory';
 import { Offloader, type OffloadOptions, type VFSConfig } from './modules/offloader';
+import { type ResolveRecallOptions, renderRecalledContent } from './modules/offloader/recallTool';
 import {
   type CompiledTools,
   Pruner,
@@ -28,11 +26,44 @@ import {
   type ToolGroup,
 } from './modules/pruner';
 import type { Skill } from './modules/skill';
-import { Prompts } from './prompts';
+import {
+  type CompressionArchiveConfig,
+  getNewContextToolDefinition,
+  type HandoffConfig,
+  isServerStrategy,
+  type OverflowStrategy,
+  resolveOverflowStrategy,
+  server,
+  validateHandoffConfig,
+} from './overflow';
+import {
+  ABORT_AFTER_PHASE,
+  COMPILE_PHASES,
+  CompileContext,
+  type PhaseName,
+  type PipelineHost,
+  type SlotHandlers,
+  type SlotName,
+  SlotRegistry,
+} from './pipeline';
+import { escapeXmlAttribute } from './pipeline/xml';
+import { Store } from './store/store';
+import type { StorageBackend } from './store/types';
+import { getContextToolDefinition } from './tools/contextTool';
+import {
+  type ContextToolCall,
+  type ContextToolHost,
+  dispatchContextTool,
+  isContextToolName,
+} from './tools/dispatch';
+import {
+  type ContextToolPolicy,
+  type ContextToolPolicyConfig,
+  resolveContextToolPolicy,
+} from './tools/policy';
 import type {
   AnthropicPayload,
   ChefLogger,
-  CompileMeta,
   CompileOptions,
   GeminiPayload,
   ITargetAdapter,
@@ -44,25 +75,7 @@ import type {
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
 import { objectToXml } from './utils/xmlGenerator';
-
-/**
- * Maps the edit types of a server-side context-management config to the
- * `anthropic-beta` header values they require.
- */
-function computeAnthropicBetas(server: unknown): string[] {
-  const betas = new Set<string>();
-  const edits = (server as { edits?: Array<{ type?: string }> } | undefined)?.edits ?? [];
-  for (const edit of edits) {
-    if (edit?.type === 'compact_20260112') betas.add('compact-2026-01-12');
-    else if (edit?.type) betas.add('context-management-2025-06-27');
-  }
-  return [...betas];
-}
-
-/** Escapes a string for use inside an XML attribute value. */
-function escapeXmlAttribute(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-}
+import { resolveVocabulary, type Vocabulary } from './vocabulary';
 
 /**
  * Delivery channel for an announcement (see {@link ContextChef.announce}).
@@ -107,16 +120,16 @@ export interface BeforeCompileContext {
 }
 
 /**
- * An immutable snapshot of ContextChef's full internal state.
- * Created by chef.snapshot() and consumed by chef.restore().
- */
-/**
  * Result of {@link ContextChef.checkToolCall}. Discriminated by `allowed`:
  * `reason` is mandatory exactly when the call was rejected, so consumers cannot
  * accidentally read it on an allowed call (or omit it on a rejection).
  */
 export type ToolCallCheckResult = { allowed: true } | { allowed: false; reason: string };
 
+/**
+ * An immutable snapshot of ContextChef's full internal state.
+ * Created by chef.snapshot() and consumed by chef.restore().
+ */
 export interface ChefSnapshot {
   readonly systemPrompt: Message[];
   readonly history: Message[];
@@ -150,9 +163,43 @@ export interface ChefSnapshot {
    * empty announcement set.
    */
   readonly announcements?: Announcement[];
+  /**
+   * The window the handoff notice had already been issued for at snapshot
+   * time. The window lineage itself round-trips through the Janitor snapshot,
+   * so without this the restored session is on a window it has already
+   * noticed with the flag cleared, and repeats the notice every turn.
+   */
+  readonly handoffNoticedWindow?: string;
   readonly label?: string;
   readonly createdAt: number;
 }
+
+/**
+ * Which library-owned tool set `compile()` puts in `payload.tools`.
+ *
+ * - `'legacy'` (default in 4.x): the Memory module's `create_memory` /
+ *   `modify_memory`. `recall_context` and `new_context` stay opt-in — register
+ *   them yourself.
+ * - `'unified'`: one `context` tool covering every namespace, plus
+ *   `new_context` when `overflow.handoff` is configured. The legacy memory
+ *   tools are not emitted; the two sets never co-exist in one payload.
+ *
+ * The mode also picks the session's {@link Vocabulary}: under `'unified'`
+ * every string the model reads — the memory instruction and memory block, the
+ * offload truncation marker, the summary wrapper, the default handoff
+ * notice — is written in `context://` addressing and names the `context` tool,
+ * so the prompt never mentions a tool the payload does not carry.
+ *
+ * Tool names are dispatch keys in your agent loop, so the default cannot flip
+ * in a minor release. It becomes `'unified'` in 5.0.
+ */
+export type ToolsMode = 'legacy' | 'unified';
+
+/**
+ * {@link MemoryConfig} with `store` optional: at the chef level a shared
+ * {@link ChefConfig.store} can supply it instead.
+ */
+export type ChefMemoryConfig = Omit<MemoryConfig, 'store'> & { store?: MemoryConfig['store'] };
 
 export interface ChefConfig {
   vfs?: Partial<VFSConfig>;
@@ -163,7 +210,37 @@ export interface ChefConfig {
    */
   logger?: ChefLogger;
   pruner?: PrunerConfig;
-  memory?: MemoryConfig;
+  memory?: ChefMemoryConfig;
+  /**
+   * One storage substrate for every namespace: `memory` (Memory), `vfs` and
+   * `archive` (Offloader + overflow), `notes` (the model's own scratch space).
+   * Pass a {@link StorageBackend} — `InMemoryBackend`, `FileSystemBackend`, or
+   * your own — or a pre-built {@link Store} when you want per-namespace
+   * eviction or URI schemes.
+   *
+   * It fills in what nothing else specifies: an explicit `memory.store` wins
+   * for memory, and an explicit `vfs.store` / `vfs.adapter` / `vfs.storageDir`
+   * wins for the VFS. With neither set, today's defaults apply unchanged.
+   *
+   * @example
+   * const backend = new InMemoryBackend();
+   * new ContextChef({ store: backend, memory: {}, tools: 'unified' });
+   */
+  store?: StorageBackend | Store;
+  /**
+   * Which library-owned tools `compile()` emits. Defaults to `'legacy'` —
+   * see {@link ToolsMode}.
+   */
+  tools?: ToolsMode;
+  /**
+   * Access policy for the unified `context` tool. Reading is always allowed;
+   * `writable` lists the namespaces the model may change. Defaults to
+   * `['memory', 'notes']`.
+   *
+   * Enforced when a call is dispatched, never in the store: the same store may
+   * be written freely from your own code.
+   */
+  contextTool?: ContextToolPolicyConfig;
   /**
    * Where the active skill's instructions land. Defaults to `'after_system'`,
    * which is bit-for-bit compatible with pre-hot-plug behavior.
@@ -185,6 +262,11 @@ export interface ChefConfig {
    * Contract: must not throw or reject. Errors propagate out of compile() — there
    * is no fallback path. Wrap your logic in try/catch and return the original
    * messages on failure.
+   *
+   * @deprecated Register on the `after-assemble` slot instead —
+   * `chef.use('after-assemble', fn)`. This field is registered on that same
+   * slot at construction (ahead of any later `use()` call) and keeps working
+   * unchanged; it is removed in 5.0.
    */
   transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   /**
@@ -228,6 +310,11 @@ export interface ChefConfig {
    *     return snippets.map(s => s.content).join('\n');
    *   },
    * });
+   *
+   * @deprecated Register on the `before-assemble` slot instead —
+   * `chef.use('before-assemble', async (ctx) => ctx.inject(await retrieve(ctx)))`.
+   * This field is registered on that same slot at construction (ahead of any
+   * later `use()` call) and keeps working unchanged; it is removed in 5.0.
    */
   onBeforeCompile?: (context: BeforeCompileContext) => string | null | Promise<string | null>;
   /**
@@ -240,6 +327,28 @@ export interface ChefConfig {
    */
   defaultTarget?: TargetProvider | ITargetAdapter;
 
+  /**
+   * When true, every compile targeting Anthropic runs
+   * `auditAnthropicCachePlacement` on the produced payload and logs each
+   * distinct issue ONCE per chef instance — volatile content (memory data,
+   * dynamic state, guardrail instructions) sitting inside the cached prefix
+   * silently invalidates prompt caching on every change. Anthropic-only:
+   * it is the one provider with explicit breakpoints to audit against.
+   * Zero cost on other targets. Default false.
+   */
+  cacheAudit?: boolean;
+  /**
+   * Dev-mode pipeline invariants. When true, `compile()` verifies after every
+   * `after-assemble` handler that pinned messages survived and tool
+   * call/result pairs are still paired, and after the tail phase that nothing
+   * ahead of the tail insertion point changed.
+   *
+   * Violations are REPORTED, never enforced: each one goes to
+   * `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event.
+   * `compile()` never throws because of a check. Costs a snapshot + a
+   * serialization pass per compile, so keep it off in production. Default false.
+   */
+  pipelineChecks?: boolean;
   /**
    * Where history compression happens:
    *
@@ -257,25 +366,58 @@ export interface ChefConfig {
    * and exact token accounting. What stays client-side is everything servers
    * don't do: tool pruning, skills, memory, VFS, dynamic state.
    */
-  /**
-   * When true, every compile targeting Anthropic runs
-   * {@link auditAnthropicCachePlacement} on the produced payload and logs each
-   * distinct issue ONCE per chef instance — volatile content (memory data,
-   * dynamic state, guardrail instructions) sitting inside the cached prefix
-   * silently invalidates prompt caching on every change. Anthropic-only:
-   * it is the one provider with explicit breakpoints to audit against.
-   * Zero cost on other targets. Default false.
-   */
-  cacheAudit?: boolean;
   contextManagement?: {
+    /**
+     * @deprecated Use `overflow.strategy` — `'server'` is
+     * `server(config, { fallback })`, `'client'` is the default. This field
+     * builds exactly that and keeps working; it is removed in 5.0.
+     */
     strategy: 'client' | 'server';
     /**
      * Provider-shaped edits config passed through verbatim, e.g. Anthropic
      * `{ edits: [{ type: 'compact_20260112', trigger: {...} }] }`. When
      * omitted under `'server'`, a default single `compact_20260112` edit is
      * emitted (server-side default trigger).
+     *
+     * @deprecated The first argument of `server()`.
      */
     server?: unknown;
+  };
+  /**
+   * The overflow axis: what leaves the context window when it fills up, and
+   * where it goes.
+   *
+   * `strategy` is the policy — `summarize()` (the default), `anchored()`,
+   * `server()`, `reset()`, composed with `chain()` / `background()`, or your
+   * own object. It REPLACES the deprecated `janitor.compression*` and
+   * `contextManagement` fields, which describe the same thing in the old
+   * vocabulary; setting both logs a warning and the strategy wins.
+   *
+   * `archive` is strategy-agnostic: whatever a strategy evicts is stored, and
+   * the URI is cited in the summary that replaced it, so exact details stay
+   * retrievable (pair with `getRecallToolDefinition()` + `chef.resolveRecall()`).
+   * Pass `'vfs'` to store spans in this chef's VFS.
+   *
+   * @example
+   * new ContextChef({
+   *   janitor: { contextWindow: 128_000, tokenizer },
+   *   overflow: {
+   *     strategy: chain(summarize({ compressionModel }), reset()),
+   *     archive: 'vfs',
+   *   },
+   * });
+   */
+  overflow?: {
+    strategy?: OverflowStrategy;
+    archive?: 'vfs' | CompressionArchiveConfig;
+    /**
+     * Tokens reserved above the compression trigger for a handoff notice: when
+     * the headroom drops into that band, one compile carries a notice in its
+     * tail telling the model its window is about to be cut, so state worth
+     * keeping can be written to memory/notes while the conversation is still
+     * there to write from. Once per window. Validated at construction.
+     */
+    handoff?: HandoffConfig;
   };
 }
 
@@ -327,8 +469,53 @@ export interface ChefEvents {
   'pruner:tool-blocked': {
     name: string;
   };
+  /**
+   * A pipeline invariant was violated: a `ChefConfig.pipelineChecks` finding
+   * (a slot handler dropped a pinned message, split a tool pair, or rewrote
+   * content ahead of the tail insertion point), or a request the pipeline
+   * could not honour — a `requestNewContext()` dropped because the target is
+   * server-managed or a `before-overflow` handler vetoed the compile, which is
+   * reported whatever `pipelineChecks` says. Reported only; compile()
+   * continues.
+   */
+  'pipeline:invariant': {
+    phase: PhaseName;
+    message: string;
+  };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
+}
+
+/**
+ * Whether any deprecated overflow alias is set — the fields an explicit
+ * `overflow.strategy` supersedes. `janitor.archive` is deliberately absent:
+ * it maps to `overflow.archive`, which applies to every strategy.
+ */
+function usesOverflowAliases(config: ChefConfig, janitor: JanitorConfig): boolean {
+  return Boolean(
+    config.contextManagement?.strategy === 'server' ||
+      janitor.compressionMode ||
+      janitor.compressionScheduling ||
+      janitor.compressionModel ||
+      janitor.compressionGuidelines ||
+      janitor.customCompressionInstructions ||
+      janitor.minShrinkRatio !== undefined ||
+      janitor.validateCompression ||
+      janitor.preserveRatio !== undefined ||
+      janitor.preserveRecentMessages !== undefined ||
+      janitor.toolResultStubThreshold !== undefined,
+  );
+}
+
+/**
+ * The `contextManagement` block the pipeline reads, projected from the
+ * strategy that was actually installed. The installed strategy IS the answer
+ * to "who manages this window" — whichever of the three spellings configured
+ * it (`overflow.strategy`, `janitor.strategy`, `contextManagement.strategy`),
+ * they all resolve into it first, so there is nothing left to ask afterwards.
+ */
+function resolveContextManagement(strategy: OverflowStrategy): ChefConfig['contextManagement'] {
+  return isServerStrategy(strategy) ? { strategy: 'server', server: strategy.config } : undefined;
 }
 
 export class ContextChef {
@@ -338,19 +525,51 @@ export class ContextChef {
   private guardrail: Guardrail;
   private pruner: Pruner;
   private memory: Memory | null;
-  private transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
   private transformToolResult?: ChefConfig['transformToolResult'];
-  private onBeforeCompile?: (
-    context: BeforeCompileContext,
-  ) => string | null | Promise<string | null>;
   private defaultTarget?: TargetProvider | ITargetAdapter;
   private contextManagement?: ChefConfig['contextManagement'];
   private logger?: ChefLogger;
-  /** One-time warning flag: strategy 'server' compiled for a non-server-managed target. */
-  private _serverFallbackWarned = false;
   private cacheAudit = false;
-  /** Distinct cache-audit issues already warned (once per instance each). */
-  private _cacheAuditWarned = new Set<string>();
+  private pipelineChecks = false;
+  /**
+   * Diagnostics already warned on this instance, keyed by kind (never by
+   * position: as history grows the same misconfiguration drifts through
+   * message indices, and a positional key would re-warn every compile and
+   * grow the set unboundedly). The kind space is fixed, so the set is bounded.
+   */
+  private _warnedOnce = new Set<string>();
+  /** Slot handlers, including the ones the legacy config hooks register. */
+  private readonly _slots = new SlotRegistry();
+  /** The validated handoff budget, or undefined when none is configured. */
+  private readonly _handoff?: Required<HandoffConfig>;
+  /**
+   * The window the handoff notice has already been issued for. Compared by id
+   * rather than counted, so the "once" resets exactly when the window the
+   * notice talked about is gone.
+   */
+  private _handoffNoticedWindow?: string;
+  /** A pending {@link requestNewContext}, consumed by the next compile. */
+  private _forceOverflow = false;
+  /** The shared context store from `ChefConfig.store`, if one was passed. */
+  private readonly _store?: Store;
+  private readonly _toolsMode: ToolsMode;
+  /**
+   * The model-facing wording of this session, resolved once from
+   * {@link _toolsMode} and handed to every module that renders: memory
+   * shaping, the Offloader's truncation marker, the Janitor's summary
+   * wrapper, and the handoff notice.
+   */
+  private readonly _vocabulary: Vocabulary;
+  private readonly _contextToolPolicy: ContextToolPolicy;
+  /**
+   * The `tools: 'unified'` definitions, built once. Frozen and
+   * reference-stable, so `payload.tools` stays deep-equal across compiles.
+   */
+  private readonly _unifiedTools: readonly ToolDefinition[];
+  /** The dispatcher's view of this chef, built once (see {@link ContextToolHost}). */
+  private readonly _contextToolHost: ContextToolHost;
+  /** The pipeline's view of this chef, built once (see {@link PipelineHost}). */
+  private readonly _host: PipelineHost;
   /**
    * Serializes compile() calls on this instance (Snapshot + Serialize model):
    * concurrent callers queue instead of interleaving the mutable state a
@@ -360,12 +579,6 @@ export class ContextChef {
   /** True while _compileInner runs — lets re-entrant compile() calls (from
    *  hooks/event handlers) bypass the queue instead of deadlocking on it. */
   private _compiling = false;
-  /** Warn-once: system-channel announcements degraded to a user message
-   *  because the assembled payload had no conversational tail. */
-  private _announcementNoTailWarned = false;
-  /** Warn-once: a positional system message sat where the Anthropic API
-   *  rejects it, so the adapter will hoist it into the cached prefix. */
-  private _positionalHoistWarned = false;
   /**
    * Per-source-message cache for transformToolResult, keyed by the ORIGINAL
    * history message. Keeps transformed message objects stable across
@@ -410,17 +623,49 @@ export class ContextChef {
   constructor(config: ChefConfig = {}) {
     this.emitter = new TypedEventEmitter<ChefEvents>(config.logger);
     this.assembler = new Assembler();
-    this.offloader = new Offloader({ logger: config.logger, ...config.vfs });
+    this._store = config.store ? Store.from(config.store) : undefined;
+    // The tools mode picks the vocabulary, and the vocabulary is what every
+    // module below renders in — so both are settled before anything is built.
+    this._toolsMode = config.tools ?? 'legacy';
+    this._vocabulary = resolveVocabulary(this._toolsMode);
+    this.offloader = new Offloader({
+      ...this._resolveVfsConfig(config),
+      vocabulary: this._vocabulary,
+    });
     this.guardrail = new Guardrail();
     this.pruner = new Pruner(config.pruner);
-    this.transformContext = config.transformContext;
     this.transformToolResult = config.transformToolResult;
-    this.onBeforeCompile = config.onBeforeCompile;
     this.defaultTarget = config.defaultTarget;
-    this.contextManagement = config.contextManagement;
     this.logger = config.logger;
     this.cacheAudit = config.cacheAudit ?? false;
+    this.pipelineChecks = config.pipelineChecks ?? false;
     this.skillPlacement = config.skillPlacement ?? 'after_system';
+    this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
+    // Before anything is wired: a handoff budget that cannot work is a config
+    // error, and it should surface at the line that wrote it. An unset prompt
+    // takes the vocabulary's notice rather than the legacy constant.
+    this._handoff = config.overflow?.handoff
+      ? validateHandoffConfig(
+          config.overflow.handoff.prompt === undefined
+            ? { ...config.overflow.handoff, prompt: this._vocabulary.handoffNotice }
+            : config.overflow.handoff,
+        )
+      : undefined;
+
+    // Legacy lifecycle hooks are slot registrations — one code path, no second
+    // idiom. Registering here puts them ahead of anything the caller adds
+    // later with use(), which is the order they used to run in.
+    if (config.onBeforeCompile) {
+      const hook = config.onBeforeCompile;
+      this._slots.use('before-assemble', async (context) => {
+        const injected = await hook(context);
+        if (injected) context.inject(injected);
+      });
+    }
+    if (config.transformContext) {
+      this._slots.use('after-assemble', config.transformContext);
+    }
+
     if (config.contextManagement?.strategy === 'server' && config.janitor?.compressionModel) {
       (config.logger ?? console).warn(
         "[context-chef] contextManagement.strategy 'server' is configured together with a " +
@@ -433,10 +678,29 @@ export class ContextChef {
     const janitorConfig = config.janitor ?? { contextWindow: Infinity };
     const userOnCompress = janitorConfig.onCompress;
     const userOnBeforeCompress = janitorConfig.onBeforeCompress;
-    // The 'vfs' archive shorthand stores compressed spans in this chef's VFS.
+    const strategy = this._resolveOverflowStrategy(config, janitorConfig);
+    // `server()` as the overflow strategy says the same thing to the pipeline
+    // as `contextManagement: { strategy: 'server' }`: the start phase resolves
+    // the server-managed target from it, the adapt phase reads the edits
+    // config out of it. One source, whichever way it was configured — read off
+    // the resolved strategy so `janitor.strategy` is not a third opinion.
+    this.contextManagement = resolveContextManagement(strategy);
+    // The Janitor's own version of this diagnostic can never fire for a
+    // chef-built runner — it is always handed a resolved strategy — so the
+    // call is made here, against the config the user actually wrote.
+    if (
+      !janitorConfig.tokenizer &&
+      !janitorConfig.compressionModel &&
+      !config.overflow?.strategy &&
+      !janitorConfig.strategy
+    ) {
+      this._warnOnce('no-compression-model', NO_COMPRESSION_MODEL_WARNING);
+    }
+    // The 'vfs' archive shorthand stores evicted spans in this chef's VFS.
     // Substituted here because only the facade holds the Offloader.
+    const configuredArchive = config.overflow?.archive ?? janitorConfig.archive;
     const archive =
-      janitorConfig.archive === 'vfs'
+      configuredArchive === 'vfs'
         ? {
             store: async (serialized: string): Promise<string> => {
               // threshold 0 forces storage regardless of size; head/tail 0
@@ -453,11 +717,13 @@ export class ContextChef {
               return result.uri;
             },
           }
-        : janitorConfig.archive;
+        : configuredArchive;
     this.janitor = new Janitor({
       logger: config.logger,
       ...janitorConfig,
+      vocabulary: this._vocabulary,
       archive,
+      strategy,
       onCompress: async (summary, truncatedCount, details) => {
         if (userOnCompress) await userOnCompress(summary, truncatedCount, details);
         await this.emitter.emit(
@@ -484,8 +750,16 @@ export class ContextChef {
     if (config.memory) {
       const userOnChanged = config.memory.onMemoryChanged;
       const userOnExpired = config.memory.onMemoryExpired;
+      const memoryStore = config.memory.store ?? this._store;
+      if (!memoryStore) {
+        throw new Error(
+          '[context-chef] memory is configured without a store. Pass `memory: { store }`, ' +
+            'or a shared `store` on ChefConfig for memory, the VFS and the archive to share.',
+        );
+      }
       this.memory = new Memory({
         ...config.memory,
+        store: memoryStore,
         onMemoryChanged: async (event) => {
           if (userOnChanged) await userOnChanged(event);
           await this.emitter.emit('memory:changed', event, this._currentSignal);
@@ -498,6 +772,216 @@ export class ContextChef {
     } else {
       this.memory = null;
     }
+
+    // `new_context` only makes sense when something is watching the budget for
+    // the model; the handoff notice is that something.
+    this._unifiedTools = Object.freeze(
+      this._handoff
+        ? [getContextToolDefinition(), getNewContextToolDefinition()]
+        : [getContextToolDefinition()],
+    );
+    this._contextToolHost = this._createContextToolHost();
+    this._host = this._createPipelineHost();
+  }
+
+  /**
+   * The VFS config the Offloader is built from. An explicit `vfs.store`,
+   * `vfs.adapter` or `vfs.storageDir` is a deliberate choice of storage for
+   * offloaded content and wins; otherwise a shared `ChefConfig.store` backs
+   * the `vfs` (and, in 4.x, archive) namespace too.
+   */
+  private _resolveVfsConfig(config: ChefConfig): Partial<VFSConfig> {
+    const vfs: Partial<VFSConfig> = { logger: config.logger, ...config.vfs };
+    const explicit = config.vfs?.store ?? config.vfs?.adapter ?? config.vfs?.storageDir;
+    if (this._store && !explicit) vfs.store = this._store;
+    return vfs;
+  }
+
+  /**
+   * The installed overflow policy.
+   *
+   * `overflow.strategy` wins outright: the deprecated `janitor.compression*`
+   * and `contextManagement` fields describe a strategy in the old vocabulary,
+   * and two descriptions of one thing would silently disagree. With none of
+   * them set this is `summarize()` built from the janitor options — the 4.x
+   * default, unchanged.
+   */
+  private _resolveOverflowStrategy(
+    config: ChefConfig,
+    janitorConfig: JanitorConfig,
+  ): OverflowStrategy {
+    const explicit = config.overflow?.strategy ?? janitorConfig.strategy;
+    if (explicit) {
+      if (usesOverflowAliases(config, janitorConfig)) {
+        this._warnOnce(
+          'overflow-alias-conflict',
+          '[context-chef] overflow.strategy is configured together with the deprecated ' +
+            'janitor.compression* / contextManagement options. The strategy wins — those ' +
+            'options are ignored. Move them into the strategy factory (summarize({ ... })).',
+        );
+      }
+      return explicit;
+    }
+
+    const client = resolveOverflowStrategy(janitorConfig);
+    // Strategy 'server' keeps its v4 meaning: the provider compacts where it
+    // can, the client-side policy runs everywhere else.
+    return config.contextManagement?.strategy === 'server'
+      ? server(config.contextManagement.server, { fallback: client })
+      : client;
+  }
+
+  /** Logs `message` the first time `kind` is seen on this instance. */
+  private _warnOnce(kind: string, message: string): void {
+    if (this._warnedOnce.has(kind)) return;
+    this._warnedOnce.add(kind);
+    (this.logger ?? console).warn(message);
+  }
+
+  /**
+   * The dispatcher's view of this chef. Same shape as {@link _createPipelineHost}:
+   * live accessors over private fields, one stable object.
+   */
+  private _createContextToolHost(): ContextToolHost {
+    const chef = this;
+    return {
+      get memory() {
+        return chef.memory;
+      },
+      get offloader() {
+        return chef.offloader;
+      },
+      get store() {
+        return chef.getStore();
+      },
+      get policy() {
+        return chef._contextToolPolicy;
+      },
+      requestNewContext() {
+        chef.requestNewContext();
+      },
+    };
+  }
+
+  /**
+   * The pipeline's view of this chef: every accessor reads live state, so the
+   * phases work against current values while the fields above stay `private`.
+   * Built once — the object identity is stable for the chef's lifetime.
+   */
+  private _createPipelineHost(): PipelineHost {
+    // `this` inside the object literal's methods and getters is the literal,
+    // not the chef — the alias is what gives them access to the instance.
+    const chef = this;
+    return {
+      get systemPrompt() {
+        return chef.systemPrompt;
+      },
+      get history() {
+        return chef.history;
+      },
+      get dynamicState() {
+        return chef.dynamicState;
+      },
+      get dynamicStateXml() {
+        return chef.dynamicStateXml;
+      },
+      get dynamicStatePlacement() {
+        return chef.dynamicStatePlacement;
+      },
+      get defaultTarget() {
+        return chef.defaultTarget;
+      },
+      get contextManagement() {
+        return chef.contextManagement;
+      },
+      get transformToolResult() {
+        return chef.transformToolResult;
+      },
+      get toolTransformCache() {
+        return chef._toolTransformCache;
+      },
+      get cacheAudit() {
+        return chef.cacheAudit;
+      },
+      get pipelineChecks() {
+        return chef.pipelineChecks;
+      },
+      get slots() {
+        return chef._slots;
+      },
+      get assembler() {
+        return chef.assembler;
+      },
+      get guardrail() {
+        return chef.guardrail;
+      },
+      get guardrailOptions() {
+        return chef._guardrailOptions;
+      },
+      get memory() {
+        return chef.memory;
+      },
+      get skill() {
+        return {
+          name: chef._activeSkill?.name,
+          instructions: chef._skillInstructions,
+          placement: chef.skillPlacement,
+        };
+      },
+      emit(event, payload, signal) {
+        return chef.emitter.emit(event, payload, signal);
+      },
+      get window() {
+        return chef.janitor.window;
+      },
+      get handoff() {
+        return chef._handoff;
+      },
+      overflow(history, signal, force) {
+        return chef.janitor.overflow(history, { signal, force });
+      },
+      readBudget(history) {
+        return chef.janitor.readBudget(history);
+      },
+      takeForcedOverflow() {
+        const forced = chef._forceOverflow;
+        chef._forceOverflow = false;
+        return forced;
+      },
+      handoffNoticedWindow() {
+        return chef._handoffNoticedWindow;
+      },
+      markHandoffNoticed(windowId) {
+        chef._handoffNoticedWindow = windowId;
+      },
+      shapeMemoryParts(dataXml, injectedMemoryKeys) {
+        return chef._shapeMemorySandwichParts(dataXml, injectedMemoryKeys);
+      },
+      resolveAnnouncementChannels(isAnthropicTarget, extra) {
+        return chef._resolveAnnouncementChannels(isAnthropicTarget, extra);
+      },
+      prunerTools() {
+        return chef._getPrunerTools();
+      },
+      get toolsMode() {
+        return chef._toolsMode;
+      },
+      contextTools() {
+        // Fresh array, same frozen definition objects — the caller may reorder
+        // its copy without the payload's identity drifting between compiles.
+        return [...chef._unifiedTools];
+      },
+      warnOnce(kind, message) {
+        chef._warnOnce(kind, message);
+      },
+      hasWarned(kind) {
+        return chef._warnedOnce.has(kind);
+      },
+      async reportInvariant(phase, message, signal) {
+        (chef.logger ?? console).warn(`[context-chef] pipeline invariant (${phase}): ${message}`);
+        await chef.emitter.emit('pipeline:invariant', { phase, message }, signal);
+      },
+    };
   }
 
   // ─── Event System ──────────────────────────────────────────────────────
@@ -531,6 +1015,42 @@ export class ContextChef {
    */
   public off<K extends keyof ChefEvents>(event: K, handler: EventHandler<ChefEvents[K]>): this {
     this.emitter.off(event, handler);
+    return this;
+  }
+
+  // ─── Pipeline Slots ────────────────────────────────────────────────────
+
+  /**
+   * Registers a handler on a compile-pipeline slot. Slots are the composition
+   * surface events cannot cover: unlike `on()`, a slot handler participates in
+   * the compile — it can inject context, transform the assembled messages, or
+   * skip the overflow phase.
+   *
+   * Handlers run in registration order and are awaited one after another. The
+   * legacy config hooks (`onBeforeCompile`, `transformContext`) are registered
+   * on this same registry at construction, so they always run first.
+   *
+   * Errors are NOT isolated (unlike event handlers): a throwing slot handler
+   * fails the compile. Wrap your logic in try/catch if that is not what you
+   * want.
+   *
+   * @example
+   * chef.use('before-assemble', async (ctx) => {
+   *   ctx.inject(await vectorDB.search(ctx.dynamicStateXml));
+   * });
+   * chef.use('after-adapt', (payload) => metrics.record(payload));
+   */
+  public use<S extends SlotName>(slot: S, handler: SlotHandlers[S]): this {
+    this._slots.use(slot, handler);
+    return this;
+  }
+
+  /**
+   * Removes one registration of `handler` from `slot`. Registering the same
+   * function twice requires two `unuse` calls.
+   */
+  public unuse<S extends SlotName>(slot: S, handler: SlotHandlers[S]): this {
+    this._slots.unuse(slot, handler);
     return this;
   }
 
@@ -700,6 +1220,55 @@ export class ContextChef {
     return { allowed: true };
   }
 
+  // ─── Library-owned tools ───────────────────────────────────────────────
+
+  /**
+   * Whether `name` is a tool this chef dispatches: `context`, `new_context`,
+   * and the legacy `create_memory` / `modify_memory` / `recall_context`.
+   *
+   * Independent of `ChefConfig.tools` — the mode decides what `compile()`
+   * EMITS, not what `handleTool` understands. A migration that emits `context`
+   * while the model still occasionally reaches for a legacy name works, and so
+   * does the reverse.
+   *
+   * @example
+   * for (const call of response.tool_calls) {
+   *   if (chef.ownsTool(call.function.name)) {
+   *     const content = await chef.handleTool({
+   *       name: call.function.name,
+   *       arguments: call.function.arguments,
+   *     });
+   *     history.push({ role: 'tool', tool_call_id: call.id, content });
+   *     continue;
+   *   }
+   *   // ... your own tools
+   * }
+   */
+  public ownsTool(name: string): boolean {
+    return typeof name === 'string' && isContextToolName(name);
+  }
+
+  /**
+   * Runs one library-owned tool call and returns the text to hand back as the
+   * tool result. `arguments` may be the JSON string the OpenAI and Anthropic
+   * SDKs produce or an already-parsed object (Anthropic `input`, Gemini
+   * `args`) — both are accepted.
+   *
+   * Model-facing mistakes never throw: an unknown path, a missing argument, a
+   * write to a read-only namespace and a veto from `onMemoryUpdate` all come
+   * back as `Error: …` text the model can read and correct. Only a tool name
+   * this chef does not own throws — guard with {@link ownsTool}.
+   */
+  public handleTool(call: ContextToolCall): Promise<string> {
+    if (!this.ownsTool(call?.name)) {
+      throw new Error(
+        `[context-chef] chef.handleTool('${call?.name}') — this chef does not own that tool. ` +
+          'Guard the call with chef.ownsTool(name) and dispatch the rest yourself.',
+      );
+    }
+    return dispatchContextTool(this._contextToolHost, call);
+  }
+
   // ─── Skill API ─────────────────────────────────────────────────────────
   //
   // Skill is fully decoupled from Pruner. None of these methods touch
@@ -846,11 +1415,16 @@ export class ContextChef {
    * support (Sonnet 5) must therefore pass `channel: 'user_tail'` explicitly —
    * mechanism, not policy.
    */
-  private _resolveAnnouncementChannels(isAnthropicTarget: boolean): {
+  private _resolveAnnouncementChannels(
+    isAnthropicTarget: boolean,
+    extra: readonly Announcement[] = [],
+  ): {
     systemXml: string;
     tailXml: string;
   } {
-    const all = [...this._announcements.values()];
+    // `extra` is this compile's own (the handoff notice) — rendered last, and
+    // never part of the standing set.
+    const all = [...this._announcements.values(), ...extra];
     const autoChannel: Exclude<AnnouncementChannel, 'auto'> = isAnthropicTarget
       ? 'system'
       : 'user_tail';
@@ -893,6 +1467,21 @@ export class ContextChef {
   }
 
   /**
+   * The context store every namespace is addressed through — the shared
+   * `ChefConfig.store` when one was passed, otherwise the Offloader's own.
+   *
+   * This is where the `context` tool reads and writes `notes/` and anything
+   * else outside `memory/`; use it to seed notes before a run, or to inspect
+   * what the model wrote after one.
+   *
+   * @example
+   * await chef.getStore().namespace('notes').put('plan.md', '# Plan\n');
+   */
+  public getStore(): Store {
+    return this._store ?? this.offloader.store;
+  }
+
+  /**
    * Offload large content to VFS, returning a truncated string with a pointer URI.
    * Throws an error if the configured VFS storage adapter is asynchronous.
    */
@@ -920,9 +1509,17 @@ export class ContextChef {
    * tool output or an archived compressed span (see `JanitorConfig.archive`).
    * Returns null when the URI is unknown. Pair with
    * {@link getRecallToolDefinition} to let the model request retrieval.
+   *
+   * `format: 'text'` renders an archived span as a readable transcript instead
+   * of the `{ version, messages }` JSON the archive stores — worth the swap
+   * when the result goes straight back to the model as a tool result. Any
+   * other payload (an offloaded tool output, a caller-written archive entry)
+   * is returned unchanged in both modes. Defaults to `'raw'`.
    */
-  public async resolveRecall(uri: string): Promise<string | null> {
-    return this.offloader.resolveAsync(uri);
+  public async resolveRecall(uri: string, options?: ResolveRecallOptions): Promise<string | null> {
+    const stored = await this.offloader.resolveAsync(uri);
+    if (stored === null || (options?.format ?? 'raw') === 'raw') return stored;
+    return renderRecalledContent(stored);
   }
 
   /**
@@ -939,6 +1536,11 @@ export class ContextChef {
    *   Assembler to append to the last user message. The volatile text never
    *   enters the top-level system parameter on Anthropic/Gemini, so cache
    *   breakpoints earlier in the message stream survive memory mutations.
+   *
+   * The wording of both parts comes from the session's {@link Vocabulary}:
+   * under `tools: 'unified'` memory is one namespace of the context store, so
+   * the instruction describes the store and the block addresses its keys as
+   * `context://memory/<key>`.
    */
   private _shapeMemorySandwichParts(
     dataXml: string,
@@ -952,21 +1554,20 @@ export class ContextChef {
     // under 'after_system' — rewrite the top system block on mutations the
     // selector deliberately never injects, re-introducing the cache
     // invalidation this placement exists to avoid. Keys a selector hides
-    // stay modifiable anyway: modify_memory validates at dispatch time.
+    // stay modifiable anyway: the dispatcher validates at call time.
+    const instruction = this._vocabulary.memoryInstruction;
     const dataBlock = dataXml
-      ? Prompts.getMemoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
+      ? this._vocabulary.memoryBlock(dataXml, injectedMemoryKeys, this.memory.allowedKeys)
       : '';
 
     if (this.memory.placement === 'after_system') {
-      const content = dataBlock
-        ? `${Prompts.MEMORY_INSTRUCTION}\n\n${dataBlock}`
-        : Prompts.MEMORY_INSTRUCTION;
+      const content = dataBlock ? `${instruction}\n\n${dataBlock}` : instruction;
       return { topMessages: [{ role: 'system', content }], tailDataXml: '' };
     }
 
     // 'before_history_tail': instruction at top, volatile data at tail
     return {
-      topMessages: [{ role: 'system', content: Prompts.MEMORY_INSTRUCTION }],
+      topMessages: [{ role: 'system', content: instruction }],
       tailDataXml: dataBlock,
     };
   }
@@ -979,6 +1580,31 @@ export class ContextChef {
     const { tools } = this.pruner.compile();
     if (tools.length > 0) return tools;
     return this.pruner.getAllTools();
+  }
+
+  /**
+   * Requests a new context window: the next `compile()` applies the overflow
+   * strategy whatever the budget says, instead of waiting for the trigger.
+   *
+   * This is the model-facing side of the overflow axis — dispatch a
+   * `new_context` tool call (see `getNewContextToolDefinition()`) here when
+   * the model decides a chunk of work is finished and its details no longer
+   * need to be in front of it.
+   *
+   * What "new window" means is whatever the installed strategy does:
+   * `summarize()` leaves a summary, `reset()` leaves a stub, `archive` keeps
+   * the span retrievable either way. Unlike {@link clearHistory} this does not
+   * discard the conversation behind the library's back — the strategy is still
+   * the one deciding what survives, and a `before-overflow` handler can still
+   * veto it.
+   *
+   * The request is consumed by one compile, whether or not the window actually
+   * changed (a strategy may decline; the circuit breaker may be open). Call it
+   * again if it must be retried.
+   */
+  public requestNewContext(): this {
+    this._forceOverflow = true;
+    return this;
   }
 
   /**
@@ -1027,6 +1653,7 @@ export class ContextChef {
         ? structuredClone(this._guardrailOptions)
         : undefined,
       announcements: [...this._announcements.values()].map((a) => ({ ...a })),
+      handoffNoticedWindow: this._handoffNoticedWindow,
       label,
       createdAt: Date.now(),
     };
@@ -1059,6 +1686,9 @@ export class ContextChef {
         { ...a },
       ]),
     );
+    // Restored together with the lineage the flag is compared against: a
+    // snapshot from before this field simply had not noticed anything yet.
+    this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);
@@ -1168,389 +1798,23 @@ export class ContextChef {
     const isOutermostCompile = !this._compiling;
     this._compiling = true;
     try {
-      // 0. Emit compile:start (unconditional — observers may want to log even
-      //    aborted compiles. throwIfAborted runs immediately after so the
-      //    expensive Janitor phase is skipped on a pre-aborted signal.)
-      await this.emitter.emit(
-        'compile:start',
-        {
-          systemPrompt: this.systemPrompt,
-          history: this.history,
-        },
+      const ctx = new CompileContext({
+        options: options ?? {},
         signal,
-      );
-      signal?.throwIfAborted();
-
-      // 0.4 Resolve the target adapter up front — the server-side context
-      //     management decision below is per-target.
-      const target = options?.target ?? this.defaultTarget ?? 'openai';
-      const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
-      const isAnthropicTarget = target === 'anthropic' || adapter instanceof AnthropicAdapter;
-      const serverManaged = this.contextManagement?.strategy === 'server' && isAnthropicTarget;
-      if (
-        this.contextManagement?.strategy === 'server' &&
-        !isAnthropicTarget &&
-        !this._serverFallbackWarned
-      ) {
-        this._serverFallbackWarned = true;
-        (this.logger ?? console).warn(
-          "[context-chef] contextManagement.strategy 'server' is configured, but the current " +
-            'compile target has no server-side context management implementation — falling back ' +
-            'to client-side compression for this target. Only the Anthropic target is server-managed.',
-        );
-      }
-
-      // 0.5 transformToolResult: uniform tool-result rewrite BEFORE compression
-      //     so the summarizer and all later stages see transformed content.
-      //     Cached per source message: unchanged tool results reuse the SAME
-      //     transformed object across compiles (no re-transform, stable
-      //     identity for the Janitor's background staleness check).
-      let workingHistory = this.history;
-      if (this.transformToolResult) {
-        const transform = this.transformToolResult;
-        const nameById = buildToolNameMap(workingHistory);
-        workingHistory = await Promise.all(
-          workingHistory.map(async (m) => {
-            if (m.role !== 'tool') return m;
-            const cached = this._toolTransformCache.get(m);
-            if (cached && cached.source === m.content) return cached.transformed;
-            const content = await transform(m.content, {
-              toolName: (m.tool_call_id && nameById.get(m.tool_call_id)) || null,
-              toolCallId: m.tool_call_id ?? null,
-            });
-            const transformed = content === m.content ? m : { ...m, content };
-            this._toolTransformCache.set(m, { source: m.content, transformed });
-            return transformed;
-          }),
-        );
-        signal?.throwIfAborted();
-      }
-
-      // 1. Janitor: Compress history if needed. When the target is server-
-      //    managed (Anthropic + strategy 'server') the provider compacts —
-      //    client compression is skipped (mechanical compact() and every
-      //    other module remain available). Non-server-managed targets keep
-      //    client-side compression even under strategy 'server'.
-      const compressedHistory = serverManaged
-        ? workingHistory
-        : await this.janitor.compress(workingHistory);
-      await this.emitter.emit(
-        'compress:end',
-        { compressed: compressedHistory !== workingHistory },
-        signal,
-      );
-      signal?.throwIfAborted();
-
-      // 2. onBeforeCompile hook: inject external context (RAG, AST, MCP, etc.)
-      let implicitContextXml = '';
-      if (this.onBeforeCompile) {
-        const injected = await this.onBeforeCompile({
-          systemPrompt: this.systemPrompt,
-          history: compressedHistory,
-          dynamicState: this.dynamicState,
-          dynamicStateXml: this.dynamicStateXml,
-        });
-        if (injected) {
-          implicitContextXml = `<implicit_context>\n${injected}\n</implicit_context>`;
-        }
-      }
-      signal?.throwIfAborted();
-
-      // 3. For system placement, append implicit_context directly to the dynamic state message
-      //    (Assembler only handles last_user injection)
-      let dynamicState = this.dynamicState;
-      if (
-        implicitContextXml &&
-        this.dynamicStatePlacement === 'system' &&
-        dynamicState.length > 0
-      ) {
-        dynamicState = dynamicState.map((msg) =>
-          msg.content.includes('CURRENT TASK STATE')
-            ? { ...msg, content: `${msg.content}\n${implicitContextXml}` }
-            : msg,
-        );
-      }
-
-      // 4+5. Memory: single-read artifacts — sweep expired entries, apply the
-      //      selector exactly once, and derive injection XML + tool definitions
-      //      from the same store read (Memory.compileArtifacts), then advance
-      //      the turn counter and shape the sandwich parts:
-      //      - `topMessages`: system message(s) that always sit at the top
-      //      - `tailDataXml`: volatile <memory> block to inject at user tail
-      //                       (empty unless memoryPlacement === 'before_history_tail')
-      let memoryExpiredKeys: string[] = [];
-      let injectedMemoryKeys: string[] = [];
-      let memoryTools: ToolDefinition[] = [];
-      let memoryMessages: Message[] = [];
-      let memoryTailDataXml = '';
-      if (this.memory) {
-        const artifacts = await this.memory.compileArtifacts();
-        this.memory.advanceTurn();
-        memoryExpiredKeys = artifacts.expiredKeys;
-        injectedMemoryKeys = artifacts.selected.map((e) => e.key);
-        memoryTools = artifacts.toolDefinitions;
-        const parts = this._shapeMemorySandwichParts(artifacts.dataXml, injectedMemoryKeys);
-        memoryMessages = parts.topMessages;
-        memoryTailDataXml = parts.tailDataXml;
-      }
-      // compileArtifacts() awaits per-entry onMemoryExpired hooks, so handler
-      // latency adds up before the next throwIfAborted at step 7. Caveat:
-      // turn counter has already advanced; aborting here means TTL state
-      // diverges from payload state. Documented in CompileOptions.signal.
-      signal?.throwIfAborted();
-
-      // 5b. Skill instructions slot. Under 'after_system' (default) they are a
-      //     single dedicated system message between userSystemPrompt and
-      //     memoryMessages — NOT appended to user system, so the cache
-      //     breakpoint stays clean and LLM attribution is direct. Under 'tail'
-      //     they leave the prefix entirely and ride the tail stitch instead.
-      const skillActive = this._skillInstructions.length > 0;
-      const skillMessages: Message[] =
-        skillActive && this.skillPlacement === 'after_system'
-          ? [{ role: 'system', content: this._skillInstructions }]
-          : [];
-      const skillTailXml =
-        skillActive && this.skillPlacement === 'tail'
-          ? `<skill_instructions skill="${escapeXmlAttribute(this._activeSkill?.name ?? '')}">\n${this._skillInstructions}\n</skill_instructions>`
-          : '';
-
-      // 5c. Guardrail messages (enforce-XML instruction + prefill) — applied
-      //     from the stored options at compile time, closest to generation.
-      //     Independent of setDynamicState call order by design.
-      //     placement 'last_user' routes the enforce-XML text through the
-      //     Assembler tail instead (cache-safe on Anthropic, where system-role
-      //     messages are hoisted into the top-level prefix); only the prefill
-      //     remains as a trailing assistant message in that mode.
-      const guardrailTailMode = this._guardrailOptions?.placement === 'last_user';
-      const guardrailMessages: Message[] = this._guardrailOptions
-        ? this.guardrail.apply(
-            [],
-            guardrailTailMode
-              ? { ...this._guardrailOptions, enforceXML: undefined }
-              : this._guardrailOptions,
-          )
-        : [];
-      const guardrailTailXml =
-        guardrailTailMode && this._guardrailOptions?.enforceXML
-          ? Prompts.getXMLGuardrail(this._guardrailOptions.enforceXML.outputTag)
-          : '';
-
-      // 6. Sandwich assembly
-      let messages = [
-        ...this.systemPrompt,
-        ...skillMessages,
-        ...memoryMessages,
-        ...compressedHistory,
-        ...dynamicState,
-        ...guardrailMessages,
-      ];
-
-      // 7. Transform hook
-      if (this.transformContext) {
-        messages = await this.transformContext(messages);
-      }
-      signal?.throwIfAborted();
-
-      // 8. Assembler: tail injection (volatile content closest to LLM generation
-      //    point) + deterministic key ordering. The stitch is composed in a fixed
-      //    inner order — skill instructions, memory data, dynamic state,
-      //    implicit context, announcements, anchor — so callers reading the
-      //    final user message can rely on the layout.
-      const announcementXml = this._resolveAnnouncementChannels(isAnthropicTarget);
-      const tailParts: string[] = [];
-      // skillPlacement 'tail': standing mode instructions lead the stitch, so
-      // the model reads "who you are right now" before the state it applies to.
-      if (skillTailXml) {
-        tailParts.push(skillTailXml);
-      }
-      if (memoryTailDataXml) {
-        tailParts.push(memoryTailDataXml);
-      }
-      {
-        let dynamicTailAdded = false;
-        if (this.dynamicStatePlacement === 'last_user') {
-          if (this.dynamicStateXml) {
-            tailParts.push(this.dynamicStateXml);
-            dynamicTailAdded = true;
-          }
-          if (implicitContextXml) {
-            tailParts.push(implicitContextXml);
-            dynamicTailAdded = true;
-          }
-        }
-        // Announcements are system-state statements too, so they do trigger the
-        // anchor — unlike skill instructions and memory data.
-        if (announcementXml.tailXml) {
-          tailParts.push(announcementXml.tailXml);
-          dynamicTailAdded = true;
-        }
-        // The anchor refers specifically to dynamic state / implicit context /
-        // announcements. Memory data already self-introduces via
-        // `Prompts.MEMORY_BLOCK_HEADER` ("You recall the following from previous
-        // conversations:"), and skill instructions are self-describing inside
-        // their own tag, so an anchor for those alone is redundant and reads as
-        // noise to the model. If `MEMORY_BLOCK_HEADER` is ever changed or
-        // removed in `prompts.ts`, this suppression rule needs re-evaluating.
-        if (dynamicTailAdded) {
-          tailParts.push('Above is the current system state. Use it to guide your next action.');
-        }
-      }
-      // Guardrail enforce-XML in 'last_user' placement: appended as the FINAL
-      // tail element (after the anchor) — a standing output-format instruction,
-      // not system state, so it sits closest to generation.
-      if (guardrailTailXml) {
-        tailParts.push(guardrailTailXml);
-      }
-      const tailXml = tailParts.join('\n\n');
-      const rawPayload = this.assembler.compile(messages, {
-        tailXml: tailXml || undefined,
+        history: this.history,
+        // The runner's lineage, by reference: an overflow inside this compile
+        // moves it, and the phases after `overflow` must see where it moved to.
+        window: this.janitor.window,
       });
-
-      // 8b. System-channel announcements: ONE positional system message placed
-      //     after the conversational tail of the ASSEMBLED result — deliberately
-      //     after the assembler ran, because the tail stitch either merged into
-      //     the last user message or added a new user message for a tool-result
-      //     tail. Scanning the result puts the announcement after that user
-      //     content (a system message following the user turn is the shape
-      //     Anthropic documents) and still before any trailing assistant
-      //     prefill. Same last-user/tool scan the Assembler uses; kept inline
-      //     rather than widening the Assembler's internal API.
-      const assembled = [...rawPayload.messages];
-      if (announcementXml.systemXml) {
-        let tail = -1;
-        for (let i = assembled.length - 1; i >= 0; i--) {
-          if (assembled[i].role === 'user' || assembled[i].role === 'tool') {
-            tail = i;
-            break;
-          }
-        }
-        if (tail !== -1) {
-          assembled.splice(
-            tail + 1,
-            0,
-            Assembler.orderKeysDeterministically<Message>({
-              role: 'system',
-              content: announcementXml.systemXml,
-              _positional: true,
-            }),
-          );
-        } else {
-          // No conversational tail at all. The degrade below is an
-          // ANTHROPIC-only constraint: a positional system message that
-          // precedes every user turn is invalid on that API, and the
-          // adapter's hoist fallback would land the volatile text back in
-          // the cacheable prefix (the exact failure this channel exists to
-          // avoid). Other targets accept a leading inline system message
-          // (OpenAI natively; Gemini via the adapter's user degrade), so
-          // they keep the positional shape.
-          let insertAt = assembled.length;
-          while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
-          if (isAnthropicTarget) {
-            if (!this._announcementNoTailWarned) {
-              this._announcementNoTailWarned = true;
-              (this.logger ?? console).warn(
-                '[context-chef] system-channel announcements need a conversational tail ' +
-                  '(a user or tool message) to attach after — none exists, and the Anthropic ' +
-                  'API rejects a leading mid-conversation system message, so the announcements ' +
-                  'were delivered as a user message instead (warned once).',
-              );
-            }
-            assembled.splice(
-              insertAt,
-              0,
-              Assembler.orderKeysDeterministically<Message>({
-                role: 'user',
-                content: announcementXml.systemXml,
-              }),
-            );
-          } else {
-            assembled.splice(
-              insertAt,
-              0,
-              Assembler.orderKeysDeterministically<Message>({
-                role: 'system',
-                content: announcementXml.systemXml,
-                _positional: true,
-              }),
-            );
-          }
-        }
+      for (const phase of COMPILE_PHASES) {
+        await phase.run(ctx, this._host);
+        // Abort points are per-phase rather than uniform: these are the
+        // boundaries that follow an await which can take arbitrarily long
+        // (compression model, memory store, user hooks). `start` and
+        // `transform-tool-results` check inside the phase instead.
+        if (ABORT_AFTER_PHASE.has(phase.name)) signal?.throwIfAborted();
       }
-
-      // Pre-flight the positional-system placement contract on the Anthropic
-      // target so the diagnostic reaches THIS chef's logger, once per
-      // instance. The adapter has its own console fallback warning, but the
-      // built-in adapters are process-wide registry singletons — their
-      // warn-once fires for the first chef in the process only, and
-      // ChefConfig.logger never reaches them. Chef-injected announcements
-      // can't trip this (their insertion point is always after a user/tool
-      // message); it catches hand-written `_positional` messages in history.
-      if (isAnthropicTarget && !this._positionalHoistWarned) {
-        for (let i = 0; i < assembled.length; i++) {
-          const msg = assembled[i];
-          if (msg.role !== 'system' || !msg._positional) continue;
-          // Walk back over ALL system messages, not just positional ones —
-          // this mirrors the adapter, which never resets its user-turn
-          // tracking on a system message (a hoisted non-positional system
-          // leaves the wire stream, so adjacency to the user turn survives;
-          // consecutive positional messages form one API section).
-          let j = i - 1;
-          while (j >= 0 && assembled[j].role === 'system') j--;
-          const prev = assembled[j];
-          if (prev && (prev.role === 'user' || prev.role === 'tool')) continue;
-          this._positionalHoistWarned = true;
-          (this.logger ?? console).warn(
-            '[context-chef] a positional system message is not immediately after a user turn — ' +
-              'the Anthropic API rejects it there, so the adapter will hoist it into the ' +
-              'top-level system prompt (its text then sits in the cacheable prefix; ' +
-              'warned once).',
-          );
-          break;
-        }
-      }
-
-      const adapterPayload = adapter.compile(assembled);
-
-      const prunerTools = this._getPrunerTools();
-      const tools = [...prunerTools, ...memoryTools];
-      const meta: CompileMeta = { injectedMemoryKeys, memoryExpiredKeys };
-      if (this._activeSkill) meta.activeSkillName = this._activeSkill.name;
-      const payload: TargetPayload = { ...adapterPayload, meta };
-      if (tools.length > 0) payload.tools = tools;
-
-      // Server-side context management: on the server-managed (Anthropic)
-      // target, carry the edits config + required beta headers in the payload.
-      if (serverManaged) {
-        const server = this.contextManagement?.server ?? {
-          edits: [{ type: 'compact_20260112' }],
-        };
-        const anthropicPayload = payload as AnthropicPayload;
-        anthropicPayload.context_management = server;
-        anthropicPayload.betas = computeAnthropicBetas(server);
-      }
-
-      // 8.5 Optional cache audit (Anthropic target only). Dedupe on the
-      //     semantic issue kind, NOT the position: as history grows the same
-      //     misconfiguration drifts through message indices, and a positional
-      //     key would re-warn every compile and grow the seen-set unboundedly.
-      //     The kind space is fixed (markers × placements), so the set is
-      //     bounded too.
-      if (this.cacheAudit && isAnthropicTarget) {
-        for (const issue of auditAnthropicCachePlacement(payload as AnthropicPayload)) {
-          const key = issue.dedupeKey;
-          if (!this._cacheAuditWarned.has(key)) {
-            this._cacheAuditWarned.add(key);
-            (this.logger ?? console).warn(
-              `[context-chef] cache audit — ${issue.location}: ${issue.message}`,
-            );
-          }
-        }
-      }
-
-      // 9. Emit compile:done
-      await this.emitter.emit('compile:done', { payload }, signal);
-
-      return payload;
+      return ctx.requirePayload();
     } finally {
       this._currentSignal = prevSignal;
       if (isOutermostCompile) this._compiling = false;

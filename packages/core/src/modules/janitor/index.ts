@@ -1,10 +1,67 @@
+import { readAnchorDoc } from '../../overflow/anchored';
+import type { BackgroundOverflowStrategy } from '../../overflow/background';
+import { resolveOverflowStrategy } from '../../overflow/resolve';
+import { renderSummaryMessage } from '../../overflow/summary';
+import {
+  buildToolNameMap,
+  collectPinnedTurnIndices,
+  extractPinnedMessages,
+} from '../../overflow/turns';
+import {
+  advanceWindow,
+  type BudgetInfo,
+  type CompressionArchiveConfig,
+  createWindowLineage,
+  type OverflowInput,
+  type OverflowResult,
+  type OverflowRunner,
+  type OverflowStrategy,
+  type WindowLineage,
+} from '../../overflow/types';
 import { Prompts } from '../../prompts';
 import type { ChefLogger, CompactOptions, Message } from '../../types';
 import { estimateObject } from '../../utils/tokenUtils';
+import { LEGACY_VOCABULARY, type Vocabulary } from '../../vocabulary';
 
-const DEFAULT_PRESERVE_RATIO = 0.8;
-const DEFAULT_PRESERVE_RECENT_MESSAGES = 1;
+/**
+ * Turn grouping, pinning and the summarization primitives live in
+ * `src/overflow/` since 4.2 — every strategy shares them. Re-exported here so
+ * the 4.x import paths keep resolving.
+ */
+export { type SummarizeHistoryOptions, summarizeHistory } from '../../overflow/summary';
+export {
+  buildToolNameMap,
+  groupIntoTurns,
+  partitionPinnedMessages,
+  type Turn,
+} from '../../overflow/turns';
+export type {
+  BudgetInfo,
+  CompressionArchiveConfig,
+  OverflowInput,
+  OverflowResult,
+  OverflowStrategy,
+  WindowLineage,
+};
+
 const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
+
+/**
+ * The diagnostic for the library's most damaging silent-failure mode: with
+ * neither a tokenizer nor a compression model, the `feedTokenUsage` path drops
+ * the oldest span behind a placeholder summary instead of compressing it.
+ *
+ * Shared with `ContextChef`, which builds its Janitor with a resolved strategy
+ * always set and so has to make the same call itself, on the config the user
+ * actually wrote.
+ *
+ * @internal
+ */
+export const NO_COMPRESSION_MODEL_WARNING =
+  '[Janitor] Warning: No tokenizer and no compressionModel configured. ' +
+  'In the feedTokenUsage path, compression without a compressionModel will discard old messages ' +
+  'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.';
+
 /**
  * Compression triggers at this fraction of `contextWindow` by default.
  * "Pre-rot": model quality degrades well before the hard window limit, so
@@ -12,19 +69,6 @@ const MAX_CONSECUTIVE_COMPRESSION_FAILURES = 3;
  * `triggerRatio: 1` to restore the pre-4.0 trigger-at-window behavior.
  */
 const DEFAULT_TRIGGER_RATIO = 0.7;
-/**
- * A compression result must shrink the compressed span's character length by
- * at least this ratio by default, or it is treated as a failed compression.
- * Guards against the "compression that doesn't shrink" death loop observed in
- * production agents (each turn re-triggers compression, costs grow unbounded).
- */
-const DEFAULT_MIN_SHRINK_RATIO = 0.5;
-/**
- * The shrink guard only applies to spans at least this long. A tiny span
- * cannot meaningfully shrink below a well-formed summary's natural length,
- * and the death-loop scenario the guard prevents only occurs on large spans.
- */
-const MIN_SHRINK_GUARD_SPAN_CHARS = 2000;
 
 /** Strips `<think>...</think>` reasoning blocks emitted inline by some reasoning models. */
 const REASONING_TAG_RE = /<think>[\s\S]*?<\/think>/gi;
@@ -62,194 +106,6 @@ export function flattenForCompression(
     const role =
       m.role === 'system' || m.role === 'user' || m.role === 'assistant' ? m.role : 'user';
     return { role, content: m.content };
-  });
-}
-
-// ─── Turn-based grouping ───
-
-export interface Turn {
-  startIndex: number;
-  endIndex: number; // exclusive
-}
-
-/**
- * Groups a flat message array into atomic "turns."
- *
- * Grouping rules:
- * - user message → single-message turn
- * - system message → single-message turn
- * - assistant (no tool_calls) → single-message turn
- * - assistant (with tool_calls) + all subsequent tool results → one atomic turn
- *
- * Splitting on turn boundaries guarantees tool pair integrity and
- * eliminates the need for post-hoc adjustSplitIndex corrections.
- */
-export function groupIntoTurns(history: Message[]): Turn[] {
-  const turns: Turn[] = [];
-  let i = 0;
-
-  while (i < history.length) {
-    const msg = history[i];
-
-    if (msg.role === 'assistant' && msg.tool_calls?.length) {
-      // Atomic turn: assistant + all subsequent tool results
-      const start = i;
-      i++;
-      while (i < history.length && history[i].role === 'tool') {
-        i++;
-      }
-      turns.push({ startIndex: start, endIndex: i });
-    } else {
-      // Single-message turn: user, system, or plain assistant
-      turns.push({ startIndex: i, endIndex: i + 1 });
-      i++;
-    }
-  }
-
-  return turns;
-}
-
-// ─── Constraint pinning ───
-
-/**
- * Returns the set of message indices protected by pinning, turn-scoped:
- * pinning any message of an atomic turn protects every message of that turn,
- * so an assistant+tool_calls unit and its tool results stay coherent.
- */
-function collectPinnedTurnIndices(history: Message[]): Set<number> {
-  const pinned = new Set<number>();
-  // Fast path: no pinned messages at all (the common case) — skip grouping.
-  if (!history.some((m) => m.pinned)) return pinned;
-  for (const turn of groupIntoTurns(history)) {
-    let hasPinned = false;
-    for (let i = turn.startIndex; i < turn.endIndex; i++) {
-      if (history[i].pinned) {
-        hasPinned = true;
-        break;
-      }
-    }
-    if (hasPinned) {
-      for (let i = turn.startIndex; i < turn.endIndex; i++) pinned.add(i);
-    }
-  }
-  return pinned;
-}
-
-/**
- * Content-equivalence check for the background-compression staleness test.
- * Object identity alone is too brittle — pipeline stages (transformToolResult,
- * compact) may recreate message objects without changing their meaning, and a
- * recreated-but-identical boundary must not discard a finished job.
- */
-function messagesEquivalent(a: Message | undefined, b: Message | undefined): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  return a.role === b.role && a.content === b.content && a.tool_call_id === b.tool_call_id;
-}
-
-/** Extracts the pinned (turn-scoped) messages of a slice, in original order. */
-function extractPinnedMessages(messages: Message[]): Message[] {
-  const indices = collectPinnedTurnIndices(messages);
-  if (indices.size === 0) return [];
-  return messages.filter((_, i) => indices.has(i));
-}
-
-/**
- * Splits a slice into its pinned (turn-scoped) messages and the rest, both in
- * original order. Used by durable compaction to move pinned turns out of the
- * summarize range so they survive verbatim.
- */
-export function partitionPinnedMessages(messages: Message[]): {
-  pinned: Message[];
-  rest: Message[];
-} {
-  const indices = collectPinnedTurnIndices(messages);
-  if (indices.size === 0) return { pinned: [], rest: messages };
-  const pinned: Message[] = [];
-  const rest: Message[] = [];
-  messages.forEach((m, i) => {
-    (indices.has(i) ? pinned : rest).push(m);
-  });
-  return { pinned, rest };
-}
-
-// ─── Attachment stripping for compression ───
-
-/**
- * Replaces media attachments with text placeholders for the compression model.
- *
- * The compression model never sees binary attachment data — it only sees text
- * markers like `[image]` or `[document: report.pdf]` prepended to the message
- * content. This avoids shipping base64 payloads through the compression call
- * (which can balloon token cost and trip prompt-too-long limits on the
- * compression call itself), while still letting the summarizer note that
- * media existed at this point in the conversation.
- *
- * Pure function — does not mutate the input array or any Message inside it.
- * Messages without attachments pass through by reference (no allocation).
- *
- * Modeled on Claude Code's `stripImagesFromMessages` strategy.
- */
-function stripAttachmentsForCompression(messages: Message[]): Message[] {
-  return messages.map((msg) => {
-    if (!msg.attachments?.length) return msg;
-
-    const placeholders = msg.attachments
-      .map((att) => Prompts.getAttachmentPlaceholder(att.mediaType, att.filename))
-      .join('\n');
-    const newContent = msg.content ? `${placeholders}\n${msg.content}` : placeholders;
-
-    const { attachments: _attachments, ...rest } = msg;
-    return { ...rest, content: newContent };
-  });
-}
-
-/**
- * Builds a map from `tool_call_id` → tool name by walking the messages and
- * collecting the names declared on every assistant turn's `tool_calls`.
- * The same map covers all tool messages because tool_call ids are unique
- * per invocation.
- */
-export function buildToolNameMap(messages: Message[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const m of messages) {
-    if (m.role === 'assistant' && m.tool_calls) {
-      for (const tc of m.tool_calls) {
-        map.set(tc.id, tc.function.name);
-      }
-    }
-  }
-  return map;
-}
-
-/**
- * Replaces large tool-result content with a metadata stub for the
- * compression model.
- *
- * The summarizer only needs to know "what happened" at each turn — feeding
- * it 87 KB of raw `fs_read` output wastes tokens and tends to drown the
- * actual conversation arc in noise. Each oversized tool message is
- * rewritten to a one-line stub like
- * `[Tool fs_read returned 87123 chars; omitted before summarization]`,
- * preserving tool name + size so the summary can still reference the
- * operation meaningfully. tool_use ↔ tool_result pairing is structurally
- * preserved.
- *
- * Tool name is resolved from the preceding assistant turn's
- * `tool_calls[].function.name` via `tool_call_id` — falls back to
- * `'unknown'` if the link is missing.
- *
- * Pure function — does not mutate inputs. Only acts on `role: 'tool'`
- * messages whose content length exceeds `threshold`.
- */
-function stripLargeToolResultsForCompression(messages: Message[], threshold: number): Message[] {
-  const nameMap = buildToolNameMap(messages);
-  return messages.map((msg) => {
-    if (msg.role !== 'tool') return msg;
-    if (msg.content.length <= threshold) return msg;
-    const name = (msg.tool_call_id && nameMap.get(msg.tool_call_id)) ?? 'unknown';
-    const stub = `[Tool ${name} returned ${msg.content.length} chars; omitted before summarization]`;
-    return { ...msg, content: stub };
   });
 }
 
@@ -295,19 +151,26 @@ export interface CompressionDetails {
 }
 
 /**
- * Where compressed spans are archived for reversible compression.
- * `store` receives the serialized span (`JSON.stringify({version: 1, messages})`)
- * and returns a URI the summary will cite (e.g. `context://vfs/...`).
- */
-export interface CompressionArchiveConfig {
-  store: (serialized: string, meta: { messageCount: number }) => string | Promise<string>;
-}
-
-/**
  * Fields shared by every JanitorConfig variant. Not exported on its own —
  * downstream callers should use {@link JanitorConfig}.
  */
 interface JanitorConfigBase {
+  /**
+   * The overflow policy: what leaves the window when the budget is blown.
+   *
+   * Defaults to the policy described by the `compression*` fields below —
+   * `summarize()`, or `anchored()` under `compressionMode:
+   * 'incremental-anchored'`, wrapped in `background()` under
+   * `compressionScheduling: 'background'`. Setting this REPLACES them; the
+   * runner concerns (`contextWindow`, `tokenizer`, `triggerRatio`,
+   * `usagePreference`, `archive`, `onCompress`, `onBeforeCompress`) keep
+   * applying whatever the strategy is.
+   *
+   * @example
+   * strategy: chain(summarize({ compressionModel }), reset())
+   */
+  strategy?: OverflowStrategy;
+
   /**
    * The model's context window size (in tokens).
    * Compression is triggered when token usage exceeds
@@ -360,6 +223,10 @@ interface JanitorConfigBase {
    *   merges it into the anchor. Avoids the drift/loss of repeated whole-
    *   summary rewrites and keeps the summary prefix stable for caching.
    *   The anchor survives snapshot()/restore() and clears on reset().
+   *
+   * @deprecated Use `overflow.strategy` — `summarize(opts)` for `'rewrite'`,
+   * `anchored(opts)` for `'incremental-anchored'`. This field builds exactly
+   * that and keeps working; it is removed in 5.0.
    */
   compressionMode?: 'rewrite' | 'incremental-anchored';
 
@@ -370,9 +237,12 @@ interface JanitorConfigBase {
    *   UNCHANGED and starts summarization in the background; a later
    *   `compress()` call swaps the finished summary in, but only if the
    *   compressed span is still a prefix of the current history (checked by
-   *   message identity) — otherwise the result is discarded and the budget
+   *   content equivalence) — otherwise the result is discarded and the budget
    *   is re-evaluated fresh. Background state does not survive
    *   snapshot()/restore().
+   *
+   * @deprecated Use `overflow.strategy: background(<strategy>)`. This field
+   * applies exactly that wrapper and keeps working; it is removed in 5.0.
    */
   compressionScheduling?: 'blocking' | 'background';
 
@@ -398,6 +268,10 @@ interface JanitorConfigBase {
    * the object form with an explicit `store`. Archiving is best-effort: a
    * failing store logs a warning and the compression proceeds without a
    * citation.
+   *
+   * @deprecated Use `overflow.archive` — archiving is strategy-agnostic now
+   * (whatever a strategy evicts is what gets stored). This field is the same
+   * setting under its old name and keeps working; it is removed in 5.0.
    */
   archive?: CompressionArchiveConfig | 'vfs';
 
@@ -490,6 +364,15 @@ interface JanitorConfigBase {
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
   ) => Message[] | null | undefined | Promise<Message[] | null | undefined>;
+
+  /**
+   * The wording the summary that replaces a compressed span is written in.
+   * `ContextChef` passes the vocabulary it resolved from `ChefConfig.tools`;
+   * a standalone Janitor leaves it unset and keeps the 4.x wrapper.
+   *
+   * @internal
+   */
+  vocabulary?: Vocabulary;
 }
 
 /**
@@ -538,8 +421,25 @@ export interface JanitorSnapshot {
   externalTokenUsage: number | null;
   suppressNextCompression: boolean;
   consecutiveFailures: number;
-  /** Persistent anchor document ('incremental-anchored' mode). Null when absent. */
+  /**
+   * Persistent anchor document ('incremental-anchored' mode). Null when absent.
+   *
+   * @deprecated Read {@link strategy} instead — this is the anchored
+   * strategy's state lifted to a named field, kept so snapshots taken before
+   * 4.2 still restore their anchor.
+   */
   anchorDoc?: string | null;
+  /**
+   * Opaque state of the installed {@link OverflowStrategy}
+   * (`strategy.snapshot()`). Absent for stateless strategies. Must stay
+   * structured-clonable: consumers persist whole snapshots.
+   */
+  strategy?: unknown;
+  /**
+   * The window lineage at snapshot time. Absent in snapshots taken before
+   * 4.2 — those restore onto a fresh lineage.
+   */
+  window?: WindowLineage;
 }
 
 /**
@@ -633,115 +533,46 @@ export function compactMessages(history: Message[], options: CompactOptions): Me
     return result;
   });
 }
-
-export interface SummarizeHistoryOptions {
-  /** Extra instructions appended to (not replacing) the default compaction
-   *  prompt — the default <analysis>/<summary> scaffolding is always kept. */
-  customCompressionInstructions?: string;
-  /** Replace tool-result content longer than this many chars with a one-line
-   *  metadata stub before summarizing (saves summarizer tokens). */
-  toolResultStubThreshold?: number;
-  /** Numbered domain guidelines injected after the base instruction and
-   *  before customCompressionInstructions. See JanitorConfig.compressionGuidelines. */
-  compressionGuidelines?: string[];
-  /** Replace the BASE instruction (default CONTEXT_COMPACTION_INSTRUCTION).
-   *  The replacement must keep the <analysis>/<summary> output contract —
-   *  used internally for the anchored-compaction instruction. */
-  baseInstruction?: string;
-}
-
 /**
- * Produce a compression summary for a slice of conversation `messages`, using
- * the same pipeline as the in-flight `compress` path: tool-result stubbing →
- * attachment stripping → trailing instruction → `<summary>` extraction. Returns
- * the extracted summary text (after `formatCompactSummary` strips `<analysis>`
- * and unwraps `<summary>`) — the caller wraps it (e.g. with
- * `Prompts.getCompactSummaryWrapper`) if it wants the continuation framing.
+ * The overflow runner.
  *
- * Stateless: no circuit breaker, no fallback. THROWS if `compress` throws —
- * callers decide their own degradation. `Janitor.executeCompression` delegates
- * here and keeps its own try/catch + circuit breaker.
- *
- * An empty `messages` slice returns `''` without invoking `compress`.
- *
- * @param messages   The slice to summarize (conversation only; exclude the
- *                   standing system prompt).
- * @param compress   Model callback `(messages) => Promise<string>`. It MUST
- *                   map `tool` roles and assistant tool-calls to plain
- *                   user/assistant text — providers reject raw `tool` roles, so
- *                   a naive passthrough will break on tool messages. If you use
- *                   ai-sdk-middleware, call `summarizeMessages(prompt, model)`
- *                   instead of building this manually; its internal
- *                   `createCompressionAdapter` is the reference flattener.
+ * Everything that is true of *any* overflow policy lives here: reading the
+ * token budget, deciding that the window is over it, running the installed
+ * {@link OverflowStrategy}, archiving what left, reporting the boundary
+ * through `onCompress`, and the circuit breaker that stops a broken
+ * compression model from being hammered every turn. What to actually drop or
+ * rewrite is the strategy's business — see `src/overflow/`.
  */
-export async function summarizeHistory(
-  messages: Message[],
-  compress: (messages: Message[]) => Promise<string>,
-  opts: SummarizeHistoryOptions = {},
-): Promise<string> {
-  if (messages.length === 0) return '';
-
-  let instruction = opts.baseInstruction ?? Prompts.CONTEXT_COMPACTION_INSTRUCTION;
-  const guidelines = (opts.compressionGuidelines ?? []).map((g) => g.trim()).filter(Boolean);
-  if (guidelines.length > 0) {
-    instruction += `\n\nDomain Guidelines:\n${guidelines.map((g, i) => `${i + 1}. ${g}`).join('\n')}`;
-  }
-  const extra = opts.customCompressionInstructions?.trim();
-  if (extra) {
-    instruction += `\n\nAdditional Instructions:\n${extra}`;
-  }
-
-  const stubbed =
-    opts.toolResultStubThreshold !== undefined
-      ? stripLargeToolResultsForCompression(messages, opts.toolResultStubThreshold)
-      : messages;
-
-  const compressionMessages: Message[] = [
-    ...stripAttachmentsForCompression(stubbed),
-    { role: 'user', content: instruction },
-  ];
-
-  const raw = await compress(compressionMessages);
-  return Prompts.formatCompactSummary(raw);
-}
-
-/** In-flight background compression job (compressionScheduling: 'background'). */
-interface BackgroundCompressionJob {
-  settled: boolean;
-  /** Head to splice in ([summaryMessage, ...pinned]) or null on failure. */
-  head: Message[] | null;
-  /** Anchor update to apply at swap time ('incremental-anchored' mode). */
-  anchorUpdate: string | null;
-  splitIndex: number;
-  firstMessage: Message | undefined;
-  lastCompressedMessage: Message;
-  toCompress: Message[];
-}
-
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
   /** Suppresses the next compression check after a successful compression (E10). */
   private _suppressNextCompression = false;
   /**
-   * Circuit breaker counter — incremented on compressionModel failure, reset on success.
-   * When it reaches MAX_CONSECUTIVE_COMPRESSION_FAILURES, compress() becomes a no-op
-   * to prevent hammering a broken compression model on every turn.
+   * Circuit breaker counter — incremented when the strategy rejects a
+   * compression, reset when it produces a usable one. At
+   * MAX_CONSECUTIVE_COMPRESSION_FAILURES, compress() becomes a no-op to
+   * prevent hammering a broken compression model on every turn.
    */
   private _consecutiveFailures = 0;
-  /** Persistent anchor document ('incremental-anchored' mode). */
-  private _anchorDoc: string | null = null;
-  /** Pending background summarization ('background' scheduling). Not snapshotted. */
-  private _pendingBackground?: BackgroundCompressionJob;
+  /** The installed overflow policy. */
+  private readonly _strategy: OverflowStrategy;
+  /**
+   * The window lineage of this session. The runner owns it because the runner
+   * is what decides that an overflow actually landed: it moves forward at
+   * commit time, never on a result that was computed and then discarded.
+   */
+  private _window: WindowLineage;
+  /** The wording landed summaries are rendered in. */
+  private readonly _vocabulary: Vocabulary;
 
   constructor(private config: JanitorConfig) {
-    // Warn if feedTokenUsage path is likely used without a compressionModel
-    if (!config.tokenizer && !config.compressionModel) {
-      (config.logger ?? console).warn(
-        '[Janitor] Warning: No tokenizer and no compressionModel configured. ' +
-          'In the feedTokenUsage path, compression without a compressionModel will discard old messages ' +
-          'with only a placeholder summary. Consider providing a compressionModel for meaningful context preservation.',
-      );
+    // The feedTokenUsage path with nothing to compress with. ContextChef
+    // always installs a resolved strategy, so this only ever fires for a
+    // standalone Janitor — the chef makes the same call itself, against the
+    // strategy the USER supplied rather than the resolved one.
+    if (!config.tokenizer && !config.compressionModel && !config.strategy) {
+      (config.logger ?? console).warn(NO_COMPRESSION_MODEL_WARNING);
     }
     if (config.archive === 'vfs') {
       (config.logger ?? console).warn(
@@ -750,6 +581,19 @@ export class Janitor {
           'explicit { store } to archive on a standalone Janitor.',
       );
     }
+
+    this._vocabulary = config.vocabulary ?? LEGACY_VOCABULARY;
+    this._strategy = config.strategy ?? resolveOverflowStrategy(config);
+    this._strategy.attach?.(this._createRunner());
+    this._window = createWindowLineage();
+  }
+
+  /**
+   * The window lineage this runner is on. Live — `current` moves as overflows
+   * land, so hold the object rather than a copy of `current`.
+   */
+  public get window(): WindowLineage {
+    return this._window;
   }
 
   /** Resolved archive config — the 'vfs' shorthand is only usable via ContextChef wiring. */
@@ -757,22 +601,74 @@ export class Janitor {
     return typeof this.config.archive === 'object' ? this.config.archive : undefined;
   }
 
-  public snapshotState(): JanitorSnapshot {
+  private get _logger(): ChefLogger {
+    return this.config.logger ?? console;
+  }
+
+  /**
+   * The services the installed strategy reports through. Failure accounting is
+   * the runner's (one breaker per Janitor, whatever strategy is installed);
+   * only the strategy knows what counts as a failure.
+   */
+  private _createRunner(): OverflowRunner {
+    const janitor = this;
     return {
+      fail(reason, ...details) {
+        janitor._consecutiveFailures++;
+        janitor._logger.warn(
+          `[context-chef] ${reason} — history left unchanged ` +
+            `(failure ${janitor._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
+          ...details,
+        );
+      },
+      succeed() {
+        janitor._consecutiveFailures = 0;
+      },
+      get logger() {
+        return janitor._logger;
+      },
+    };
+  }
+
+  /**
+   * The in-flight background job, when `background()` is the installed
+   * strategy — bookkeeping only, and named for the 4.1 field it replaces.
+   *
+   * @internal
+   */
+  public get _pendingBackground(): { settled: boolean } | undefined {
+    return (this._strategy as Partial<BackgroundOverflowStrategy>).pendingJob;
+  }
+
+  public snapshotState(): JanitorSnapshot {
+    const strategy = this._strategy.snapshot?.();
+    const snapshot: JanitorSnapshot = {
       externalTokenUsage: this._externalTokenUsage,
       suppressNextCompression: this._suppressNextCompression,
       consecutiveFailures: this._consecutiveFailures,
-      anchorDoc: this._anchorDoc,
+      anchorDoc: readAnchorDoc(strategy),
+      // Copied: the lineage keeps moving after the snapshot is taken, and a
+      // snapshot that moved with it would restore the wrong window.
+      window: { ...this._window },
     };
+    if (strategy !== undefined) snapshot.strategy = strategy;
+    return snapshot;
   }
 
   public restoreState(state: JanitorSnapshot): void {
     this._externalTokenUsage = state.externalTokenUsage;
     this._suppressNextCompression = state.suppressNextCompression;
     this._consecutiveFailures = state.consecutiveFailures ?? 0;
-    this._anchorDoc = state.anchorDoc ?? null;
-    // A pending background job belongs to the pre-restore timeline — drop it.
-    this._pendingBackground = undefined;
+    // A snapshot taken before 4.2 has no lineage. Restoring one starts a fresh
+    // one rather than keeping this runner's: the restored history is not the
+    // history the current window was built from.
+    this._window = state.window ? { ...state.window } : createWindowLineage();
+    // Pre-4.2 snapshots carry only the anchor document; from 4.2 the strategy
+    // round-trips its own opaque state. A pending background job belongs to
+    // the pre-restore timeline — the strategy drops it.
+    this._strategy.restore?.(
+      state.strategy ?? (state.anchorDoc == null ? undefined : { anchorDoc: state.anchorDoc }),
+    );
   }
 
   /**
@@ -783,13 +679,16 @@ export class Janitor {
     this._externalTokenUsage = null;
     this._suppressNextCompression = false;
     this._consecutiveFailures = 0;
-    this._anchorDoc = null;
-    this._pendingBackground = undefined;
+    // A cleared history is a new conversation, not a continuation of the old
+    // window chain — the lineage starts over with it.
+    this._window = createWindowLineage();
+    // `restore(undefined)` is the strategies' "back to initial" contract.
+    this._strategy.restore?.(undefined);
   }
 
   /** Current anchor document ('incremental-anchored' mode), for observability. */
   public getAnchorDoc(): string | null {
-    return this._anchorDoc;
+    return readAnchorDoc(this._strategy.snapshot?.());
   }
 
   /**
@@ -803,127 +702,267 @@ export class Janitor {
   }
 
   /**
-   * Compresses the rolling history when token budget is exceeded.
+   * Reads the token budget without touching any state.
    *
-   * Two paths:
-   * - Tokenizer path: precise splitIndex based on per-turn token costs.
-   * - FeedTokenUsage path: full compression, keeping only the last N turns.
-   *
-   * Structured in three phases: `_prepareCompression` (budget evaluation +
-   * developer hook), `_summarize` (model call + quality guards + archive),
-   * and finalization (summary application + onCompress + suppression), which
-   * runs inline here for blocking scheduling or in `_trySwapInBackgroundResult`
-   * for background scheduling.
-   *
-   * Guarantees:
-   * - Pinned (turn-scoped) messages inside the compressed span are re-inserted
-   *   verbatim after the summary, never summarized away.
-   * - A failed/rejected/non-shrinking summary leaves history UNCHANGED and
-   *   counts toward the circuit breaker; after
-   *   MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive failures compress()
-   *   short-circuits entirely.
+   * The number the overflow decision is made against, exposed so observers
+   * (the `before-overflow` slot) see the same figures the runner does. Unlike
+   * the decision itself it does NOT consume the fed usage value, so it can be
+   * called any number of times per turn.
    */
-  public async compress(history: Message[]): Promise<Message[]> {
-    // 0. Background job bookkeeping (background scheduling only)
-    const swapped = await this._trySwapInBackgroundResult(history);
-    if (swapped) return swapped;
-    if (this._pendingBackground) {
-      // Job still running — don't stack a second evaluation on top of it.
-      return history;
+  public readBudget(history: Message[]): BudgetInfo {
+    const limit = this.config.contextWindow;
+    const trigger = limit * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
+    const fedTokens = this._externalTokenUsage;
+
+    let current: number;
+    if (this.config.tokenizer) {
+      const tokenizerTokens = this.config.tokenizer(history);
+      // Trigger source selection — see UsagePreferenceWithTokenizer JSDoc for
+      // when each branch is the right call. Default 'max' preserves the
+      // historical Math.max behavior for callers that do not opt in.
+      switch (this.config.usagePreference ?? 'max') {
+        case 'feedFirst':
+          current = fedTokens ?? tokenizerTokens;
+          break;
+        case 'tokenizerFirst':
+          current = tokenizerTokens;
+          break;
+        default:
+          current = Math.max(tokenizerTokens, fedTokens ?? 0);
+      }
+    } else {
+      current = fedTokens ?? estimateObject(history);
     }
 
-    // Circuit breaker: bail out if compression is consistently failing.
-    if (this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
-      return history;
-    }
-
-    // 1. Prepare: budget evaluation + onBeforeCompress hook
-    const prepared = await this._prepareCompression(history);
-    if (prepared.splitIndex === null) return prepared.history;
-    const { splitIndex } = prepared;
-    history = prepared.history;
-
-    const toCompress = history.slice(0, splitIndex);
-    const toKeep = history.slice(splitIndex);
-    if (toCompress.length === 0) return history;
-
-    // Pinned (turn-scoped) messages survive verbatim in all outcomes below.
-    const pinned = extractPinnedMessages(toCompress);
-
-    // 2a. No compression model: drop the span (placeholder summary via
-    //     onCompress only), keeping pinned messages.
-    if (!this.config.compressionModel) {
-      await this._fireOnCompress(
-        { role: 'system', content: Prompts.getFallbackCompressionSummary(toCompress.length) },
-        toCompress.length,
-        { compressedMessages: toCompress },
-      );
-      this._suppressNextCompression = true;
-      return [...pinned, ...toKeep];
-    }
-
-    // 2b. Background scheduling: kick the summarization off and return
-    //     history unchanged; a later compress() call swaps the result in.
-    if ((this.config.compressionScheduling ?? 'blocking') === 'background') {
-      this._startBackgroundJob(history, toCompress, splitIndex, pinned);
-      return history;
-    }
-
-    // 2c. Blocking: summarize now.
-    const result = await this._summarize(toCompress, toKeep);
-    if (result === null) return history; // guard/model failure — unchanged
-
-    // 3. Finalize (anchor updates apply only when the summary is applied)
-    this._applyAnchorUpdate(result.anchorUpdate);
-    await this._fireOnCompress(result.summaryMessage, toCompress.length, {
-      compressedMessages: toCompress,
-    });
-    this._suppressNextCompression = true;
-    return [result.summaryMessage, ...pinned, ...toKeep];
+    return { limit, current, trigger, remaining: trigger - current };
   }
 
   /**
-   * Phase 1: evaluates the budget and runs the onBeforeCompress hook.
-   * Returns the (possibly hook-modified) history and the split index, or
-   * `splitIndex: null` when no compression is needed.
+   * Compresses the rolling history when the token budget is exceeded.
+   *
+   * {@link overflow} without the reporting — kept as the 4.x entry point.
+   *
+   * @param options `force: true` applies the strategy whatever the budget says
+   *   (`chef.requestNewContext()` / the `new_context` tool).
    */
-  private async _prepareCompression(
+  public async compress(history: Message[], options: { force?: boolean } = {}): Promise<Message[]> {
+    return (await this.overflow(history, options)).history;
+  }
+
+  /**
+   * One overflow pass: budget evaluation → `onBeforeCompress` → the installed
+   * strategy → archive → `onCompress`.
+   *
+   * Guarantees, whatever the strategy:
+   * - Pinned (turn-scoped) messages are handed to the strategy separately and
+   *   are expected back verbatim; the built-ins re-insert them after the
+   *   summary and never evict them.
+   * - A rejected compression leaves history UNCHANGED and counts toward the
+   *   circuit breaker; after MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive
+   *   failures this becomes a no-op until the next success or an explicit
+   *   reset()/restoreState().
+   * - The window lineage moves forward exactly when a result lands, so
+   *   `windowId` identifies a window that really existed.
+   *
+   * @param options `force: true` skips the budget test (and the one-shot
+   *   post-compression suppression) and applies the strategy regardless — the
+   *   `new_context` path. The circuit breaker still applies: a strategy that
+   *   just failed three times in a row does not get hammered on request.
+   */
+  public async overflow(
     history: Message[],
-  ): Promise<{ history: Message[]; splitIndex: number | null }> {
-    const evaluation = this.evaluateBudget(history);
-    if (evaluation === null) return { history, splitIndex: null };
+    options: { signal?: AbortSignal; force?: boolean } = {},
+  ): Promise<OverflowResult> {
+    const { signal, force = false } = options;
+    const idle = (reason: string, current: Message[] = history): OverflowResult => ({
+      history: current,
+      evicted: [],
+      span: [],
+      meta: {
+        strategy: this._strategy.name,
+        windowId: this._window.current,
+        changed: false,
+        reason,
+      },
+    });
 
-    let { splitIndex } = evaluation;
-    const { currentTokens, limit } = evaluation;
+    // A background job that finished is offered the window whatever the budget
+    // says: it was over budget when the job started, the summary is already
+    // paid for, and holding it means the model keeps paying for the span it
+    // replaces. Asked before the circuit breaker, as it was before 4.2 — the
+    // breaker is there to stop a broken model being hammered, not to hold back
+    // a result that already succeeded.
+    const pendingSwap = history.length > 0 && this._strategy.pending?.() === true;
 
-    // Fire onBeforeCompress hook — developer gets a chance to intervene
-    const hook = this.config.onBeforeCompress;
-    if (hook) {
-      let modified: Message[] | null | undefined;
-      try {
-        modified = await hook(history, { currentTokens, limit });
-      } catch (error) {
-        // Same degradation stance as onCompress: a broken hook must not fail
-        // compile(). A throw is treated as "return null" — the failure recipe
-        // the return contract already documents — so default compression
-        // proceeds.
-        (this.config.logger ?? console).warn(
-          '[context-chef] onBeforeCompress hook threw — proceeding with default compression',
-          error,
-        );
-        modified = null;
-      }
-
-      if (modified != null) {
-        // Re-evaluate with the developer-modified history
-        const reEval = this.evaluateBudget(modified);
-        if (reEval === null) return { history: modified, splitIndex: null };
-        history = modified;
-        splitIndex = reEval.splitIndex;
-      }
+    // Circuit breaker: bail out if compression is consistently failing.
+    if (!pendingSwap && this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
+      return idle(
+        `circuit breaker open after ${MAX_CONSECUTIVE_COMPRESSION_FAILURES} consecutive compression failures`,
+      );
     }
 
-    return { history, splitIndex };
+    const prepared = await this._prepareOverflow(history, force);
+    // The swap-in path runs under a plain reading: `_prepareOverflow` declined
+    // to overflow, and the strategy is being called only to let the finished
+    // job in.
+    const budget = prepared.budget ?? (pendingSwap ? this.readBudget(prepared.history) : null);
+    if (!budget) {
+      return idle(
+        force ? 'nothing to overflow — history is empty' : 'within budget',
+        prepared.history,
+      );
+    }
+
+    const result = await this._strategy.apply({
+      history: prepared.history,
+      budget,
+      tokenizer: this.config.tokenizer ?? estimateObject,
+      pinned: extractPinnedMessages(prepared.history),
+      window: this._window,
+      forced: force,
+      signal,
+    });
+    if (!result.meta.changed) return result;
+
+    // This result is entering the window: it closes the window the strategy
+    // worked on and opens the next one. Advanced before `commit` so state the
+    // strategy derives from its own output (an anchor document) is filed under
+    // the window that will read it back — and only ever for a result that
+    // landed, since a stale background job reports `changed: false` and never
+    // reaches this line.
+    advanceWindow(this._window);
+    this._strategy.commit?.(result);
+
+    // Archive is strategy-agnostic: whatever the strategy compressed is what
+    // gets stored, and the citation goes back into the summary that replaced it.
+    const archived = await this._landResult(result);
+    // `span` over `evicted`: the boundary the hook is told about is the span
+    // the summary replaced, pinned messages included. They stayed in the
+    // window, but they are part of what the summary now stands for, and a sink
+    // persisting `compressedMessages` must not lose them.
+    const span = archived.span;
+    await this._fireOnCompress(
+      archived.summary === undefined
+        ? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) }
+        : archived.history[0],
+      span.length,
+      { compressedMessages: span },
+    );
+    this._suppressNextCompression = true;
+    return archived;
+  }
+
+  /**
+   * Budget evaluation plus the onBeforeCompress hook. `budget: null` means no
+   * overflow is needed — `history` is still returned because the hook may have
+   * replaced it on the way.
+   */
+  private async _prepareOverflow(
+    history: Message[],
+    force: boolean,
+  ): Promise<{ history: Message[]; budget: BudgetInfo | null }> {
+    const budget = this._evaluateBudget(history, force);
+    if (!budget) return { history, budget: null };
+
+    const hook = this.config.onBeforeCompress;
+    if (!hook) return { history, budget };
+
+    // Fire onBeforeCompress hook — developer gets a chance to intervene
+    let modified: Message[] | null | undefined;
+    try {
+      modified = await hook(history, { currentTokens: budget.current, limit: budget.trigger });
+    } catch (error) {
+      // Same degradation stance as onCompress: a broken hook must not fail
+      // compile(). A throw is treated as "return null" — the failure recipe
+      // the return contract already documents — so default compression
+      // proceeds.
+      this._logger.warn(
+        '[context-chef] onBeforeCompress hook threw — proceeding with default compression',
+        error,
+      );
+      modified = null;
+    }
+    if (modified == null) return { history, budget };
+
+    // Re-evaluate with the developer-modified history
+    return { history: modified, budget: this._evaluateBudget(modified, force) };
+  }
+
+  /**
+   * Decides whether the window is over budget, consuming the one-shot state
+   * that decision depends on (the fed usage value, the E10 suppression flag).
+   * Returns the reading when compression should run, null otherwise.
+   *
+   * The effective trigger threshold is `contextWindow * triggerRatio`
+   * (default 0.7 — "pre-rot"), which is also what the strategies size their
+   * preserved tail against, so post-compression usage lands safely below the
+   * trigger point (no compress-every-turn thrash).
+   *
+   * `force` skips the verdict, not the reading: the strategy still needs a
+   * budget to size its preserved tail against. An empty history is the one
+   * case force cannot override — there is nothing to overflow.
+   */
+  private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
+    if (history.length === 0) return null;
+
+    // E10: Skip check once after a successful compression to avoid cascading
+    // re-compression. The one-shot flag is consumed either way — a forced
+    // overflow answers for this turn, so the suppression has done its job.
+    const suppressed = this._suppressNextCompression;
+    this._suppressNextCompression = false;
+    if (suppressed && !force) return null;
+
+    const budget = this.readBudget(history);
+    this._externalTokenUsage = null;
+    return force || budget.remaining < 0 ? budget : null;
+  }
+
+  /**
+   * Finishes a result that is entering the window: archive the evicted span,
+   * then re-render the summary message with everything only the runner knows —
+   * the archive citation, and the window lineage the result just moved.
+   *
+   * A strategy renders its summary speculatively (a `background()` job may
+   * never land), so the final wording is settled here. Under the legacy
+   * vocabulary with nothing to cite there is nothing to settle, and the
+   * strategy's own message is kept.
+   */
+  private async _landResult(result: OverflowResult): Promise<OverflowResult> {
+    const citation = await this._archiveEvicted(result);
+    if (result.summary === undefined) return result;
+    if (citation === '' && this._vocabulary.mode === 'legacy') return result;
+
+    const history = [...result.history];
+    history[0] = renderSummaryMessage(result.summary, citation, this._vocabulary, this._window);
+    return { ...result, history };
+  }
+
+  /**
+   * Reversible compression: stores the compressed span and returns the
+   * citation line to append to the summary that replaced it. Best-effort — a
+   * failing store logs a warning and the compression proceeds without a
+   * citation.
+   */
+  private async _archiveEvicted(result: OverflowResult): Promise<string> {
+    const archive = this._archive;
+    // The stored span is the one the summary replaced, so a pinned turn inside
+    // it is archived with its neighbours and the transcript stays contiguous.
+    const span = result.span;
+    if (!archive || span.length === 0) return '';
+
+    try {
+      const serialized = JSON.stringify({ version: 1, messages: span });
+      const uri = await archive.store(serialized, { messageCount: span.length });
+      // Nothing to cite it in — the strategy evicted without summarizing.
+      if (result.summary === undefined) return '';
+      return `\n\n${Prompts.getArchiveCitation(uri, span.length)}`;
+    } catch (error) {
+      this._logger.warn(
+        '[context-chef] compression archive store failed — proceeding without a citation',
+        error,
+      );
+      return '';
+    }
   }
 
   /**
@@ -966,316 +1005,6 @@ export class Janitor {
   }
 
   /**
-   * Evaluates token budgets and returns the split index for compression,
-   * or null if no compression is needed.
-   *
-   * The effective trigger threshold is `contextWindow * triggerRatio`
-   * (default 0.7 — "pre-rot"). In the tokenizer path, `preserveRatio` is
-   * applied to that same effective budget so post-compression usage lands
-   * safely below the trigger point (no compress-every-turn thrash).
-   *
-   * Uses turn-based grouping: messages are grouped into atomic turns
-   * (assistant+tool_calls+tool_results as one unit), and splits only happen
-   * on turn boundaries. This guarantees tool pair integrity and valid
-   * message alternation without post-hoc corrections.
-   */
-  private evaluateBudget(
-    history: Message[],
-  ): { splitIndex: number; currentTokens: number; limit: number } | null {
-    if (history.length === 0) return null;
-
-    // E10: Skip check once after a successful compression to avoid cascading re-compression.
-    if (this._suppressNextCompression) {
-      this._suppressNextCompression = false;
-      return null;
-    }
-
-    const limit = this.config.contextWindow * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
-    const turns = groupIntoTurns(history);
-
-    // ─── Tokenizer path: precise per-message calculation ───
-    if (this.config.tokenizer) {
-      const tokenizerTokens = this.config.tokenizer(history);
-      const fedTokens = this._externalTokenUsage;
-      this._externalTokenUsage = null;
-
-      // Trigger source selection — see UsagePreferenceWithTokenizer JSDoc for
-      // when each branch is the right call. Default 'max' preserves the
-      // historical Math.max behavior for callers that do not opt in.
-      const preference = this.config.usagePreference ?? 'max';
-      let effectiveTokens: number;
-      switch (preference) {
-        case 'feedFirst':
-          effectiveTokens = fedTokens ?? tokenizerTokens;
-          break;
-        case 'tokenizerFirst':
-          effectiveTokens = tokenizerTokens;
-          break;
-        default:
-          effectiveTokens = Math.max(tokenizerTokens, fedTokens ?? 0);
-      }
-
-      if (effectiveTokens <= limit) {
-        return null;
-      }
-
-      const preserveTarget = Math.floor(
-        limit * (this.config.preserveRatio ?? DEFAULT_PRESERVE_RATIO),
-      );
-
-      // Iterate turns from the tail, accumulating token costs per turn
-      let accumulatedTokens = 0;
-      let splitTurn = turns.length;
-
-      for (let t = turns.length - 1; t >= 0; t--) {
-        const turnMessages = history.slice(turns[t].startIndex, turns[t].endIndex);
-        const turnTokens = this.config.tokenizer(turnMessages);
-        if (accumulatedTokens + turnTokens > preserveTarget) {
-          break;
-        }
-        accumulatedTokens += turnTokens;
-        splitTurn = t;
-      }
-
-      // Keep at least 1 turn if a single turn exceeds the preserve budget
-      if (splitTurn === turns.length && turns.length > 0) {
-        splitTurn = turns.length - 1;
-      }
-
-      if (splitTurn <= 0) return null;
-
-      const splitIndex = turns[splitTurn].startIndex;
-      return { splitIndex, currentTokens: effectiveTokens, limit };
-    }
-
-    // ─── FeedTokenUsage path: simple total comparison, keep last N turns ───
-    const currentTokens = this._externalTokenUsage ?? estimateObject(history);
-    this._externalTokenUsage = null;
-
-    if (currentTokens <= limit) {
-      return null;
-    }
-
-    // Keep the last N turns (not messages), compress everything else
-    const keepCount = Math.min(
-      this.config.preserveRecentMessages ?? DEFAULT_PRESERVE_RECENT_MESSAGES,
-      turns.length,
-    );
-    const splitTurn = turns.length - keepCount;
-
-    if (splitTurn <= 0) return null;
-
-    const splitIndex = turns[splitTurn].startIndex;
-    return { splitIndex, currentTokens, limit };
-  }
-
-  /**
-   * Phase 2: produce the summary message for a compressed span, applying
-   * quality guards, archiving, and anchor bookkeeping.
-   *
-   * Returns the ready summary Message, or null on ANY failure — model throw,
-   * shrink-guard rejection, or validateCompression rejection. Every failure
-   * increments the circuit breaker and leaves history for the caller to
-   * return UNCHANGED (never a lossy placeholder truncation — the pre-4.0
-   * behavior of dropping the span with a bare notice applied only to the
-   * model-throw path and made a bad situation worse).
-   */
-  private async _summarize(
-    toCompress: Message[],
-    toKeep: Message[],
-  ): Promise<{ summaryMessage: Message; anchorUpdate: string | null } | null> {
-    const compressionModel = this.config.compressionModel;
-    if (!compressionModel) return null;
-    const logger = this.config.logger ?? console;
-    const anchored = this.config.compressionMode === 'incremental-anchored';
-
-    // ── Model call
-    let summaryText: string;
-    try {
-      summaryText = await summarizeHistory(toCompress, compressionModel, {
-        customCompressionInstructions: this.config.customCompressionInstructions,
-        toolResultStubThreshold: this.config.toolResultStubThreshold,
-        compressionGuidelines: this.config.compressionGuidelines,
-        baseInstruction: anchored
-          ? Prompts.getAnchoredCompactionInstruction(this._anchorDoc)
-          : undefined,
-      });
-    } catch (error) {
-      this._consecutiveFailures++;
-      logger.warn(
-        '[context-chef] compression model failed — history left unchanged (failure ' +
-          `${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
-        error,
-      );
-      return null;
-    }
-
-    // ── Shrink guard: a summary that doesn't shrink the span is a failure.
-    //    Only applied to spans >= MIN_SHRINK_GUARD_SPAN_CHARS — tiny spans
-    //    can't shrink below a well-formed summary's natural length, and the
-    //    death loop this prevents only occurs on large spans.
-    //    Span size counts everything the summarizer consumes: content,
-    //    thinking, AND tool-call arguments (write/edit tools routinely carry
-    //    the bulk of a coding-agent span in `arguments`).
-    //    Anchored mode compares GROWTH, not absolute size — the anchor is
-    //    cumulative, so comparing it against only the newly evicted span
-    //    would inevitably trip the breaker in healthy long sessions.
-    const minShrink = this.config.minShrinkRatio ?? DEFAULT_MIN_SHRINK_RATIO;
-    if (minShrink > 0) {
-      const spanChars = toCompress.reduce(
-        (sum, m) =>
-          sum +
-          m.content.length +
-          (m.thinking?.thinking.length ?? 0) +
-          (m.tool_calls?.reduce((s, tc) => s + tc.function.arguments.length, 0) ?? 0),
-        0,
-      );
-      const allowance = (1 - minShrink) * spanChars;
-      const effectiveSize = anchored
-        ? summaryText.length - (this._anchorDoc?.length ?? 0)
-        : summaryText.length;
-      if (spanChars >= MIN_SHRINK_GUARD_SPAN_CHARS && effectiveSize > allowance) {
-        this._consecutiveFailures++;
-        logger.warn(
-          `[context-chef] compression result failed the shrink guard (${anchored ? 'anchor growth' : 'summary'} ` +
-            `${effectiveSize} chars vs span ${spanChars} chars, minShrinkRatio ${minShrink}) — history left ` +
-            `unchanged (failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
-        );
-        return null;
-      }
-    }
-
-    // ── Validation gate
-    if (this.config.validateCompression) {
-      let valid: boolean;
-      try {
-        valid = await this.config.validateCompression(summaryText, {
-          compressed: toCompress,
-          kept: toKeep,
-        });
-      } catch (error) {
-        logger.warn(
-          '[context-chef] validateCompression threw — treating the summary as rejected',
-          error,
-        );
-        valid = false;
-      }
-      if (!valid) {
-        this._consecutiveFailures++;
-        logger.warn(
-          '[context-chef] compression summary rejected by validateCompression — history left ' +
-            `unchanged (failure ${this._consecutiveFailures}/${MAX_CONSECUTIVE_COMPRESSION_FAILURES} toward circuit breaker)`,
-        );
-        return null;
-      }
-    }
-
-    // ── Success: breaker reset (model-health signal — a later stale discard
-    //    doesn't change that the model succeeded) + best-effort archive.
-    //    The anchor is NOT written here: it is applied by the caller at
-    //    application time, so a background job discarded as stale can never
-    //    pollute the anchor with content that stays live in history.
-    this._consecutiveFailures = 0;
-
-    let citation = '';
-    const archive = this._archive;
-    if (archive) {
-      try {
-        const serialized = JSON.stringify({ version: 1, messages: toCompress });
-        const uri = await archive.store(serialized, { messageCount: toCompress.length });
-        citation = `\n\n${Prompts.getArchiveCitation(uri, toCompress.length)}`;
-      } catch (error) {
-        logger.warn(
-          '[context-chef] compression archive store failed — proceeding without a citation',
-          error,
-        );
-      }
-    }
-
-    return {
-      summaryMessage: {
-        role: 'user',
-        content: Prompts.getCompactSummaryWrapper(summaryText + citation),
-      },
-      anchorUpdate: anchored ? summaryText : null,
-    };
-  }
-
-  /** Applies a successful summarization's anchor update ('incremental-anchored'). */
-  private _applyAnchorUpdate(anchorUpdate: string | null): void {
-    if (anchorUpdate !== null) {
-      this._anchorDoc = anchorUpdate;
-    }
-  }
-
-  /** Kicks off a background summarization job ('background' scheduling). */
-  private _startBackgroundJob(
-    history: Message[],
-    toCompress: Message[],
-    splitIndex: number,
-    pinned: Message[],
-  ): void {
-    const job: BackgroundCompressionJob = {
-      settled: false,
-      head: null,
-      anchorUpdate: null,
-      splitIndex,
-      firstMessage: history[0],
-      lastCompressedMessage: toCompress[toCompress.length - 1],
-      toCompress,
-    };
-    this._pendingBackground = job;
-    const toKeep = history.slice(splitIndex);
-    void this._summarize(toCompress, toKeep)
-      .then((result) => {
-        if (result !== null) {
-          job.head = [result.summaryMessage, ...pinned];
-          job.anchorUpdate = result.anchorUpdate;
-        }
-      })
-      .catch((error) => {
-        // _summarize handles its own failures; this is a belt-and-braces net.
-        (this.config.logger ?? console).warn(
-          '[context-chef] background compression job crashed unexpectedly',
-          error,
-        );
-      })
-      .finally(() => {
-        job.settled = true;
-      });
-  }
-
-  /**
-   * Applies a finished background job to the current history, if it is still
-   * applicable. Returns the swapped history, or null when there is nothing to
-   * apply (no job, job unsettled, job failed, or job stale — the compressed
-   * span is no longer a prefix of the current history, checked by message
-   * identity).
-   */
-  private async _trySwapInBackgroundResult(history: Message[]): Promise<Message[] | null> {
-    const job = this._pendingBackground;
-    if (!job?.settled) return null;
-    this._pendingBackground = undefined;
-    if (!job.head) return null; // failed job — breaker already counted it
-
-    const stillPrefix =
-      history.length >= job.splitIndex &&
-      messagesEquivalent(history[0], job.firstMessage) &&
-      messagesEquivalent(history[job.splitIndex - 1], job.lastCompressedMessage);
-    if (!stillPrefix) return null; // stale — discard, fall through to fresh evaluation
-
-    // Finalize at application time (not at computation time): the anchor and
-    // persistence consumers only see summaries that actually entered history.
-    // onCompress is awaited so the persistence contract matches blocking mode.
-    this._applyAnchorUpdate(job.anchorUpdate);
-    await this._fireOnCompress(job.head[0], job.toCompress.length, {
-      compressedMessages: job.toCompress,
-    });
-    this._suppressNextCompression = true;
-    return [...job.head, ...history.slice(job.splitIndex)];
-  }
-
-  /**
    * Invokes the `onCompress` hook, downgrading a throwing/rejecting hook to a
    * logger warning. The hook is an observation/persistence sink — its failure
    * must not discard an already-computed compression or fail compile().
@@ -1289,7 +1018,7 @@ export class Janitor {
     try {
       await this.config.onCompress(summaryMessage, truncatedCount, details);
     } catch (error) {
-      (this.config.logger ?? console).warn(
+      this._logger.warn(
         '[context-chef] onCompress hook threw — compression result is kept, but your sink may have missed this summary',
         error,
       );

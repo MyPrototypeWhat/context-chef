@@ -1,5 +1,20 @@
+import { fromMemoryStore, memoryEntryToStored, storedToMemoryEntry } from '../../store/legacy';
+import { type NamespaceView, Store } from '../../store/store';
+import { MEMORY_NAMESPACE, type StorageBackend, type StoredEntry } from '../../store/types';
 import type { ToolDefinition } from '../../types';
 import type { MemoryStore, MemoryStoreEntry } from './memoryStore';
+
+/**
+ * Legacy `MemoryStore`s are flat key→entry maps and are recognised by their
+ * `keys()` method — no `StorageBackend` has one.
+ */
+function resolveMemoryStore(store: MemoryConfig['store']): Store {
+  if (store instanceof Store) return store;
+  if (typeof (store as MemoryStore).keys === 'function') {
+    return new Store(fromMemoryStore(store as MemoryStore));
+  }
+  return new Store(store as StorageBackend);
+}
 
 /** TTL value: bare number = turns, or explicit { ms } / { turns }. */
 export type TTLValue = number | { ms: number } | { turns: number };
@@ -114,7 +129,12 @@ const MODIFY_MEMORY_TOOL: ToolDefinition = deepFreeze({
 });
 
 export interface MemoryConfig {
-  store: MemoryStore;
+  /**
+   * Where entries live. Accepts a {@link Store} or a raw {@link StorageBackend}
+   * (Memory then owns the `memory` namespace on it), or a legacy
+   * {@link MemoryStore}, which is wrapped with `Store.fromMemoryStore`.
+   */
+  store: MemoryStore | StorageBackend | Store;
   /** Default TTL for all writes. Bare number = turns. undefined = never expire. */
   defaultTTL?: TTLValue;
   allowedKeys?: string[];
@@ -170,7 +190,9 @@ export interface MemoryConfig {
 }
 
 export class Memory {
-  private store: MemoryStore;
+  /** The context store this Memory reads and writes. Shared with the rest of the chef. */
+  readonly store: Store;
+  private readonly ns: NamespaceView;
   readonly allowedKeys?: string[];
   readonly placement: MemoryPlacement;
   private selector?: MemoryConfig['selector'];
@@ -190,7 +212,8 @@ export class Memory {
   private readonly _toolDefinitions: readonly ToolDefinition[];
 
   constructor(config: MemoryConfig) {
-    this.store = config.store;
+    this.store = resolveMemoryStore(config.store);
+    this.ns = this.store.namespace(MEMORY_NAMESPACE);
     this.allowedKeys = config.allowedKeys;
     this.placement = config.memoryPlacement ?? 'after_system';
     this.selector = config.selector;
@@ -211,20 +234,26 @@ export class Memory {
     this._turnCount++;
   }
 
+  /** Reads one entry out of the `memory` namespace in the legacy entry shape. */
+  private async _read(key: string): Promise<MemoryStoreEntry | null> {
+    const stored = await this.ns.get(key);
+    return stored ? storedToMemoryEntry(stored) : null;
+  }
+
   async get(key: string): Promise<string | null> {
-    const entry = await this.store.get(key);
+    const entry = await this._read(key);
     return entry?.value ?? null;
   }
 
   async getEntry(key: string): Promise<MemoryEntry | null> {
-    const entry = await this.store.get(key);
+    const entry = await this._read(key);
     if (!entry) return null;
     return { key, ...entry };
   }
 
   async set(key: string, value: string, options?: MemorySetOptions): Promise<void> {
     const now = Date.now();
-    const existing = await this.store.get(key);
+    const existing = await this._read(key);
     const oldValue = existing?.value ?? null;
 
     const ttlFields = this._resolveTTL(options?.ttl !== undefined ? options.ttl : this.defaultTTL);
@@ -249,7 +278,8 @@ export class Memory {
           ...ttlFields,
         };
 
-    await this.store.set(key, entry);
+    const stored = memoryEntryToStored(entry);
+    await this.ns.put(key, stored.content, stored.meta);
 
     if (this.onMemoryChanged) {
       await this.onMemoryChanged({ type: 'set', key, value, oldValue });
@@ -257,9 +287,9 @@ export class Memory {
   }
 
   async delete(key: string): Promise<boolean> {
-    const existing = await this.store.get(key);
+    const existing = await this._read(key);
     const oldValue = existing?.value ?? null;
-    const deleted = await this.store.delete(key);
+    const deleted = await this.ns.delete(key);
 
     if (deleted && this.onMemoryChanged) {
       await this.onMemoryChanged({ type: 'delete', key, value: null, oldValue });
@@ -269,18 +299,16 @@ export class Memory {
   }
 
   async getAll(): Promise<MemoryEntry[]> {
-    const allKeys = await this.store.keys();
-    // Fetch entries concurrently — sequential awaits would serialize 1+N
-    // round-trips per compile() on async stores (Redis etc.).
-    const storeEntries = await Promise.all(allKeys.map((key) => this.store.get(key)));
-    const entries: MemoryEntry[] = [];
-    for (let i = 0; i < allKeys.length; i++) {
-      const storeEntry = storeEntries[i];
-      if (storeEntry !== null) {
-        entries.push({ key: allKeys[i], ...storeEntry });
-      }
-    }
-    return entries;
+    // One bulk read, not a key scan followed by a read per key — on an async
+    // store (Redis etc.) that difference is 1+N vs 2N round-trips per compile().
+    // The store's key order is the order entries reach the <memory> block, so
+    // it has to survive the trip: a Map keeps it, a plain object would hoist
+    // integer-like keys ('10' before 'zeta') and change the injected bytes.
+    const stored = await this.ns.entries();
+    return Array.from(stored, ([key, entry]) => ({
+      key,
+      ...storedToMemoryEntry(entry),
+    }));
   }
 
   /**
@@ -354,7 +382,7 @@ export class Memory {
     if (this.onMemoryExpired) {
       await this.onMemoryExpired(entry);
     }
-    await this.store.delete(entry.key);
+    await this.ns.delete(entry.key);
     if (this.onMemoryChanged) {
       await this.onMemoryChanged({
         type: 'expire',
@@ -420,7 +448,7 @@ export class Memory {
   ): Promise<MemoryEntry | null> {
     if (this.allowedKeys && !this.allowedKeys.includes(key)) return null;
 
-    const oldEntry = await this.store.get(key);
+    const oldEntry = await this._read(key);
     const oldValue = oldEntry?.value ?? null;
     if (this.onMemoryUpdate) {
       const allowed = await this.onMemoryUpdate(key, value, oldValue);
@@ -428,7 +456,7 @@ export class Memory {
     }
 
     await this.set(key, value, { description });
-    const entry = await this.store.get(key);
+    const entry = await this._read(key);
     return entry ? { key, ...entry } : null;
   }
 
@@ -443,7 +471,7 @@ export class Memory {
   ): Promise<MemoryEntry | null> {
     if (this.allowedKeys && !this.allowedKeys.includes(key)) return null;
 
-    const existing = await this.store.get(key);
+    const existing = await this._read(key);
     if (!existing) return null;
 
     const oldValue = existing.value;
@@ -453,7 +481,7 @@ export class Memory {
     }
 
     await this.set(key, value, { description });
-    const entry = await this.store.get(key);
+    const entry = await this._read(key);
     return entry ? { key, ...entry } : null;
   }
 
@@ -464,7 +492,7 @@ export class Memory {
   async deleteMemory(key: string): Promise<boolean> {
     if (this.allowedKeys && !this.allowedKeys.includes(key)) return false;
 
-    const existing = await this.store.get(key);
+    const existing = await this._read(key);
     if (!existing) return false;
 
     const oldValue = existing.value;
@@ -499,6 +527,15 @@ export class Memory {
    * freely. The definition OBJECTS inside are frozen and reference-stable
    * across calls (that identity is what keeps `payload.tools` deep-equal
    * between compiles); clone one before editing it.
+   *
+   * @deprecated Under `ChefConfig.tools: 'unified'` these two tools are
+   *   replaced by the single `context` tool, which writes the same entries at
+   *   `context://memory/<key>` through the same validation. They keep working
+   *   unchanged in 4.x — `tools: 'legacy'` is still the default — and are
+   *   removed in 5.0. Every historical inline write path (the
+   *   `<update_core_memory>` / `<delete_core_memory>` response tags of the
+   *   pre-4.0 Memory module) is likewise superseded by that tool; nothing in
+   *   this module parses them any more.
    *
    * @param existingKeys @deprecated Ignored — the schema is static since 4.1.
    *   Still accepted for backward compatibility.
@@ -549,15 +586,21 @@ export class Memory {
   // ─── Snapshot / Restore ─────────────────────────────────────────────────
 
   snapshot(): MemorySnapshot | null {
-    const storeData = this.store.snapshot ? this.store.snapshot() : null;
+    const storeData = this.ns.snapshot();
     if (!storeData) return null;
-    return { entries: storeData, turnCount: this._turnCount };
+    const entries: Record<string, MemoryStoreEntry> = {};
+    for (const [key, stored] of Object.entries(storeData)) {
+      entries[key] = storedToMemoryEntry(stored);
+    }
+    return { entries, turnCount: this._turnCount };
   }
 
   restore(data: MemorySnapshot): void {
-    if (this.store.restore) {
-      this.store.restore(data.entries);
+    const stored: Record<string, StoredEntry> = {};
+    for (const [key, entry] of Object.entries(data.entries)) {
+      stored[key] = memoryEntryToStored(entry);
     }
+    this.ns.restore(stored);
     this._turnCount = data.turnCount;
   }
 

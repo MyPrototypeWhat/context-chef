@@ -11,7 +11,6 @@ describe('fromTanStackAI', () => {
         role: 'user',
         content: 'Hello',
         _original: messages[0],
-        _originalText: 'Hello',
       }),
     ]);
   });

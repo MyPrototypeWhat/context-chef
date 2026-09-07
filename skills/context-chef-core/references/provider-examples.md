@@ -136,7 +136,7 @@ async function agentLoop(userMessage: string) {
 
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
-import { ContextChef, InMemoryStore } from "@context-chef/core";
+import { ContextChef, InMemoryBackend } from "@context-chef/core";
 import type { Message } from "@context-chef/core";
 import { z } from "zod";
 
@@ -159,7 +159,7 @@ const chef = new ContextChef({
     },
   },
   memory: {
-    store: new InMemoryStore(),
+    store: new InMemoryBackend(),
     defaultTTL: { turns: 20 },
   },
   vfs: { threshold: 5000 },
@@ -227,21 +227,12 @@ async function agentLoop(userMessage: string) {
 
     // Handle tool calls
     for (const block of toolUseBlocks) {
-      // Handle memory tool calls
-      if (block.name === "create_memory") {
-        const { key, value, description } = block.input as any;
-        await chef.getMemory().createMemory(key, value, description);
-        history.push({ role: "tool", content: `Memory "${key}" created.`, tool_call_id: block.id });
-        continue;
-      }
-      if (block.name === "modify_memory") {
-        const { action, key, value, description } = block.input as any;
-        if (action === "update") {
-          await chef.getMemory().updateMemory(key, value, description);
-        } else {
-          await chef.getMemory().deleteMemory(key);
-        }
-        history.push({ role: "tool", content: `Memory "${key}" ${action}d.`, tool_call_id: block.id });
+      // One entry point for every library-owned tool: `context`, `new_context`,
+      // and the legacy create_memory / modify_memory / recall_context. Works in
+      // both `tools` modes, so it survives the 5.0 default flip to 'unified'.
+      if (chef.ownsTool(block.name)) {
+        const content = await chef.handleTool({ name: block.name, arguments: block.input });
+        history.push({ role: "tool", content, tool_call_id: block.id });
         continue;
       }
 
@@ -361,17 +352,23 @@ async function callLLM(chef: ContextChef, provider: Provider, history: Message[]
 Complete example with all features enabled:
 
 ```typescript
-import { ContextChef, InMemoryStore, VFSMemoryStore, Janitor } from "@context-chef/core";
+import {
+  ContextChef, FileSystemBackend, Janitor, anchored,
+} from "@context-chef/core";
 import type { Message } from "@context-chef/core";
 import { z } from "zod";
 
 const compactJanitor = new Janitor({ contextWindow: Infinity });
 
 const chef = new ContextChef({
+  // One backend behind every namespace: memory, vfs, archive, notes.
+  store: new FileSystemBackend(".context-store"),
+  // One `context` tool instead of create_memory / modify_memory / recall_context.
+  tools: "unified",
   janitor: {
+    // Runner concerns: budget, breaker, events.
     contextWindow: 200000,
     preserveRecentMessages: 1,
-    compressionModel: async (msgs) => summarizeWithCheapModel(msgs),
     onCompress: (summaryMessage, count, details) => {
       console.log(`Compressed ${count} messages`);
     },
@@ -383,8 +380,15 @@ const chef = new ContextChef({
     },
     toolResultStubThreshold: 5000,
   },
+  overflow: {
+    // Policy: what leaves the window, and where it goes.
+    strategy: anchored({ compressionModel: async (msgs) => summarizeWithCheapModel(msgs) }),
+    archive: "vfs",
+    // One compile in the last 8k of headroom carries a notice telling the model
+    // to write anything worth keeping into memory/ or notes/ first.
+    handoff: { budgetTokens: 8000 },
+  },
   memory: {
-    store: new VFSMemoryStore(".context-memory"),
     defaultTTL: { turns: 50 },
     onMemoryChanged: (event) => {
       console.log(`Memory ${event.type}: ${event.key}`);
@@ -392,12 +396,12 @@ const chef = new ContextChef({
   },
   pruner: { strategy: "union" },
   vfs: { threshold: 5000 },
-  onBeforeCompile: async (ctx) => {
-    // Inject RAG results based on the current task state
-    const results = await vectorDB.search(ctx.dynamicStateXml);
-    if (results.length === 0) return null;
-    return results.map(r => r.content).join("\n\n");
-  },
+});
+
+// RAG injection is a pipeline slot, not a config hook.
+chef.use("before-assemble", async (ctx) => {
+  const results = await vectorDB.search(ctx.dynamicStateXml);
+  if (results.length) ctx.inject(results.map(r => r.content).join("\n\n"));
 });
 
 // Register tools with tags for task-based filtering
@@ -431,7 +435,7 @@ async function agentLoop(userMessage: string) {
     const payload = await chef
       .setSystemPrompt([{
         role: "system",
-        content: "You are an expert coding agent. Use create_memory to remember important project details.",
+        content: "You are an expert coding agent. Use the context tool to remember important project details under memory/.",
         _cache_breakpoint: true,
       }])
       .setHistory(history)
@@ -452,9 +456,10 @@ async function agentLoop(userMessage: string) {
 
     for (const tc of toolCalls) {
       try {
-        // Memory tools
-        if (tc.name === "create_memory" || tc.name === "modify_memory") {
-          await handleMemoryToolCall(chef, tc);
+        // Library-owned tools: context, new_context, and the legacy trio.
+        if (chef.ownsTool(tc.name)) {
+          const content = await chef.handleTool({ name: tc.name, arguments: tc.args });
+          history.push({ role: "tool", content, tool_call_id: tc.id });
           continue;
         }
 

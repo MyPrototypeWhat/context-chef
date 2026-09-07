@@ -1,0 +1,46 @@
+{
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "How do I read a file in Node?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Use node:fs/promises readFile.",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "text": "And write one?\n\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "<answer>",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "system": [
+    {
+      "text": "You are a careful engineering assistant.",
+      "type": "text"
+    }
+  ]
+}
