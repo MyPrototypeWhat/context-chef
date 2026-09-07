@@ -1,5 +1,14 @@
 # @context-chef/examples
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`3549dee`](https://github.com/MyPrototypeWhat/context-chef/commit/3549deec7e46b62eeb19f1a4f9ae6bcbfdfeefbc), [`3549dee`](https://github.com/MyPrototypeWhat/context-chef/commit/3549deec7e46b62eeb19f1a4f9ae6bcbfdfeefbc), [`3549dee`](https://github.com/MyPrototypeWhat/context-chef/commit/3549deec7e46b62eeb19f1a4f9ae6bcbfdfeefbc)]:
+  - @context-chef/core@4.2.0
+  - @context-chef/ai-sdk-middleware@3.1.0
+  - @context-chef/tanstack-ai@1.1.0
+
 ## 0.0.2
 
 ### Patch Changes
