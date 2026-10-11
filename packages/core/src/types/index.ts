@@ -95,6 +95,26 @@ export interface Attachment {
   filename?: string;
 }
 
+/**
+ * The Anthropic wire message an IR message was parsed from. One wire message
+ * can become several IR messages — each `tool_result` block turns into its own
+ * `tool` message — so every IR message of the group records its place in it,
+ * and the first also carries the original content blocks. The Anthropic
+ * target replays those blocks only when the whole group is still present, in
+ * order, and every part still hashes the same; a cleared tool result,
+ * stripped thinking or a dropped part falls back to rebuilding from IR fields.
+ */
+export interface AnthropicOrigin {
+  /** Original content blocks; present on part 0 only. */
+  blocks?: unknown[];
+  /** This message's index within the group. */
+  part: number;
+  /** Number of IR messages parsed from the wire message. */
+  parts: number;
+  /** Hash of this message's IR fields at parse time. */
+  hash: string;
+}
+
 export interface Message {
   role: Role;
   content: string;
@@ -198,6 +218,16 @@ export interface Message {
    * only consumer.
    */
   _openai_reasoning?: unknown[];
+  /**
+   * Where this message came from when `fromAnthropic` parsed it, so the
+   * Anthropic target can replay the original message byte-for-byte while
+   * nothing has changed it. Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5
+   * sign every thinking block over everything before it, and rebuilding an
+   * earlier turn from IR fields (one thinking block per message, text blocks
+   * joined, unmodeled blocks dropped) fails that check. See
+   * {@link AnthropicOrigin}; other adapters ignore it.
+   */
+  _anthropic_origin?: AnthropicOrigin;
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }

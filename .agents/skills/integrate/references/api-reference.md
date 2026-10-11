@@ -299,7 +299,7 @@ interface Message {
 | `setSystemPrompt(messages): this` | Static system prompt (cached prefix) |
 | `setHistory(messages): this` | Conversation history |
 | `setDynamicState(schema, data, { placement? }): this` | Zod-validated state as XML (`'last_user'` default / `'system'`) |
-| `withGuardrails(options \| null): this` | Stored and applied at compile(); replace semantics; `null` clears |
+| `withGuardrails(options \| null): this` | Stored and applied at compile(); replace semantics; `null` clears. Options: `enforceXML?: { outputTag }`, `prefill?`, `prefillMode?: 'native' \| 'instruction'` (default `'native'`: trailing assistant message; `'instruction'`: no trailing assistant message on any target, the prefill travels as an instruction, delivered per `placement` — see the adapter table below), `placement?: 'system' \| 'last_user'` |
 | `clearHistory(): this` | Clear history, reset Janitor (breaker, strategy state, window lineage). Announcements survive |
 | `use(slot, handler)` / `unuse(slot, handler)` | 4.2: pipeline slots |
 | `announce(id, content, { channel? })` / `retractAnnouncement(id)` / `getAnnouncements()` | 4.1: standing capability statements |
@@ -355,9 +355,11 @@ CompileMeta { injectedMemoryKeys: string[]; memoryExpiredKeys: string[];
 |---|---|---|---|
 | System messages | Kept inline | Separated to `system` (except `_positional`) | Separated to `systemInstruction` |
 | Cache breakpoints | Stripped | `cache_control: { type: 'ephemeral' }` | Stripped |
-| Prefill (trailing assistant) | Degraded to `[System Note]` in last user message | Native support | Degraded to `[System Note]` |
+| Prefill (trailing assistant) | Degraded to an instruction in the last user message | Native; models that reject it (Sonnet 4.6 / 5 / 5.5, Haiku 5.5) need `prefillMode: 'instruction'` | Degraded to `[System Note]` |
 | Thinking blocks | Dropped, or `<thinking>` text with `preserveThinkingAsText` | Mapped to `ThinkingBlockParam` | Dropped, or `<thinking>` text |
 | Tool calls format | `tool_calls` array | `tool_use` content blocks | `functionCall` parts (+ `thoughtSignature` echo) |
+
+History parsed with `fromAnthropic` is replayed to the Anthropic target byte-for-byte while unmodified (origin kept in `Message._anthropic_origin`): Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign each thinking block over every earlier turn, and accounts created on or after 2026-08-31 get a 400 when one differs. A modified message is rebuilt from IR fields; the original's `cache_control` markers give way to the chef's breakpoints.
 
 ## Deprecated in 4.2 (removed in 5.0)
 

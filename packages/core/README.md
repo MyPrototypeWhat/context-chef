@@ -256,10 +256,21 @@ Applies output format guardrails and optional prefill.
 chef.withGuardrails({
   enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
   prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
+  prefillMode: "native", // default; "instruction" never sends a trailing assistant message
 });
 ```
 
 **v4 semantics.** Options are now *stored* and applied at `compile()`, so call order relative to `setDynamicState` no longer matters (pre-4.0, calling `setDynamicState` after `withGuardrails` silently discarded the guardrail). Each call **replaces** the previous options (no accumulation); `withGuardrails(null)` clears them. The stored options are persisted in `ChefSnapshot` (`guardrailOptions`), and the guardrail message lands at the very end of the sandwich as its own message — closest to generation, no longer merged into the dynamic-state message.
+
+**Prefill mode (4.3).** Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a request that ends with a prefilled assistant turn (400: "This model does not support assistant message prefill"). With `prefillMode: 'instruction'`, no target gets a trailing assistant message. Instead, an instruction to start the reply with the prefill text goes out with the enforce-XML instruction, wherever `placement` puts it (a system message by default, the last user turn with `placement: 'last_user'`). The default `'native'` keeps the trailing assistant message. ContextChef doesn't know which model a payload is for, so the mode is yours to set:
+
+```typescript
+chef.withGuardrails({
+  enforceXML: { outputTag: "answer" },
+  prefill: "<answer>",
+  prefillMode: "instruction",
+});
+```
 
 #### `chef.compile(options?): Promise<TargetPayload>`
 
@@ -852,7 +863,7 @@ const payload = await chef.compile({ target: "anthropic" });
 - On any other target `server()` has nothing to delegate to, so it runs the `fallback` strategy if one was given, and otherwise leaves history alone. That is what makes one configuration portable across providers.
 - `ChefConfig.contextManagement` is the **deprecated alias** (removed in 5.0): `{ strategy: 'server', server: config }` builds `server(config, { fallback: <the default client strategy> })`, which is why v4 behavior is preserved exactly. `{ strategy: 'client' }` is the default and needs no configuration.
 - The first argument is a provider-shaped edits config passed through verbatim, e.g. `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` or `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`. `payload.betas` is auto-derived: `'compact-2026-01-12'` for compaction edits, `'context-management-2025-06-27'` for the clear-tool-uses / clear-thinking edits. `AnthropicPayload` gains `context_management?` and `betas?` fields.
-- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched.
+- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched. While the parsed message is unmodified, the whole original message is replayed, so fields the IR doesn't carry, such as the block's signature, survive too.
 
 This is a hybrid positioning, not an either/or: LLM compression can be delegated to the provider while ContextChef keeps doing the parts servers don't — pruning, skills, memory, the context store, and dynamic state.
 
@@ -1586,9 +1597,13 @@ chef.on("pipeline:invariant", ({ phase, message }) => {
 | ---------------------------- | --------------------------- | -------------------------------------- | ------------------------------------------ |
 | Format                       | Chat Completions            | Messages API                           | generateContent                            |
 | Cache breakpoints            | Stripped                    | `cache_control: { type: 'ephemeral' }` | Stripped (uses separate CachedContent API) |
-| Prefill (trailing assistant) | Degraded to `[System Note]` | Native support                         | Degraded to `[System Note]`                |
+| Prefill (trailing assistant) | Degraded to an instruction  | Native support                         | Degraded to an instruction                 |
 | `thinking` field             | Stripped                    | Mapped to `ThinkingBlockParam`         | Stripped                                   |
 | Tool calls                   | `tool_calls` array          | `tool_use` blocks                      | `functionCall` parts                       |
+
+Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a native prefill; set `prefillMode: 'instruction'` on `withGuardrails` for them.
+
+History parsed with `fromAnthropic` goes back to Anthropic byte-for-byte as long as nothing has changed it: all thinking blocks, separate text blocks, parallel tool results in one user message, and blocks the IR doesn't model (server tool use, web search results) come out as they came in. Only cache breakpoints are swapped for the chef's own. Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. Once a parsed message is modified (a cleared tool result, stripped thinking), it is rebuilt from IR fields as before.
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 

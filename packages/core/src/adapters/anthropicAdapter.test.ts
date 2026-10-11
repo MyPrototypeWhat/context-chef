@@ -1,11 +1,13 @@
 import type { MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import type { AnthropicPayload, Message } from '../types';
+import { estimateObject } from '../utils/tokenUtils';
 import {
   AnthropicAdapter,
   anthropicServerContextManagement,
   fromAnthropic,
 } from './anthropicAdapter';
+import { OpenAIAdapter } from './openAIAdapter';
 
 interface AnthropicBlock {
   type: string;
@@ -738,3 +740,220 @@ describe('anthropicServerContextManagement', () => {
     expect(anthropicServerContextManagement({}).betas).toEqual([]);
   });
 });
+
+// Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign each thinking block over
+// everything before it; any byte the round-trip changes in an earlier turn
+// fails that check. An unmodified parsed message must replay as it came in.
+describe('fromAnthropic → AnthropicAdapter verbatim replay', () => {
+  function roundTrip(messages: MessageParam[], edit?: (history: Message[]) => Message[]) {
+    const { history } = fromAnthropic(messages);
+    return new AnthropicAdapter().compile(edit ? edit(history) : history);
+  }
+
+  const toolTurn: MessageParam[] = [
+    { role: 'user', content: 'Compare both cities.' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '', signature: 'SIG_A' },
+        { type: 'tool_use', id: 'call_1', name: 'weather', input: { city: 'Oslo' } },
+        { type: 'tool_use', id: 'call_2', name: 'weather', input: { city: 'Rome' } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'call_1', content: '4°C' },
+        { type: 'tool_result', tool_use_id: 'call_2', content: '19°C' },
+        { type: 'text', text: 'Also mention humidity.' },
+      ],
+    },
+  ];
+
+  it('keeps every thinking block of an assistant turn', () => {
+    const result = roundTrip([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_A' },
+          { type: 'thinking', thinking: '', signature: 'SIG_B' },
+          { type: 'text', text: 'Answer.' },
+        ],
+      },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'thinking', thinking: '', signature: 'SIG_B' },
+      { type: 'text', text: 'Answer.' },
+    ]);
+  });
+
+  it('keeps separate text blocks separate', () => {
+    const result = roundTrip([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Part one.' },
+          { type: 'text', text: 'Part two.' },
+        ],
+      },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'text', text: 'Part one.' },
+      { type: 'text', text: 'Part two.' },
+    ]);
+  });
+
+  it('does not add an empty text block to a tool-only assistant turn', () => {
+    const result = roundTrip(toolTurn);
+
+    expect(getContentBlocks(result, 1).map((b) => b.type)).toEqual([
+      'thinking',
+      'tool_use',
+      'tool_use',
+    ]);
+  });
+
+  it('replays parallel tool results and the user text after them as one user message', () => {
+    const result = roundTrip(toolTurn);
+
+    expect(result.messages).toHaveLength(3);
+    expect(getContentBlocks(result, 2)).toEqual([
+      { type: 'tool_result', tool_use_id: 'call_1', content: '4°C' },
+      { type: 'tool_result', tool_use_id: 'call_2', content: '19°C' },
+      { type: 'text', text: 'Also mention humidity.' },
+    ]);
+  });
+
+  it('replays block types the IR does not model', () => {
+    const serverToolTurn = [
+      { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'x' } },
+      { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [] },
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'text', text: 'Found it.' },
+    ];
+    const result = roundTrip([
+      { role: 'user', content: 'search' },
+      { role: 'assistant', content: serverToolTurn } as unknown as MessageParam,
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual(serverToolTurn);
+  });
+
+  it('keeps the signature of a compaction block', () => {
+    const compaction = { type: 'compaction', content: 'Summary so far.', signature: 'SIG_C' };
+    const result = roundTrip([
+      { role: 'assistant', content: [compaction] } as unknown as MessageParam,
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(JSON.stringify(result.messages)).toContain('"signature":"SIG_C"');
+  });
+
+  // On-demand compaction (compact-2026-09-04): the block replaces everything it
+  // summarized and must lead `messages`, or the API rejects the request.
+  const leadingCompaction = [
+    {
+      role: 'assistant',
+      content: [{ type: 'compaction', content: 'Summary so far.', signature: 'SIG_C' }],
+    },
+    { role: 'user', content: 'Now do the same for Ingredient.' },
+  ] as unknown as MessageParam[];
+
+  it('lets a compaction block that opens the history stay first', () => {
+    const result = roundTrip(leadingCompaction);
+
+    expect(result.messages[0].role).toBe('assistant');
+    expect(getContentBlocks(result, 0)[0].type).toBe('compaction');
+  });
+
+  it('still opens with a user turn on targets without compaction blocks', async () => {
+    const { history } = fromAnthropic(leadingCompaction);
+    const payload = new OpenAIAdapter().compile(history);
+
+    expect(payload.messages[0].role).toBe('user');
+  });
+
+  it('rebuilds a tool result whose IR content was changed', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.map((m) => (m.tool_call_id === 'call_1' ? { ...m, content: '[cleared]' } : m)),
+    );
+
+    const blocks = JSON.stringify(result.messages);
+    expect(blocks).toContain('[cleared]');
+    expect(blocks).not.toContain('4°C');
+  });
+
+  it('drops replayed thinking once the IR thinking was stripped', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.map((m) => {
+        if (m.role !== 'assistant') return m;
+        const { thinking: _stripped, ...rest } = m;
+        return rest;
+      }),
+    );
+
+    expect(JSON.stringify(result.messages)).not.toContain('SIG_A');
+  });
+
+  it('rebuilds the rest of a user message when one of its parts was removed', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.filter((m) => m.tool_call_id !== 'call_2'),
+    );
+
+    const blocks = JSON.stringify(result.messages);
+    expect(blocks).toContain('4°C');
+    expect(blocks).not.toContain('19°C');
+  });
+
+  it("replaces the original's cache breakpoints with the chef's", () => {
+    const messages: MessageParam[] = [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'q', cache_control: { type: 'ephemeral' } }],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_A' },
+          { type: 'text', text: 'a' },
+        ],
+      },
+    ];
+
+    const result = roundTrip(messages, (history) =>
+      history.map((m) => (m.role === 'assistant' ? { ...m, _cache_breakpoint: true } : m)),
+    );
+
+    expect(getContentBlocks(result, 0)[0].cache_control).toBeUndefined();
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'text', text: 'a', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('does not count the stored original toward the token estimate', () => {
+    const { history } = fromAnthropic(toolTurn);
+    const withoutOrigin = history.map(({ _anthropic_origin: _origin, ...msg }) => msg);
+
+    expect(estimateObject(history)).toBe(estimateObject(withoutOrigin));
+  });
+
+  it('does not let payload edits leak back into the parsed history', () => {
+    const { history } = fromAnthropic(toolTurn);
+    const first = new AnthropicAdapter().compile(history);
+    (getFirstBlock(first, 2) as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+
+    const second = new AnthropicAdapter().compile(history);
+    expect(getContentBlocks(second, 2)[0].cache_control).toBeUndefined();
+  });
+});
+
+function getFirstBlock(result: AnthropicPayload, messageIndex: number): unknown {
+  const content = result.messages[messageIndex].content;
+  return Array.isArray(content) ? content[0] : undefined;
+}

@@ -718,6 +718,19 @@ The two deferred behavioral items — skill-activation tail delivery and positio
 
 ---
 
+# Thinking Prefix-Check Follow-ups (2026-10)
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign every thinking block over the `system`, `tools` and every message before it. On accounts created on or after 2026-08-31 the API rejects (400) a request that replays such a block after any edit to earlier history, unless `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` is set. Already landed: `fromAnthropic` history replays byte-for-byte while unmodified, and `withGuardrails({ prefillMode: 'instruction' })` for the models that reject a native prefill (Sonnet 4.6 / 5 / 5.5, Haiku 5.5). Still open:
+
+- **Append-only mode**: every tail injection is re-rendered at the new tail on each compile, so the previous turn changes — dynamic state (`'last_user'`), announcements (both channels), guardrail `placement: 'last_user'`, memory (`'before_history_tail'`, and any memory change under `'after_system'`), the handoff notice, `skillPlacement: 'tail'`. Client-side `summarize` / `anchored` and `compact()` tool-result clearing edit earlier turns by design. A local probe confirmed the tail cases. This conflicts with "injections never persist into the caller's history" and needs a design decision; draft spec in `docs/superpowers/specs/2026-10-11-append-only-prefix-design.md` (local working doc).
+- **On-demand compaction** (`compact-2026-09-04`): the signed block replacing the messages it summarizes is exempt from the check, which makes it the natural overflow strategy for these models. The block must come first in `messages` (the Anthropic target already drops `ensureValidHistory`'s opening placeholder in front of a leading compaction block).
+- **ai-sdk-middleware replay check**: `toAISDK` / `toModelMessages` decide "unmodified" by comparing text only, so `clear: ['thinking']` likely still re-sends the original reasoning parts.
+- **Empty text block**: IR built directly emits `{ type: 'text', text: '' }` for a tool-only assistant turn on the Anthropic target. Kept for golden byte-identity; whether the API accepts it is unverified.
+- **Unverified on the API** (no key available): Sonnet 5.5 / Haiku 5.5 ignoring a system message placed right after a tool result, which is where the `'system'` announcement channel lands mid-agent-loop.
+- **5.0 candidate**: flip the `prefillMode` default to `'instruction'` once most Claude models in use reject native prefill.
+
+---
+
 # 5.0 Removal List
 
 The mirror of `MIGRATION-5.md` — what 4.2 deprecated and 5.0 deletes. Nothing here is

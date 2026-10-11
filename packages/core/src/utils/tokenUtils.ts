@@ -24,11 +24,19 @@ export function estimate(text: string): number {
 }
 
 /**
+ * `_anthropic_origin` holds a verbatim copy of content the message's own
+ * fields already carry; serializing it would count that content twice.
+ */
+function skipDuplicateContent(key: string, value: unknown): unknown {
+  return key === '_anthropic_origin' ? undefined : value;
+}
+
+/**
  * Estimates tokens for an array of messages or a single object by serializing it.
  */
 export function estimateObject(obj: unknown): number {
   if (typeof obj === 'string') {
     return estimate(obj);
   }
-  return estimate(JSON.stringify(obj));
+  return estimate(JSON.stringify(obj, skipDuplicateContent));
 }

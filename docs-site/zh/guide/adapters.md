@@ -22,6 +22,8 @@ const { system, history } = fromGemini(geminiContents, systemInstruction);
 chef.setSystemPrompt(system).setHistory(history);
 ```
 
+**`fromAnthropic` 解析的历史原样回放。** 用 `fromAnthropic` 解析的历史，只要没被改动过，编译回 Anthropic target 时就逐字节一致：每个 thinking block、各自独立的 text block、IR 不建模的块（server tool use、web search 结果、compaction block 的签名）都原样保留，并行 tool result 和其后的用户文本也仍在同一条 user message 里。每条解析出的消息在 `Message._anthropic_origin` 里记录自己的来源。之所以这样做，是因为 Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking block 连同它之前的全部内容做签名，在 2026-08-31 及之后创建的账号上，只要更早的某一轮和模型当时看到的不一致，API 就返回 400。你改动过的消息（清掉了 tool result、剥掉了 thinking）照旧从 IR 字段重建；原消息里的 `cache_control` 标记会被 chef 自己的断点替换。
+
 多模态内容（图片、文件）自动转换为 IR `attachments` 字段：
 
 | Provider 格式                    | IR 字段                              |
@@ -34,14 +36,16 @@ chef.setSystemPrompt(system).setHistory(history);
 
 ## Target Adapters
 
-| 特性                      | OpenAI                             | Anthropic                              | Gemini                               |
-| ------------------------- | ---------------------------------- | -------------------------------------- | ------------------------------------ |
-| 格式                      | Chat Completions                   | Messages API                           | generateContent                      |
-| 缓存断点                  | 移除                               | `cache_control: { type: 'ephemeral' }` | 移除（使用独立的 CachedContent API） |
-| Prefill（尾部 assistant） | 降级为 `[System Note]`             | 原生支持                               | 降级为 `[System Note]`               |
-| `thinking` 字段           | 移除                               | 映射为 `ThinkingBlockParam`            | 移除                                 |
-| 工具调用                  | `tool_calls` 数组                  | `tool_use` blocks                      | `functionCall` parts                 |
-| `attachments`             | `image_url` / `file` content parts | `image` / `document` blocks            | `inlineData` / `fileData` parts      |
+| 特性                      | OpenAI                             | Anthropic                                                      | Gemini                               |
+| ------------------------- | ---------------------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| 格式                      | Chat Completions                   | Messages API                                                   | generateContent                      |
+| 缓存断点                  | 移除                               | `cache_control: { type: 'ephemeral' }`                         | 移除（使用独立的 CachedContent API） |
+| Prefill（尾部 assistant） | 降级为指令                         | 原生支持；不接受 prefill 的模型用 `prefillMode: 'instruction'` | 降级为指令                           |
+| `thinking` 字段           | 移除                               | 映射为 `ThinkingBlockParam`                                    | 移除                                 |
+| 工具调用                  | `tool_calls` 数组                  | `tool_use` blocks                                              | `functionCall` parts                 |
+| `attachments`             | `image_url` / `file` content parts | `image` / `document` blocks                                    | `inlineData` / `fileData` parts      |
+
+Claude Sonnet 4.6、Sonnet 5、Sonnet 5.5 和 Haiku 5.5 会拒绝最后一条消息是 prefill assistant 轮次的请求（400）。用这些模型时，设置 `withGuardrails({ prefill, prefillMode: 'instruction' })`：任何 target 都不会收到尾部 assistant 消息，prefill 改成一条指令，和其他 guardrail 指令一起按 `placement` 投递。chef 看不到你的 model id，所以这个模式由你来定。见 [Guardrail](/zh/guide/guardrail)。
 
 适配器由 `compile({ target })` 自动选择。也可以独立使用：
 

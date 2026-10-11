@@ -271,12 +271,23 @@ chef.setDynamicState(TaskSchema, { activeFile: "auth.ts", todo: ["Fix bug"] });
 chef.withGuardrails({
   enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
   prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
+  prefillMode: "native", // default; "instruction" never sends a trailing assistant message
 });
 ```
 
 **v4 语义。** options 现在会被*存储*并在 `compile()` 时应用，因此与 `setDynamicState` 的调用顺序不再重要（4.0 之前，在 `withGuardrails` 之后调用 `setDynamicState` 会静默丢弃护栏）。每次调用会**替换**上一次的 options（不累积）；`withGuardrails(null)` 清除。存储的 options 会随 `ChefSnapshot` 持久化（`guardrailOptions`），护栏消息作为独立消息落在三明治最末端 —— 离生成最近，不再合并进动态状态消息。
 
-**缓存安全落点（4.1）。** `placement: 'last_user'` 会把 enforce-XML 指令通过最后一条 user 消息的尾部注入送达（与动态状态同一通道），而不是走 system message。这在 Anthropic 上很关键：每条 `role: 'system'` 消息都会被提取进 top-level `system` 前缀，因此在默认的 `placement: 'system'` 下，护栏一有改动就会击穿其下游的所有 cache breakpoint。`prefill` 在两种落点下均不受影响。
+**缓存安全落点（4.1）。** `placement: 'last_user'` 会把 enforce-XML 指令通过最后一条 user 消息的尾部注入送达（与动态状态同一通道），而不是走 system message。这在 Anthropic 上很关键：每条 `role: 'system'` 消息都会被提取进 top-level `system` 前缀，因此在默认的 `placement: 'system'` 下，护栏一有改动就会击穿其下游的所有 cache breakpoint。原生 `prefill` 在两种落点下均不受影响。
+
+**Prefill 模式（4.3）。** Claude Sonnet 4.6、Sonnet 5、Sonnet 5.5 和 Haiku 5.5 会拒绝最后一轮是 assistant prefill 的请求（400："This model does not support assistant message prefill"）。设置 `prefillMode: 'instruction'` 后，任何 target 都不会出现尾部 assistant 消息，改为发送一条「回复必须以 prefill 文本开头」的指令，和 enforce-XML 指令一起送到 `placement` 指定的位置。在 Anthropic 上，默认的 `placement: 'system'` 对应 top-level `system`，只在 options 变化时才会改变。默认的 `'native'` 保留尾部 assistant 消息。ContextChef 不知道 payload 是发给哪个模型的，所以模式由你来设：
+
+```typescript
+chef.withGuardrails({
+  enforceXML: { outputTag: "answer" },
+  prefill: "<answer>",
+  prefillMode: "instruction",
+});
+```
 
 #### `chef.compile(options?): Promise<TargetPayload>`
 
@@ -528,6 +539,8 @@ chef.setHistory(safeHistory);
 ```
 
 > **边界契约**：所有 input adapter（`fromOpenAI` / `fromAnthropic` / `fromGemini`，以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`）都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize：IR 是内部协议，直接构造或 mutate 出来的 history 视为已满足契约。如果不确定，显式用 `ensureValidHistory(...)` 包一下。
+>
+> 用 `fromAnthropic` 解析的 history，只要没被改动，就会逐字节原样发回 Anthropic：所有 thinking 块、分开的 text 块、同一条 user 消息里的并行 tool result，以及 IR 不建模的块（server tool use、web search 结果）都保持进来时的样子，只有 cache breakpoint 会换成 chef 自己的。Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking 块连同它之前的全部内容签名，2026-08-31 及之后创建的账号上，只要较早的某一轮和模型当时看到的不一致，API 就返回 400。解析出的消息一旦被改动（tool result 被清除、thinking 被剥离），就会像以前一样从 IR 字段重建。
 
 #### `chef.clearHistory(): this`
 
@@ -712,7 +725,7 @@ const payload = await chef.compile({ target: "anthropic" });
 
 - 在服务端托管的 target 上，客户端的 overflow 阶段被完全跳过；机械 `compact()` 和其他模块照常运行。
 - 第一个参数是按 provider 形状原样透传的 edits 配置，例如 `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` 或 `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`。`payload.betas` 自动推导：compaction 类 edit 对应 `'compact-2026-01-12'`，clear-tool-uses / clear-thinking 类 edit 对应 `'context-management-2025-06-27'`。
-- **compaction 块往返**：`fromAnthropic` 把 API 的 `{ type: 'compaction', content }` 块映射为标记 `pinned: true` 的透传消息，Anthropic adapter 在下次编译时把该块原文重新放在最前面 —— 服务端产出的摘要原样穿过客户端管道。
+- **compaction 块往返**：`fromAnthropic` 把 API 的 `{ type: 'compaction', content }` 块映射为标记 `pinned: true` 的透传消息，Anthropic adapter 在下次编译时把该块原文重新放在最前面 —— 服务端产出的摘要原样穿过客户端管道。解析出的消息未被改动时，会整条重放原始消息，因此 IR 不携带的字段（比如该块的 signature）也会保留。
 
 这是混合定位，不是二选一：LLM 压缩可以交给 provider，同时 ContextChef 继续做服务端不做的部分 —— 裁剪、skills、记忆、VFS 和动态状态。AI SDK 用户有配套防护：middleware 检测到某次调用带 `providerOptions.anthropic.contextManagement` 时，会为该次调用跳过自己的压缩（见 [ai-sdk-middleware README](./packages/ai-sdk-middleware/README.md#anthropic-server-side-context-management)）。
 

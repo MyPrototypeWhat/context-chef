@@ -22,6 +22,8 @@ const { system, history } = fromGemini(geminiContents, systemInstruction);
 chef.setSystemPrompt(system).setHistory(history);
 ```
 
+**`fromAnthropic` history replays verbatim.** History parsed with `fromAnthropic` compiles back to the Anthropic target byte-for-byte while nothing has modified it: every thinking block, separate text blocks, parallel tool results plus the user text after them as one user message, and blocks the IR does not model (server tool use, web search results, compaction block signatures). Each parsed message records where it came from in `Message._anthropic_origin`. This matters because Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. A message you modify (a cleared tool result, stripped thinking) is rebuilt from IR fields as before, and `cache_control` markers in the original are replaced by the chef's own breakpoints.
+
 Multimodal content (images, files) is automatically converted to IR `attachments`:
 
 | Provider Format | IR Field |
@@ -34,14 +36,16 @@ Multimodal content (images, files) is automatically converted to IR `attachments
 
 ## Target Adapters
 
-| Feature                      | OpenAI                      | Anthropic                              | Gemini                                     |
-| ---------------------------- | --------------------------- | -------------------------------------- | ------------------------------------------ |
-| Format                       | Chat Completions            | Messages API                           | generateContent                            |
-| Cache breakpoints            | Stripped                    | `cache_control: { type: 'ephemeral' }` | Stripped (uses separate CachedContent API) |
-| Prefill (trailing assistant) | Degraded to `[System Note]` | Native support                         | Degraded to `[System Note]`                |
-| `thinking` field             | Stripped                    | Mapped to `ThinkingBlockParam`         | Stripped                                   |
-| Tool calls                   | `tool_calls` array          | `tool_use` blocks                      | `functionCall` parts                       |
-| `attachments`                | `image_url` / `file` content parts | `image` / `document` blocks   | `inlineData` / `fileData` parts            |
+| Feature                      | OpenAI                             | Anthropic                                                      | Gemini                                     |
+| ---------------------------- | ---------------------------------- | -------------------------------------------------------------- | ------------------------------------------ |
+| Format                       | Chat Completions                   | Messages API                                                   | generateContent                            |
+| Cache breakpoints            | Stripped                           | `cache_control: { type: 'ephemeral' }`                         | Stripped (uses separate CachedContent API) |
+| Prefill (trailing assistant) | Degraded to an instruction         | Native; `prefillMode: 'instruction'` for models that reject it | Degraded to an instruction                 |
+| `thinking` field             | Stripped                           | Mapped to `ThinkingBlockParam`                                 | Stripped                                   |
+| Tool calls                   | `tool_calls` array                 | `tool_use` blocks                                              | `functionCall` parts                       |
+| `attachments`                | `image_url` / `file` content parts | `image` / `document` blocks                                    | `inlineData` / `fileData` parts            |
+
+Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a request whose last message is a prefilled assistant turn (400). For those, set `withGuardrails({ prefill, prefillMode: 'instruction' })`: no target gets a trailing assistant message, and the prefill becomes an instruction, delivered with the other guardrail instructions wherever `placement` puts them. The chef never sees your model id, so the mode is yours to set. See [Guardrail](/guide/guardrail).
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 

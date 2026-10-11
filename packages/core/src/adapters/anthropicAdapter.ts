@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   ContentBlockParam as SDKContentBlockParam,
   DocumentBlockParam as SDKDocumentBlockParam,
@@ -9,6 +10,7 @@ import type {
   ToolResultBlockParam as SDKToolResultBlockParam,
   ToolUseBlockParam as SDKToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
+import { Assembler } from '../modules/assembler';
 import type {
   AnthropicPayload,
   Attachment,
@@ -18,7 +20,7 @@ import type {
   ParsedMessages,
   ToolCall,
 } from '../types';
-import { ensureValidHistory } from '../utils/ensureValidHistory';
+import { ensureValidHistory, isOpeningPlaceholder } from '../utils/ensureValidHistory';
 import type { ITargetAdapter } from './targetAdapter';
 
 // ─── Input: Anthropic → IR ───
@@ -91,7 +93,9 @@ export function fromAnthropic(
       continue;
     }
 
-    // Complex content blocks
+    // Complex content blocks. Everything parsed from this message is collected
+    // first so the group can be stamped with its origin (see stampOrigin).
+    const parsed: HistoryMessage[] = [];
     const textParts: string[] = [];
     const attachments: Attachment[] = [];
     const toolCalls: ToolCall[] = [];
@@ -166,7 +170,7 @@ export function fromAnthropic(
         case 'tool_result':
           // Tool results in Anthropic live inside user messages as content blocks.
           // Flatten to separate IR tool messages.
-          history.push({
+          parsed.push({
             role: 'tool',
             content:
               typeof block.content === 'string'
@@ -220,8 +224,11 @@ export function fromAnthropic(
         ir._anthropic_compaction = compaction;
         ir.pinned = true;
       }
-      history.push(ir);
+      parsed.push(ir);
     }
+
+    stampOrigin(parsed, msg.content);
+    history.push(...parsed);
   }
 
   // Sanitize at boundary: enforce IR invariants before handing to caller.
@@ -229,7 +236,86 @@ export function fromAnthropic(
   return { system: systemMsgs, history: ensureValidHistory(history) as HistoryMessage[] };
 }
 
+/**
+ * Hash of the IR fields the Anthropic target would otherwise rebuild a message
+ * from. Key order is normalized: compile() re-orders keys deterministically,
+ * which must not read as a modification.
+ */
+function irHash(msg: Message): string {
+  const fields = [
+    msg.role,
+    msg.content,
+    msg.tool_call_id,
+    msg.tool_calls,
+    msg.thinking,
+    msg.redacted_thinking,
+    msg.attachments,
+    msg._anthropic_compaction,
+  ];
+  return createHash('sha256')
+    .update(Assembler.stringifyPayload(fields))
+    .digest('hex')
+    .substring(0, 16);
+}
+
+/** Records on each IR message parsed from one wire message where it came from. */
+function stampOrigin(parsed: HistoryMessage[], blocks: SDKContentBlockParam[]): void {
+  parsed.forEach((msg, part) => {
+    msg._anthropic_origin = {
+      ...(part === 0 ? { blocks: structuredClone(blocks) } : {}),
+      part,
+      parts: parsed.length,
+      hash: irHash(msg),
+    };
+  });
+}
+
 // ─── Output: IR → Anthropic ───
+
+/**
+ * A shallow copy of `block` without `cache_control`. Breakpoints are the
+ * chef's to place (`_cache_breakpoint`); markers carried in from the original
+ * could push a request past the API's four-breakpoint limit. The copy also
+ * keeps edits to the returned payload out of the stored original.
+ */
+function withoutCacheControl(block: SDKContentBlockParam): SDKContentBlockParam {
+  const { cache_control: _dropped, ...rest } = block as SDKContentBlockParam & {
+    cache_control?: unknown;
+  };
+  return rest as SDKContentBlockParam;
+}
+
+/**
+ * The original message `messages[start]` was parsed from, if every IR message
+ * parsed from it is still here, in order, with the fields it was parsed with.
+ */
+function replayOrigin(
+  messages: Message[],
+  start: number,
+): { message: SDKMessageParam; parts: number } | undefined {
+  const head = messages[start]._anthropic_origin;
+  if (!head?.blocks || head.part !== 0) return undefined;
+
+  const group = messages.slice(start, start + head.parts);
+  const intact =
+    group.length === head.parts &&
+    group.every((msg, part) => {
+      const origin = msg._anthropic_origin;
+      return origin?.part === part && origin.parts === head.parts && origin.hash === irHash(msg);
+    });
+  if (!intact) return undefined;
+
+  const content = (head.blocks as SDKContentBlockParam[]).map(withoutCacheControl);
+  if (group.some((msg) => msg._cache_breakpoint)) {
+    // Thinking blocks can't carry a breakpoint; the last other block caches the whole message.
+    const last = [...content]
+      .reverse()
+      .find((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
+    if (last) (last as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+  }
+  const role = messages[start].role === 'assistant' ? 'assistant' : 'user';
+  return { message: { role, content }, parts: head.parts };
+}
 
 /** Converts IR attachments to Anthropic image/document content blocks. */
 function attachmentsToBlocks(attachments: Attachment[]): SDKContentBlockParam[] {
@@ -326,7 +412,26 @@ export class AnthropicAdapter implements ITargetAdapter {
     // (the API treats them as one section).
     let afterUserTurn = false;
 
-    for (const msg of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      // A history that opens with a compaction block (on-demand compaction)
+      // gets a placeholder user turn from ensureValidHistory, but the API
+      // requires the block itself to come first.
+      if (
+        chatMessages.length === 0 &&
+        isOpeningPlaceholder(msg) &&
+        messages.slice(i + 1).find((m) => m.role !== 'system')?._anthropic_compaction !== undefined
+      ) {
+        continue;
+      }
+      const replayed = msg.role === 'system' ? undefined : replayOrigin(messages, i);
+      if (replayed) {
+        chatMessages.push(replayed.message);
+        afterUserTurn = replayed.message.role === 'user';
+        i += replayed.parts - 1;
+        continue;
+      }
+
       if (msg.role === 'system') {
         const sysObj: SDKTextBlockParam = { type: 'text', text: msg.content };
         if (msg._cache_breakpoint) {

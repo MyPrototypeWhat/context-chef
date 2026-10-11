@@ -1,4 +1,3 @@
-import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { checkAssembleInvariants } from '../checks';
 import type { Phase } from '../context';
@@ -6,29 +5,25 @@ import type { Phase } from '../context';
 /**
  * Sandwich assembly, then the `after-assemble` slot.
  *
- * Guardrail messages (enforce-XML instruction + prefill) are applied from the
- * stored options at compile time, closest to generation — independent of
+ * Guardrail messages (instructions + prefill) are applied from the stored
+ * options at compile time, closest to generation — independent of
  * `setDynamicState` call order by design. Placement 'last_user' routes the
- * enforce-XML text through the Assembler tail instead (cache-safe on
- * Anthropic, where system-role messages are hoisted into the top-level
- * prefix); only the prefill remains as a trailing assistant message in that
- * mode.
+ * instructions through the Assembler tail instead (cache-safe on Anthropic,
+ * where system-role messages are hoisted into the top-level prefix); only a
+ * native prefill remains as a trailing assistant message in that mode.
  */
 export const assemblePhase: Phase = {
   name: 'assemble',
   async run(ctx, host) {
     const options = host.guardrailOptions;
-    const guardrailTailMode = options?.placement === 'last_user';
-    ctx.guardrailMessages = options
-      ? host.guardrail.apply(
-          [],
-          guardrailTailMode ? { ...options, enforceXML: undefined } : options,
-        )
-      : [];
-    ctx.guardrailTailXml =
-      guardrailTailMode && options?.enforceXML
-        ? Prompts.getXMLGuardrail(options.enforceXML.outputTag)
-        : '';
+    if (options?.placement === 'last_user') {
+      const nativePrefill = options.prefillMode === 'instruction' ? undefined : options.prefill;
+      ctx.guardrailMessages = host.guardrail.apply([], { prefill: nativePrefill });
+      ctx.guardrailTailXml = host.guardrail.instructions(options);
+    } else {
+      ctx.guardrailMessages = options ? host.guardrail.apply([], options) : [];
+      ctx.guardrailTailXml = '';
+    }
 
     ctx.systemLayers = [...host.systemPrompt, ...ctx.skillMessages, ...ctx.memoryMessages];
     ctx.messages = [

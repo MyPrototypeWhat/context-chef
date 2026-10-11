@@ -271,12 +271,23 @@ Applies output format guardrails and optional prefill.
 chef.withGuardrails({
   enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
   prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
+  prefillMode: "native", // default; "instruction" never sends a trailing assistant message
 });
 ```
 
 **v4 semantics.** Options are now *stored* and applied at `compile()`, so call order relative to `setDynamicState` no longer matters (pre-4.0, calling `setDynamicState` after `withGuardrails` silently discarded the guardrail). Each call **replaces** the previous options (no accumulation); `withGuardrails(null)` clears them. The stored options are persisted in `ChefSnapshot` (`guardrailOptions`), and the guardrail message lands at the very end of the sandwich as its own message — closest to generation, no longer merged into the dynamic-state message.
 
-**Cache-safe placement (4.1).** `placement: 'last_user'` delivers the enforce-XML instruction through the last-user-message tail injection (same channel as dynamic state) instead of a system message. This matters on Anthropic: every `role: 'system'` message is hoisted into the top-level `system` prefix, so under the default `placement: 'system'` any guardrail change invalidates cache breakpoints downstream of it. `prefill` is unaffected either way.
+**Cache-safe placement (4.1).** `placement: 'last_user'` delivers the enforce-XML instruction through the last-user-message tail injection (same channel as dynamic state) instead of a system message. This matters on Anthropic: every `role: 'system'` message is hoisted into the top-level `system` prefix, so under the default `placement: 'system'` any guardrail change invalidates cache breakpoints downstream of it. A native `prefill` is unaffected either way.
+
+**Prefill mode (4.3).** Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a request that ends with a prefilled assistant turn (400: "This model does not support assistant message prefill"). With `prefillMode: 'instruction'`, no target gets a trailing assistant message. Instead, an instruction to start the reply with the prefill text goes out with the enforce-XML instruction, wherever `placement` puts it. Under the default `placement: 'system'` on Anthropic, that is the top-level `system`, which only changes when the options do. The default `'native'` keeps the trailing assistant message. ContextChef doesn't know which model a payload is for, so the mode is yours to set:
+
+```typescript
+chef.withGuardrails({
+  enforceXML: { outputTag: "answer" },
+  prefill: "<answer>",
+  prefillMode: "instruction",
+});
+```
 
 #### `chef.compile(options?): Promise<TargetPayload>`
 
@@ -528,6 +539,8 @@ chef.setHistory(safeHistory);
 ```
 
 > **Boundary contract.** All input adapters (`fromOpenAI` / `fromAnthropic` / `fromGemini`, plus middleware-internal `fromAISDK` / `fromTanStackAI`) run their output through `ensureValidHistory` automatically — they're the system boundary between external SDK formats and ContextChef IR. `chef.setHistory(IR)` does NOT sanitize: IR is treated as an internal protocol, and history you construct (or mutate) directly is trusted to satisfy the invariants. Wrap with `ensureValidHistory(...)` explicitly when in doubt.
+>
+> History parsed with `fromAnthropic` goes back to Anthropic byte-for-byte as long as nothing has changed it: all thinking blocks, separate text blocks, parallel tool results in one user message, and blocks the IR doesn't model (server tool use, web search results) come out as they came in. Only cache breakpoints are swapped for the chef's own. Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. Once a parsed message is modified (a cleared tool result, stripped thinking), it is rebuilt from IR fields as before.
 
 #### `chef.clearHistory(): this`
 
@@ -712,7 +725,7 @@ const payload = await chef.compile({ target: "anthropic" });
 
 - On a server-managed target the client-side overflow phase is skipped entirely; mechanical `compact()` and every other module still run.
 - The first argument is a provider-shaped edits config passed through verbatim, e.g. `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` or `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`. `payload.betas` is auto-derived: `'compact-2026-01-12'` for compaction edits, `'context-management-2025-06-27'` for the clear-tool-uses / clear-thinking edits.
-- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched.
+- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched. While the parsed message is unmodified, the whole original message is replayed, so fields the IR doesn't carry, such as the block's signature, survive too.
 
 This is a hybrid positioning, not an either/or: LLM compression can be delegated to the provider while ContextChef keeps doing the parts servers don't — pruning, skills, memory, VFS, and dynamic state. AI SDK users get a matching guard: the middleware detects `providerOptions.anthropic.contextManagement` on a call and skips its own compression for that call (see the [ai-sdk-middleware README](./packages/ai-sdk-middleware/README.md#anthropic-server-side-context-management)).
 

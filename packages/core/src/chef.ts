@@ -1108,6 +1108,8 @@ export class ContextChef {
   /**
    * Sets the Guardrail rules for subsequent compile() calls.
    * If a specific `target` is provided during `compile()`, it will elegantly degrade prefill.
+   * Claude models that reject a native prefill (Sonnet 4.6, Sonnet 5, Sonnet 5.5,
+   * Haiku 5.5) need `prefillMode: 'instruction'`; the chef cannot tell models apart.
    *
    * Replace semantics: each call REPLACES the previous options (no
    * accumulation); pass `null` to clear. Application is deferred to
@@ -1363,6 +1365,18 @@ export class ContextChef {
    * read as system state; "You must now use read_file" reads as an instruction
    * competing with the system prompt.
    *
+   * Newer Claude models (from Anthropic's docs as of 2026-10; neither point is
+   * verified against the API yet):
+   * - Sonnet 5.5 and Haiku 5.5 may treat a system message placed right after
+   *   a tool result as untrusted and ignore it. Mid-agent-loop, that is where
+   *   the `'system'` channel lands; pass `channel: 'user_tail'` if those
+   *   models don't act on an announcement.
+   * - Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block
+   *   over everything before it. Either channel re-renders the announcement
+   *   at the new tail on every compile, so the turn it sat in last time
+   *   changes, and replaying that turn's thinking fails the check (a 400 on
+   *   accounts created on or after 2026-08-31).
+   *
    * Detecting the delta is userland policy, not chef mechanism:
    *
    * @example
@@ -1413,7 +1427,8 @@ export class ContextChef {
    * leave the cached prefix intact and carry operator precedence; every other
    * target gets `'user_tail'`. Anthropic models WITHOUT mid-conversation system
    * support (Sonnet 5) must therefore pass `channel: 'user_tail'` explicitly —
-   * mechanism, not policy.
+   * mechanism, not policy. So may Sonnet 5.5 / Haiku 5.5 callers whose
+   * announcements go unheeded after tool results (see {@link announce}).
    */
   private _resolveAnnouncementChannels(
     isAnthropicTarget: boolean,
