@@ -71,7 +71,7 @@ contextChefMiddleware({
 
 ### 会话隔离
 
-压缩状态（fed token 用量、压缩抑制、失败熔断器）按 `ctx.threadId` 跟踪，一个 middleware 实例可以安全服务多段对话。给 `chat()` 传 `threadId`（`conversationId` 是仍可用的废弃别名）；不传的调用会拿到按 run 自动生成的 id —— run 内隔离，但跨调用无连续性。最多并发跟踪 `maxSessions` 段对话（默认 256，LRU 淘汰）。
+压缩状态（fed token 用量、压缩后标记、失败熔断器）按 `ctx.threadId` 跟踪，一个 middleware 实例可以安全服务多段对话。给 `chat()` 传 `threadId`（`conversationId` 是仍可用的废弃别名）；不传的调用会拿到按 run 自动生成的 id —— run 内隔离，但跨调用无连续性。最多并发跟踪 `maxSessions` 段对话（默认 256，LRU 淘汰）。
 
 ### Compact（机械裁剪）
 

@@ -250,11 +250,7 @@ describe('Janitor — feedTokenUsage path (no tokenizer)', () => {
     await janitor.compress(buildHistory(5));
     expect(mockModel).toHaveBeenCalledTimes(1);
 
-    // E10 suppresses next call
-    await janitor.compress(buildHistory(5));
-    expect(mockModel).toHaveBeenCalledTimes(1);
-
-    // Third call: no fed value, heuristic is low → no compression
+    // Second call: the fed value was used up, and the heuristic is low → no compression
     await janitor.compress(buildHistory(5));
     expect(mockModel).toHaveBeenCalledTimes(1);
   });
@@ -518,25 +514,38 @@ describe('Janitor — onBeforeCompress hook', () => {
 // E10: Compression suppression
 // ═══════════════════════════════════════════════════════
 
-describe('Janitor — E10 compression suppression', () => {
-  it('suppresses check immediately after compression, resumes after', async () => {
+describe('Janitor — E10 after a compression', () => {
+  const setup = () => {
     const compressionModel = vi.fn().mockResolvedValue('<history_summary>S</history_summary>');
     const janitor = new Janitor({
       contextWindow: 30,
       tokenizer: makeTokenizer(10),
       compressionModel,
     });
+    return { compressionModel, janitor };
+  };
+
+  it('compresses an uncompressed history again on the very next call', async () => {
+    const { compressionModel, janitor } = setup();
 
     await janitor.compress(buildHistory(5));
-    expect(compressionModel).toHaveBeenCalledTimes(1);
+    const second = await janitor.compress(buildHistory(5));
 
-    // Suppressed (E10)
-    const result2 = await janitor.compress(buildHistory(5));
-    expect(compressionModel).toHaveBeenCalledTimes(1);
-    expect(result2).toHaveLength(5);
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(second.length).toBeLessThan(5);
+  });
 
-    // Resumes
+  it('ignores a usage reported right after a compression, then trusts the next one', async () => {
+    const { compressionModel, janitor } = setup();
     await janitor.compress(buildHistory(5));
+
+    // 2 × 10 tokens is under the 21-token trigger; only the report says otherwise.
+    janitor.feedTokenUsage(999);
+    await janitor.compress(buildHistory(2));
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+
+    janitor.feedTokenUsage(999);
+    await janitor.compress(buildHistory(2));
     expect(compressionModel).toHaveBeenCalledTimes(2);
   });
 });
@@ -550,16 +559,16 @@ describe('Janitor — snapshot & restore', () => {
     const janitor = new Janitor({ contextWindow: 100, tokenizer: makeTokenizer(10) });
 
     janitor.feedTokenUsage(999);
-    janitor['_suppressNextCompression'] = true;
+    janitor['_reportedUsageStale'] = true;
     const snap = janitor.snapshotState();
 
     janitor.reset();
     expect(janitor['_externalTokenUsage']).toBeNull();
-    expect(janitor['_suppressNextCompression']).toBe(false);
+    expect(janitor['_reportedUsageStale']).toBe(false);
 
     janitor.restoreState(snap);
     expect(janitor['_externalTokenUsage']).toBe(999);
-    expect(janitor['_suppressNextCompression']).toBe(true);
+    expect(janitor['_reportedUsageStale']).toBe(true);
   });
 });
 

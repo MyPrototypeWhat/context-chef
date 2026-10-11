@@ -611,3 +611,55 @@ describe('overflow — v5 review fixes', () => {
     expect(compressed).toEqual([false]);
   });
 });
+
+// In-flight overflow: the host keeps its full history and passes it to
+// setHistory every turn; the summary is recomputed per call (README,
+// "Durable compaction"). Before the fix, the call after each compression
+// skipped the budget check and sent the full history.
+describe('overflow — host passes its full history every turn', () => {
+  const turn = (i: number): Message[] => [
+    { role: 'user', content: `q${i}: ${'context '.repeat(200)}` },
+    { role: 'assistant', content: `a${i}: ${'context '.repeat(200)}` },
+  ];
+
+  it('keeps every payload within the budget', async () => {
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, compressionModel },
+    });
+    const full: Message[] = [];
+    const sizes: number[] = [];
+
+    for (let i = 1; i <= 6; i++) {
+      full.push(...turn(i));
+      chef.setHistory([...full, { role: 'user', content: `next ${i}` }]);
+      const payload = await chef.compile({ target: 'openai' });
+      sizes.push((payload as { messages: unknown[] }).messages.length);
+    }
+
+    // runnerConfig: 10 tokens per message, budget 60 → at most 6 messages.
+    expect(sizes.every((n) => n <= 6)).toBe(true);
+  });
+
+  it('still ignores a usage report that predates the compression', async () => {
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, compressionModel },
+    });
+    let compressions = 0;
+    chef.on('compress:end', ({ compressed }) => {
+      if (compressed) compressions++;
+    });
+
+    chef.setHistory(longHistory(8));
+    await chef.compile({ target: 'openai' });
+    expect(compressions).toBe(1);
+
+    // The host now holds the compressed history, but reports the usage of
+    // the request it sent before the compression.
+    chef.setHistory(longHistory(2));
+    chef.reportTokenUsage(500);
+    await chef.compile({ target: 'openai' });
+    expect(compressions).toBe(1);
+  });
+});

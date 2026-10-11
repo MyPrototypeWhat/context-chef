@@ -71,7 +71,7 @@ The per-tool lookup key is the tool's name — read from `ModelMessage.name` whe
 
 ### Conversation Isolation
 
-Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per `ctx.threadId`, so one middleware instance safely serves many conversations. Pass a `threadId` to `chat()` (`conversationId` is a deprecated alias); calls without one get an auto-generated per-run id — isolated within the run, but with no cross-call continuity. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted).
+Compression state (fed token usage, the post-compression flag, the failure circuit breaker) is tracked per `ctx.threadId`, so one middleware instance safely serves many conversations. Pass a `threadId` to `chat()` (`conversationId` is a deprecated alias); calls without one get an auto-generated per-run id — isolated within the run, but with no cross-call continuity. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted).
 
 ### Compact (Mechanical Pruning)
 

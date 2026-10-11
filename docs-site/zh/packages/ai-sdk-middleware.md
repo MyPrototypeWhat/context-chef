@@ -130,7 +130,7 @@ const model = withContextChef(openai('gpt-4o'), {
 
 ## 会话隔离（多用户服务）
 
-wrapped model 通常在模块层创建一次、跨请求复用。压缩状态（fed token 用量、压缩抑制、失败熔断器）按**会话**跟踪 —— 每次调用通过 `providerOptions` 传 `sessionId`，并发对话就不会共享状态：
+wrapped model 通常在模块层创建一次、跨请求复用。压缩状态（fed token 用量、压缩后标记、失败熔断器）按**会话**跟踪 —— 每次调用通过 `providerOptions` 传 `sessionId`，并发对话就不会共享状态：
 
 ```typescript
 const model = withContextChef(openai('gpt-4o'), {

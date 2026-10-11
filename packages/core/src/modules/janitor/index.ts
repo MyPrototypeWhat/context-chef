@@ -419,6 +419,11 @@ export type JanitorConfig = JanitorConfigWithTokenizer | JanitorConfigWithoutTok
 
 export interface JanitorSnapshot {
   externalTokenUsage: number | null;
+  /**
+   * True right after a successful compression: the next budget check ignores
+   * the reported usage. Named for its pre-4.3 meaning (the next check was
+   * skipped outright); the key is kept so stored snapshots still restore.
+   */
   suppressNextCompression: boolean;
   consecutiveFailures: number;
   /**
@@ -546,8 +551,11 @@ export function compactMessages(history: Message[], options: CompactOptions): Me
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
-  /** Suppresses the next compression check after a successful compression (E10). */
-  private _suppressNextCompression = false;
+  /**
+   * Set by a successful compression (E10): the next budget check ignores the
+   * reported usage, which may describe the payload from before it.
+   */
+  private _reportedUsageStale = false;
   /**
    * Circuit breaker counter — incremented when the strategy rejects a
    * compression, reset when it produces a usable one. At
@@ -644,7 +652,7 @@ export class Janitor {
     const strategy = this._strategy.snapshot?.();
     const snapshot: JanitorSnapshot = {
       externalTokenUsage: this._externalTokenUsage,
-      suppressNextCompression: this._suppressNextCompression,
+      suppressNextCompression: this._reportedUsageStale,
       consecutiveFailures: this._consecutiveFailures,
       anchorDoc: readAnchorDoc(strategy),
       // Copied: the lineage keeps moving after the snapshot is taken, and a
@@ -657,7 +665,7 @@ export class Janitor {
 
   public restoreState(state: JanitorSnapshot): void {
     this._externalTokenUsage = state.externalTokenUsage;
-    this._suppressNextCompression = state.suppressNextCompression;
+    this._reportedUsageStale = state.suppressNextCompression;
     this._consecutiveFailures = state.consecutiveFailures ?? 0;
     // A snapshot taken before 4.2 has no lineage. Restoring one starts a fresh
     // one rather than keeping this runner's: the restored history is not the
@@ -677,7 +685,7 @@ export class Janitor {
    */
   public reset(): void {
     this._externalTokenUsage = null;
-    this._suppressNextCompression = false;
+    this._reportedUsageStale = false;
     this._consecutiveFailures = 0;
     // A cleared history is a new conversation, not a continuation of the old
     // window chain — the lineage starts over with it.
@@ -858,7 +866,7 @@ export class Janitor {
       span.length,
       { compressedMessages: span },
     );
-    this._suppressNextCompression = true;
+    this._reportedUsageStale = true;
     return archived;
   }
 
@@ -900,7 +908,7 @@ export class Janitor {
 
   /**
    * Decides whether the window is over budget, consuming the one-shot state
-   * that decision depends on (the fed usage value, the E10 suppression flag).
+   * that decision depends on (the fed usage value, the E10 staleness flag).
    * Returns the reading when compression should run, null otherwise.
    *
    * The effective trigger threshold is `contextWindow * triggerRatio`
@@ -915,12 +923,15 @@ export class Janitor {
   private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
     if (history.length === 0) return null;
 
-    // E10: Skip check once after a successful compression to avoid cascading
-    // re-compression. The one-shot flag is consumed either way — a forced
-    // overflow answers for this turn, so the suppression has done its job.
-    const suppressed = this._suppressNextCompression;
-    this._suppressNextCompression = false;
-    if (suppressed && !force) return null;
+    // E10: right after a successful compression, a reported usage may still
+    // describe the payload from before it, and acting on it would compress the
+    // summary again. Drop it for this one check, but still check: a host that
+    // kept the compressed history is under budget by its own count, and a host
+    // that passes its full history again gets it compressed again.
+    if (this._reportedUsageStale) {
+      this._reportedUsageStale = false;
+      this._externalTokenUsage = null;
+    }
 
     const budget = this.readBudget(history);
     this._externalTokenUsage = null;

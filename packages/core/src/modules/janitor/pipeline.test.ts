@@ -546,9 +546,6 @@ describe('Janitor — incremental-anchored mode', () => {
     expect(janitor.getAnchorDoc()).toBe('ANCHOR-v1');
     expect(r1[0].content).toContain('ANCHOR-v1');
 
-    // E10 suppression consumes the call right after a successful compression.
-    await janitor.compress(buildHistory(7));
-
     // Second compression: instruction embeds the current anchor
     const r2 = await janitor.compress(buildHistory(7));
     const instruction2 = captured[1][captured[1].length - 1].content;
@@ -906,9 +903,6 @@ describe('Janitor — review fixes', () => {
     await janitor.compress(buildLongHistory(5, 5000));
     expect(janitor.getAnchorDoc()).toBe(bigAnchor);
 
-    // E10 suppression consumes the call right after a successful compression.
-    await janitor.compress(buildLongHistory(6, 5000));
-
     // Next compression over a long span: absolute anchor size (9k) far
     // exceeds naive shrink limits, but GROWTH (8 chars) passes easily.
     const r2 = await janitor.compress(buildLongHistory(6, 5000));
@@ -958,9 +952,6 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
     });
 
     for (let round = 0; round < 4; round++) {
-      // E10 suppression consumes the call right after a successful overflow.
-      if (round > 0) await janitor.overflow(buildLongHistory(5));
-
       const result = await janitor.overflow(buildLongHistory(5));
 
       expect(result.meta.changed).toBe(true);

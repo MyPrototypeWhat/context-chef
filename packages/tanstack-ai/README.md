@@ -150,7 +150,7 @@ The middleware's `onUsage` hook automatically extracts `promptTokens` from each 
 
 ### Conversation Isolation
 
-Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per `ctx.threadId`, so one middleware instance safely serves many conversations. Pass a `threadId` to `chat()` (`conversationId` is a deprecated alias that also works); calls without one get an auto-generated per-run id — isolated within the run, but with no cross-call continuity, so pass an explicit `threadId` for multi-turn conversations. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted); an evicted conversation is transparently recreated on next access, losing only its fed token usage.
+Compression state (fed token usage, the post-compression flag, the failure circuit breaker) is tracked per `ctx.threadId`, so one middleware instance safely serves many conversations. Pass a `threadId` to `chat()` (`conversationId` is a deprecated alias that also works); calls without one get an auto-generated per-run id — isolated within the run, but with no cross-call continuity, so pass an explicit `threadId` for multi-turn conversations. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted); an evicted conversation is transparently recreated on next access, losing only its fed token usage.
 
 ### Compact (Mechanical Pruning)
 

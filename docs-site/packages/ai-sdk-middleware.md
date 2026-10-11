@@ -130,7 +130,7 @@ const model = withContextChef(openai('gpt-4o'), {
 
 ## Session Isolation (Multi-User Servers)
 
-A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
+A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, the post-compression flag, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
 
 ```typescript
 const model = withContextChef(openai('gpt-4o'), {
