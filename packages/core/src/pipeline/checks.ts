@@ -105,3 +105,70 @@ export function tailInsertionIndex(messages: Message[]): number {
   while (insertAt > 0 && messages[insertAt - 1].role === 'assistant') insertAt--;
   return insertAt;
 }
+
+/** The parts of any target payload that decide what the model has already seen. */
+export interface PrefixComparable {
+  /** Anthropic top-level system blocks. */
+  system?: unknown;
+  /** Gemini system instruction. */
+  systemInstruction?: unknown;
+  /** OpenAI Responses system prompt. */
+  instructions?: unknown;
+  tools?: unknown;
+  /** Chat-style targets (OpenAI, Anthropic, Gemini). */
+  messages?: readonly unknown[];
+  /** OpenAI Responses input items. */
+  input?: readonly unknown[];
+}
+
+export interface PrefixContinuity {
+  ok: boolean;
+  /** The first place `next` stops repeating `prev`: `'system'`, `'tools'`, `'messages[3]'`, … */
+  firstDivergence?: { path: string; before: unknown; after: unknown };
+}
+
+const PREFIX_HEAD_FIELDS = ['system', 'systemInstruction', 'instructions', 'tools'] as const;
+
+/** Key order and cache breakpoints don't change what the model saw. */
+function sameContent(a: unknown, b: unknown): boolean {
+  const canonical = (value: unknown) =>
+    JSON.stringify(Assembler.orderKeysDeterministically(value), (key, v) =>
+      key === 'cache_control' ? undefined : v,
+    );
+  return canonical(a) === canonical(b);
+}
+
+/**
+ * Whether the payload sent on one turn is still the prefix of the payload for
+ * the next: the system prompt and tools unchanged, and every earlier message
+ * repeated as it was, with new ones only appended. Claude Fable 5.1 / Opus 5.5
+ * / Sonnet 5.5 / Haiku 5.5 sign each thinking block over everything before it,
+ * so a turn that fails this check fails theirs when it replays thinking. The
+ * payload's `meta`, and request fields outside the prompt, are not compared.
+ */
+export function checkPrefixContinuity(
+  prev: PrefixComparable,
+  next: PrefixComparable,
+): PrefixContinuity {
+  for (const field of PREFIX_HEAD_FIELDS) {
+    if (!sameContent(prev[field], next[field])) {
+      return {
+        ok: false,
+        firstDivergence: { path: field, before: prev[field], after: next[field] },
+      };
+    }
+  }
+
+  const field = prev.input !== undefined || next.input !== undefined ? 'input' : 'messages';
+  const before = prev[field] ?? [];
+  const after = next[field] ?? [];
+  for (let i = 0; i < before.length; i++) {
+    if (!sameContent(before[i], after[i])) {
+      return {
+        ok: false,
+        firstDivergence: { path: `${field}[${i}]`, before: before[i], after: after[i] },
+      };
+    }
+  }
+  return { ok: true };
+}

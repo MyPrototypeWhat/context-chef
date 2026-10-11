@@ -160,6 +160,11 @@ export type {
   SlotHandlers,
   SlotName,
 } from './pipeline';
+export {
+  checkPrefixContinuity,
+  type PrefixComparable,
+  type PrefixContinuity,
+} from './pipeline/checks';
 export * from './prompts';
 export * from './store';
 export * from './tools';
