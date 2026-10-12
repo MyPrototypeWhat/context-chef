@@ -3,6 +3,7 @@ import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
 import type { Memory } from '../modules/memory';
 import type { BudgetInfo, HandoffConfig, OverflowResult, WindowLineage } from '../overflow/types';
+import type { PrefixLedger, PrefixMeta, PrefixSent } from '../prefix';
 import type {
   CompileMeta,
   CompileOptions,
@@ -20,6 +21,7 @@ import type { SlotRegistry } from './slots';
 export type PhaseName =
   | 'start'
   | 'transform-tool-results'
+  | 'prefix'
   | 'handoff'
   | 'overflow'
   | 'inject'
@@ -49,6 +51,27 @@ export interface ResolvedTarget {
 /**
  * @internal
  *
+ * `appendOnly`: what one compile did with the ledger. The `prefix` phase
+ * creates it; it is absent when the mode is off.
+ */
+export interface PrefixCompile {
+  /** The chef's ledger as this compile found it; every phase of the compile works on this one. */
+  readonly ledger: PrefixLedger;
+  /**
+   * The host history the ledger reconciled (after `transform-tool-results`):
+   * the ledger's host indices point into it, and the commit records it.
+   * `CompileContext.history` is the window rendered over it.
+   */
+  readonly history: Message[];
+  /** The checkpoints this compile applied, in order, as `prefix:break` reported them. */
+  readonly breaks: NonNullable<PrefixMeta['break']>[];
+  /** What the payload sends ahead of the window, read once `adapt` built it. */
+  sent?: PrefixSent;
+}
+
+/**
+ * @internal
+ *
  * Mutable state of a single `compile()` pass. Replaces the closure variables
  * `_compileInner` used to thread between its numbered steps: every phase reads
  * what earlier phases wrote and writes what later phases read.
@@ -60,14 +83,24 @@ export class CompileContext {
   readonly options: CompileOptions;
   readonly signal?: AbortSignal;
   /**
+   * Started from a hook while another compile runs. Its payload is not the
+   * conversation's next request, so it leaves the append-only ledger alone.
+   */
+  readonly nested: boolean;
+  /**
    * The runner's live window lineage — the same object the Janitor advances,
    * so `current` read late in the pipeline is the window this payload belongs
    * to, not the one the compile started in.
    */
   readonly window: WindowLineage;
 
-  /** Working history: chef history → transformed tool results → post-overflow. */
+  /**
+   * Working history: chef history → transformed tool results → the
+   * append-only window, when that mode is on → post-overflow.
+   */
   history: Message[];
+  /** `appendOnly` only: the ledger's side of this compile. */
+  prefix?: PrefixCompile;
   /** `<implicit_context>` block built from `before-assemble` injections. */
   implicitContextXml = '';
   /** Dynamic state messages, with implicit context folded in under `'system'` placement. */
@@ -107,11 +140,13 @@ export class CompileContext {
   constructor(init: {
     options: CompileOptions;
     signal?: AbortSignal;
+    nested?: boolean;
     history: Message[];
     window: WindowLineage;
   }) {
     this.options = init.options;
     this.signal = init.signal;
+    this.nested = init.nested ?? false;
     this.history = init.history;
     this.window = init.window;
     // Key order is part of the compile output (`payload.meta`), so both memory
@@ -163,6 +198,12 @@ export interface PipelineHost {
 
   readonly cacheAudit: boolean;
   readonly pipelineChecks: boolean;
+  /**
+   * The chef's append-only prefix ledger; `undefined` when `appendOnly` is
+   * off. The `prefix` phase takes it for the compile: later phases read
+   * `ctx.prefix.ledger`, which is absent for a nested compile too.
+   */
+  readonly ledger?: PrefixLedger;
 
   readonly slots: SlotRegistry;
   readonly assembler: Assembler;

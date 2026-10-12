@@ -47,6 +47,12 @@ import {
   SlotRegistry,
 } from './pipeline';
 import { escapeXmlAttribute } from './pipeline/xml';
+import {
+  type AppendOnlyConfig,
+  type PrefixBreakReason,
+  PrefixLedger,
+  type PrefixLedgerSnapshot,
+} from './prefix';
 import { Store } from './store/store';
 import type { StorageBackend } from './store/types';
 import { getContextToolDefinition } from './tools/contextTool';
@@ -170,6 +176,13 @@ export interface ChefSnapshot {
    * noticed with the flag cleared, and repeats the notice every turn.
    */
   readonly handoffNoticedWindow?: string;
+  /**
+   * The append-only prefix ledger, present when `appendOnly` is on. Restored
+   * together with the history: a chef created per request must persist it,
+   * or every request starts a new ledger. A snapshot without it restores as
+   * an empty ledger.
+   */
+  readonly prefixLedger?: PrefixLedgerSnapshot;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -350,6 +363,20 @@ export interface ChefConfig {
    */
   pipelineChecks?: boolean;
   /**
+   * Keeps what was already sent as the prefix of the next payload. Fable 5.1 /
+   * Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign every thinking block over
+   * everything before it, and OpenAI / Gemini prefix caches key on the same
+   * bytes. The chef keeps a ledger and rebuilds each window from (history,
+   * ledger); anything that rewrites what was sent — an edited history, a new
+   * system prompt or tool list, a cleared history — is a checkpoint, reported
+   * through `prefix:break` and `CompileMeta.prefix`.
+   *
+   * `true` is `{}`. Off by default, which compiles exactly what 4.x compiles.
+   * Persist `snapshot().prefixLedger` along with the history when the chef
+   * does not outlive a request.
+   */
+  appendOnly?: boolean | AppendOnlyConfig;
+  /**
    * Where history compression happens:
    *
    * - `'client'` (default): ContextChef's Janitor compresses locally (today's
@@ -432,6 +459,7 @@ export type { CompiledTools, DynamicStatePlacement, GuardrailOptions, ResolvedTo
  * - `compress`       — emitted after Janitor compresses history
  * - `memory:changed` — emitted after any memory mutation (set, delete, expire)
  * - `memory:expired` — emitted when a memory entry expires during compile()
+ * - `prefix:break`   — emitted when an `appendOnly` compile applies a checkpoint
  *
  * Intercept hooks (can modify data / veto operations) remain as config callbacks:
  * - `onBeforeCompress` in JanitorConfig
@@ -484,6 +512,21 @@ export interface ChefEvents {
   };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
+  /**
+   * `appendOnly`: something rewrote what was already sent, and this compile
+   * applied it as a checkpoint. `at` is the window index of the first message
+   * it changed — `0` when the system prompt or tools did; unless `signed`, the
+   * thinking from there on is invalid, and `strippedThinking` counts the
+   * blocks dropped for it (Anthropic only). A compile that fails after
+   * reporting one is rolled back, so the next compile reports it again.
+   */
+  'prefix:break': {
+    reason: PrefixBreakReason;
+    at: number;
+    signed: boolean;
+    strippedThinking: number;
+    windowId?: string;
+  };
 }
 
 /**
@@ -550,6 +593,8 @@ export class ContextChef {
   private _handoffNoticedWindow?: string;
   /** A pending {@link requestNewContext}, consumed by the next compile. */
   private _forceOverflow = false;
+  /** What was appended to the window and what was sent; only when `appendOnly` is on. */
+  private _prefixLedger?: PrefixLedger;
   /** The shared context store from `ChefConfig.store`, if one was passed. */
   private readonly _store?: Store;
   private readonly _toolsMode: ToolsMode;
@@ -640,6 +685,7 @@ export class ContextChef {
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
     this.skillPlacement = config.skillPlacement ?? 'after_system';
+    if (config.appendOnly) this._prefixLedger = new PrefixLedger();
     this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
     // Before anything is wired: a handoff budget that cannot work is a config
     // error, and it should surface at the line that wrote it. An unset prompt
@@ -905,6 +951,9 @@ export class ContextChef {
       },
       get pipelineChecks() {
         return chef.pipelineChecks;
+      },
+      get ledger() {
+        return chef._prefixLedger;
       },
       get slots() {
         return chef._slots;
@@ -1631,10 +1680,14 @@ export class ContextChef {
    * Announcements survive: they describe the CURRENT capability set, which a
    * fresh conversation still needs. Retract them explicitly via
    * {@link retractAnnouncement} when the capability change no longer holds.
+   *
+   * With `appendOnly`, the ledger starts over too, and the next compile
+   * reports a `ledger` checkpoint: what was sent before is not repeated.
    */
   public clearHistory(): this {
     this.history = [];
     this.janitor.reset();
+    this._prefixLedger?.reset();
     return this;
   }
 
@@ -1669,6 +1722,7 @@ export class ContextChef {
         : undefined,
       announcements: [...this._announcements.values()].map((a) => ({ ...a })),
       handoffNoticedWindow: this._handoffNoticedWindow,
+      ...(this._prefixLedger ? { prefixLedger: this._prefixLedger.snapshot() } : {}),
       label,
       createdAt: Date.now(),
     };
@@ -1704,6 +1758,13 @@ export class ContextChef {
     // Restored together with the lineage the flag is compared against: a
     // snapshot from before this field simply had not noticed anything yet.
     this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
+    // With the history it was committed against, so this is no checkpoint.
+    // Without one, the ledger has nothing to check the history against.
+    if (this._prefixLedger) {
+      this._prefixLedger = snapshot.prefixLedger
+        ? PrefixLedger.fromSnapshot(snapshot.prefixLedger)
+        : new PrefixLedger();
+    }
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);
@@ -1816,6 +1877,7 @@ export class ContextChef {
       const ctx = new CompileContext({
         options: options ?? {},
         signal,
+        nested: !isOutermostCompile,
         history: this.history,
         // The runner's lineage, by reference: an overflow inside this compile
         // moves it, and the phases after `overflow` must see where it moved to.
@@ -1830,6 +1892,12 @@ export class ContextChef {
         if (ABORT_AFTER_PHASE.has(phase.name)) signal?.throwIfAborted();
       }
       return ctx.requirePayload();
+    } catch (error) {
+      // Nothing of a failed compile was sent: the next one must meet the same
+      // checkpoints, against the window that was. A nested compile never
+      // touched the ledger, and must not undo the one it runs inside.
+      if (isOutermostCompile) this._prefixLedger?.rollback();
+      throw error;
     } finally {
       this._currentSignal = prevSignal;
       if (isOutermostCompile) this._compiling = false;

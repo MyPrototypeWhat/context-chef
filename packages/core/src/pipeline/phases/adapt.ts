@@ -1,6 +1,7 @@
 import { anthropicServerContextManagement } from '../../adapters/anthropicAdapter';
 import type { AnthropicPayload, TargetPayload } from '../../types';
 import type { Phase } from '../context';
+import { reconcilePrefixSent } from './prefix';
 
 /**
  * Target adapter + tools + server-managed payload fields.
@@ -40,6 +41,8 @@ export const adaptPhase: Phase = {
     }
 
     ctx.payload = payload;
+    // appendOnly: a changed system prompt or tool list is a checkpoint; then meta.prefix.
+    await reconcilePrefixSent(ctx, host);
 
     for (const handler of host.slots.get('after-adapt')) {
       await handler(payload);

@@ -47,18 +47,23 @@ const turns = [
   user('q4'),
 ];
 
-/** One compile as the pipeline runs it: reconcile, append at the tail, render, commit. */
+/**
+ * One compile as the pipeline runs it: reconcile, append at the tail, compare
+ * what is sent ahead of the window once the payload exists, render, commit.
+ */
 function compile(
   ledger: PrefixLedger,
   history: Message[],
   events: PrefixCandidate[] = [],
   sent?: PrefixSent,
 ) {
-  const { break: brk } = ledger.reconcile(history, sent);
+  const { break: brk } = ledger.reconcile(history);
   if (events.length > 0) ledger.append(events);
+  const sentBreak = sent && ledger.reconcileSent(sent);
   const window = ledger.window();
+  const stable = ledger.stable();
   ledger.commit(history, sent);
-  return { window, break: brk };
+  return { window, break: brk ?? sentBreak, stable };
 }
 
 describe('PrefixLedger — events are appended once', () => {
@@ -263,7 +268,7 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
   });
 
-  it('reports `system` and `tools` breaks, ignoring key order and cache_control', () => {
+  it('reports `system` and `tools` breaks that keep the entries, ignoring key order and cache_control', () => {
     const ledger = new PrefixLedger();
     const history = turns.slice(0, 3);
     const sent: PrefixSent = {
@@ -281,7 +286,14 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     const newSystem: PrefixSent = { ...sent, system: [{ type: 'text', text: 'S2' }] };
     const changed = compile(ledger, history, [], newSystem);
     expect(changed.break).toEqual({ reason: 'system', at: 0, signed: false, stripped: [0, 3] });
-    expect(shape(changed.window)).toEqual(['user:q1', 'assistant:r1', 'user:q2']);
+    // Only the signatures died: the event is still valid content, so it stays and still counts.
+    expect(shape(changed.window)).toEqual([
+      'user:q1',
+      'assistant:r1',
+      'user:q2',
+      'user:<state>A</state>',
+    ]);
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
     expect(compile(ledger, history, [], newSystem).break).toBeUndefined();
 
     const newTools: PrefixSent = { ...newSystem, tools: [] };
@@ -291,6 +303,31 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
       signed: false,
       stripped: [0, 3],
     });
+  });
+
+  it('compares what was sent as the plain JSON it keeps', () => {
+    class Schema {
+      toJSON() {
+        return { type: 'object' };
+      }
+    }
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 3);
+    const sent: PrefixSent = {
+      system: 'S',
+      tools: [{ name: 'search', input_schema: new Schema() }],
+    };
+    compile(ledger, history, [], sent);
+
+    expect(compile(ledger, history, [], sent).break).toBeUndefined();
+  });
+
+  it('has nothing to compare what is sent with before a compile committed one', () => {
+    const ledger = new PrefixLedger();
+    ledger.reconcile(turns.slice(0, 3));
+
+    expect(ledger.reconcileSent({ system: 'S', tools: [] })).toBeUndefined();
+    expect(ledger.stripped).toEqual([]);
   });
 
   it.each([
@@ -308,14 +345,14 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     const ledger = new PrefixLedger();
     const history = turns.slice(0, 7);
     const sent: PrefixSent = { system: 'S', tools: [] };
-    ledger.reconcile(history, sent);
+    ledger.reconcile(history);
     ledger.checkpoint('compaction', 3, { cut: 3, replacement, signed });
     ledger.append([state('<state>A</state>')]); // @7
     ledger.commit(history, sent);
 
     const system = compile(ledger, history, [], { ...sent, system: 'S2' });
     expect(system.break).toEqual({ reason: 'system', at: 0, signed: false, stripped: [3, 7] });
-    // The head stays; only what came after it is re-based.
+    // The head and the entries stay; every signature after the head is gone.
     expect(ledger.head).toMatchObject({ cut: 3, signed });
     expect(shape(system.window)).toEqual([
       ...shape(replacement),
@@ -323,6 +360,7 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
       'user:q3',
       'assistant:r3',
       'user:q4',
+      'user:<state>A</state>',
     ]);
 
     const tools = compile(ledger, history, [], { system: 'S2', tools: [{ name: 'search' }] });
@@ -665,6 +703,121 @@ describe('PrefixLedger — checkpoints', () => {
   });
 });
 
+describe('PrefixLedger — stable', () => {
+  it('counts the leading messages the window last committed also had', () => {
+    const ledger = new PrefixLedger();
+    expect(compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]).stable).toBe(0);
+    // [q1 r1 q2 A] → [q1 r1 q2 A r2 q3]
+    expect(compile(ledger, turns.slice(0, 5)).stable).toBe(4);
+    expect(compile(ledger, turns.slice(0, 5)).stable).toBe(6);
+  });
+
+  it('stops where the unanswered tail was rendered again', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 3), [announce]); // [q1 r1 q2 S]
+
+    // A user event renders before the system one: [q1 r1 q2 A S].
+    const next = compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]);
+    expect(next.break).toBeUndefined();
+    expect(next.stable).toBe(3);
+  });
+
+  it('stops at a kept event that moved in front of the changed message, before `at`', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]); // @3
+    compile(ledger, [...turns.slice(0, 3), user('q2 again'), assistant('r2')]);
+
+    // Rolled back to three messages, A is unanswered again and renders at the tail, where
+    // "q2 again" was. `at` is where host[3] would be; A already differs.
+    const next = compile(ledger, turns.slice(0, 3));
+    expect(next.break).toEqual({ reason: 'history', at: 4, signed: false });
+    expect(shape(next.window)).toEqual([
+      'user:q1',
+      'assistant:r1',
+      'user:q2',
+      'user:<state>A</state>',
+    ]);
+    expect(next.stable).toBe(3);
+  });
+
+  it('is 0 once what is sent ahead of the window changed', () => {
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 3);
+    compile(ledger, history, [], { system: 'S' });
+
+    expect(compile(ledger, history, [], { system: 'S2' }).stable).toBe(0);
+    expect(compile(ledger, history, [], { system: 'S2' }).stable).toBe(3);
+  });
+
+  it('rebuilds the committed window from a snapshot, which holds no messages', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]);
+    const answered = [...turns.slice(0, 3), user('q2 again'), assistant('r2')];
+    compile(ledger, answered); // [q1 r1 q2 "q2 again" A r2]
+    const restored = () => PrefixLedger.fromSnapshot(JSON.parse(JSON.stringify(ledger.snapshot())));
+
+    // Where A rendered depends on which host message was the reply.
+    expect(compile(restored(), answered).stable).toBe(6);
+    expect(compile(restored(), turns.slice(0, 3)).stable).toBe(3);
+  });
+});
+
+describe('PrefixLedger — a compile that failed', () => {
+  it('rolls back to what was last committed', () => {
+    const ledger = new PrefixLedger();
+    const sent: PrefixSent = { system: 'S' };
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')], sent);
+    const edited = turns.slice(0, 3);
+    edited[2] = user('q2 (edited)');
+
+    const failed = ledger.reconcile(edited);
+    ledger.append([state('<state>B</state>')]);
+    ledger.reconcileSent({ system: 'S2' });
+    ledger.rollback();
+
+    expect(ledger.stripped).toEqual([]);
+    expect(ledger.lastSent).toEqual(sent);
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
+    // None of it was sent, so the next compile meets the same checkpoint.
+    const retried = compile(ledger, edited, [], { system: 'S2' });
+    expect(retried.break).toEqual(failed.break);
+    expect(retried.window).toEqual(failed.window);
+  });
+
+  it('keeps a committed compile, with nothing to roll back', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]);
+    ledger.rollback();
+
+    expect(compile(ledger, turns.slice(0, 5)).break).toBeUndefined();
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
+  });
+});
+
+describe('PrefixLedger — reset', () => {
+  it('starts over, and the next compile reports a `ledger` checkpoint at 0', () => {
+    const ledger = new PrefixLedger();
+    const sent: PrefixSent = { system: 'S' };
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')], sent);
+
+    ledger.reset();
+    const fresh = [user('new topic')];
+    // A compile that fails right after does not use the reset up.
+    ledger.reconcile(fresh);
+    ledger.rollback();
+    const next = compile(ledger, fresh, [], sent);
+
+    // What was sent ahead of the window is not part of the conversation: no `system` break.
+    expect(next.break).toEqual({ reason: 'ledger', at: 0, signed: false, stripped: [0, 1] });
+    expect(shape(next.window)).toEqual(['user:new topic']);
+    expect(next.stable).toBe(0);
+    expect(ledger.lastAppended('dynamic-state')).toBeUndefined();
+    expect(
+      compile(ledger, [...fresh, assistant('ok'), user('more')], [], sent).break,
+    ).toBeUndefined();
+  });
+});
+
 describe('PrefixLedger — snapshot', () => {
   it('round-trips through JSON to the same window and the same validation', () => {
     const sent: PrefixSent = { system: [{ type: 'text', text: 'S' }], tools: [] };
@@ -682,7 +835,7 @@ describe('PrefixLedger — snapshot', () => {
       sent,
     );
     const history = turns.slice(0, 7);
-    ledger.reconcile(history, sent);
+    ledger.reconcile(history);
     ledger.checkpoint('history', 6);
     // Cut before both events, so the grouped, turn-scoped and tombstone entries all survive.
     ledger.checkpoint('compaction', 1, {
@@ -697,8 +850,8 @@ describe('PrefixLedger — snapshot', () => {
     const restored = PrefixLedger.fromSnapshot(JSON.parse(JSON.stringify(snapshot)));
 
     expect(restored.snapshot()).toEqual(snapshot);
-    const original = ledger.reconcile(history, sent);
-    const replayed = restored.reconcile(history, sent);
+    const original = ledger.reconcile(history);
+    const replayed = restored.reconcile(history);
     expect(replayed.break).toBeUndefined();
     expect(Assembler.stringifyPayload(replayed.window)).toBe(
       Assembler.stringifyPayload(original.window),
@@ -707,7 +860,7 @@ describe('PrefixLedger — snapshot', () => {
 
     const edited = [...history];
     edited[5] = assistant('r3 (edited)');
-    expect(restored.reconcile(edited, sent).break).toMatchObject({ reason: 'history' });
+    expect(restored.reconcile(edited).break).toMatchObject({ reason: 'history' });
   });
 
   it('keeps what was sent as plain JSON', () => {

@@ -165,6 +165,20 @@ export {
   type PrefixComparable,
   type PrefixContinuity,
 } from './pipeline/checks';
+export {
+  type AppendOnlyConfig,
+  type InjectionSource,
+  type PrefixBreak,
+  type PrefixBreakReason,
+  type PrefixCandidate,
+  type PrefixEntry,
+  type PrefixHead,
+  PrefixLedger,
+  type PrefixLedgerSnapshot,
+  type PrefixMeta,
+  type PrefixReconcile,
+  type PrefixSent,
+} from './prefix';
 export * from './prompts';
 export * from './store';
 export * from './tools';

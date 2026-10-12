@@ -9,6 +9,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import type { Content as GeminiContent, TextPart as GeminiTextPart } from '@google/generative-ai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions';
+import type { PrefixMeta } from '../prefix/types';
 
 /**
  * Minimal logging hook for degradation warnings (storage write failures,
@@ -371,6 +372,11 @@ export interface CompileMeta {
    * history behind the model was rewritten.
    */
   windowId?: string;
+  /**
+   * `ChefConfig.appendOnly` only: how much of the previous payload's window
+   * this one repeats, and the checkpoint this compile applied, if any.
+   */
+  prefix?: PrefixMeta;
 }
 
 // ─── Per-provider payload types ───

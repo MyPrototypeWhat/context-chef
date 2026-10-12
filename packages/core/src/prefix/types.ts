@@ -85,7 +85,10 @@ export interface PrefixLedgerSnapshot {
   readonly head?: PrefixHead;
   /** Host ranges `[from, until)` whose thinking an unsigned checkpoint stripped; never put back. */
   readonly stripped: ReadonlyArray<readonly [number, number]>;
-  /** Digests of the host messages last seen (after `transform-tool-results`), from `head.cut` on. */
+  /**
+   * Digests of the host messages last seen (after `transform-tool-results`),
+   * from `head.cut` on, each led by its role's initial (`a:…` for a reply).
+   */
   readonly seen: readonly string[];
   /** What was last sent: compared to detect a change, and reused by an on-demand compaction request. */
   readonly lastSent?: PrefixSent;
@@ -96,7 +99,9 @@ export interface PrefixBreak {
   readonly reason: PrefixBreakReason;
   /**
    * Window index (rendered messages) of the first host message the checkpoint
-   * changed, after it was applied; `0` for compaction, system and tools.
+   * changed, after it was applied; `0` for compaction, system and tools. An
+   * entry kept ahead of it may have moved there from later in the window, so
+   * the first message that differs can come earlier: see `stable()`.
    */
   readonly at: number;
   readonly signed: boolean;

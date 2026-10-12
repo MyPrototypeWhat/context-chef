@@ -15,6 +15,17 @@ import type {
 
 type Range = [from: number, until: number];
 
+/** What a compile can change, as the last commit left it: what `rollback()` puts back. */
+interface Committed {
+  readonly head?: PrefixHead;
+  readonly entries: PrefixEntry[];
+  readonly stripped: Range[];
+  readonly seen: string[];
+  readonly lastSent?: PrefixSent;
+  readonly history: readonly Message[];
+  readonly restarted: boolean;
+}
+
 /** Key order and cache breakpoints don't change what the model saw. */
 function canonical(value: unknown): string {
   return JSON.stringify(Assembler.orderKeysDeterministically(value), (key, v) =>
@@ -28,11 +39,20 @@ function jsonCopy(value: unknown): unknown {
   return text === undefined ? undefined : JSON.parse(text);
 }
 
+/** Whether `value` is what `commit()` kept as `kept`, compared as the JSON it keeps. */
+function sameAsKept(value: unknown, kept: unknown): boolean {
+  return canonical(jsonCopy(value)) === canonical(kept);
+}
+
 /**
  * Digest of the fields of a host message that reach some provider's wire.
  * Anything else — breakpoints, pinning, host metadata — is not an edit.
  * `_anthropic_origin` counts by identity: dropping or replacing it makes the
  * Anthropic target rebuild the message from IR instead of replaying it.
+ *
+ * The role's initial leads in clear: where an entry renders depends on which
+ * host messages are replies, and `seen` is all a restored ledger knows of the
+ * history it committed.
  */
 function digest(message: Message): string {
   const origin = message._anthropic_origin;
@@ -56,8 +76,11 @@ function digest(message: Message): string {
     message._openai_reasoning,
     message._positional,
   ];
-  return createHash('sha256').update(canonical(wire)).digest('hex').substring(0, 16);
+  const hash = createHash('sha256').update(canonical(wire)).digest('hex').substring(0, 16);
+  return `${message.role.charAt(0)}:${hash}`;
 }
+
+const isReplyDigest = (key: string): boolean => key.startsWith('a:');
 
 /**
  * The messages of the entries that render at one place: user events, then
@@ -91,6 +114,34 @@ function mergeRanges(ranges: Range[]): Range[] {
 }
 
 /**
+ * Where an entry anchored at each host index renders, as the host index it
+ * sits before: the first assistant message at or after the anchor, or
+ * `length` while unanswered. Anchors past `length` have no place.
+ */
+function anchorPlaces(length: number, isReply: (index: number) => boolean): number[] {
+  const place = new Array<number>(length + 1);
+  place[length] = length;
+  for (let i = length - 1; i >= 0; i--) place[i] = isReply(i) ? i : place[i + 1];
+  return place;
+}
+
+/** Entries by the host index they render before, in the order they were appended. */
+function groupEntries(
+  entries: readonly PrefixEntry[],
+  place: readonly number[],
+): Map<number, PrefixEntry[]> {
+  const groups = new Map<number, PrefixEntry[]>();
+  for (const entry of entries) {
+    const at = place[entry.anchor];
+    if (at === undefined) continue;
+    const group = groups.get(at);
+    if (group) group.push(entry);
+    else groups.set(at, [entry]);
+  }
+  return groups;
+}
+
+/**
  * What the chef appended to the window and where, and what it last saw of the
  * host history. The window is rebuilt from (host history, ledger) on every
  * compile — `head.replacement`, then host messages from `head.cut` on, with
@@ -108,8 +159,10 @@ function mergeRanges(ranges: Range[]): Range[] {
  * at the tail.
  *
  * One compile runs `reconcile()`, then `append()` / `checkpoint()` as its
- * phases decide, then `commit()`; everything in between works on the history
- * `reconcile()` was given.
+ * phases decide, then `reconcileSent()` once the payload exists, then
+ * `commit()`; everything in between works on the history `reconcile()` was
+ * given. A compile that fails instead calls `rollback()`: nothing it built was
+ * sent, so nothing it did is kept.
  *
  * Pure: no `ContextChef` dependency, so the integration packages reuse it.
  */
@@ -122,6 +175,16 @@ export class PrefixLedger {
   private _lastSent?: PrefixSent;
   /** The host history being compiled: the last one reconciled or committed. */
   private history: readonly Message[] = [];
+  /** Set by `reset()`: the next `reconcile()` applies a `ledger` checkpoint at 0. */
+  private restarted = false;
+  /**
+   * From the first `reconcile()` after a commit until the next commit: the
+   * state committed, which `stable()` compares with and `rollback()` returns
+   * to, and the lowest window index a checkpoint has changed since.
+   */
+  private pending?: { readonly committed: Committed; at: number };
+  /** Digests taken in the compile in progress, so it reads the history once. */
+  private readonly digests = new Map<Message, string>();
 
   /** A ledger in the state `snapshot()` captured; `reconcile()` it before anything else. */
   static fromSnapshot(snapshot: PrefixLedgerSnapshot): PrefixLedger {
@@ -161,17 +224,36 @@ export class PrefixLedger {
 
   /**
    * Rebuilds the window over `history`. When the ledger no longer matches —
-   * history shorter than `head.cut`, `sent` differing from what was last
-   * sent, a host message that is not the one seen, an entry anchored past the
-   * end — the first mismatch is applied as a checkpoint and reported in
-   * `break`; the window is the one after it.
+   * history shorter than `head.cut`, a host message that is not the one seen,
+   * an entry anchored past the end, a `reset()` since the last compile — the
+   * first mismatch is applied as a checkpoint and reported in `break`; the
+   * window is the one after it.
    */
-  reconcile(history: readonly Message[], sent?: PrefixSent): PrefixReconcile {
+  reconcile(history: readonly Message[]): PrefixReconcile {
+    this.pending ??= { committed: this.capture(), at: Number.POSITIVE_INFINITY };
+    this.digests.clear();
     this.history = [...history];
-    const found = this.findBreak(sent);
+    const found = this.restarted ? { reason: 'ledger' as const, hostIndex: 0 } : this.findBreak();
+    this.restarted = false;
     if (!found) return { window: this.window() };
     const applied = this.checkpoint(found.reason, found.hostIndex);
     return { window: this.window(), break: applied };
+  }
+
+  /**
+   * Compares the system prompt and tools a compile sends with the ones last
+   * committed, once its payload exists. A change — the system prompt is
+   * checked first — is a `system` or `tools` checkpoint: every thinking block
+   * after the head was signed over the old ones, so all of them are stripped,
+   * while the entries stay, since what they say still holds. Before the first
+   * commit there is nothing to compare with.
+   */
+  reconcileSent(sent: PrefixSent): PrefixBreak | undefined {
+    const last = this._lastSent;
+    if (!last) return undefined;
+    if (!sameAsKept(sent.system, last.system)) return this.checkpoint('system', this.cut);
+    if (!sameAsKept(sent.tools, last.tools)) return this.checkpoint('tools', this.cut);
+    return undefined;
   }
 
   /** The window as the ledger stands, over the history being compiled. */
@@ -235,6 +317,10 @@ export class PrefixLedger {
    * `host[cut]` went into the summary, later ones stay where they are. `seen`
    * is cut back to what still holds until the next `commit()`. Unless the head
    * is signed, thinking in `host[hostIndex, length)` is stripped for good.
+   *
+   * `system` and `tools` change what comes before every message, not the
+   * messages: entries, `seen` and the head stay, and `hostIndex` is `head.cut`
+   * (`reconcileSent()` passes it), so all thinking after the head is stripped.
    */
   checkpoint(reason: PrefixBreakReason, hostIndex: number, head?: PrefixHead): PrefixBreak {
     const length = this.history.length;
@@ -255,18 +341,20 @@ export class PrefixLedger {
       );
     }
 
-    const placeOf = this.placer();
+    const place = this.places();
     const previousCut = this.cut;
     if (head) {
       this._head = head;
-      this.entries = this.entries.filter((e) => (placeOf(e) ?? -1) > head.cut);
+      this.entries = this.entries.filter((e) => (place[e.anchor] ?? -1) > head.cut);
       this.seen = head.cut >= previousCut ? this.seen.slice(head.cut - previousCut) : [];
+    } else if (reason === 'system' || reason === 'tools') {
+      // Re-based by the next commit.
+      this._lastSent = undefined;
     } else {
       if (hostIndex < previousCut) this._head = undefined;
-      this.entries = this.entries.filter((e) => (placeOf(e) ?? Infinity) <= hostIndex);
+      this.entries = this.entries.filter((e) => (place[e.anchor] ?? Infinity) <= hostIndex);
       this.seen = this.seen.slice(0, Math.max(0, hostIndex - previousCut));
     }
-    if (reason === 'system' || reason === 'tools') this._lastSent = undefined;
 
     const signed = head?.signed ?? false;
     const stripped: Range | undefined =
@@ -284,14 +372,68 @@ export class PrefixLedger {
       : (this._head?.replacement.length ?? 0) +
         (hostIndex - this.cut) +
         [...this.groups().values()].reduce((n, group) => n + renderGroup(group).length, 0);
+    if (this.pending) this.pending.at = Math.min(this.pending.at, at);
     return { reason, at, signed, ...(stripped ? { stripped } : {}) };
+  }
+
+  /**
+   * How many leading messages of `window()` the window last committed also
+   * started with, never counting past a checkpoint applied since:
+   * `PrefixMeta.stable`. The windows are compared message by message rather
+   * than read off `at`, which marks the changed host message — an entry kept
+   * ahead of it may have moved there, and an unanswered tail may have been
+   * rendered again.
+   */
+  stable(): number {
+    const before = this.keys(this.pending?.committed ?? this.capture());
+    const now = this.window().map((message) => this.digestOf(message));
+    let same = 0;
+    while (same < before.length && same < now.length && before[same] === now[same]) same++;
+    return Math.min(same, this.pending?.at ?? same);
   }
 
   /** Records what a compile used: digests of `history` from `head.cut` on, and `sent`. */
   commit(history: readonly Message[], sent?: PrefixSent): void {
     this.history = [...history];
-    this.seen = history.slice(this.cut).map(digest);
+    this.seen = history.slice(this.cut).map((message) => this.digestOf(message));
     if (sent) this._lastSent = { system: jsonCopy(sent.system), tools: jsonCopy(sent.tools) };
+    this.pending = undefined;
+    this.digests.clear();
+  }
+
+  /**
+   * Undoes everything since the first `reconcile()` after the last commit:
+   * that compile failed, so nothing it built was sent, and the next one meets
+   * the same checkpoints again. Nothing to undo after a commit.
+   */
+  rollback(): void {
+    const committed = this.pending?.committed;
+    this.pending = undefined;
+    this.digests.clear();
+    if (!committed) return;
+    this._head = committed.head;
+    this.entries = committed.entries;
+    this._stripped = committed.stripped;
+    this.seen = committed.seen;
+    this._lastSent = committed.lastSent;
+    this.history = committed.history;
+    this.restarted = committed.restarted;
+  }
+
+  /**
+   * Starts over, as `clearHistory()` does: the entries, head, stripped ranges
+   * and what was seen are dropped, and the next `reconcile()` applies a
+   * `ledger` checkpoint at 0, since the window sent before is not repeated.
+   * What was last sent ahead of the window stays: it is not part of the
+   * conversation. A snapshot taken before that `reconcile()` does not carry it.
+   */
+  reset(): void {
+    this._head = undefined;
+    this.entries = [];
+    this._stripped = [];
+    this.seen = [];
+    this.history = [];
+    this.restarted = true;
   }
 
   /** Plain data, safe for `structuredClone` and JSON. */
@@ -307,25 +449,14 @@ export class PrefixLedger {
   }
 
   /** The first place the ledger stops matching the history being compiled. */
-  private findBreak(
-    sent: PrefixSent | undefined,
-  ): { reason: PrefixBreakReason; hostIndex: number } | undefined {
+  private findBreak(): { reason: PrefixBreakReason; hostIndex: number } | undefined {
     const history = this.history;
     const cut = this.cut;
     if (history.length < cut) return { reason: 'ledger', hostIndex: 0 };
-    // System and tools come before every message: a change invalidates everything after the head.
-    if (sent && this._lastSent) {
-      if (canonical(sent.system) !== canonical(this._lastSent.system)) {
-        return { reason: 'system', hostIndex: cut };
-      }
-      if (canonical(sent.tools) !== canonical(this._lastSent.tools)) {
-        return { reason: 'tools', hostIndex: cut };
-      }
-    }
     // A history break drops any entry anchored past the end along with the rest.
     for (let k = 0; k < this.seen.length; k++) {
       const i = cut + k;
-      if (i >= history.length || digest(history[i]) !== this.seen[k]) {
+      if (i >= history.length || this.digestOf(history[i]) !== this.seen[k]) {
         return { reason: 'history', hostIndex: i };
       }
     }
@@ -335,32 +466,57 @@ export class PrefixLedger {
     return undefined;
   }
 
-  /**
-   * Where each entry renders, as the host index it sits before: the first
-   * assistant message at or after its anchor, or the history length while
-   * unanswered. `undefined` for an anchor past the end.
-   */
-  private placer(): (entry: PrefixEntry) => number | undefined {
+  /** Where an entry anchored at each host index renders, over the history being compiled. */
+  private places(): number[] {
     const history = this.history;
-    const reply = new Array<number>(history.length + 1);
-    reply[history.length] = history.length;
-    for (let i = history.length - 1; i >= 0; i--) {
-      reply[i] = history[i].role === 'assistant' ? i : reply[i + 1];
-    }
-    return (entry) => (entry.anchor <= history.length ? reply[entry.anchor] : undefined);
+    return anchorPlaces(history.length, (i) => history[i].role === 'assistant');
   }
 
-  /** Entries by the host index they render before, in the order they were appended. */
   private groups(): Map<number, PrefixEntry[]> {
-    const placeOf = this.placer();
-    const groups = new Map<number, PrefixEntry[]>();
-    for (const entry of this.entries) {
-      const place = placeOf(entry);
-      if (place === undefined) continue;
-      const group = groups.get(place);
-      if (group) group.push(entry);
-      else groups.set(place, [entry]);
+    return groupEntries(this.entries, this.places());
+  }
+
+  private digestOf(message: Message): string {
+    let key = this.digests.get(message);
+    if (key === undefined) {
+      key = digest(message);
+      this.digests.set(message, key);
     }
-    return groups;
+    return key;
+  }
+
+  private capture(): Committed {
+    return {
+      head: this._head,
+      // `append()` pushes onto the live array.
+      entries: [...this.entries],
+      stripped: this._stripped,
+      seen: this.seen,
+      lastSent: this._lastSent,
+      history: this.history,
+      restarted: this.restarted,
+    };
+  }
+
+  /**
+   * The window `committed` rendered, one digest per message, rebuilt from its
+   * `seen` alone: a restored ledger has no host message of it to render.
+   */
+  private keys(committed: Committed): string[] {
+    const { head, seen } = committed;
+    const cut = head?.cut ?? 0;
+    const length = cut + seen.length;
+    // An entry kept past a compaction has no reply before the cut, or it was summarized.
+    const groups = groupEntries(
+      committed.entries,
+      anchorPlaces(length, (i) => i >= cut && isReplyDigest(seen[i - cut])),
+    );
+    const keys = (head?.replacement ?? []).map(digest);
+    for (let i = cut; i <= length; i++) {
+      const group = groups.get(i);
+      if (group) keys.push(...renderGroup(group).map(digest));
+      if (i < length) keys.push(seen[i - cut]);
+    }
+    return keys;
   }
 }
