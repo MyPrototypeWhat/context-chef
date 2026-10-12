@@ -226,6 +226,7 @@ export class OpenAIAdapter implements ITargetAdapter {
         _positional,
         // Turn-scoped messages are an Anthropic feature: here the text simply stays.
         _clear_at,
+        _chef_event,
         thinking,
         redacted_thinking,
         attachments,

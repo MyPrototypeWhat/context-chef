@@ -845,7 +845,7 @@ export class Janitor {
    *   post-compression suppression) and applies the strategy regardless — the
    *   `new_context` path. The circuit breaker still applies: a strategy that
    *   just failed three times in a row does not get hammered on request.
-   *   `collapse` and `wire` go to the strategy as they are
+   *   `appendOnly`, `collapse` and `wire` go to the strategy as they are
    *   ({@link OverflowInput}); the compile pipeline sets them under `appendOnly`.
    *   `collapse` skips the budget test too: the caller found that the window
    *   cannot wait.
@@ -855,11 +855,12 @@ export class Janitor {
     options: {
       signal?: AbortSignal;
       force?: boolean;
+      appendOnly?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;
     } = {},
   ): Promise<OverflowResult> {
-    const { signal, force = false, collapse = false, wire } = options;
+    const { signal, force = false, appendOnly = false, collapse = false, wire } = options;
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
       evicted: [],
@@ -907,6 +908,7 @@ export class Janitor {
       pinned: extractPinnedMessages(prepared.history),
       window: this._window,
       forced: force,
+      ...(appendOnly ? { appendOnly: true as const } : {}),
       ...(collapse ? { collapse: true as const } : {}),
       ...(wire ? { wire } : {}),
       signal,

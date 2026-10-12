@@ -207,6 +207,15 @@ export interface Message {
    */
   _clear_at?: 'next_user_message';
   /**
+   * Set by the chef, never by host code: under `appendOnly` this message is
+   * one of the chef's events (state, announcements, memory, skills …) that
+   * the prefix ledger rendered into the window, not a host message. Overflow
+   * cuts on it: `groupIntoTurns` puts an event in the turn it follows, so a
+   * strategy never keeps an event without the turn it belongs to. No adapter
+   * sends it.
+   */
+  _chef_event?: true;
+  /**
    * Anthropic server-side compaction block (`compact_20260112`), carried
    * verbatim. `fromAnthropic` lifts it off the message that owns it and marks
    * that message `pinned` — the API discards everything before a compaction

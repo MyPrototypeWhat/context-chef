@@ -6,6 +6,7 @@ import { chain } from './chain';
 import { reset } from './reset';
 import { isServerStrategy, server } from './server';
 import { summarize } from './summarize';
+import { extractPinnedMessages, groupIntoTurns } from './turns';
 import type { OverflowInput, OverflowResult, OverflowRunner, OverflowStrategy } from './types';
 
 const tokenizer = (messages: Message[]): number => messages.length * 10;
@@ -611,5 +612,267 @@ describe('background()', () => {
 
     strategy.restore?.(undefined);
     expect(strategy.pendingJob).toBeUndefined();
+  });
+});
+
+describe("appendOnly: the chef's events in the window", () => {
+  const model = async () => '<summary>THE SUMMARY</summary>';
+  const user = (content: string): Message => ({ role: 'user', content });
+  const reply = (content: string): Message => ({ role: 'assistant', content });
+  const call = (...ids: string[]): Message => ({
+    role: 'assistant',
+    content: '',
+    tool_calls: ids.map((id) => ({
+      id,
+      type: 'function' as const,
+      function: { name: 'search', arguments: '{}' },
+    })),
+  });
+  const result = (id: string): Message => ({ role: 'tool', content: `r-${id}`, tool_call_id: id });
+  /** The two kinds of message the prefix ledger renders: a user event, a positional system one. */
+  const event = (content: string): Message => ({ role: 'user', content, _chef_event: true });
+  const systemEvent = (content: string): Message => ({
+    role: 'system',
+    content,
+    _positional: true,
+    _chef_event: true,
+  });
+  const spans = (messages: Message[]) =>
+    groupIntoTurns(messages).map(({ startIndex, endIndex }) => [startIndex, endIndex]);
+  const keepLast = (turns: number) =>
+    summarize({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: turns });
+
+  describe('groupIntoTurns()', () => {
+    it('puts an event in the turn it follows, and leaves a host system message a turn of its own', () => {
+      const messages: Message[] = [
+        user('q1'),
+        event('state 1'),
+        systemEvent('docs'),
+        call('c1'),
+        result('c1'),
+        event('state 2'),
+        reply('a2'),
+        user('q3'),
+        { role: 'system', content: 'The host wrote this.', _positional: true },
+        reply('a3'),
+      ];
+
+      expect(spans(messages)).toEqual([
+        [0, 3],
+        [3, 6],
+        [6, 7],
+        [7, 8],
+        [8, 9],
+        [9, 10],
+      ]);
+    });
+
+    it('keeps a tool result after an event with its call, and an event that opens the window on its own', () => {
+      const messages = [
+        event('state 1'),
+        call('c1', 'c2'),
+        result('c1'),
+        event('state 2'),
+        result('c2'),
+        systemEvent('docs'),
+      ];
+
+      expect(spans(messages)).toEqual([
+        [0, 1],
+        [1, 6],
+      ]);
+    });
+  });
+
+  describe('where a strategy cuts', () => {
+    it.each([
+      ['the last turn', {}],
+      ['a forced overflow', { forced: true }],
+    ])('keeps the pending question with the event after it (%s)', async (_, options) => {
+      const [strategy] = attached(keepLast(1));
+      const messages = [user('q1'), reply('a1'), user('q2'), event('state')];
+
+      const kept = await strategy.apply(makeInput({ history: messages, ...options }));
+
+      expect(kept.history.slice(1)).toEqual(messages.slice(2));
+      expect(kept.span).toEqual(messages.slice(0, 2));
+    });
+
+    it('never starts the kept turns with an event', async () => {
+      const [strategy] = attached(keepLast(3));
+      const messages = [
+        user('q1'),
+        event('state'),
+        reply('a1'),
+        user('q2'),
+        systemEvent('docs'),
+        reply('a2'),
+        user('q3'),
+      ];
+
+      const kept = await strategy.apply(makeInput({ history: messages }));
+
+      // The last 3 turns are [q2, docs], a2 and q3.
+      expect(kept.history.slice(1)).toEqual(messages.slice(3));
+      expect(kept.span).toEqual(messages.slice(0, 3));
+    });
+
+    it.each([
+      ['summarize()', () => summarize({ compressionModel: model })],
+      ['reset()', () => reset()],
+    ])('%s keeps a tool call waiting for its result with the event after it when it collapses', async (_, make) => {
+      const [strategy] = attached(make());
+      const messages = [user('q1'), reply('a1'), user('q2'), call('c1'), event('state')];
+
+      const collapsed = await strategy.apply(makeInput({ history: messages, collapse: true }));
+
+      expect(collapsed.history.slice(1)).toEqual(messages.slice(3));
+      expect(collapsed.span).toEqual(messages.slice(0, 3));
+    });
+
+    it('puts a pinned turn back without the events after it, which the ledger states again', async () => {
+      const [strategy] = attached(keepLast(1));
+      const pinned: Message = { ...user('q1'), pinned: true };
+      const messages = [pinned, event('state'), reply('a1'), user('q2')];
+
+      const kept = await strategy.apply(
+        makeInput({ history: messages, pinned: extractPinnedMessages(messages) }),
+      );
+
+      expect(kept.history.slice(1)).toEqual([pinned, messages[3]]);
+      expect(kept.evicted).toEqual(messages.slice(1, 3));
+    });
+  });
+
+  describe('background()', () => {
+    const settled = (strategy: BackgroundOverflowStrategy) =>
+      vi.waitFor(() => {
+        if (!strategy.pendingJob?.settled) throw new Error('not settled');
+      });
+    const inBackground = () => background(keepLast(1));
+    // 7 messages against a trigger of 20: over budget. The job keeps q3.
+    const source = [
+      user('q1'),
+      event('state 1'),
+      reply('a1'),
+      user('q2'),
+      event('state 2'),
+      reply('a2'),
+      user('q3'),
+    ];
+    /** The window compiled again: the ledger renders its events anew. */
+    const again = (messages: Message[]) =>
+      messages.map((message) => (message._chef_event ? { ...message } : message));
+
+    it('lands a job once the window only grew at its end, keeping the turns that arrived', async () => {
+      const [strategy] = attached(inBackground());
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+      await settled(strategy);
+
+      const arrived = [event('state 3'), reply('a3'), user('q4')];
+      const current = [...again(source), ...arrived];
+      const landed = await strategy.apply(makeInput({ history: current, appendOnly: true }));
+
+      expect(landed.meta.changed).toBe(true);
+      expect(landed.history[0].content).toContain('THE SUMMARY');
+      expect(landed.history.slice(1)).toEqual(current.slice(6));
+      expect(landed.history[1]).toBe(current[6]);
+    });
+
+    it.each([
+      ['it summarized', 3],
+      ['it kept', 6],
+    ])('drops a job once a message %s changed, and starts another', async (_, index) => {
+      const [strategy] = attached(inBackground());
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+      await settled(strategy);
+
+      const current = [...again(source), reply('a3'), user('q4')];
+      current[index] = { ...current[index], content: 'edited' };
+      const stale = await strategy.apply(makeInput({ history: current, appendOnly: true }));
+
+      expect(stale.meta.changed).toBe(false);
+      expect(stale.history).toBe(current);
+      expect(strategy.pendingJob?.settled).toBe(false);
+    });
+
+    it('still compares only the ends of the span it summarized without appendOnly (4.x)', async () => {
+      const [strategy] = attached(inBackground());
+      await strategy.apply(makeInput({ history: history(7) }));
+      await settled(strategy);
+
+      // The job kept msg-7: msg-1 and msg-6 are the ends of its span.
+      const current = history(9);
+      current[3] = { ...current[3], content: 'edited' };
+      const landed = await strategy.apply(makeInput({ history: current }));
+
+      expect(landed.meta.changed).toBe(true);
+    });
+
+    it('collapses the window itself, dropping the job still running', async () => {
+      const compressionModel = vi
+        .fn<(messages: Message[]) => Promise<string>>()
+        .mockImplementationOnce(() => new Promise<string>(() => {}))
+        .mockResolvedValue('<summary>COLLAPSED</summary>');
+      const [strategy] = attached(
+        background(
+          summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+        ),
+      );
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+
+      const current = [...again(source), call('c1'), result('c1')];
+      const collapsed = await strategy.apply(
+        makeInput({ history: current, appendOnly: true, collapse: true }),
+      );
+
+      expect(collapsed.meta).toMatchObject({ changed: true, strategy: 'background(summarize)' });
+      expect(collapsed.history).toHaveLength(1);
+      expect(collapsed.history[0].content).toContain('COLLAPSED');
+      expect(collapsed.span).toEqual(current);
+      expect(strategy.pendingJob).toBeUndefined();
+    });
+
+    it('collapses the window itself instead of landing a finished job, and commits the collapse', async () => {
+      let round = 0;
+      const [strategy, runner] = attached(
+        background(
+          anchored({
+            compressionModel: async () => `<summary>ANCHOR-v${++round}</summary>`,
+            split: 'recent-turns',
+            preserveRecentMessages: 1,
+          }),
+        ),
+      );
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+      await settled(strategy);
+
+      const current = [...again(source), call('c1'), result('c1')];
+      const collapsed = await strategy.apply(
+        makeInput({ history: current, appendOnly: true, collapse: true }),
+      );
+      strategy.commit?.(collapsed);
+
+      expect(collapsed.history).toHaveLength(1);
+      expect(collapsed.history[0].content).toContain('ANCHOR-v2');
+      expect(strategy.snapshot?.()).toEqual({
+        anchorDoc: 'ANCHOR-v2',
+        anchors: { w_first: 'ANCHOR-v2' },
+      });
+      // The job succeeded; it just never landed.
+      expect(runner.successes).toBe(1);
+    });
+
+    it('reports the inner strategy declining a collapse under its own name', async () => {
+      const [strategy] = attached(inBackground());
+
+      const declined = await strategy.apply(
+        makeInput({ history: [call('c1')], appendOnly: true, collapse: true }),
+      );
+
+      expect(declined.meta).toMatchObject({ changed: false, strategy: 'background(summarize)' });
+      expect(declined.meta.reason).toContain('nothing to collapse');
+      expect(strategy.pendingJob).toBeUndefined();
+    });
   });
 });

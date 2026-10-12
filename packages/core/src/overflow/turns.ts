@@ -19,30 +19,30 @@ export interface Turn {
  * - system message → single-message turn
  * - assistant (no tool_calls) → single-message turn
  * - assistant (with tool_calls) + all subsequent tool results → one atomic turn
+ * - an event the chef appended under `appendOnly` (`_chef_event`) → part of
+ *   the turn it follows, among that turn's tool results included; only one
+ *   that opens the history is a turn of its own
  *
  * Splitting on turn boundaries guarantees tool pair integrity and
- * eliminates the need for post-hoc adjustSplitIndex corrections.
+ * eliminates the need for post-hoc adjustSplitIndex corrections, and never
+ * keeps an event apart from the request it was sent with.
  */
 export function groupIntoTurns(history: Message[]): Turn[] {
   const turns: Turn[] = [];
   let i = 0;
 
   while (i < history.length) {
-    const msg = history[i];
+    const start = i;
+    const msg = history[i++];
 
     if (msg.role === 'assistant' && msg.tool_calls?.length) {
-      // Atomic turn: assistant + all subsequent tool results
-      const start = i;
-      i++;
-      while (i < history.length && history[i].role === 'tool') {
+      // Atomic turn: assistant + all subsequent tool results, events among them
+      while (i < history.length && (history[i].role === 'tool' || history[i]._chef_event)) {
         i++;
       }
-      turns.push({ startIndex: start, endIndex: i });
-    } else {
-      // Single-message turn: user, system, or plain assistant
-      turns.push({ startIndex: i, endIndex: i + 1 });
-      i++;
     }
+    while (i < history.length && history[i]._chef_event) i++;
+    turns.push({ startIndex: start, endIndex: i });
   }
 
   return turns;
@@ -72,7 +72,9 @@ export function waitingCallStart(history: Message[]): number {
 /**
  * Returns the set of message indices protected by pinning, turn-scoped:
  * pinning any message of an atomic turn protects every message of that turn,
- * so an assistant+tool_calls unit and its tool results stay coherent.
+ * so an assistant+tool_calls unit and its tool results stay coherent. The
+ * chef's events in the turn are not protected: what they said is the
+ * ledger's to state again once they leave the window.
  */
 export function collectPinnedTurnIndices(history: Message[]): Set<number> {
   const pinned = new Set<number>();
@@ -87,7 +89,9 @@ export function collectPinnedTurnIndices(history: Message[]): Set<number> {
       }
     }
     if (hasPinned) {
-      for (let i = turn.startIndex; i < turn.endIndex; i++) pinned.add(i);
+      for (let i = turn.startIndex; i < turn.endIndex; i++) {
+        if (!history[i]._chef_event) pinned.add(i);
+      }
     }
   }
   return pinned;

@@ -108,6 +108,7 @@ async function overflowWindow(
   const result = await host.overflow(ctx.history, {
     signal: ctx.signal,
     force: forced,
+    appendOnly: true,
     collapse: timing === 'collapse',
     wire: wireOf(ctx, prefix),
   });

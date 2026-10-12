@@ -99,6 +99,14 @@ export interface OverflowInput {
    */
   forced?: boolean;
   /**
+   * `appendOnly`: `history` is the chef's window — the head of the last
+   * compaction, the host's messages after it, and the chef's events among
+   * them (`_chef_event`). Between compactions it only grows at its end;
+   * anything else is a checkpoint that rewrote it. A strategy is applied to
+   * it only between turns, or to collapse it (`collapse`).
+   */
+  appendOnly?: true;
+  /**
    * `appendOnly`: the window cannot wait for the turn in progress to end — a
    * tool turn is still going, and the model asked for a new window or the
    * window outgrew the raw context window. Keep no turn: summarize every one,

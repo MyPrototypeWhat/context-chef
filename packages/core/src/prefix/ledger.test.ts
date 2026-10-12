@@ -14,6 +14,14 @@ import type { PrefixCandidate, PrefixLedgerSnapshot, PrefixSent } from './types'
 
 const user = (content: string): Message => ({ role: 'user', content });
 const assistant = (content: string): Message => ({ role: 'assistant', content });
+/** What the ledger renders an entry as: a user event, or a positional system one. */
+const userEvent = (content: string): Message => ({ role: 'user', content, _chef_event: true });
+const systemEvent = (content: string): Message => ({
+  role: 'system',
+  content,
+  _positional: true,
+  _chef_event: true,
+});
 
 /** `role:content` per message — enough to read a window at a glance. */
 const shape = (messages: Message[]) => messages.map((m) => `${m.role}:${m.content}`);
@@ -127,7 +135,7 @@ describe('PrefixLedger — events are appended once', () => {
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>B</state>');
   });
 
-  it('renders user events, then system events, then turn-scoped ones, one message each', () => {
+  it("renders user events, then system events, then turn-scoped ones, one message each, marked as the chef's", () => {
     const ledger = new PrefixLedger();
     ledger.reconcile([user('q1')]);
     ledger.append([
@@ -139,14 +147,9 @@ describe('PrefixLedger — events are appended once', () => {
 
     expect(ledger.window()).toEqual([
       user('q1'),
-      { role: 'user', content: '<state>A</state>\n\n<guardrail/>' },
-      { role: 'system', content: '<skill name="x"/>', _positional: true },
-      {
-        role: 'system',
-        content: '<announcement id="a"/>',
-        _positional: true,
-        _clear_at: 'next_user_message',
-      },
+      userEvent('<state>A</state>\n\n<guardrail/>'),
+      systemEvent('<skill name="x"/>'),
+      { ...systemEvent('<announcement id="a"/>'), _clear_at: 'next_user_message' },
     ]);
     expect(ledger.lastAppended('guardrail')?.content).toBe('<guardrail/>');
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
@@ -265,13 +268,13 @@ describe('PrefixLedger — events are appended once', () => {
     const history = [...turns.slice(0, 3), assistant('prefill')];
     ledger.reconcile(history);
 
-    expect(ledger.renderedAt(1)).toEqual([user('<state>A</state>')]);
+    expect(ledger.renderedAt(1)).toEqual([userEvent('<state>A</state>')]);
     expect(ledger.renderedAt(3)).toEqual([]);
     ledger.append([announce, state('<state>B</state>')], 3);
     // Before the prefill at host[3], user events first.
     expect(ledger.renderedAt(3)).toEqual([
-      user('<state>B</state>'),
-      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+      userEvent('<state>B</state>'),
+      systemEvent('<announcement id="a"/>'),
     ]);
     expect(ledger.renderedAt(4)).toEqual([]);
   });
@@ -280,15 +283,12 @@ describe('PrefixLedger — events are appended once', () => {
     const ledger = new PrefixLedger();
     const empty = compile(ledger, [], [announce]); // @0: nothing before it
 
-    expect(empty.window).toEqual([user('<announcement id="a"/>')]);
+    expect(empty.window).toEqual([userEvent('<announcement id="a"/>')]);
     expect(ledger.lastAppended('announcement:a')?.channel).toBe('system');
 
     // Still unanswered, it moves past the first turn and follows a user turn now.
     const next = compile(ledger, [user('q1')]);
-    expect(next.window).toEqual([
-      user('q1'),
-      { role: 'system', content: '<announcement id="a"/>', _positional: true },
-    ]);
+    expect(next.window).toEqual([user('q1'), systemEvent('<announcement id="a"/>')]);
   });
 
   it('keeps a system event positional behind the user event of its own group', () => {
@@ -299,8 +299,8 @@ describe('PrefixLedger — events are appended once', () => {
 
     expect(ledger.window()).toEqual([
       assistant('Hi!'),
-      user('<state>A</state>'),
-      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+      userEvent('<state>A</state>'),
+      systemEvent('<announcement id="a"/>'),
     ]);
   });
 
@@ -312,7 +312,7 @@ describe('PrefixLedger — events are appended once', () => {
     const restored = PrefixLedger.fromSnapshot(ledger.snapshot());
     const again = compile(restored, history);
 
-    expect(again.window).toEqual([assistant('Hi!'), user('<announcement id="a"/>')]);
+    expect(again.window).toEqual([assistant('Hi!'), userEvent('<announcement id="a"/>')]);
     expect(again.stable).toBe(2);
   });
 
@@ -327,8 +327,8 @@ describe('PrefixLedger — events are appended once', () => {
 
     const sent = [
       user('q1'),
-      user('<state>A</state>'),
-      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+      userEvent('<state>A</state>'),
+      systemEvent('<announcement id="a"/>'),
       note,
     ];
     expect(ledger.window()).toEqual(sent);
@@ -350,7 +350,7 @@ describe('PrefixLedger — events are appended once', () => {
     ledger.reconcile(history);
     ledger.append([state('<state>A</state>')], 2);
 
-    const sent = [user('q1'), assistant('r1'), note, user('<state>A</state>')];
+    const sent = [user('q1'), assistant('r1'), note, userEvent('<state>A</state>')];
     expect(ledger.window()).toEqual(sent);
     ledger.commit(history);
     expect(compile(PrefixLedger.fromSnapshot(ledger.snapshot()), history).stable).toBe(4);
@@ -368,7 +368,7 @@ describe('PrefixLedger — events are appended once', () => {
     ledger.checkpoint('compaction', 2, { cut: 2, replacement: [head], signed: false });
     ledger.append([state('<state>A</state>')], 2);
 
-    const event = user('<state>A</state>');
+    const event = userEvent('<state>A</state>');
     const sent = ahead ? [head, event, note] : [head, note, event];
     expect(ledger.window()).toEqual(sent);
     ledger.commit(history);

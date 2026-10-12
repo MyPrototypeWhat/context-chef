@@ -20,6 +20,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   anchored,
+  background,
   type ChefConfig,
   type ChefEvents,
   ContextChef,
@@ -844,13 +845,14 @@ describe('appendOnly overflow: after a compaction the window is stated again', (
   });
 
   it('restates a source the summary absorbed, and not one whose event it kept', async () => {
-    const { chef, breaks } = chefWith({ janitor: { ...JANITOR, triggerRatio: 0.8 } }, keepLast(4));
+    const { chef, breaks } = chefWith({ janitor: { ...JANITOR, triggerRatio: 0.8 } }, keepLast(3));
     const setup = (c: ContextChef, turn: number) => {
       if (turn === 1) c.setDynamicState(State, { step: 1 });
       if (turn === 3) c.announce('docs', 'Docs are indexed.', { channel: 'user_tail' });
     };
 
-    // [q1, state, a1, q2, a2, q3, docs, a3, q4]: 9 messages, the last 4 turns kept from q3 on.
+    // [q1, state, a1, q2, a2, q3, docs, a3, q4]: 9 messages, the last 3 turns ([q3, docs], a3
+    // and q4) kept.
     const payloads = await converse<OpenAIPayload>(
       chef,
       [1, 2, 3, 4, 5].map(asked),
@@ -871,19 +873,32 @@ describe('appendOnly overflow: after a compaction the window is stated again', (
     expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
   });
 
-  it('summarizes an event the kept turns start with, and states its source again', async () => {
-    const { chef } = chefWith({ janitor: { ...JANITOR, triggerRatio: 0.8 } }, keepLast(3));
+  it('summarizes an event a strategy that cuts inside a turn keeps first, and states its source again', async () => {
+    // Keeps the last 3 messages, wherever the turns start.
+    const lastThree: OverflowStrategy = {
+      name: 'last-three',
+      async apply(input) {
+        const span = input.history.slice(0, -3);
+        return {
+          history: [user('NOTE'), ...input.history.slice(-3)],
+          evicted: span,
+          span,
+          meta: { strategy: 'last-three', windowId: input.window.current, changed: true },
+        };
+      },
+    };
+    const { chef } = chefWith({ janitor: { ...JANITOR, triggerRatio: 0.8 } }, () => lastThree);
     const setup = (c: ContextChef, turn: number) => {
       if (turn === 1) c.setDynamicState(State, { step: 1 });
       if (turn === 3) c.announce('docs', 'Docs are indexed.', { channel: 'user_tail' });
     };
 
-    // The last 3 turns are [docs, a3, q4]: the window resumes at a3, the event goes with q1…q3.
+    // It keeps [docs, a3, q4]: the window resumes at a3, the event goes with q1…q3.
     const payloads = await converse<OpenAIPayload>(chef, [1, 2, 3, 4].map(asked), 'openai', setup);
 
     expect(contents(payloads[3])).toEqual([
       'You are terse.',
-      SUMMARY(1),
+      'NOTE',
       'a3',
       'q4',
       `${state(1, 1)}\n\n${announcement('docs', 'Docs are indexed.', 1)}\n\n${ANCHOR}`,
@@ -923,6 +938,209 @@ describe('appendOnly overflow: after a compaction the window is stated again', (
       ['compaction', 3],
       ['compaction', 1],
     ]);
+  });
+});
+
+describe('appendOnly overflow: an event stays with the turn it follows', () => {
+  /** Chat Completions messages as [role, content]: shows which channel an event went out on. */
+  const said = (payload: OpenAIPayload): Array<[string, string]> =>
+    payload.messages.map((m) => [m.role, String(m.content)]);
+
+  it('keeps a positional system event with the user turn before it', async () => {
+    const { chef, breaks } = chefWith({ janitor: { ...JANITOR, triggerRatio: 0.8 } }, keepLast(3));
+    const setup = (c: ContextChef, turn: number) => {
+      if (turn === 1) c.setDynamicState(State, { step: 1 });
+      if (turn === 3) c.announce('docs', 'Docs are indexed.', { channel: 'system' });
+    };
+
+    // [q1, state, a1, q2, a2, q3, docs, a3, q4]: the last 3 turns are [q3, docs], a3 and q4.
+    const payloads = await converse<OpenAIPayload>(
+      chef,
+      [1, 2, 3, 4, 5].map(asked),
+      'openai',
+      setup,
+    );
+
+    expect(said(payloads[3])).toEqual([
+      ['system', 'You are terse.'],
+      ['user', SUMMARY(1)],
+      ['user', 'q3'],
+      ['system', `${announcement('docs', 'Docs are indexed.', 1)}\n\n${ANCHOR}`],
+      ['assistant', 'a3'],
+      ['user', 'q4'],
+      ['user', `${state(1, 1)}\n\n${ANCHOR}`],
+    ]);
+    expectAppendOnly(payloads.slice(3));
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it.each([
+    ['the request is tried again', asked(3), 'q3'],
+    [
+      'the host adds a message to the unanswered request',
+      [...asked(3), user('q3, again')],
+      'q3, again',
+    ],
+  ])('keeps the pending question with the event after it when %s', async (_, retry, question) => {
+    const { chef } = chefWith();
+    const setup = (c: ContextChef, turn: number) => {
+      if (turn === 1) c.setDynamicState(State, { step: 1 });
+      if (turn === 3) c.setDynamicState(State, { step: 2 });
+    };
+
+    // The first try at q3 appends step 2 after it, and nothing answers it: the next compile's
+    // window ends [question, step 2], over the trigger, and keeps that last turn whole.
+    const payloads = await converse<OpenAIPayload>(
+      chef,
+      [asked(1), asked(2), asked(3), retry],
+      'openai',
+      setup,
+    );
+
+    expect(said(payloads[3])).toEqual([
+      ['system', 'You are terse.'],
+      ['user', SUMMARY(1)],
+      ['user', question],
+      ['user', `${state(2, 2)}\n\n${ANCHOR}`],
+    ]);
+  });
+
+  it.each([
+    'anthropic',
+    'openai',
+    'gemini',
+    'openai-responses',
+  ])('sends no trace of the mark the events carry in the window (%s)', async (target) => {
+    const { chef } = chefWith();
+    chef.setDynamicState(State, { step: 1 });
+    chef.announce('docs', 'Docs are indexed.', { channel: 'system' });
+
+    const [payload] = await converse(chef, [asked(2)], target);
+
+    expect(occurrences(payload, 'Docs are indexed.')).toBe(1);
+    expect(JSON.stringify(wire(payload))).not.toContain('_chef_event');
+  });
+});
+
+describe('appendOnly overflow: background() lands a job while the window only grew', () => {
+  const inBackground = (compressionModel: CompressionModel) =>
+    background(keepLast(1)(compressionModel));
+
+  /** `converse`, letting a background job finish between compiles. */
+  async function converseSettling<P extends TargetPayload = AnthropicPayload>(
+    chef: ContextChef,
+    turns: Message[][],
+    target = 'anthropic',
+  ): Promise<P[]> {
+    const payloads: P[] = [];
+    for (const history of turns) {
+      payloads.push(...(await converse<P>(chef, [history], target)));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return payloads;
+  }
+
+  it('lands the job at the next compile, its events rendered anew, the turns since kept', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+    chef.setDynamicState(State, { step: 1 });
+
+    // asked(4) is [q1, state, a1, …, q4], over the trigger: the job starts there and keeps q4.
+    const payloads = await converseSettling<OpenAIPayload>(
+      chef,
+      [1, 2, 3, 4, 5].map(asked),
+      'openai',
+    );
+
+    const stated = `${state(1, 1)}\n\n${ANCHOR}`;
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(summarized(compressionModel, 1).map((m) => m.content)).toEqual([
+      'q1',
+      stated,
+      'a1',
+      'q2',
+      'a2',
+      'q3',
+      'a3',
+    ]);
+    expect(contents(payloads[3])).toEqual([
+      'You are terse.',
+      'q1',
+      stated,
+      'a1',
+      'q2',
+      'a2',
+      'q3',
+      'a3',
+      'q4',
+    ]);
+    expect(contents(payloads[4])).toEqual(['You are terse.', SUMMARY(1), 'q4', 'a4', 'q5', stated]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+    expectAppendOnly(payloads.slice(0, 4));
+  });
+
+  it('waits for the tool turn in progress to end before it lands', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+    const loop = [...asked(4), call('t1', 'SIG_C1'), result('t1', 'r1')]; // 9
+    const done = [...loop, reply('a4', 'SIG_4'), user('q5')]; // 11, a turn boundary
+
+    const payloads = await converseSettling<OpenAIPayload>(
+      chef,
+      [asked(1), asked(2), asked(3), asked(4), loop, done],
+      'openai',
+    );
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expectAppendOnly(payloads.slice(0, 5));
+    expect(contents(payloads[5])).toEqual([
+      'You are terse.',
+      SUMMARY(1),
+      'q4',
+      '',
+      'r1',
+      'a4',
+      'q5',
+    ]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('drops a job when a checkpoint rewrote the window it started on, and lands the next one', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+    const edited = (n: number) =>
+      asked(n).map((m) => (m.content === 'q2' ? user('q2, edited') : m));
+
+    const payloads = await converseSettling<OpenAIPayload>(
+      chef,
+      [asked(1), asked(2), asked(3), asked(4), edited(5), edited(6)],
+      'openai',
+    );
+
+    // The first job summarized q2 as it was: the edit drops it, and a job starts on the window
+    // that holds the edit. That one lands.
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(summarized(compressionModel, 2).map((m) => m.content)).toContain('q2, edited');
+    expect(contents(payloads[4])).toEqual(['You are terse.', ...edited(5).map((m) => m.content)]);
+    expect(contents(payloads[5])).toEqual(['You are terse.', SUMMARY(2), 'q5', 'a5', 'q6']);
+    expect(breaks.map((b) => b.reason)).toEqual(['history', 'compaction']);
+  });
+
+  it('collapses a tool turn that cannot wait at once, whatever job is running', async () => {
+    // The job started at q4 never finishes.
+    const { chef, compressionModel } = chefWith({}, (model) => {
+      let calls = 0;
+      return inBackground((messages) =>
+        ++calls === 1 ? new Promise<string>(() => {}) : model(messages),
+      );
+    });
+    const loop = [...asked(4), call('t1', 'SIG_C1'), result('t1', 'r1')];
+    await converseSettling(chef, [asked(1), asked(2), asked(3), asked(4)]);
+
+    chef.requestNewContext();
+    const [collapsed] = await converse(chef, [loop]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(summarized(compressionModel, 1)).toEqual(loop);
+    expect(collapsed.messages).toEqual([text('user', SUMMARY(1))]);
+    expect(collapsed.meta?.prefix?.break?.reason).toBe('compaction');
   });
 });
 

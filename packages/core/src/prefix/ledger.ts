@@ -117,7 +117,8 @@ export function followsUserTurn(end: number, initial: (i: number) => string): bo
  * A user message cannot be turn-scoped, so turn-scoped entries are only
  * appended where they stay system messages (`turnScopedAt()`). A pure
  * function of the group and what precedes it, so a tail renders the same
- * bytes once answered.
+ * bytes once answered. Every message is marked `_chef_event`, which no
+ * adapter sends.
  */
 export function renderGroup(
   entries: readonly PrefixCandidate[],
@@ -129,13 +130,13 @@ export function renderGroup(
   const turnScoped = entries.filter((e) => e.channel === 'system' && e.clearAt);
   const positional = afterUserTurn || user.length > 0;
   const messages: Message[] = [];
-  if (user.length > 0) messages.push({ role: 'user', content: text(user) });
+  if (user.length > 0) messages.push({ role: 'user', content: text(user), _chef_event: true });
   const say = (part: readonly PrefixCandidate[], scope: Pick<Message, '_clear_at'>) => {
     if (part.length === 0) return;
     messages.push(
       positional
-        ? { role: 'system', content: text(part), _positional: true, ...scope }
-        : { role: 'user', content: text(part) },
+        ? { role: 'system', content: text(part), _positional: true, ...scope, _chef_event: true }
+        : { role: 'user', content: text(part), _chef_event: true },
     );
   };
   say(system, {});
