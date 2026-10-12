@@ -1223,6 +1223,79 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
     expect(breaks.map((b) => b.reason)).toEqual(['history', 'compaction']);
   });
 
+  it('summarizes the window a finished job leaves when that is still past the raw window', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+
+    // The job starts at q4 and keeps it. The host comes back at q12: the job would leave
+    // [SUMMARY 1, q4 … q12], 18 messages.
+    const payloads = await converseSettling(chef, [
+      asked(1),
+      asked(2),
+      asked(3),
+      asked(4),
+      asked(12),
+    ]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(summarized(compressionModel, 2)[0].content).toBe(SUMMARY(1));
+    expect(payloads[4].messages).toEqual([text('user', SUMMARY(2)), text('user', 'q12')]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('reads no report once a checkpoint changed the request it came back for', async () => {
+    // A trigger of 95: only a reading past the raw window of 100 compacts.
+    const { chef, compressionModel, breaks } = chefWith({
+      janitor: { ...JANITOR, triggerRatio: 0.95 },
+    });
+    const edited = (n: number) =>
+      asked(n).map((m) => (m.content === 'q2' ? user('q2, edited') : m));
+    await converse(chef, [asked(1), asked(2), asked(3)], 'openai');
+
+    // 60 came back for [q1 … q3], the system prompt included. Then q2 is edited: the windows are
+    // 70 and 90, and the report, which counted the old q2 and everything after it, describes
+    // neither of them.
+    chef.reportTokenUsage(60);
+    const payloads = await converse<OpenAIPayload>(chef, [edited(4), edited(5)], 'openai');
+
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(payloads.map((p) => p.messages.length)).toEqual([8, 10]);
+    expect(breaks.map((b) => b.reason)).toEqual(['history']);
+  });
+
+  it('keeps reading no report through the rest of a tool turn after the edit', async () => {
+    const { chef, compressionModel, breaks } = chefWith();
+    const edited = [...asked(3)];
+    edited[2] = user('q2, edited');
+    const step1 = [...asked(3), call('t1', 'SIG_C1')]; // 6
+    const step2 = [...step1, result('t1', 'r1')]; // 7
+    const step3 = [...edited, ...step2.slice(5), call('t2', 'SIG_C2')]; // 8, q2 edited
+    const step4 = [...step3, result('t2', 'r2')]; // 9
+    await converse(chef, [asked(1), asked(2), asked(3)]);
+
+    // 60 came back for [q1 … q3], and the tool turn waits on it: 70, 80. From the edit on the
+    // report describes no window — 80, then 90, all under the raw window of 100 — for as long
+    // as the turn lasts, not just for the compile that made the edit.
+    chef.reportTokenUsage(60);
+    await converse(chef, [step1, step2, step3, step4]);
+
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(breaks.map((b) => b.reason)).toEqual(['history']);
+  });
+
+  it('counts no more tokens than 4.x without a finite context window', async () => {
+    const counted = async (appendOnly: boolean) => {
+      const tokenizer = vi.fn((messages: Message[]) => messages.length * 10);
+      const { chef } = chefWith({
+        appendOnly,
+        janitor: { contextWindow: Number.POSITIVE_INFINITY, tokenizer },
+      });
+      await converse(chef, [asked(1), asked(2), asked(3)]);
+      return tokenizer.mock.calls.length;
+    };
+
+    expect(await counted(true)).toBe(await counted(false));
+  });
+
   it('summarizes what the last usage report did not see, whatever that report says', async () => {
     // No tokenizer: the runner's own reading is the report alone.
     const { chef, compressionModel } = chefWith({

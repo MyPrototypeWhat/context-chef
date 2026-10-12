@@ -256,7 +256,7 @@ export class PrefixLedger {
   private restarted = false;
   /**
    * Leading window messages the last usage report covers: the window
-   * committed when it came, cut back to what every commit since kept of it.
+   * committed when it came, or 0 once a commit since changed one of them.
    */
   private _reported?: number;
   /**
@@ -304,19 +304,33 @@ export class PrefixLedger {
 
   /**
    * How many leading messages of the window the last usage report covers
-   * (`markReported()`); `undefined` before any report.
+   * (`markReported()`), as the last commit left it; `undefined` before any
+   * report.
    */
   get reported(): number | undefined {
     return this._reported;
   }
 
   /**
+   * How many leading messages of the window being compiled the last usage
+   * report describes: those of the payload it came back for, while the window
+   * still starts with them — and none once one of them changed, since the
+   * report then counts a payload that no longer exists. `undefined` before
+   * any report.
+   */
+  reportCovers(): number | undefined {
+    const reported = this._reported;
+    if (reported === undefined) return undefined;
+    return this.stable() < reported ? 0 : reported;
+  }
+
+  /**
    * A usage report came back for the window last committed: until the next
    * one, the report covers that many leading messages of the window, however
-   * many compiles commit after it without a report — fewer once one of them
-   * commits a window that changed a message it covered, since the report
-   * never saw the new one. Survives a rollback — the report describes what
-   * was sent, not what a failed compile built.
+   * many compiles commit after it without a report — and none once one of
+   * them commits a window that changed a message it covered
+   * (`reportCovers()`). Survives a rollback — the report describes what was
+   * sent, not what a failed compile built.
    */
   markReported(): void {
     this._reported = this.keys(this.pending?.committed ?? this.capture()).length;
@@ -543,10 +557,11 @@ export class PrefixLedger {
 
   /**
    * Records what a compile used: digests of `history` from `head.cut` on, and
-   * `sent`. The last usage report no longer covers what this window changed.
+   * `sent`. The last usage report describes no window once this one changed
+   * a message it covered.
    */
   commit(history: readonly Message[], sent?: PrefixSent): void {
-    if (this._reported !== undefined) this._reported = Math.min(this._reported, this.stable());
+    this._reported = this.reportCovers();
     this.history = [...history];
     this.seen = history.slice(this.cut).map((message) => this.digestOf(message));
     if (sent) this._lastSent = plainSent(sent);

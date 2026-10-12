@@ -279,10 +279,13 @@ export interface PipelineHost {
   readBudget(history: Message[]): BudgetInfo;
   /**
    * The runner's reading of the request about to be sent: the last reported
-   * usage plus a local count of `appended`, what that report does not cover.
-   * Consumes nothing.
+   * usage plus a local count of `appended`, what that report does not cover;
+   * `appended` null when the report describes none of `history`, which is
+   * then counted locally. Consumes nothing.
    */
-  readRequestBudget(history: Message[], appended: Message[]): BudgetInfo;
+  readRequestBudget(history: Message[], appended: Message[] | null): BudgetInfo;
+  /** The runner's raw context window (`janitor.contextWindow`). */
+  readonly contextWindow: number;
   /**
    * Drops a reported usage that may predate the last landed compression,
    * once (E10), as the runner's own budget check does.

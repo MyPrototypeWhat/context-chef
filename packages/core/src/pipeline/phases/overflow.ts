@@ -148,24 +148,27 @@ function compactionTiming(
 }
 
 /**
- * Whether the request about to be sent is past the raw context window.
+ * Whether the request about to be sent is past the raw context window. With
+ * none configured (the default) nothing is read: nothing can be past it.
  *
  * Reading consumes no reported usage, so a compile that waits leaves it for
  * the one that ends the turn — except one that predates the last landing,
  * which the first reading after it drops (E10). A report describes the
  * request it came back for, possibly several compiles ago, so everything the
- * window gained since that request, or changed in what it held, is counted on
- * top of it.
+ * window gained since that request is counted on top of it. Once a message of
+ * that request changed, the report counts a payload that no longer exists,
+ * and the whole window is counted locally instead.
  */
 function pastLimit(prefix: PrefixCompile, host: PipelineHost, window: Message[]): boolean {
   host.dropStaleUsage();
-  // A report covers no message this compile changed. A usage fed past
-  // `reportTokenUsage()` is taken to cover the window last committed.
-  const covered = Math.min(
-    prefix.ledger.reported ?? Number.POSITIVE_INFINITY,
-    prefix.ledger.stable(),
+  if (!Number.isFinite(host.contextWindow)) return false;
+  // A usage fed past `reportTokenUsage()` is taken to cover the window last
+  // committed; one that describes none of the window is no report at all.
+  const covered = prefix.ledger.reportCovers() ?? prefix.ledger.stable();
+  const { current, limit } = host.readRequestBudget(
+    window,
+    covered > 0 ? window.slice(covered) : null,
   );
-  const { current, limit } = host.readRequestBudget(window, window.slice(covered));
   return current > limit;
 }
 

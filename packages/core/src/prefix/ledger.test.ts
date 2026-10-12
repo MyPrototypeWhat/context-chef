@@ -1056,22 +1056,28 @@ describe('PrefixLedger — usage reports', () => {
     expect(ledger.reported).toBeUndefined();
   });
 
-  it('keeps it through a failed compile, and cuts it back to what a commit kept', () => {
+  it('keeps it through a failed compile, and describes nothing once what it covered changed', () => {
     const ledger = new PrefixLedger();
     compile(ledger, turns.slice(0, 3)); // [q1, r1, q2]
     ledger.markReported();
     const edited = [turns[0], assistant('r1 (edited)'), turns[2]];
 
-    // Nothing a failed compile built was sent: the report still covers [q1, r1, q2].
+    // The compile that changes r1 reads the report as covering none of its window…
     ledger.reconcile(edited);
+    expect(ledger.reportCovers()).toBe(0);
+    // …but it failed: nothing it built was sent, and the report still covers [q1, r1, q2].
     ledger.rollback();
     expect(ledger.reported).toBe(3);
+    expect(ledger.reportCovers()).toBe(3);
 
-    // The same length, r1 changed: the report covers q1 alone, whatever is appended after it.
+    // Committed, r1 changed: the report describes no window that exists any more, whatever is
+    // appended after it, until the next report.
     compile(ledger, edited);
-    expect(ledger.reported).toBe(1);
+    expect(ledger.reported).toBe(0);
     compile(ledger, [...edited, ...turns.slice(3, 5)]);
-    expect(ledger.reported).toBe(1);
+    expect(ledger.reportCovers()).toBe(0);
+    ledger.markReported();
+    expect(ledger.reportCovers()).toBe(5);
   });
 });
 

@@ -52,9 +52,10 @@ function commonSuffixLength(a: readonly Message[], b: readonly Message[]): numbe
  * it, so there a job is fresh exactly while `source` is still the start of
  * the window: every message the same on the wire, as the ledger compares
  * them — it renders its events anew on every compile, and a host may move a
- * cache breakpoint — and pinned exactly when it was, since the job
- * summarized what was not. A 4.x history may be recreated and compacted in
- * place, so only the two ends of the span are compared, by content.
+ * cache breakpoint — and in the span it summarized, pinned exactly when it
+ * was, since what was pinned went back verbatim and what was not into the
+ * summary. A 4.x history may be recreated and compacted in place, so only
+ * the two ends of the span are compared, by content.
  */
 function stillApplies(
   source: readonly Message[],
@@ -68,7 +69,7 @@ function stillApplies(
       source.every(
         (message, i) =>
           message === history[i] ||
-          (!message.pinned === !history[i].pinned &&
+          ((i >= splitIndex || !message.pinned === !history[i].pinned) &&
             wireDigest(message) === wireDigest(history[i])),
       )
     );
@@ -109,7 +110,8 @@ export interface BackgroundOverflowStrategy extends OverflowStrategy {
  * turns the job kept included, makes it stale. Two windows cannot wait a
  * compile for a job. One that collapses gets `inner` on the spot, and any
  * job, on an earlier window, is dropped. A request past the raw context
- * window (`pastLimit`) takes a finished job that still applies, and
+ * window (`pastLimit`) takes a finished job that still applies — and `inner`
+ * on top of it when what the job leaves still counts past the window — and
  * otherwise gets `inner` on the spot too, in place of a job starting, in
  * flight or gone stale.
  *
@@ -119,8 +121,8 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
   let job: BackgroundJob | undefined;
   let runner: OverflowRunner = detachedRunner;
   const name = `background(${inner.name})`;
-  /** A result this strategy returned → the inner result it was built from, for `commit`. */
-  const rebased = new WeakMap<OverflowResult, OverflowResult>();
+  /** A result this strategy returned → the inner results it was built from, for `commit`. */
+  const built = new WeakMap<OverflowResult, OverflowResult[]>();
 
   /**
    * `inner` applied on this compile, reported under this strategy's name, for
@@ -132,8 +134,37 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
     job = undefined;
     const result = await inner.apply(input);
     const named: OverflowResult = { ...result, meta: { ...result.meta, strategy: name } };
-    rebased.set(named, result);
+    built.set(named, [result]);
     return named;
+  };
+
+  /**
+   * A landed job under `pastLimit`, with `inner` run on the window it leaves
+   * when that still counts past the raw context window: both are one
+   * overflow, covering what either summarized and leaving what the second
+   * left.
+   */
+  const fitLanded = async (
+    landed: OverflowResult,
+    input: OverflowInput,
+  ): Promise<OverflowResult> => {
+    if (input.tokenizer(landed.history) <= input.budget.limit) return landed;
+    const inWindow = new Set(landed.history);
+    const again = await inner.apply({
+      ...input,
+      history: landed.history,
+      pinned: input.pinned.filter((message) => inWindow.has(message)),
+    });
+    if (!again.meta.changed) return landed;
+    const both: OverflowResult = {
+      history: again.history,
+      evicted: [...landed.evicted, ...again.evicted],
+      span: [...new Set([...landed.span, ...again.span])],
+      summary: again.summary,
+      meta: landed.meta,
+    };
+    built.set(both, [...(built.get(landed) ?? []), again]);
+    return both;
   };
 
   const start = (input: OverflowInput): void => {
@@ -171,7 +202,7 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
       ],
       meta: { ...result.meta, strategy: name, windowId: input.window.current },
     };
-    rebased.set(swapped, result);
+    built.set(swapped, [result]);
     return swapped;
   };
 
@@ -184,7 +215,7 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
         const finished = job;
         job = undefined;
         const swapped = swapIn(finished, input);
-        if (swapped) return swapped;
+        if (swapped) return input.pastLimit ? fitLanded(swapped, input) : swapped;
         // The model did its work off-turn; the history simply moved under it.
         // The runner credits a result that lands, and this one never will, so
         // without this a flaky model interleaved with fast-moving history
@@ -207,7 +238,7 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
     },
 
     commit(result) {
-      inner.commit?.(rebased.get(result) ?? result);
+      for (const step of built.get(result) ?? [result]) inner.commit?.(step);
     },
 
     snapshot: () => inner.snapshot?.(),

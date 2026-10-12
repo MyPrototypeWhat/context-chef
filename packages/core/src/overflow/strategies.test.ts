@@ -817,6 +817,21 @@ describe("appendOnly: the chef's events in the window", () => {
       expect(landed.history.slice(1)).toEqual(current.slice(6));
     });
 
+    it('lands a job whose kept turn was pinned since: nothing it summarized changed', async () => {
+      const [strategy] = attached(inBackground());
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+      await settled(strategy);
+
+      const current = [...again(source), reply('a3'), user('q4')];
+      current[6] = { ...current[6], pinned: true };
+      const landed = await strategy.apply(
+        makeInput({ history: current, appendOnly: true, pinned: extractPinnedMessages(current) }),
+      );
+
+      expect(landed.meta.changed).toBe(true);
+      expect(landed.history.slice(1)).toEqual(current.slice(6));
+    });
+
     it('drops a job once a message it summarized was pinned since', async () => {
       const [strategy] = attached(inBackground());
       await strategy.apply(makeInput({ history: source, appendOnly: true }));
@@ -884,15 +899,52 @@ describe("appendOnly: the chef's events in the window", () => {
         expect(strategy.pendingJob).toBeUndefined();
       });
 
-      it('still lands a finished job that applies: its summary is paid for', async () => {
+      it('lands a finished job that applies as it is when its window fits: its summary is paid for', async () => {
         const [strategy] = attached(inBackground());
         await strategy.apply(makeInput({ history: source, appendOnly: true }));
         await settled(strategy);
 
+        // [summary, q3, a3, q4] is 40 tokens against a raw window of 50.
         const current = [...again(source), reply('a3'), user('q4')];
-        const landed = await strategy.apply(pastLimit(current));
+        const landed = await strategy.apply({
+          ...pastLimit(current),
+          budget: { limit: 50, current: 90, trigger: 20, remaining: -70 },
+        });
 
         expect(landed.history.slice(1)).toEqual(current.slice(6));
+      });
+
+      it('runs the inner strategy on the window a finished job leaves when that is still past it', async () => {
+        let round = 0;
+        const committed: Array<string | undefined> = [];
+        const summarizing = summarize({
+          compressionModel: async () => `<summary>S${++round}</summary>`,
+          split: 'recent-turns',
+          preserveRecentMessages: 1,
+        });
+        const [strategy] = attached(
+          background({
+            name: 'spy',
+            apply: (input) => summarizing.apply(input),
+            commit: (result) => {
+              committed.push(result.summary);
+            },
+          }),
+        );
+        await strategy.apply(makeInput({ history: source, appendOnly: true }));
+        await settled(strategy);
+
+        // The job leaves [S1, q3, a3, q4, a4, q5]: 60 tokens against a raw window of 30.
+        const current = [...again(source), reply('a3'), user('q4'), reply('a4'), user('q5')];
+        const fitted = await strategy.apply(pastLimit(current));
+        strategy.commit?.(fitted);
+
+        expect(fitted.meta).toMatchObject({ changed: true, strategy: 'background(spy)' });
+        expect(fitted.summary).toBe('S2');
+        expect(fitted.history.slice(1)).toEqual([current[10]]);
+        expect(fitted.span.slice(0, 6)).toEqual(source.slice(0, 6));
+        expect(fitted.span.slice(-4)).toEqual(current.slice(6, 10));
+        expect(committed).toEqual(['S1', 'S2']);
       });
     });
 

@@ -614,6 +614,11 @@ export class Janitor {
     return this._window;
   }
 
+  /** The raw context window every budget reading is measured against. */
+  public get contextWindow(): number {
+    return this.config.contextWindow;
+  }
+
   /** Resolved archive config — the 'vfs' shorthand is only usable via ContextChef wiring. */
   private get _archive(): CompressionArchiveConfig | undefined {
     return typeof this.config.archive === 'object' ? this.config.archive : undefined;
@@ -766,15 +771,16 @@ export class Janitor {
    * fits (`appendOnly`, while a compaction waits for a tool turn to end).
    *
    * `current` is the last reported usage plus a local count of `appended`,
-   * the messages that report does not cover yet; with no report, a local
-   * count of the whole `history`. The local count is the tokenizer, or the
-   * built-in heuristic (`estimateMessages` under `appendOnly`: each
-   * attachment at a flat `ATTACHMENT_TOKENS`).
+   * the messages that report does not cover yet; with no report, or with
+   * `appended` null — the report describes none of `history` — a local count
+   * of the whole `history`. The local count is the tokenizer, or the built-in
+   * heuristic (`estimateMessages` under `appendOnly`: each attachment at a
+   * flat `ATTACHMENT_TOKENS`).
    * `usagePreference` applies as in {@link readBudget}: `'tokenizerFirst'`
    * ignores the report, and under `'max'` a tokenizer's count of the whole
    * history wins when it is larger. Consumes nothing.
    */
-  public readRequestBudget(history: Message[], appended: Message[]): BudgetInfo {
+  public readRequestBudget(history: Message[], appended: Message[] | null): BudgetInfo {
     const limit = this.config.contextWindow;
     const trigger = limit * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
     const { tokenizer, usagePreference = 'max' } = this.config;
@@ -782,7 +788,7 @@ export class Janitor {
     const fed = usagePreference === 'tokenizerFirst' ? null : this._externalTokenUsage;
 
     let current: number;
-    if (fed === null) {
+    if (fed === null || appended === null) {
       current = count(history);
     } else if (tokenizer && usagePreference === 'max') {
       // A tokenizer's count of the whole history is a second opinion; the larger wins.

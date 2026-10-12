@@ -1092,6 +1092,9 @@ export class ContextChef {
       readRequestBudget(history, appended) {
         return chef.janitor.readRequestBudget(history, appended);
       },
+      get contextWindow() {
+        return chef.janitor.contextWindow;
+      },
       dropStaleUsage() {
         chef.janitor.dropStaleUsage();
       },
@@ -1319,7 +1322,9 @@ export class ContextChef {
    *
    * With `appendOnly` the report is taken to describe the request last
    * compiled; until the next one, what the window gained since is counted on
-   * top of it.
+   * top of it — and once a message of that request changes (an edit, a
+   * checkpoint), the report describes no window any more and the whole window
+   * is counted locally.
    *
    * @example
    * const response = await openai.chat.completions.create({ ... });
