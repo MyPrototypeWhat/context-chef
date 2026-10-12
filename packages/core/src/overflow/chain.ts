@@ -63,12 +63,21 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
         return unchanged(input, name, reason ?? 'no strategy changed the window');
       }
 
+      // A step that landed without a step it needed stays partial whatever came
+      // after it, so the runner keeps the failure it counted.
+      const partial = contributions.some(([, step]) => step.meta.partial);
       const composed: OverflowResult = {
         history,
         evicted,
         span: [...span],
         summary,
-        meta: { strategy: name, windowId: input.window.current, changed: true, reason },
+        meta: {
+          strategy: name,
+          windowId: input.window.current,
+          changed: true,
+          reason,
+          ...(partial ? { partial: true as const } : {}),
+        },
       };
       steps.set(composed, contributions);
       return composed;

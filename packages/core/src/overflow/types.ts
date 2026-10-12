@@ -199,7 +199,8 @@ export interface OverflowResult {
      * The window changed, but a step the result needed changed nothing:
      * `background()` landed a job whose window is still past the raw context
      * window, and summarizing that failed. The runner does not clear the
-     * circuit breaker for it, so a failure that step counted stays counted.
+     * circuit breaker for it, so a failure that step counted stays counted;
+     * `chain()` passes it on from any step.
      */
     partial?: true;
   };

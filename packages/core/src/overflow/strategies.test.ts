@@ -7,7 +7,13 @@ import { reset } from './reset';
 import { isServerStrategy, server } from './server';
 import { summarize } from './summarize';
 import { extractPinnedMessages, groupIntoTurns } from './turns';
-import type { OverflowInput, OverflowResult, OverflowRunner, OverflowStrategy } from './types';
+import {
+  type OverflowInput,
+  type OverflowResult,
+  type OverflowRunner,
+  type OverflowStrategy,
+  unchanged,
+} from './types';
 
 const tokenizer = (messages: Message[]): number => messages.length * 10;
 
@@ -500,6 +506,40 @@ describe('chain()', () => {
     // Every message is counted once, however many steps compressed it.
     expect(new Set(result.span).size).toBe(result.span.length);
   });
+
+  it.each([
+    ['changes nothing', false],
+    ['changes the window too', true],
+  ])('passes on a partial step when the step after it %s', async (_, changes) => {
+    // Drops the oldest message, but a step it needed failed.
+    const partial: OverflowStrategy = {
+      name: 'partial',
+      async apply(input) {
+        const [oldest, ...rest] = input.history;
+        return {
+          history: rest,
+          evicted: [oldest],
+          span: [oldest],
+          meta: {
+            strategy: 'partial',
+            windowId: input.window.current,
+            changed: true,
+            partial: true,
+          },
+        };
+      },
+    };
+    const declines: OverflowStrategy = {
+      name: 'declines',
+      apply: async (input) => unchanged(input, 'declines', 'nothing to do'),
+    };
+    const [strategy] = attached(chain(partial, changes ? reset() : declines));
+
+    // 4 messages after the first step are still over the trigger of 20: the second step runs.
+    const result = await strategy.apply(makeInput());
+
+    expect(result.meta).toMatchObject({ changed: true, partial: true });
+  });
 });
 
 describe('background()', () => {
@@ -860,6 +900,36 @@ describe("appendOnly: the chef's events in the window", () => {
       );
 
       expect(stale.meta.changed).toBe(false);
+    });
+
+    it.each([
+      ['it summarized', 3],
+      ['it kept', 6],
+    ])('drops a job once the host edited a message %s in place since', async (_, index) => {
+      const [strategy] = attached(inBackground());
+      const messages = source.map((message) => ({ ...message }));
+      await strategy.apply(makeInput({ history: messages, appendOnly: true }));
+      await settled(strategy);
+
+      // The very object the job read now says something else.
+      messages[index].content = 'edited';
+      const stale = await strategy.apply(
+        makeInput({ history: [...messages, reply('a3'), user('q4')], appendOnly: true }),
+      );
+
+      expect(stale.meta.changed).toBe(false);
+    });
+
+    it('lands a job on a window the host built anew with every message the same', async () => {
+      const [strategy] = attached(inBackground());
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+      await settled(strategy);
+
+      const current = structuredClone([...source, reply('a3'), user('q4')]);
+      const landed = await strategy.apply(makeInput({ history: current, appendOnly: true }));
+
+      expect(landed.meta.changed).toBe(true);
+      expect(landed.history.slice(1)).toEqual(current.slice(6));
     });
 
     describe('when the request is past the raw context window (pastLimit)', () => {

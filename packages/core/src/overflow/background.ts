@@ -27,10 +27,20 @@ interface BackgroundJob {
   result: OverflowResult | null;
   source: Message[];
   /**
-   * Whether each message of `source` was pinned when the job started — read
-   * then, since a host may set the flag on the same object afterwards.
+   * `appendOnly`: each message of `source` as the job read it, taken when it
+   * started — a host may change the very object afterwards.
    */
-  pinned: boolean[];
+  read?: readonly MessageRead[];
+}
+
+/** What a job read of one message: its wire digest, and whether it was pinned. */
+interface MessageRead {
+  readonly digest: string;
+  readonly pinned: boolean;
+}
+
+function readOf(messages: readonly Message[]): MessageRead[] {
+  return messages.map((message) => ({ digest: wireDigest(message), pinned: !!message.pinned }));
 }
 
 /**
@@ -54,27 +64,29 @@ function commonSuffixLength(a: readonly Message[], b: readonly Message[]): numbe
  * summarized, still applies to `input.history`.
  *
  * The `appendOnly` window only grows at its end until a checkpoint rewrites
- * it, so there a job is fresh exactly while its `source` is still the start
- * of the window: every message the same on the wire, as the ledger compares
- * them — it renders its events anew on every compile, and a host may move a
- * cache breakpoint — and in the span it summarized, pinned exactly when the
- * job started, since what was pinned went back verbatim and what was not
- * into the summary. A 4.x history may be recreated and compacted in place,
- * so only the two ends of the span are compared, by content.
+ * it, so there a job is fresh exactly while the window still starts with
+ * what the job read: every message the same on the wire as when the job
+ * started, compared by the ledger's digest whether or not it is the same
+ * object — the ledger renders its events anew on every compile, a host may
+ * move a cache breakpoint, and a host may also edit the very object the job
+ * read — and in the span it summarized, pinned exactly when the job started,
+ * since what was pinned went back verbatim and what was not into the
+ * summary. A 4.x history may be recreated and compacted in place, so only
+ * the two ends of the span are compared, by content.
  */
 function stillApplies(job: BackgroundJob, input: OverflowInput, splitIndex: number): boolean {
-  const { source } = job;
   const { history } = input;
   if (input.appendOnly) {
+    const read = job.read ?? readOf(job.source);
     return (
-      source.length <= history.length &&
-      source.every(
-        (message, i) =>
-          (i >= splitIndex || job.pinned[i] === !!history[i].pinned) &&
-          (message === history[i] || wireDigest(message) === wireDigest(history[i])),
+      read.length <= history.length &&
+      read.every(
+        ({ digest, pinned }, i) =>
+          (i >= splitIndex || pinned === !!history[i].pinned) && digest === wireDigest(history[i]),
       )
     );
   }
+  const { source } = job;
   return (
     history.length >= splitIndex &&
     messagesEquivalent(history[0], source[0]) &&
@@ -181,7 +193,7 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
       settled: false,
       result: null,
       source: input.history,
-      pinned: input.history.map((message) => !!message.pinned),
+      ...(input.appendOnly ? { read: readOf(input.history) } : {}),
     };
     job = started;
     void inner
