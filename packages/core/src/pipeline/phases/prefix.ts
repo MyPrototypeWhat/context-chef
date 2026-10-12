@@ -1,9 +1,12 @@
-import type { PrefixBreak, PrefixMeta, PrefixSent } from '../../prefix';
+import { type PrefixBreak, type PrefixMeta, type PrefixSent, plainSent } from '../../prefix';
 import type { Message, TargetPayload } from '../../types';
 import type { PrefixComparable } from '../checks';
 import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
 
-/** More replies than this in the host history is a conversation a fresh ledger should have seen. */
+/**
+ * More replies than this behind a fresh ledger's `ledger` checkpoint, and the
+ * host most likely creates a chef per request without keeping the ledger.
+ */
 const FRESH_LEDGER_REPLIES = 2;
 
 const isThinkingBlock = (block: unknown): boolean => {
@@ -95,9 +98,9 @@ export async function reportPrefixBreak(
  * `appendOnly`: the window. The ledger rebuilds it from the host history and
  * what it appended there, and a history it no longer matches — an earlier
  * message edited, the history shorter than what it saw, an entry anchored
- * past the end, a `clearHistory()` — is a checkpoint, applied and reported
- * here. Every later phase works on the window; the host history stays on
- * `ctx.prefix` for the commit.
+ * past the end, a `clearHistory()`, replies to requests it never saw — is a
+ * checkpoint, applied and reported here. Every later phase works on the
+ * window; the host history stays on `ctx.prefix` for the commit.
  *
  * Off, the phase does nothing and the compile is 4.x. So it does for a compile
  * a hook starts inside another one: what that builds is not the next request.
@@ -110,26 +113,28 @@ export const prefixPhase: Phase = {
 
     const history = ctx.history;
     // Every committed compile records what it sent, so a ledger without it has
-    // never seen one — yet the host has been talking to the model already.
-    if (ledger.lastSent === undefined && !host.hasWarned('append-only-fresh-ledger')) {
-      const replies = history.filter((m) => m.role === 'assistant').length;
-      if (replies > FRESH_LEDGER_REPLIES) {
-        host.warnOnce(
-          'append-only-fresh-ledger',
-          `[context-chef] appendOnly: the prefix ledger is empty, but the history already holds ` +
-            `${replies} replies — earlier turns were compiled by another chef. A chef created ` +
-            'per request must persist `snapshot().prefixLedger` and restore it with the ' +
-            'history; otherwise what was appended before is gone from the window and no ' +
-            'checkpoint reports it (warned once).',
-        );
-      }
-    }
-
+    // never seen one.
+    const fresh = ledger.lastSent === undefined;
     const strippedBefore = ledger.stripped;
     const { window, break: brk } = ledger.reconcile(history);
     ctx.prefix = { ledger, history, breaks: [] };
     ctx.history = window;
-    if (brk) await reportPrefixBreak(ctx, host, brk, strippedBefore);
+    if (!brk) return;
+
+    if (fresh && brk.reason === 'ledger') {
+      const replies = history.filter((m) => m.role === 'assistant').length;
+      if (replies > FRESH_LEDGER_REPLIES) {
+        host.warnOnce(
+          'append-only-fresh-ledger',
+          `[context-chef] appendOnly: the prefix ledger is empty, but the history already ` +
+            `holds ${replies} replies, compiled by a chef whose ledger was not kept — the ` +
+            'thinking in them was invalidated (a `ledger` checkpoint). A chef created per ' +
+            'request must persist `snapshot().prefixLedger` and restore it with the history ' +
+            '(warned once).',
+        );
+      }
+    }
+    await reportPrefixBreak(ctx, host, brk, strippedBefore);
   },
 };
 
@@ -143,7 +148,8 @@ export async function reconcilePrefixSent(ctx: CompileContext, host: PipelineHos
   const prefix = ctx.prefix;
   if (!prefix) return;
 
-  prefix.sent = sentAhead(ctx.requirePayload(), ctx.systemLayers.length);
+  // A copy, read before the after-adapt handlers: what is compared is what is committed.
+  prefix.sent = plainSent(sentAhead(ctx.requirePayload(), ctx.systemLayers.length));
   const strippedBefore = prefix.ledger.stripped;
   const brk = prefix.ledger.reconcileSent(prefix.sent);
   if (brk) await reportPrefixBreak(ctx, host, brk, strippedBefore);

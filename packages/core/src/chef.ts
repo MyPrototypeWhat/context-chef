@@ -49,9 +49,9 @@ import {
 import { escapeXmlAttribute } from './pipeline/xml';
 import {
   type AppendOnlyConfig,
-  type PrefixBreakReason,
   PrefixLedger,
   type PrefixLedgerSnapshot,
+  type PrefixMeta,
 } from './prefix';
 import { Store } from './store/store';
 import type { StorageBackend } from './store/types';
@@ -520,13 +520,7 @@ export interface ChefEvents {
    * blocks dropped for it (Anthropic only). A compile that fails after
    * reporting one is rolled back, so the next compile reports it again.
    */
-  'prefix:break': {
-    reason: PrefixBreakReason;
-    at: number;
-    signed: boolean;
-    strippedThinking: number;
-    windowId?: string;
-  };
+  'prefix:break': NonNullable<PrefixMeta['break']> & { windowId?: string };
 }
 
 /**
@@ -1739,6 +1733,14 @@ export class ContextChef {
    * empty (e.g., a fresh chef restoring an old snapshot).
    */
   public restore(snapshot: ChefSnapshot): this {
+    // First, since reading it can throw: a snapshot it cannot read changes
+    // nothing. Together with the history it was committed against, it is no
+    // checkpoint; without one, the ledger meets that history knowing nothing.
+    const ledger =
+      this._prefixLedger &&
+      (snapshot.prefixLedger
+        ? PrefixLedger.fromSnapshot(snapshot.prefixLedger)
+        : new PrefixLedger());
     this.systemPrompt = structuredClone(snapshot.systemPrompt);
     this.history = structuredClone(snapshot.history);
     this.dynamicState = structuredClone(snapshot.dynamicState);
@@ -1758,13 +1760,7 @@ export class ContextChef {
     // Restored together with the lineage the flag is compared against: a
     // snapshot from before this field simply had not noticed anything yet.
     this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
-    // With the history it was committed against, so this is no checkpoint.
-    // Without one, the ledger has nothing to check the history against.
-    if (this._prefixLedger) {
-      this._prefixLedger = snapshot.prefixLedger
-        ? PrefixLedger.fromSnapshot(snapshot.prefixLedger)
-        : new PrefixLedger();
-    }
+    this._prefixLedger = ledger;
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);

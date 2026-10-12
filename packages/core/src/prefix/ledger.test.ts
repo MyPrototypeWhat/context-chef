@@ -66,6 +66,14 @@ function compile(
   return { window, break: brk ?? sentBreak, stable };
 }
 
+/** A ledger that has followed the conversation from its first request to `history`. */
+function following(history: Message[]): PrefixLedger {
+  const ledger = new PrefixLedger();
+  compile(ledger, history.slice(0, 1));
+  compile(ledger, history);
+  return ledger;
+}
+
 describe('PrefixLedger — events are appended once', () => {
   it('replays the same window on a recompile at the same history length', () => {
     const ledger = new PrefixLedger();
@@ -324,7 +332,7 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
 
   it('has nothing to compare what is sent with before a compile committed one', () => {
     const ledger = new PrefixLedger();
-    ledger.reconcile(turns.slice(0, 3));
+    ledger.reconcile(turns.slice(0, 1));
 
     expect(ledger.reconcileSent({ system: 'S', tools: [] })).toBeUndefined();
     expect(ledger.stripped).toEqual([]);
@@ -383,6 +391,17 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     expect(next.break).toEqual({ reason: 'ledger', at: 0, signed: false, stripped: [0, 1] });
     expect(shape(next.window)).toEqual(['user:fresh']);
     expect(ledger.head).toBeUndefined();
+  });
+
+  it('reports a `ledger` break when a ledger that saw nothing meets a reply', () => {
+    // r1 answered a request this ledger never saw: whatever it was sent with is unknown.
+    expect(compile(new PrefixLedger(), turns.slice(0, 3)).break).toEqual({
+      reason: 'ledger',
+      at: 0,
+      signed: false,
+      stripped: [0, 3],
+    });
+    expect(compile(new PrefixLedger(), turns.slice(0, 1)).break).toBeUndefined();
   });
 
   it('reports a `ledger` break for an entry anchored past the end of the history', () => {
@@ -636,9 +655,8 @@ describe('PrefixLedger — checkpoints', () => {
   });
 
   it('records no stripped range for a signed compaction', () => {
-    const ledger = new PrefixLedger();
     const history = turns.slice(0, 5);
-    compile(ledger, history);
+    const ledger = following(history);
     ledger.reconcile(history);
 
     const brk = ledger.checkpoint('compaction', 3, {
@@ -665,9 +683,8 @@ describe('PrefixLedger — checkpoints', () => {
   });
 
   it('accumulates stripped ranges and never uncovers a message that is still there', () => {
-    const ledger = new PrefixLedger();
     const six = [...turns.slice(0, 6)];
-    compile(ledger, six);
+    const ledger = following(six);
     six[2] = user('q2 (edited)');
     compile(ledger, six);
     expect(ledger.stripped).toEqual([[2, 6]]);
@@ -687,9 +704,8 @@ describe('PrefixLedger — checkpoints', () => {
   });
 
   it('forgets stripped indices past the host history, so later messages keep their thinking', () => {
-    const ledger = new PrefixLedger();
     const six = [...turns.slice(0, 6)];
-    compile(ledger, six);
+    const ledger = following(six);
     six[2] = user('q2 (edited)');
     compile(ledger, six);
     expect(ledger.stripped).toEqual([[2, 6]]);
@@ -766,6 +782,7 @@ describe('PrefixLedger — a compile that failed', () => {
   it('rolls back to what was last committed', () => {
     const ledger = new PrefixLedger();
     const sent: PrefixSent = { system: 'S' };
+    compile(ledger, turns.slice(0, 1), [], sent);
     compile(ledger, turns.slice(0, 3), [state('<state>A</state>')], sent);
     const edited = turns.slice(0, 3);
     edited[2] = user('q2 (edited)');
@@ -815,6 +832,15 @@ describe('PrefixLedger — reset', () => {
     expect(
       compile(ledger, [...fresh, assistant('ok'), user('more')], [], sent).break,
     ).toBeUndefined();
+  });
+
+  it('carries a reset the next compile has not met through a snapshot', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]);
+    ledger.reset();
+
+    const restored = PrefixLedger.fromSnapshot(JSON.parse(JSON.stringify(ledger.snapshot())));
+    expect(compile(restored, [user('new topic')]).break).toMatchObject({ reason: 'ledger', at: 0 });
   });
 });
 

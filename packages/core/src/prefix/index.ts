@@ -1,4 +1,4 @@
-export { PrefixLedger } from './ledger';
+export { PrefixLedger, plainSent } from './ledger';
 export type {
   AppendOnlyConfig,
   InjectionSource,

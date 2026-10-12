@@ -39,6 +39,16 @@ function jsonCopy(value: unknown): unknown {
   return text === undefined ? undefined : JSON.parse(text);
 }
 
+/**
+ * `sent` as the ledger compares and keeps it: a plain JSON copy, which
+ * whatever edits the payload it was read from afterwards does not reach.
+ * Take it once per compile and pass the same copy to `reconcileSent()` and
+ * `commit()`.
+ */
+export function plainSent(sent: PrefixSent): PrefixSent {
+  return { system: jsonCopy(sent.system), tools: jsonCopy(sent.tools) };
+}
+
 /** Whether `value` is what `commit()` kept as `kept`, compared as the JSON it keeps. */
 function sameAsKept(value: unknown, kept: unknown): boolean {
   return canonical(jsonCopy(value)) === canonical(kept);
@@ -200,6 +210,7 @@ export class PrefixLedger {
     ledger._stripped = copy.stripped.map(([from, until]) => [from, until]);
     ledger.seen = [...copy.seen];
     ledger._lastSent = copy.lastSent;
+    ledger.restarted = copy.restarted === true;
     return ledger;
   }
 
@@ -225,7 +236,8 @@ export class PrefixLedger {
   /**
    * Rebuilds the window over `history`. When the ledger no longer matches —
    * history shorter than `head.cut`, a host message that is not the one seen,
-   * an entry anchored past the end, a `reset()` since the last compile — the
+   * an entry anchored past the end, a `reset()` since the last compile, a
+   * ledger that has seen nothing meeting a history with a reply in it — the
    * first mismatch is applied as a checkpoint and reported in `break`; the
    * window is the one after it.
    */
@@ -396,7 +408,7 @@ export class PrefixLedger {
   commit(history: readonly Message[], sent?: PrefixSent): void {
     this.history = [...history];
     this.seen = history.slice(this.cut).map((message) => this.digestOf(message));
-    if (sent) this._lastSent = { system: jsonCopy(sent.system), tools: jsonCopy(sent.tools) };
+    if (sent) this._lastSent = plainSent(sent);
     this.pending = undefined;
     this.digests.clear();
   }
@@ -425,7 +437,7 @@ export class PrefixLedger {
    * and what was seen are dropped, and the next `reconcile()` applies a
    * `ledger` checkpoint at 0, since the window sent before is not repeated.
    * What was last sent ahead of the window stays: it is not part of the
-   * conversation. A snapshot taken before that `reconcile()` does not carry it.
+   * conversation.
    */
   reset(): void {
     this._head = undefined;
@@ -445,6 +457,7 @@ export class PrefixLedger {
       stripped: this._stripped,
       seen: this.seen,
       ...(this._lastSent ? { lastSent: this._lastSent } : {}),
+      ...(this.restarted ? { restarted: true as const } : {}),
     });
   }
 
@@ -453,6 +466,12 @@ export class PrefixLedger {
     const history = this.history;
     const cut = this.cut;
     if (history.length < cut) return { reason: 'ledger', hostIndex: 0 };
+    // A reply answered a request this ledger never saw, sent with whatever was
+    // appended to it then: nothing it was signed over can be vouched for.
+    const blank = !this._head && this.entries.length === 0 && this.seen.length === 0;
+    if (blank && history.some((m) => m.role === 'assistant')) {
+      return { reason: 'ledger', hostIndex: 0 };
+    }
     // A history break drops any entry anchored past the end along with the rest.
     for (let k = 0; k < this.seen.length; k++) {
       const i = cut + k;

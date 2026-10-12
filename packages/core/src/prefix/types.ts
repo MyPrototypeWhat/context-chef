@@ -92,6 +92,8 @@ export interface PrefixLedgerSnapshot {
   readonly seen: readonly string[];
   /** What was last sent: compared to detect a change, and reused by an on-demand compaction request. */
   readonly lastSent?: PrefixSent;
+  /** `reset()` since the last compile: the next one reports a `ledger` checkpoint at 0. */
+  readonly restarted?: true;
 }
 
 /** A checkpoint the ledger applied. */

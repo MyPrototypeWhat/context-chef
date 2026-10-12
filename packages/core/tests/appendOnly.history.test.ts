@@ -14,6 +14,7 @@ import {
   ContextChef,
   checkPrefixContinuity,
   PrefixLedger,
+  type PrefixLedgerSnapshot,
 } from '../src/index';
 import { Assembler } from '../src/modules/assembler';
 import type { ChefLogger, Message, TargetPayload, ToolDefinition } from '../src/types';
@@ -60,6 +61,18 @@ const chefWith = (config: ChefConfig = {}): ContextChef =>
 
 const compileAt = (chef: ContextChef, history: Message[], target: Target = 'anthropic') =>
   chef.setHistory(history).compile({ target });
+
+/** Compiles each turn in order, as the agent loop does; the last payload. */
+async function converse(
+  chef: ContextChef,
+  turns: Message[][],
+  target: Target = 'anthropic',
+): Promise<TargetPayload> {
+  let payload: TargetPayload | undefined;
+  for (const history of turns) payload = await compileAt(chef, history, target);
+  if (!payload) throw new Error('converse() needs a turn');
+  return payload;
+}
 
 function breaksOf(chef: ContextChef): ChefEvents['prefix:break'][] {
   const breaks: ChefEvents['prefix:break'][] = [];
@@ -170,7 +183,7 @@ describe('appendOnly on, the host rewrote its history', () => {
   it('reports an edit of an earlier message as a `history` checkpoint at that message', async () => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
-    await compileAt(chef, turn3);
+    await converse(chef, [turn1, turn2, turn3]);
 
     const edited = [...turn3];
     edited[2] = result('t1', '2026-09-29');
@@ -184,7 +197,7 @@ describe('appendOnly on, the host rewrote its history', () => {
 
   it('strips no thinking off Anthropic, so it reports none', async () => {
     const chef = chefWith();
-    await compileAt(chef, turn3, 'gemini');
+    await converse(chef, [turn1, turn2, turn3], 'gemini');
 
     const edited = [...turn3];
     edited[2] = result('t1', '2026-09-29');
@@ -216,7 +229,7 @@ describe('appendOnly on, the host rewrote its history', () => {
   it('reports the checkpoint again when the compile that met it was aborted', async () => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
-    await compileAt(chef, turn3);
+    await converse(chef, [turn1, turn2, turn3]);
     const edited = [...turn3];
     edited[2] = result('t1', '2026-09-29');
 
@@ -243,7 +256,7 @@ describe('appendOnly on, what is sent ahead of the window changed', () => {
   )('reports a new system prompt as a `system` checkpoint at 0 (%s)', async (target) => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
-    await compileAt(chef, turn3, target);
+    await converse(chef, [turn1, turn2, turn3], target);
 
     chef.setSystemPrompt([{ role: 'system', content: 'You are thorough.' }]);
     const changed = await compileAt(chef, turn3, target);
@@ -263,7 +276,7 @@ describe('appendOnly on, what is sent ahead of the window changed', () => {
 
   it('reports a changed tool list as a `tools` checkpoint at 0', async () => {
     const chef = chefWith().registerTools([search]);
-    await compileAt(chef, turn2);
+    await converse(chef, [turn1, turn2]);
 
     chef.registerTools([search, { name: 'fetch', description: 'Fetch a URL' }]);
     const payload = await compileAt(chef, turn3);
@@ -274,9 +287,54 @@ describe('appendOnly on, what is sent ahead of the window changed', () => {
     });
   });
 
+  it('keeps what it compared, untouched by an after-adapt handler that edits the payload', async () => {
+    const chef = chefWith().registerTools([search]);
+    const breaks = breaksOf(chef);
+    chef.use('after-adapt', (payload) => {
+      payload.tools?.push({ name: 'debug', description: 'Added after the chef built the payload' });
+    });
+
+    const payloads: TargetPayload[] = [];
+    for (const history of [turn1, turn2, turn3]) payloads.push(await compileAt(chef, history));
+
+    expect(breaks).toEqual([]);
+    expect(payloads.map((p) => p.meta?.prefix)).toEqual([
+      { stable: 0 },
+      { stable: turn1.length },
+      { stable: turn2.length },
+    ]);
+  });
+
+  it('rolls back a compile that failed after a `system` checkpoint, and reports it again', async () => {
+    const chef = chefWith();
+    const breaks = breaksOf(chef);
+    await converse(chef, [turn1, turn2, turn3]);
+    chef.setSystemPrompt([{ role: 'system', content: 'You are thorough.' }]);
+
+    const fail = () => {
+      throw new Error('after-adapt failed');
+    };
+    chef.use('after-adapt', fail);
+    await expect(compileAt(chef, turn3)).rejects.toThrow('after-adapt failed');
+    chef.unuse('after-adapt', fail);
+    const retried = await compileAt(chef, turn3);
+    const settled = await compileAt(chef, turn3);
+
+    // The failed compile's checkpoint was never sent: the retry strips the same two blocks.
+    const brk = { reason: 'system', at: 0, signed: false, strippedThinking: 2 };
+    const windowId = retried.meta?.windowId;
+    expect(breaks).toEqual([
+      { ...brk, windowId },
+      { ...brk, windowId },
+    ]);
+    expect(retried.meta?.prefix).toEqual({ stable: 0, break: brk });
+    expect(settled.meta?.prefix).toEqual({ stable: turn3.length });
+    expect(chef.snapshot().prefixLedger?.stripped).toEqual([[0, turn3.length]]);
+  });
+
   it('counts only the thinking no earlier checkpoint stripped', async () => {
     const chef = chefWith();
-    await compileAt(chef, turn3);
+    await converse(chef, [turn1, turn2, turn3]);
     const edited = [...turn3];
     edited[2] = result('t1', '2026-09-29');
     await compileAt(chef, edited); // strips host[2, 5): SIG_2
@@ -295,7 +353,7 @@ describe('appendOnly on, what is sent ahead of the window changed', () => {
   it('reports each checkpoint of a compile, and the one nearest the start in meta', async () => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
-    await compileAt(chef, turn3);
+    await converse(chef, [turn1, turn2, turn3]);
 
     const edited = [...turn3];
     edited[2] = result('t1', '2026-09-29');
@@ -315,7 +373,7 @@ describe('appendOnly on, what is sent ahead of the window changed', () => {
   it('leaves the ledger to the outer compile when a hook compiles inside it', async () => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
-    await compileAt(chef, turn2);
+    await converse(chef, [turn1, turn2]);
 
     // A sub-payload for another target: had it touched the ledger, its system
     // prompt would read as a change, and the real request as another.
@@ -331,20 +389,38 @@ describe('appendOnly on, what is sent ahead of the window changed', () => {
     expect(breaks).toEqual([]);
     expect(outer.meta?.prefix).toEqual({ stable: turn2.length });
   });
+});
 
-  it('starts with nothing to compare against', async () => {
+describe('appendOnly on, a ledger that never saw the conversation', () => {
+  it('reports a history that already holds a reply as a `ledger` checkpoint at 0', async () => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
 
-    await compileAt(chef, turn1);
+    // Those replies answered requests this ledger never saw: their thinking is stripped.
+    const payload = await compileAt(chef, turn3);
+    const next = await compileAt(chef, turn4);
+
+    const brk = { reason: 'ledger', at: 0, signed: false, strippedThinking: 2 };
+    expect(breaks).toEqual([{ ...brk, windowId: payload.meta?.windowId }]);
+    expect(payload.meta?.prefix).toEqual({ stable: 0, break: brk });
+    expect(next.meta?.prefix).toEqual({ stable: turn3.length });
+  });
+
+  it('starts a conversation nobody has answered yet with nothing to report', async () => {
+    const chef = chefWith();
+    const breaks = breaksOf(chef);
+
+    const payload = await compileAt(chef, turn1);
+
     expect(breaks).toEqual([]);
+    expect(payload.meta?.prefix).toEqual({ stable: 0 });
   });
 });
 
 describe('appendOnly on, the ledger across sessions', () => {
   it('keeps the prefix through snapshot and restore', async () => {
     const before = chefWith();
-    const first = await compileAt(before, turn2);
+    const first = await converse(before, [turn1, turn2]);
     const persisted = JSON.parse(JSON.stringify(before.snapshot())) as ChefSnapshot;
     expect(persisted.prefixLedger).toBeDefined();
 
@@ -372,16 +448,32 @@ describe('appendOnly on, the ledger across sessions', () => {
     ]);
   });
 
-  it('finds nothing to check a history restored without its ledger against', async () => {
+  it('reports a history restored without its ledger as a `ledger` checkpoint', async () => {
     const chef = chefWith();
     const breaks = breaksOf(chef);
     chef.restore({ ...sessionWithEvent(), prefixLedger: undefined });
 
     const payload = await compileAt(chef, turn3);
 
-    expect(breaks).toEqual([]);
-    expect(payload.meta?.prefix).toEqual({ stable: 0 });
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([['ledger', 0, 2]]);
+    expect(payload.meta?.prefix).toMatchObject({ stable: 0, break: { reason: 'ledger' } });
     expect(JSON.stringify(payload.messages)).not.toContain('step 1');
+  });
+
+  it('refuses a snapshot whose ledger it cannot read, before restoring any of it', async () => {
+    const chef = chefWith();
+    await converse(chef, [turn1, turn2]);
+    const unreadable = {
+      ...chef.snapshot(),
+      history: turn3,
+      prefixLedger: { version: 2 } as unknown as PrefixLedgerSnapshot,
+    };
+
+    expect(() => chef.restore(unreadable)).toThrow(/version/);
+    expect(chef.snapshot().history).toEqual(turn2);
+    expect((await chef.compile({ target: 'anthropic' })).meta?.prefix).toEqual({
+      stable: turn2.length,
+    });
   });
 
   it('starts over on clearHistory(), reporting a `ledger` checkpoint', async () => {
@@ -405,6 +497,19 @@ describe('appendOnly on, the ledger across sessions', () => {
     expect(next.meta?.prefix).toEqual({ stable: 1 });
   });
 
+  it('carries a clearHistory() the next compile has not reported through a snapshot', async () => {
+    const chef = chefWith();
+    await converse(chef, [turn1, turn2]);
+    chef.clearHistory();
+
+    const restored = chefWith();
+    const breaks = breaksOf(restored);
+    restored.restore(JSON.parse(JSON.stringify(chef.snapshot())));
+    await compileAt(restored, [user('New topic.')]);
+
+    expect(breaks.map((b) => [b.reason, b.at])).toEqual([['ledger', 0]]);
+  });
+
   it('warns once when a fresh chef meets a conversation its ledger never saw', async () => {
     const warn = vi.fn();
     const ledgerWarnings = () =>
@@ -414,6 +519,7 @@ describe('appendOnly on, the ledger across sessions', () => {
     await compileAt(perRequest, turn4);
     await compileAt(perRequest, turn4);
     expect(ledgerWarnings()).toHaveLength(1);
+    expect(ledgerWarnings()[0][0]).toMatch(/thinking/);
 
     warn.mockClear();
     await compileAt(chefWith({ logger: { warn } }), turn3);
