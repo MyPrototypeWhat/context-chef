@@ -846,6 +846,22 @@ describe("appendOnly: the chef's events in the window", () => {
       expect(stale.meta.changed).toBe(false);
     });
 
+    it('drops a job once a message it summarized was pinned in place since', async () => {
+      const [strategy] = attached(inBackground());
+      const messages = source.map((message) => ({ ...message }));
+      await strategy.apply(makeInput({ history: messages, appendOnly: true }));
+      await settled(strategy);
+
+      // The host sets the flag on the very object the job read.
+      messages[3].pinned = true;
+      const current = [...messages, reply('a3'), user('q4')];
+      const stale = await strategy.apply(
+        makeInput({ history: current, appendOnly: true, pinned: extractPinnedMessages(current) }),
+      );
+
+      expect(stale.meta.changed).toBe(false);
+    });
+
     describe('when the request is past the raw context window (pastLimit)', () => {
       const pastLimit = (messages: Message[]) =>
         makeInput({ history: messages, appendOnly: true, pastLimit: true });
@@ -945,6 +961,72 @@ describe("appendOnly: the chef's events in the window", () => {
         expect(fitted.span.slice(0, 6)).toEqual(source.slice(0, 6));
         expect(fitted.span.slice(-4)).toEqual(current.slice(6, 10));
         expect(committed).toEqual(['S1', 'S2']);
+      });
+
+      it.each([
+        [
+          'summarize()',
+          () => {
+            let round = 0;
+            return summarize({
+              compressionModel: async () => `<summary>S${++round}</summary>`,
+              split: 'recent-turns',
+              preserveRecentMessages: 1,
+            });
+          },
+          ['q2', 'q5'],
+        ],
+        ['reset()', () => reset(), ['q2']],
+      ])('keeps through a %s refit what the job put back as pinned, whatever objects the host handed in', async (_, make, kept) => {
+        const [strategy] = attached(background(make()));
+        const pinned = [
+          user('q1'),
+          reply('a1'),
+          { ...user('q2'), pinned: true },
+          reply('a2'),
+          user('q3'),
+        ];
+        await strategy.apply(
+          makeInput({ history: pinned, appendOnly: true, pinned: extractPinnedMessages(pinned) }),
+        );
+        await settled(strategy);
+
+        // The host builds every message anew for this request; the job leaves 6 or 7 of them,
+        // past a raw window of 30 tokens.
+        const current = [
+          ...pinned.map((message) => ({ ...message })),
+          reply('a3'),
+          user('q4'),
+          reply('a4'),
+          user('q5'),
+        ];
+        const fitted = await strategy.apply({
+          ...pastLimit(current),
+          pinned: extractPinnedMessages(current),
+        });
+
+        expect(fitted.history.slice(1).map((message) => message.content)).toEqual(kept);
+      });
+
+      it('lands a job whose refit fails as partial, the failure still counted', async () => {
+        const compressionModel = vi
+          .fn<(messages: Message[]) => Promise<string>>()
+          .mockResolvedValueOnce('<summary>S1</summary>')
+          .mockRejectedValue(new Error('model down'));
+        const [strategy, runner] = attached(
+          background(
+            summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+          ),
+        );
+        await strategy.apply(makeInput({ history: source, appendOnly: true }));
+        await settled(strategy);
+
+        const current = [...again(source), reply('a3'), user('q4'), reply('a4'), user('q5')];
+        const landed = await strategy.apply(pastLimit(current));
+
+        expect(landed.meta).toMatchObject({ changed: true, partial: true });
+        expect(landed.history.slice(1)).toEqual(current.slice(6));
+        expect(runner.failures).toEqual(['compression model failed']);
       });
     });
 

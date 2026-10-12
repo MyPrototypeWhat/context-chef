@@ -1242,6 +1242,40 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
     expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
   });
 
+  it('keeps a pinned message through the refit, though the host builds every message anew', async () => {
+    const { chef, compressionModel } = chefWith({}, inBackground);
+    // q2 is pinned, and every request hands in copies, as a host parsing its own store does.
+    const pinnedAt = (n: number) =>
+      structuredClone(asked(n).map((m) => (m.content === 'q2' ? { ...m, pinned: true } : m)));
+
+    // The job puts q2 back after SUMMARY 1; at q12 what it leaves is past the raw window.
+    const payloads = await converseSettling(chef, [1, 2, 3, 4, 12].map(pinnedAt));
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(payloads[4].messages).toEqual([
+      text('user', SUMMARY(2)),
+      text('user', 'q2'),
+      text('user', 'q12'),
+    ]);
+  });
+
+  it('counts a refit that failed: the job lands, and the breaker is not cleared', async () => {
+    const { chef } = chefWith({}, (model) => {
+      let calls = 0;
+      return inBackground(async (messages) => {
+        if (++calls > 1) throw new Error('model down');
+        return model(messages);
+      });
+    });
+
+    // The job lands at q12; summarizing what it leaves fails, so that goes out as it is.
+    const payloads = await converseSettling(chef, [1, 2, 3, 4, 12].map(asked));
+
+    expect(payloads[4].messages[0]).toEqual(text('user', SUMMARY(1)));
+    expect(payloads[4].messages).toHaveLength(18);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+  });
+
   it('reads no report once a checkpoint changed the request it came back for', async () => {
     // A trigger of 95: only a reading past the raw window of 100 compacts.
     const { chef, compressionModel, breaks } = chefWith({

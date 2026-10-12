@@ -933,8 +933,9 @@ export class Janitor {
     // The overflow as a whole succeeded, so the breaker's count goes back to
     // zero — whichever step of a chain did the work. A summarize() that threw
     // still warns and still counted, but a reset() that rescued the window
-    // behind it must not be locked out three failures later.
-    this._consecutiveFailures = 0;
+    // behind it must not be locked out three failures later. A partial result
+    // landed without the step it needed, so what that step counted stays.
+    if (!result.meta.partial) this._consecutiveFailures = 0;
 
     // This result is entering the window: it closes the window the strategy
     // worked on and opens the next one. Advanced before `commit` so state the

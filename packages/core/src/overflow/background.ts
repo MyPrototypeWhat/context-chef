@@ -4,7 +4,7 @@
 
 import { wireDigest } from '../prefix/ledger';
 import type { Message } from '../types';
-import { messagesEquivalent } from './turns';
+import { extractPinnedMessages, messagesEquivalent } from './turns';
 import {
   detachedRunner,
   type OverflowInput,
@@ -26,6 +26,11 @@ interface BackgroundJob {
   /** The inner strategy's result, or null while it runs and when it failed. */
   result: OverflowResult | null;
   source: Message[];
+  /**
+   * Whether each message of `source` was pinned when the job started — read
+   * then, since a host may set the flag on the same object afterwards.
+   */
+  pinned: boolean[];
 }
 
 /**
@@ -45,32 +50,28 @@ function commonSuffixLength(a: readonly Message[], b: readonly Message[]): numbe
 }
 
 /**
- * Whether a job computed on `source`, whose first `splitIndex` messages it
+ * Whether `job`, whose first `splitIndex` messages of its `source` it
  * summarized, still applies to `input.history`.
  *
  * The `appendOnly` window only grows at its end until a checkpoint rewrites
- * it, so there a job is fresh exactly while `source` is still the start of
- * the window: every message the same on the wire, as the ledger compares
+ * it, so there a job is fresh exactly while its `source` is still the start
+ * of the window: every message the same on the wire, as the ledger compares
  * them — it renders its events anew on every compile, and a host may move a
- * cache breakpoint — and in the span it summarized, pinned exactly when it
- * was, since what was pinned went back verbatim and what was not into the
- * summary. A 4.x history may be recreated and compacted in place, so only
- * the two ends of the span are compared, by content.
+ * cache breakpoint — and in the span it summarized, pinned exactly when the
+ * job started, since what was pinned went back verbatim and what was not
+ * into the summary. A 4.x history may be recreated and compacted in place,
+ * so only the two ends of the span are compared, by content.
  */
-function stillApplies(
-  source: readonly Message[],
-  input: OverflowInput,
-  splitIndex: number,
-): boolean {
+function stillApplies(job: BackgroundJob, input: OverflowInput, splitIndex: number): boolean {
+  const { source } = job;
   const { history } = input;
   if (input.appendOnly) {
     return (
       source.length <= history.length &&
       source.every(
         (message, i) =>
-          message === history[i] ||
-          ((i >= splitIndex || !message.pinned === !history[i].pinned) &&
-            wireDigest(message) === wireDigest(history[i])),
+          (i >= splitIndex || job.pinned[i] === !!history[i].pinned) &&
+          (message === history[i] || wireDigest(message) === wireDigest(history[i])),
       )
     );
   }
@@ -142,20 +143,28 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
    * A landed job under `pastLimit`, with `inner` run on the window it leaves
    * when that still counts past the raw context window: both are one
    * overflow, covering what either summarized and leaving what the second
-   * left.
+   * left. When the second changes nothing, the job still lands, but `partial`:
+   * the window is past the raw context window all the same, and whatever
+   * failure the second counted stays counted.
    */
   const fitLanded = async (
     landed: OverflowResult,
     input: OverflowInput,
   ): Promise<OverflowResult> => {
     if (input.tokenizer(landed.history) <= input.budget.limit) return landed;
-    const inWindow = new Set(landed.history);
+    const steps = built.get(landed) ?? [landed];
     const again = await inner.apply({
       ...input,
       history: landed.history,
-      pinned: input.pinned.filter((message) => inWindow.has(message)),
+      // Read off the landed window as the runner reads its own: what the job
+      // put back as pinned is the job's copy, not the object the host handed in.
+      pinned: extractPinnedMessages(landed.history),
     });
-    if (!again.meta.changed) return landed;
+    if (!again.meta.changed) {
+      const partial: OverflowResult = { ...landed, meta: { ...landed.meta, partial: true } };
+      built.set(partial, steps);
+      return partial;
+    }
     const both: OverflowResult = {
       history: again.history,
       evicted: [...landed.evicted, ...again.evicted],
@@ -163,12 +172,17 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
       summary: again.summary,
       meta: landed.meta,
     };
-    built.set(both, [...(built.get(landed) ?? []), again]);
+    built.set(both, [...steps, again]);
     return both;
   };
 
   const start = (input: OverflowInput): void => {
-    const started: BackgroundJob = { settled: false, result: null, source: input.history };
+    const started: BackgroundJob = {
+      settled: false,
+      result: null,
+      source: input.history,
+      pinned: input.history.map((message) => !!message.pinned),
+    };
     job = started;
     void inner
       .apply(input)
@@ -192,7 +206,7 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
 
     const keptCount = commonSuffixLength(result.history, finished.source);
     const splitIndex = finished.source.length - keptCount;
-    if (splitIndex <= 0 || !stillApplies(finished.source, input, splitIndex)) return null;
+    if (splitIndex <= 0 || !stillApplies(finished, input, splitIndex)) return null;
 
     const swapped: OverflowResult = {
       ...result,
