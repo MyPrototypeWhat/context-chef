@@ -3,7 +3,7 @@ import type { PrefixCandidate, PrefixEntry } from './types';
 /** A memory entry as the `<memory>` block lists it. */
 export interface MemoryEntryXml {
   readonly key: string;
-  /** `<entry key="…">…</entry>`, as `Memory.toXml` renders it inside the block. */
+  /** `<entry key="…">…</entry>`, as `renderMemoryEntry` renders it. */
   readonly xml: string;
 }
 
@@ -42,7 +42,9 @@ const MENTION = /<entry key="([^"]*)"/g;
  * what the selector picks; after that only what the model was not told is
  * appended, as a delta: an entry picked now that the window shows otherwise
  * or not at all, and the removal of one it shows. An entry the selector
- * stops picking is not gone — it is left alone.
+ * does not pick is left alone while memory holds it, changed or not; once it
+ * is removed, that is said if the model saw it — in the window, or because
+ * it wrote the entry itself — whatever the selector picks.
  *
  * What the model was told is read back from the memory entries still in the
  * window, `told` — each mention of a key, an `<entry>` or its removal,

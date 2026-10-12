@@ -6,7 +6,7 @@ import { ContextChef } from '../../index';
 import { FileSystemBackend } from '../../store/backends/fileSystem';
 import { InMemoryBackend } from '../../store/backends/inMemory';
 import type { ToolDefinition } from '../../types';
-import { Memory, type MemoryConfig } from '.';
+import { Memory, type MemoryConfig, renderMemoryEntry } from '.';
 import { InMemoryStore } from './inMemoryStore';
 
 const memoryTmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'context-chef-memory-'));
@@ -1419,6 +1419,21 @@ describe('Memory compileArtifacts (single-scan)', () => {
 
     expect(getKeysCalls() - before).toBe(0);
     expect(xml).toContain('key="x"');
+  });
+
+  it('builds the block from one rendering per entry', async () => {
+    const mem = new Memory({ store: new InMemoryStore() });
+    await mem.set('x', 'one', { description: 'first' });
+    await mem.set('y', 'two');
+    const [x, y] = await mem.getAll();
+
+    expect(renderMemoryEntry(y)).toBe(
+      `<entry key="y">\n<metadata>\n- updated_at=${new Date(y.updatedAt).toISOString()}\n` +
+        '- update_count=1\n</metadata>\n<value>\ntwo\n</value>\n</entry>',
+    );
+    expect(await mem.toXml([x, y])).toBe(
+      `<memory>\n${renderMemoryEntry(x)}\n\n${renderMemoryEntry(y)}\n</memory>`,
+    );
   });
 
   it('getToolDefinitions() never reads the store; deprecated existingKeys param is ignored', async () => {

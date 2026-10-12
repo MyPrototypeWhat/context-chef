@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type { z } from 'zod';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
@@ -187,6 +186,14 @@ export interface ChefSnapshot {
    * an empty ledger.
    */
   readonly prefixLedger?: PrefixLedgerSnapshot;
+  /**
+   * `appendOnly`: the memory writes the model made through `handleTool`, by
+   * key, each as it left the entry (`null`: deleted). The history holds the
+   * results that told the model of them, so memory events leave them out —
+   * a chef created per request restores this to do the same. Present when
+   * `appendOnly` is on; a snapshot without it restores with none recorded.
+   */
+  readonly modelMemoryWrites?: Readonly<Record<string, MemoryEntry | null>>;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -387,8 +394,12 @@ export interface ChefConfig {
    * was not told is appended, as a delta — your own `getMemory().set()` /
    * `delete()` and TTL expiry, never what the model wrote through
    * {@link ContextChef.handleTool}, whose tool result already says so. A
-   * selector that picks nothing pushes nothing; with `tools: 'unified'` the
-   * model reads `context://memory/*` itself.
+   * checkpoint forgets which writes were the model's, so one may be stated
+   * once more after it, even while its turn is still in view. An entry the
+   * selector does not pick is not pushed when it changes, but its removal
+   * is, once the model has seen the entry or written it — even under a
+   * selector that picks nothing. With such a selector and `tools: 'unified'`,
+   * the model reads `context://memory/*` itself.
    *
    * It changes defaults, never explicit choices: an unset `skillPlacement` is
    * `'tail'` and an unset `memoryPlacement` `'before_history_tail'`, both
@@ -614,13 +625,12 @@ export class ContextChef {
   /** What was appended to the window and what was sent; only when `appendOnly` is on. */
   private _prefixLedger?: PrefixLedger;
   /**
-   * `appendOnly`: memory entries the model wrote through {@link handleTool},
-   * as its last write left each one (`null`: it deleted the key). Its tool
-   * result told it, so the `memory` phase does not push them back.
+   * `appendOnly`, memory as events: the entries the model wrote through
+   * {@link handleTool}, as its last write left each one (`null`: it deleted
+   * the key), reported by the dispatcher. The tool result told the model, so
+   * the `memory` phase does not push them back.
    */
   private _modelMemoryWrites = new Map<string, MemoryEntry | null>();
-  /** Set inside {@link handleTool}: the memory writes made there are the model's. */
-  private readonly _modelToolCall = new AsyncLocalStorage<true>();
   /** The shared context store from `ChefConfig.store`, if one was passed. */
   private readonly _store?: Store;
   private readonly _toolsMode: ToolsMode;
@@ -838,7 +848,6 @@ export class ContextChef {
         memoryPlacement:
           config.memory.memoryPlacement ?? (config.appendOnly ? 'before_history_tail' : undefined),
         onMemoryChanged: async (event) => {
-          if (this._modelToolCall.getStore()) await this._recordModelMemoryWrite(event.key);
           if (userOnChanged) await userOnChanged(event);
           await this.emitter.emit('memory:changed', event, this._currentSignal);
         },
@@ -922,6 +931,9 @@ export class ContextChef {
    */
   private _createContextToolHost(): ContextToolHost {
     const chef = this;
+    // appendOnly's memory events leave out what the model wrote itself.
+    const eventModel =
+      this._prefixLedger !== undefined && this.memory?.placement === 'before_history_tail';
     return {
       get memory() {
         return chef.memory;
@@ -938,6 +950,13 @@ export class ContextChef {
       requestNewContext() {
         chef.requestNewContext();
       },
+      ...(eventModel
+        ? {
+            memoryWritten(key: string, entry: MemoryEntry | null) {
+              chef._modelMemoryWrites.set(key, entry);
+            },
+          }
+        : {}),
     };
   }
 
@@ -1360,9 +1379,11 @@ export class ContextChef {
    * back as `Error: …` text the model can read and correct. Only a tool name
    * this chef does not own throws — guard with {@link ownsTool}.
    *
-   * With `appendOnly`, the memory writes made here are the model's own: the
-   * tool result tells it, so they are not pushed back as a memory delta.
-   * Writes your code makes at the same time are told apart.
+   * With `appendOnly`, the memory writes this call makes are the model's
+   * own: its result tells the model, so they are not pushed back as a memory
+   * delta. A write anything else makes — your code, a `memory:changed`
+   * listener, a memory hook, even one this call set off — is the host's, and
+   * is pushed.
    */
   public handleTool(call: ContextToolCall): Promise<string> {
     if (!this.ownsTool(call?.name)) {
@@ -1371,13 +1392,7 @@ export class ContextChef {
           'Guard the call with chef.ownsTool(name) and dispatch the rest yourself.',
       );
     }
-    return this._modelToolCall.run(true, () => dispatchContextTool(this._contextToolHost, call));
-  }
-
-  /** `appendOnly`: `key` as the model's memory write inside {@link handleTool} left it. */
-  private async _recordModelMemoryWrite(key: string): Promise<void> {
-    if (!this._prefixLedger || !this.memory) return;
-    this._modelMemoryWrites.set(key, await this.memory.getEntry(key));
+    return dispatchContextTool(this._contextToolHost, call);
   }
 
   // ─── Skill API ─────────────────────────────────────────────────────────
@@ -1785,7 +1800,12 @@ export class ContextChef {
         : undefined,
       announcements: [...this._announcements.values()].map((a) => ({ ...a })),
       handoffNoticedWindow: this._handoffNoticedWindow,
-      ...(this._prefixLedger ? { prefixLedger: this._prefixLedger.snapshot() } : {}),
+      ...(this._prefixLedger
+        ? {
+            prefixLedger: this._prefixLedger.snapshot(),
+            modelMemoryWrites: structuredClone(Object.fromEntries(this._modelMemoryWrites)),
+          }
+        : {}),
       label,
       createdAt: Date.now(),
     };
@@ -1830,8 +1850,10 @@ export class ContextChef {
     // snapshot from before this field simply had not noticed anything yet.
     this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
     this._prefixLedger = ledger;
-    // The restored history need not hold the turns that told the model of its writes.
-    this._modelMemoryWrites.clear();
+    // Recorded against the history restored with it.
+    this._modelMemoryWrites = new Map(
+      ledger ? Object.entries(structuredClone(snapshot.modelMemoryWrites ?? {})) : [],
+    );
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);

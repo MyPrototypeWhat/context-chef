@@ -190,7 +190,7 @@ const createMemory = (key: string, value: string) => ({
 
 describe('appendOnly memory: one snapshot when the window starts', () => {
   it.each(
-    THREE,
+    TARGETS,
   )('keeps every turn the prefix of the next while memory changes (%s)', async (target) => {
     const { chef, breaks, invariants } = chefWith();
     await chef.getMemory().set('lang', 'TypeScript');
@@ -372,6 +372,20 @@ describe('appendOnly memory: a delta for what the host changed', () => {
     expect(payloads.map((p) => p.meta?.memoryExpiredKeys)).toEqual([[], [], ['session']]);
     expect(injected(payloads)).toEqual([['lang', 'session'], [], ['session']]);
   });
+
+  it('says an entry whose time ran out is gone', async () => {
+    const { chef } = chefWith();
+    await chef.getMemory().set('lang', 'TypeScript');
+    await chef.getMemory().set('session', 'abc', { ttl: { ms: 60_000 } });
+
+    const payloads = await converse(chef, [turn1, turn2], 'openai', (_c, turn) => {
+      if (turn === 2) vi.setSystemTime(new Date(LATER));
+    });
+
+    expect(payloads.map((p) => p.meta?.memoryExpiredKeys)).toEqual([[], ['session']]);
+    expect(contents(payloads[1]).at(-1)).toBe(delta([removed('session')]));
+    expect(injected(payloads)).toEqual([['lang', 'session'], ['session']]);
+  });
 });
 
 describe('appendOnly memory: what the model wrote itself is not pushed back', () => {
@@ -468,6 +482,63 @@ describe('appendOnly memory: what the model wrote itself is not pushed back', ()
     expect(injected(payloads)).toEqual([['lang'], ['tz']]);
   });
 
+  describe('pushes what the host wrote from code the call set off', () => {
+    let auditing: ContextChef;
+    /** The host's own bookkeeping: a note in memory whenever `style` changes. */
+    const audit = async (key: string) => {
+      if (key === 'style') await auditing.getMemory().set('audit', 'noted');
+    };
+    const hooks: Array<[string, ChefConfig, (chef: ContextChef) => void]> = [
+      [
+        'a memory:changed listener',
+        {},
+        (chef) => chef.on('memory:changed', ({ key }) => audit(key)),
+      ],
+      [
+        'the onMemoryChanged hook',
+        { memory: { onMemoryChanged: ({ key }) => audit(key) } },
+        () => {},
+      ],
+      [
+        'the onMemoryUpdate hook',
+        {
+          memory: {
+            onMemoryUpdate: async (key) => {
+              await audit(key);
+              return true;
+            },
+          },
+        },
+        () => {},
+      ],
+      [
+        'a timer a listener started',
+        {},
+        (chef) =>
+          chef.on('memory:changed', ({ key }) => {
+            setTimeout(() => void audit(key), 0);
+          }),
+      ],
+    ];
+
+    it.each(hooks)('%s', async (_name, config, listen) => {
+      const { chef } = chefWith(config);
+      auditing = chef;
+      listen(chef);
+      await chef.getMemory().set('lang', 'TypeScript');
+
+      const payloads = await converse(chef, [turn1, turn2], 'openai', async (c, turn) => {
+        if (turn === 2) {
+          await c.handleTool(createMemory('style', 'terse'));
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      });
+
+      expect(contents(payloads[1]).at(-1)).toBe(delta([entry('audit', 'noted')]));
+      expect(injected(payloads)).toEqual([['lang'], ['audit']]);
+    });
+  });
+
   it('says a key the model created is gone once it expired', async () => {
     // Created after the first compile, it expires two compiles later: the fourth sweeps it.
     const { chef } = chefWith({ memory: { defaultTTL: 2 } });
@@ -505,6 +576,24 @@ describe('appendOnly memory: the selector decides what is pushed', () => {
       ...ANSWERED,
     ]);
     expect(injected(payloads)).toEqual([[], [], []]);
+  });
+
+  it('says a key the model wrote is gone once the host deleted it, but not that the host changed it', async () => {
+    const { chef } = chefWith({ memory: { selector: () => [] } });
+
+    const payloads = await converse(
+      chef,
+      [turn1, turn2, turn3, turn4],
+      'openai',
+      async (c, turn) => {
+        if (turn === 2) await c.handleTool(createMemory('style', 'terse'));
+        if (turn === 3) await c.getMemory().set('style', 'verbose');
+        if (turn === 4) await c.getMemory().delete('style');
+      },
+    );
+
+    expect(injected(payloads)).toEqual([[], [], [], ['style']]);
+    expect(contents(payloads[3]).at(-1)).toBe(delta([removed('style')]));
   });
 
   it("leaves the model to read memory through the 'context' tool under tools: 'unified'", async () => {
@@ -706,6 +795,60 @@ describe('appendOnly memory: after a checkpoint, what the window lost is stated 
   });
 });
 
+describe('appendOnly memory: the snapshot keeps what the model wrote', () => {
+  /** A chef that compiled two turns; the model wrote `style` between them. Its snapshot, as stored. */
+  async function savedAfterModelWrite(store: InMemoryBackend) {
+    const { chef } = chefWith({ store });
+    await chef.getMemory().set('lang', 'TypeScript');
+    await converse(chef, [turn1]);
+    await chef.handleTool(createMemory('style', 'terse'));
+    await converse(chef, [turn2]);
+    return JSON.parse(JSON.stringify(chef.snapshot())) as ReturnType<ContextChef['snapshot']>;
+  }
+
+  it('lets a chef created for the next request leave the write alone', async () => {
+    const store = new InMemoryBackend();
+    const saved = await savedAfterModelWrite(store);
+
+    const { chef, breaks } = chefWith({ store });
+    const [payload] = await converse(chef.restore(saved), [turn3]);
+
+    expect(breaks).toEqual([]);
+    expect(contents(payload)).toEqual([
+      'You are terse.',
+      Prompts.MEMORY_INSTRUCTION,
+      ...TURN1,
+      SNAPSHOT,
+      ...TOOL_LOOP,
+      ...ANSWERED,
+    ]);
+    expect(payload.meta?.injectedMemoryKeys).toEqual([]);
+  });
+
+  it('states the write once after restoring a snapshot taken before the record existed', async () => {
+    const store = new InMemoryBackend();
+    const { modelMemoryWrites: _dropped, ...older } = await savedAfterModelWrite(store);
+
+    const { chef } = chefWith({ store });
+    const [payload] = await converse(chef.restore(older), [turn3]);
+
+    expect(contents(payload).at(-1)).toBe(delta([STYLE]));
+  });
+
+  it('records only under the event model, and snapshots nothing without appendOnly', async () => {
+    const events = chefWith().chef;
+    const explicit = chefWith({ memory: { memoryPlacement: 'after_system' } }).chef;
+    const off = new ContextChef({ logger: silent, store: new InMemoryBackend(), memory: {} });
+    for (const c of [events, explicit, off]) await c.handleTool(createMemory('style', 'terse'));
+
+    expect(events.snapshot().modelMemoryWrites).toEqual({
+      style: await events.getMemory().getEntry('style'),
+    });
+    expect(explicit.snapshot().modelMemoryWrites).toEqual({});
+    expect('modelMemoryWrites' in off.snapshot()).toBe(false);
+  });
+});
+
 describe('appendOnly memory: placement', () => {
   it("compiles an unset memoryPlacement as 'before_history_tail'", async () => {
     const unset = chefWith();
@@ -893,6 +1036,43 @@ describe('appendOnly skills: instructions are events', () => {
       skillEvent('researcher', 'Cite sources.', 1),
       ...TOOL_LOOP,
       ...ANSWERED,
+    ]);
+  });
+
+  it('appends nothing for a skill switched away and back before the next compile', async () => {
+    const { chef } = skillChef();
+
+    const payloads = await converse(chef, [turn1, turn2], 'openai', (c, turn) => {
+      if (turn === 1) c.activateSkill(RESEARCHER);
+      if (turn === 2) c.activateSkill(WRITER).activateSkill(RESEARCHER);
+    });
+
+    expect(contents(payloads[1])).toEqual([
+      'You are terse.',
+      ...TURN1,
+      skillEvent('researcher', 'Cite sources.', 1),
+      ...TOOL_LOOP,
+    ]);
+  });
+
+  it.each(
+    THREE,
+  )('states a skill activated again after its tombstone as the next revision (%s)', async (target) => {
+    const { chef } = skillChef();
+
+    const payloads = await converse(chef, [turn1, turn2, turn3], target, (c, turn) => {
+      c.activateSkill(turn === 2 ? null : RESEARCHER);
+    });
+
+    expectAppendOnly(payloads);
+    expectSentInOrder(payloads[2], [
+      'Find the release date.',
+      skillEvent('researcher', 'Cite sources.', 1),
+      skillWithdrawn(2),
+      'It is 2026-09-28.',
+      'And the price?',
+      // Rev 3 opens with the sentence that says it replaces what came before.
+      skillEvent('researcher', 'Cite sources.', 3),
     ]);
   });
 

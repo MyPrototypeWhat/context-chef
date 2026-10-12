@@ -1,4 +1,4 @@
-import type { Memory, MemoryEntry } from '../../modules/memory';
+import { type MemoryEntry, renderMemoryEntry } from '../../modules/memory';
 import { memoryEvents } from '../../prefix';
 import type { Phase, PipelineHost, PrefixCompile } from '../context';
 
@@ -35,7 +35,7 @@ export const memoryPhase: Phase = {
     const parts = host.shapeMemoryParts(artifacts.dataXml, ctx.meta.injectedMemoryKeys);
     ctx.memoryMessages = parts.topMessages;
     if (ctx.prefix && memory.placement === 'before_history_tail') {
-      const pushed = await memoryEventsFor(ctx.prefix, host, memory, {
+      const pushed = memoryEventsFor(ctx.prefix, host, {
         live: artifacts.live,
         selected: artifacts.selected,
         snapshot: parts.tailDataXml,
@@ -48,14 +48,6 @@ export const memoryPhase: Phase = {
   },
 };
 
-const MEMORY_OPEN = '<memory>\n';
-const MEMORY_CLOSE = '\n</memory>';
-
-/** `entry` as the `<memory>` block lists it: what `Memory.toXml` renders for it alone, unwrapped. */
-async function entryXml(memory: Memory, entry: MemoryEntry): Promise<string> {
-  return (await memory.toXml([entry])).slice(MEMORY_OPEN.length, -MEMORY_CLOSE.length);
-}
-
 /**
  * `appendOnly`: the snapshot or delta this compile appends, and the keys it
  * speaks for. The model's own writes count as told until an event states
@@ -63,20 +55,20 @@ async function entryXml(memory: Memory, entry: MemoryEntry): Promise<string> {
  * made them: every one reported by now does — `system` and `tools`, which
  * keep the turns, are only found once the payload exists.
  */
-async function memoryEventsFor(
+function memoryEventsFor(
   prefix: PrefixCompile,
   host: PipelineHost,
-  memory: Memory,
   read: { live: MemoryEntry[]; selected: MemoryEntry[]; snapshot: string },
 ) {
   if (prefix.breaks.length > 0) host.forgetModelMemoryWrites();
   const written = new Map<string, string | null>();
   for (const [key, entry] of host.modelMemoryWrites) {
-    written.set(key, entry && (await entryXml(memory, entry)));
+    written.set(key, entry && renderMemoryEntry(entry));
   }
-  const selected = await Promise.all(
-    read.selected.map(async (entry) => ({ key: entry.key, xml: await entryXml(memory, entry) })),
-  );
+  const selected = read.selected.map((entry) => ({
+    key: entry.key,
+    xml: renderMemoryEntry(entry),
+  }));
 
   const pushed = memoryEvents(
     prefix.ledger.appended('memory'),

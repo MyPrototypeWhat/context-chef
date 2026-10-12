@@ -182,8 +182,9 @@ export interface MemoryConfig {
    * Defaults to `'after_system'` (current behavior). Set to
    * `'before_history_tail'` to keep memory text out of the top-level system
    * parameter so provider-level cache breakpoints on history survive memory
-   * mutations. Under `ChefConfig.appendOnly` the default is
-   * `'before_history_tail'`, where the data becomes events in the conversation.
+   * mutations. `ContextChef` passes `'before_history_tail'` when this is
+   * unset and `ChefConfig.appendOnly` is on: the data then becomes events in
+   * the conversation.
    *
    * See {@link MemoryPlacement} for the full rationale.
    */
@@ -422,22 +423,7 @@ export class Memory {
 
   private _renderXml(entries: MemoryEntry[]): string {
     if (entries.length === 0) return '';
-    const inner = entries
-      .map((e) => {
-        const parts: string[] = [`<entry key="${e.key}">`];
-        if (e.description) {
-          parts.push(`<description>\n${e.description}\n</description>`);
-        }
-        const updated = new Date(e.updatedAt).toISOString();
-        parts.push(
-          `<metadata>\n- updated_at=${updated}\n- update_count=${e.updateCount}\n</metadata>`,
-        );
-        parts.push(`<value>\n${e.value}\n</value>`);
-        parts.push('</entry>');
-        return parts.join('\n');
-      })
-      .join('\n\n');
-    return `<memory>\n${inner}\n</memory>`;
+    return `<memory>\n${entries.map(renderMemoryEntry).join('\n\n')}\n</memory>`;
   }
 
   // ─── Validated methods (for LLM-driven operations) ──────────────────────
@@ -630,6 +616,19 @@ export class Memory {
     }
     return { expiresAtTurn: this._turnCount + ttl.turns };
   }
+}
+
+/** One entry as the `<memory>` block lists it: `<entry key="…">…</entry>`. */
+export function renderMemoryEntry(e: MemoryEntry): string {
+  const parts: string[] = [`<entry key="${e.key}">`];
+  if (e.description) {
+    parts.push(`<description>\n${e.description}\n</description>`);
+  }
+  const updated = new Date(e.updatedAt).toISOString();
+  parts.push(`<metadata>\n- updated_at=${updated}\n- update_count=${e.updateCount}\n</metadata>`);
+  parts.push(`<value>\n${e.value}\n</value>`);
+  parts.push('</entry>');
+  return parts.join('\n');
 }
 
 /** Snapshot of Memory state for save/restore. */
