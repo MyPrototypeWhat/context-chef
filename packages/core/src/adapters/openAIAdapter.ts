@@ -222,6 +222,8 @@ export class OpenAIAdapter implements ITargetAdapter {
         // Chat Completions keeps system messages inline, so positional is the
         // only behavior here — the flag itself must not reach the wire.
         _positional,
+        // Turn-scoped messages are an Anthropic feature: here the text simply stays.
+        _clear_at,
         thinking,
         redacted_thinking,
         attachments,

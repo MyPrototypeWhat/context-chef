@@ -1,10 +1,22 @@
-import { anthropicServerContextManagement } from '../../adapters/anthropicAdapter';
+import {
+  anthropicServerContextManagement,
+  ON_DEMAND_COMPACTION_BETA,
+} from '../../adapters/anthropicAdapter';
 import type { AnthropicPayload, TargetPayload } from '../../types';
 import type { Phase } from '../context';
-import { reconcilePrefixSent } from './prefix';
+import { reconcilePrefixSent, withoutStrippedThinking } from './prefix';
+
+/** `betas` with `more` added, each once. */
+const withBetas = (betas: string[] | undefined, more: readonly string[]): string[] => [
+  ...new Set([...(betas ?? []), ...more]),
+];
 
 /**
  * Target adapter + tools + server-managed payload fields.
+ *
+ * Under `appendOnly` on Anthropic, the adapter renders the messages without
+ * the thinking unsigned checkpoints stripped, and the betas a replayed
+ * signed compaction needs are added.
  */
 export const adaptPhase: Phase = {
   name: 'adapt',
@@ -13,7 +25,8 @@ export const adaptPhase: Phase = {
       await handler(ctx.messages);
     }
 
-    const adapterPayload = ctx.target.adapter.compile(ctx.messages);
+    const render = () => ctx.target.adapter.compile(withoutStrippedThinking(ctx, ctx.messages));
+    const adapterPayload = render();
     // The two library-owned tool sets never co-exist in one payload: they
     // describe the same operations in two vocabularies, and a model handed
     // both has to guess which one the host actually dispatches.
@@ -37,12 +50,20 @@ export const adaptPhase: Phase = {
         host.contextManagement?.server,
       );
       anthropicPayload.context_management = context_management;
-      anthropicPayload.betas = betas;
+      anthropicPayload.betas = withBetas(anthropicPayload.betas, betas);
+    }
+    // A signed compaction leads the window: the block it replays needs its beta.
+    if (ctx.target.isAnthropicTarget && ctx.prefix?.ledger.head?.signed) {
+      const anthropicPayload = payload as AnthropicPayload;
+      anthropicPayload.betas = withBetas(anthropicPayload.betas, [ON_DEMAND_COMPACTION_BETA]);
     }
 
     ctx.payload = payload;
     // appendOnly: a changed system prompt or tool list is a checkpoint; then meta.prefix.
-    await reconcilePrefixSent(ctx, host);
+    if (await reconcilePrefixSent(ctx, host)) {
+      // Every thinking block was signed over what was sent before: none of them goes out.
+      payload.messages = render().messages;
+    }
 
     for (const handler of host.slots.get('after-adapt')) {
       await handler(payload);

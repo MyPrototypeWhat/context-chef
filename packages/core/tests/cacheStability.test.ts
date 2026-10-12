@@ -245,6 +245,42 @@ describe('auditAnthropicCachePlacement', () => {
     expect(issues.every((i) => i.message.includes('move the cache breakpoint'))).toBe(true);
   });
 
+  it('under appendOnly, reads what the chef put in messages as events sent once, not volatile', () => {
+    const payload = {
+      system: [
+        sys('You recall the following from previous conversations:\n<memory>a</memory>'),
+        sys('stable'),
+      ],
+      messages: [
+        { role: 'user', content: 'q1' },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: '<skill_instructions rev="1" skill="t">x</skill_instructions>' },
+          ],
+        },
+        {
+          role: 'user',
+          content: 'You recall the following from previous conversations:\n<memory>b</memory>',
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }],
+        },
+      ],
+    } as unknown as AnthropicPayload;
+
+    // The system prompt still changes with what it holds (explicit 'after_system' memory).
+    expect(auditAnthropicCachePlacement(payload, { appendOnly: true })).toEqual([
+      expect.objectContaining({ location: 'system[0]', dedupeKey: 'memory data block@prefix' }),
+    ]);
+    expect(auditAnthropicCachePlacement(payload).map((i) => i.location)).toEqual([
+      'system[0]',
+      'messages[1]',
+      'messages[2]',
+    ]);
+  });
+
   it("breakpoint-tail diagnosis keeps the skill marker's alternative remedy", () => {
     const payload = {
       system: [sys('stable')],

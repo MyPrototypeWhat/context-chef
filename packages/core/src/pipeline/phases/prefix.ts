@@ -117,7 +117,8 @@ export const prefixPhase: Phase = {
     const fresh = ledger.lastSent === undefined;
     const strippedBefore = ledger.stripped;
     const { window, break: brk } = ledger.reconcile(history);
-    ctx.prefix = { ledger, history, breaks: [] };
+    const clearAt = host.clearAt && ctx.target.isAnthropicTarget;
+    ctx.prefix = { ledger, history, breaks: [], clearAt };
     ctx.history = window;
     if (!brk) return;
 
@@ -142,11 +143,15 @@ export const prefixPhase: Phase = {
  * `appendOnly`, once `adapt` built the payload: a system prompt or tool list
  * other than the one last sent is a checkpoint at 0 that keeps the entries
  * and strips every thinking block after the head. Then `meta.prefix` is
- * written. Off: nothing.
+ * written. Returns whether the payload's messages still hold thinking the
+ * checkpoint stripped, and have to be rendered again. Off: nothing.
  */
-export async function reconcilePrefixSent(ctx: CompileContext, host: PipelineHost): Promise<void> {
+export async function reconcilePrefixSent(
+  ctx: CompileContext,
+  host: PipelineHost,
+): Promise<boolean> {
   const prefix = ctx.prefix;
-  if (!prefix) return;
+  if (!prefix) return false;
 
   // A copy, read before the after-adapt handlers: what is compared is what is committed.
   prefix.sent = plainSent(sentAhead(ctx.requirePayload(), ctx.systemLayers.length));
@@ -154,6 +159,41 @@ export async function reconcilePrefixSent(ctx: CompileContext, host: PipelineHos
   const brk = prefix.ledger.reconcileSent(prefix.sent);
   if (brk) await reportPrefixBreak(ctx, host, brk, strippedBefore);
   ctx.meta.prefix = prefixMeta(prefix.ledger.stable(), prefix.breaks);
+  return ctx.target.isAnthropicTarget && brk?.stripped !== undefined;
+}
+
+/**
+ * `appendOnly` on Anthropic: `messages` without the thinking an unsigned
+ * checkpoint stripped, so it is never sent again. A message holding a block
+ * from a stripped host range loses all its thinking. Blocks are known by
+ * their signature (a redacted one by its data) rather than by message: the
+ * phases since `prefix` work on copies of the host's messages. The host's
+ * own objects are never touched; one `fromAnthropic` parsed no longer
+ * matches its original once its thinking is gone, so the adapter rebuilds
+ * it from IR instead of replaying it.
+ */
+export function withoutStrippedThinking(ctx: CompileContext, messages: Message[]): Message[] {
+  const prefix = ctx.prefix;
+  if (!prefix || !ctx.target.isAnthropicTarget) return messages;
+
+  const signatures = new Set<string>();
+  const redacted = new Set<string>();
+  for (const [from, until] of prefix.ledger.stripped) {
+    for (const message of prefix.history.slice(from, until)) {
+      if (message.thinking?.signature) signatures.add(message.thinking.signature);
+      if (message.redacted_thinking) redacted.add(message.redacted_thinking.data);
+    }
+  }
+  if (signatures.size === 0 && redacted.size === 0) return messages;
+
+  return messages.map((message) => {
+    const stripped =
+      (message.thinking?.signature !== undefined && signatures.has(message.thinking.signature)) ||
+      (message.redacted_thinking !== undefined && redacted.has(message.redacted_thinking.data));
+    if (!stripped) return message;
+    const { thinking: _thinking, redacted_thinking: _redacted, ...rest } = message;
+    return rest;
+  });
 }
 
 /**

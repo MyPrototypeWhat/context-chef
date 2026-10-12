@@ -37,14 +37,24 @@ export function revisionOf(content: string): number {
  * revision, one that went quiet leaves a tombstone, and one that says the
  * same thing again leaves nothing. "The same thing" is its current content
  * rendered at that entry's own revision.
+ *
+ * With `turnScoped` (`appendOnly.clearAt` on Anthropic), the system-channel
+ * sources take {@link reminderEvents} instead; `anchor` is where this
+ * compile appends.
  */
 export function sourceEvents(
   ledger: PrefixLedger,
   sources: readonly PushSource[],
+  turnScoped?: { readonly anchor: number },
 ): PrefixCandidate[] {
   const events: PrefixCandidate[] = [];
-  for (const { source, current, tombstone } of sources) {
+  for (const push of sources) {
+    const { source, current, tombstone } = push;
     const last = ledger.lastAppended(source);
+    if (turnScoped && (current ? current.channel === 'system' : last?.clearAt === true)) {
+      events.push(...reminderEvents(ledger, push, turnScoped.anchor));
+      continue;
+    }
     const rev = last ? revisionOf(last.content) : 0;
     if (current) {
       const unchanged =
@@ -72,6 +82,73 @@ export function sourceEvents(
 }
 
 /**
+ * `clearAt`: a system-channel source says what it says now in every request,
+ * as a turn-scoped reminder the API clears once a user message follows it.
+ * The reminder keeps the revision of the state it repeats and moves to the
+ * next one when the state changes. A request that already shows it — a
+ * retry — gets nothing more. A source that goes quiet just stops; only a
+ * reminder still showing in the request being built gets a turn-scoped
+ * tombstone. A statement the source made earlier that stays in place (it was
+ * on the user channel, or `clearAt` was off) is withdrawn first: it would
+ * outlive every reminder.
+ */
+function reminderEvents(
+  ledger: PrefixLedger,
+  { source, current, tombstone }: PushSource,
+  anchor: number,
+): PrefixCandidate[] {
+  const entries = ledger.appended(source);
+  const last = entries[entries.length - 1];
+  let rev = last ? revisionOf(last.content) : 0;
+  let said = last && !last.withdrawn ? last.content : undefined;
+  const events: PrefixCandidate[] = [];
+
+  const standing = lastOf(entries, (entry) => !entry.clearAt);
+  if (standing && !standing.withdrawn) {
+    rev += 1;
+    events.push({
+      channel: standing.channel,
+      content: tombstone(rev),
+      sources: [source],
+      withdrawn: true,
+    });
+    said = undefined;
+  }
+
+  const showing = lastOf(
+    ledger.entriesAt(anchor),
+    (entry) => entry.clearAt === true && entry.sources.includes(source),
+  );
+  if (current) {
+    const content =
+      said !== undefined && said === current.render(revisionOf(said))
+        ? said
+        : current.render(rev + 1);
+    if (showing?.content !== content) {
+      events.push({ channel: 'system', content, sources: [source], clearAt: true });
+    }
+  } else if (showing && !showing.withdrawn) {
+    events.push({
+      channel: 'system',
+      content: tombstone(rev + 1),
+      sources: [source],
+      clearAt: true,
+      withdrawn: true,
+    });
+  }
+  return events;
+}
+
+/** The last of `entries` that `test` accepts. */
+function lastOf(
+  entries: readonly PrefixEntry[],
+  test: (entry: PrefixEntry) => boolean,
+): PrefixEntry | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) if (test(entries[i])) return entries[i];
+  return undefined;
+}
+
+/**
  * A prefill: an assistant message the host wrote for the model to continue.
  * One that carries what only a model's reply has — thinking, tool calls, a
  * provider's own fields — is a reply, and Anthropic rejects a prefill with
@@ -94,9 +171,16 @@ function isPrefill(message: Message): boolean {
  * Where a compile's events anchor: the end of the host history, or the slot
  * before the one prefill it ends with — never inside the head. Never before
  * a reply: an entry anchored there would join the group that reply answered,
- * whose bytes its signature covers.
+ * whose bytes its signature covers. Ahead of the host's own system messages
+ * the history (or the prefill) ends with: a user message must not follow a
+ * mid-conversation system message.
  */
 export function eventAnchor(history: readonly Message[], cut: number): number {
-  const last = history.length - 1;
-  return last >= cut && isPrefill(history[last]) ? last : history.length;
+  const aheadOfSystem = (end: number) => {
+    let at = end;
+    while (at > cut && history[at - 1].role === 'system') at--;
+    return at;
+  };
+  const anchor = aheadOfSystem(history.length);
+  return anchor > cut && isPrefill(history[anchor - 1]) ? aheadOfSystem(anchor - 1) : anchor;
 }

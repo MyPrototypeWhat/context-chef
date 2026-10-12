@@ -1,5 +1,8 @@
 import { adapterRegistry } from '../../adapters/adapterRegistry';
 import { AnthropicAdapter } from '../../adapters/anthropicAdapter';
+import { GeminiAdapter } from '../../adapters/geminiAdapter';
+import { OpenAIAdapter } from '../../adapters/openAIAdapter';
+import { OpenAIResponsesAdapter } from '../../adapters/openAIResponsesAdapter';
 import type { Phase } from '../context';
 
 /**
@@ -34,6 +37,13 @@ export const startPhase: Phase = {
       );
     }
 
-    ctx.target = { adapter, isAnthropicTarget, serverManaged };
+    // A custom adapter is taken at its word: whatever it does with a trailing assistant message.
+    const nativePrefill = !(
+      adapter instanceof OpenAIAdapter ||
+      adapter instanceof OpenAIResponsesAdapter ||
+      adapter instanceof GeminiAdapter
+    );
+
+    ctx.target = { adapter, isAnthropicTarget, nativePrefill, serverManaged };
   },
 };

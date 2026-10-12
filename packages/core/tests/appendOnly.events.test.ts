@@ -498,6 +498,56 @@ describe('appendOnly: a source is appended again only when what it says changed'
     expect(occurrences(second, instructions)).toBe(1);
   });
 
+  // Their adapters would fold it into whichever user message is last: a different one every turn.
+  it.each([
+    'openai',
+    'gemini',
+    'openai-responses',
+  ] as const)('asks for a guardrail prefill with its instructions on %s, which has no native prefill', async (target) => {
+    const { chef, breaks, invariants } = chefWith();
+    chef.withGuardrails({ enforceXML: { outputTag: 'out' }, prefill: '<out>' });
+
+    const payloads = await converse(chef, [turn1, turn2, turn3, turn4], target);
+
+    expectAppendOnly(payloads);
+    expect(breaks).toEqual([]);
+    expect(invariants).toEqual([]);
+    const instructions = `${Prompts.getXMLGuardrail('out')}\n\n${Prompts.getPrefillEnforcement('<out>')}`;
+    for (const payload of payloads) expect(occurrences(payload, instructions)).toBe(1);
+  });
+
+  it("warns once when prefillMode 'native' is set explicitly on a target without native prefill", async () => {
+    const warn = vi.fn();
+    const { chef } = chefWith({ logger: { warn } });
+    chef.withGuardrails({ prefill: '<out>', prefillMode: 'native' });
+
+    const [, payload] = await converse(chef, [turn1, turn3]);
+
+    const warned = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('native'));
+    expect(warned).toEqual([
+      "[context-chef] appendOnly: the guardrail's prefillMode 'native' on a target without " +
+        'native prefill: its adapter folds the prefill into the last user message of each ' +
+        'request, a different message every turn, so each request stops repeating the one ' +
+        "before. Leave prefillMode unset or set 'instruction' (warned once).",
+    ]);
+    expect(contents(payload).at(-1)).toBe(
+      `And the price?\n\n${Prompts.getPrefillEnforcement('<out>')}`,
+    );
+  });
+
+  it('leaves a guardrail prefill to the adapter with appendOnly off, as 4.x does', async () => {
+    const chef = new ContextChef({ logger: silent })
+      .setSystemPrompt([{ role: 'system', content: 'You are terse.' }])
+      .withGuardrails({ prefill: '<out>' });
+
+    const payload = await chef.setHistory(turn1).compile({ target: 'openai' });
+
+    expect(contents(payload)).toEqual([
+      'You are terse.',
+      `Find the release date.\n\n${Prompts.getPrefillEnforcement('<out>')}`,
+    ]);
+  });
+
   it('puts the events of several sources one compile appends in one user message', async () => {
     const { chef } = chefWith();
     chef

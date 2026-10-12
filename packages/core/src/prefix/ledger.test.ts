@@ -141,7 +141,12 @@ describe('PrefixLedger — events are appended once', () => {
       user('q1'),
       { role: 'user', content: '<state>A</state>\n\n<guardrail/>' },
       { role: 'system', content: '<skill name="x"/>', _positional: true },
-      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+      {
+        role: 'system',
+        content: '<announcement id="a"/>',
+        _positional: true,
+        _clear_at: 'next_user_message',
+      },
     ]);
     expect(ledger.lastAppended('guardrail')?.content).toBe('<guardrail/>');
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
@@ -309,6 +314,57 @@ describe('PrefixLedger — events are appended once', () => {
 
     expect(again.window).toEqual([assistant('Hi!'), user('<announcement id="a"/>')]);
     expect(again.stable).toBe(2);
+  });
+
+  it("renders a group in front of the host's system messages right before its place", () => {
+    // A user message right after a mid-conversation system message is a 400.
+    const note: Message = { role: 'system', content: 'The repo uses pnpm.', _positional: true };
+    const ledger = new PrefixLedger();
+    const history = [user('q1'), note];
+    compile(ledger, history.slice(0, 1));
+    ledger.reconcile(history);
+    ledger.append([state('<state>A</state>'), announce], 1);
+
+    const sent = [
+      user('q1'),
+      user('<state>A</state>'),
+      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+      note,
+    ];
+    expect(ledger.window()).toEqual(sent);
+    expect(ledger.renderedAt(1)).toEqual(sent.slice(1, 3));
+    ledger.commit(history);
+
+    // Answered, it stays there, rebuilt the same way from what the ledger saw.
+    const answered = [...history, assistant('r1'), user('q2'), note];
+    const next = compile(PrefixLedger.fromSnapshot(ledger.snapshot()), answered);
+    expect(next.window).toEqual([...sent, assistant('r1'), user('q2'), note]);
+    expect(next.stable).toBe(4);
+  });
+
+  it('lists the entries of the group an entry anchored somewhere would join', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]);
+    ledger.reconcile(turns.slice(0, 3));
+    ledger.append([announce]);
+
+    expect(ledger.entriesAt(1).map((e) => e.content)).toEqual(['<state>A</state>']);
+    expect(ledger.entriesAt(3).map((e) => e.content)).toEqual(['<announcement id="a"/>']);
+    expect(ledger.entriesAt(2)).toEqual(ledger.entriesAt(3));
+  });
+
+  it('tells whether a turn-scoped entry appended somewhere would stay a system message', () => {
+    const turnScoped = { ...announce, clearAt: true as const };
+    const ledger = new PrefixLedger();
+    ledger.reconcile([]);
+    expect(ledger.turnScopedAt(0, [turnScoped])).toBe(false);
+    // Its own group's user event comes first.
+    expect(ledger.turnScopedAt(0, [state('<state>A</state>'), turnScoped])).toBe(true);
+
+    ledger.reconcile(turns.slice(0, 2));
+    expect(ledger.turnScopedAt(2, [turnScoped])).toBe(false); // right after a reply
+    ledger.reconcile([user('q1'), { role: 'system', content: 'note', _positional: true }]);
+    expect(ledger.turnScopedAt(1, [turnScoped])).toBe(true);
   });
 
   it('rejects an anchor outside the window', () => {
@@ -541,6 +597,17 @@ describe('PrefixLedger — what counts as an edit of a host message', () => {
       { role: 'user', content: 'q2', meta: { at: 2 }, savedBy: 'host' },
     ];
     expect(ledger.reconcile(replayed).break).toBeUndefined();
+  });
+
+  it("counts a host system message's turn scope, since the Anthropic wire sends it", () => {
+    const note: Message = { role: 'system', content: 'note', _positional: true };
+    const ledger = new PrefixLedger();
+    compile(ledger, [user('q1'), { ...note, _clear_at: 'next_user_message' }, assistant('r1')]);
+
+    expect(ledger.reconcile([user('q1'), note, assistant('r1')]).break).toMatchObject({
+      reason: 'history',
+      at: 1,
+    });
   });
 
   it('counts a provider field, since it reaches its wire', () => {

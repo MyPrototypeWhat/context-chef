@@ -18,6 +18,11 @@ export interface GuardrailOptions {
    *   Sonnet 5.5 and Haiku 5.5 reject a prefilled last assistant turn with a
    *   400, so use this mode for them. ContextChef does not know the model id
    *   and cannot choose for you.
+   *
+   * Unset, it is `'native'` — except with `ChefConfig.appendOnly` on a target
+   * without native prefill, where it is `'instruction'`: the adapter would
+   * append the instruction to whichever user message is last, a different one
+   * every turn.
    */
   prefillMode?: 'native' | 'instruction';
   /**

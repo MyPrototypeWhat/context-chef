@@ -73,11 +73,24 @@ const VOLATILE_MARKERS: Array<{
   },
 ];
 
+/** Options for {@link auditAnthropicCachePlacement}. */
+export interface CacheAuditOptions {
+  /**
+   * The payload was compiled with `ChefConfig.appendOnly`: what the chef put
+   * in `messages` is events, appended once and sent where they were from
+   * then on, so only the top-level system prompt can still change under a
+   * breakpoint. Default `false`.
+   */
+  appendOnly?: boolean;
+}
+
 /** Structural view of one position in the Anthropic prompt prefix. */
 interface PrefixSegment {
   location: string;
   text: string;
   hasBreakpoint: boolean;
+  /** Part of the top-level `system`, not of `messages`. */
+  system: boolean;
 }
 
 function collectSegments(payload: AnthropicPayload): PrefixSegment[] {
@@ -89,6 +102,7 @@ function collectSegments(payload: AnthropicPayload): PrefixSegment[] {
       location: `system[${i}]`,
       text: typeof block?.text === 'string' ? block.text : '',
       hasBreakpoint: Boolean(block?.cache_control),
+      system: true,
     });
   }
 
@@ -106,7 +120,7 @@ function collectSegments(payload: AnthropicPayload): PrefixSegment[] {
         if (block.cache_control) hasBreakpoint = true;
       }
     }
-    segments.push({ location: `messages[${i}]`, text, hasBreakpoint });
+    segments.push({ location: `messages[${i}]`, text, hasBreakpoint, system: false });
   }
 
   return segments;
@@ -132,13 +146,19 @@ function collectSegments(payload: AnthropicPayload): PrefixSegment[] {
  * Returns an empty array when the placement is cache-safe (including when no
  * breakpoints exist at all — with nothing marked, nothing can be broken).
  *
+ * For a payload compiled with `appendOnly`, pass `{ appendOnly: true }`: the
+ * markers in `messages` are then events that stay where they were sent.
+ *
  * @example
  * const payload = await chef.compile({ target: 'anthropic' });
  * for (const issue of auditAnthropicCachePlacement(payload)) {
  *   console.warn(`[cache] ${issue.location}: ${issue.message}`);
  * }
  */
-export function auditAnthropicCachePlacement(payload: AnthropicPayload): CacheAuditIssue[] {
+export function auditAnthropicCachePlacement(
+  payload: AnthropicPayload,
+  options: CacheAuditOptions = {},
+): CacheAuditIssue[] {
   const segments = collectSegments(payload);
 
   let lastBreakpoint = -1;
@@ -149,6 +169,7 @@ export function auditAnthropicCachePlacement(payload: AnthropicPayload): CacheAu
 
   const issues: CacheAuditIssue[] = [];
   for (let i = 0; i <= lastBreakpoint; i++) {
+    if (options.appendOnly && !segments[i].system) continue;
     for (const { marker, source, fix, breakpointTailAlt } of VOLATILE_MARKERS) {
       if (!segments[i].text.includes(marker)) continue;
 

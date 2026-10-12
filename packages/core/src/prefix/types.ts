@@ -15,10 +15,19 @@ import type { Message } from '../types';
 
 export interface AppendOnlyConfig {
   /**
-   * On Anthropic, push the system-channel sources as a turn-scoped reminder
-   * on every compile (`clear_at: 'next_user_message'`) instead of once. Each
-   * reminder still stays in place and costs no tokens once cleared. Needs the
-   * `mid-conversation-system-clear-at-2026-08-21` beta. Default `false`.
+   * On Anthropic, the system-channel sources — skill instructions, dynamic
+   * state at `'system'`, announcements on the `'system'` channel (`'auto'`
+   * there) — say their current state in every request as a turn-scoped
+   * reminder (`clear_at: 'next_user_message'`) instead of an event appended
+   * once. The model sees a reminder until the next user message (tool
+   * results count); it then stays in place, cleared, costing no tokens.
+   *
+   * A source that goes quiet just stops being repeated: no tombstone, unless
+   * its reminder still shows in the request being retried. A reminder needs a
+   * user turn right before it, so a request without one — an empty history, a
+   * compile right after a reply — goes without. The chef adds the
+   * `mid-conversation-system-clear-at-2026-08-21` beta to `payload.betas`.
+   * Other targets ignore it. Default `false`.
    */
   clearAt?: boolean;
 }
@@ -37,9 +46,10 @@ export type InjectionSource =
 /**
  * Something the chef appended to the window, and where. An entry renders
  * before the first assistant message at or after its anchor — the reply to
- * the request that carried it. Until that reply exists the entry is
- * provisional: nothing signed depends on it, so it renders at the current
- * tail, wherever the host history has grown to.
+ * the request that carried it — and ahead of the host's own system messages
+ * right before that. Until that reply exists the entry is provisional:
+ * nothing signed depends on it, so it renders at the current tail, wherever
+ * the host history has grown to.
  */
 export interface PrefixEntry {
   /** The host length when it was appended: it sits before `host[anchor]` or later (absolute index). */
@@ -49,7 +59,7 @@ export interface PrefixEntry {
   readonly content: string;
   /** The sources this entry speaks for. */
   readonly sources: readonly InjectionSource[];
-  /** Turn-scoped (`clear_at`); only on the system channel. */
+  /** Turn-scoped (`clear_at`); only on the system channel, and only right after a user turn. */
   readonly clearAt?: true;
   /** A tombstone: `sources` were withdrawn and `content` says so. */
   readonly withdrawn?: true;

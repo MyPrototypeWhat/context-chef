@@ -508,6 +508,16 @@ describe('OpenAIAdapter — positional system messages', () => {
 
     expect(JSON.stringify(result)).not.toContain('_positional');
   });
+
+  it('never leaks _clear_at into the wire payload', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Note.', _positional: true, _clear_at: 'next_user_message' },
+    ];
+    const result = adapter.compile([...messages]);
+
+    expect(toPlainMessages(result)[1]).toEqual({ role: 'system', content: 'Note.' });
+  });
 });
 
 describe('OpenAIAdapter — Anthropic-parsed history', () => {

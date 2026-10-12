@@ -190,9 +190,22 @@ export interface Message {
    * entries rather than parsing them into history — they are volatile
    * channel content (announcements are re-rendered every compile until
    * retracted), and baking them into durable history would put the text in
-   * the cached prefix and defeat retraction.
+   * the cached prefix and defeat retraction. `fromAnthropic` keeps the ones
+   * your own code wrote with `keepPositionalSystem`.
    */
   _positional?: boolean;
+  /**
+   * Turn-scoped system message: only meaningful on a `role: 'system'`,
+   * `_positional` message, and only the Anthropic adapter reads it. It sends
+   * `clear_at: 'next_user_message'` (beta
+   * `mid-conversation-system-clear-at-2026-08-21`, added to `payload.betas`):
+   * the model sees the text until a user message follows it — tool results
+   * count — and after that it stays in place, cleared, costing no tokens.
+   * Re-send it unchanged on every later request. It carries no
+   * `cache_control`: a `_cache_breakpoint` on it goes on the message before
+   * it. Other targets send the text as a plain positional system message.
+   */
+  _clear_at?: 'next_user_message';
   /**
    * Anthropic server-side compaction block (`compact_20260112`), carried
    * verbatim. `fromAnthropic` lifts it off the message that owns it and marks
@@ -407,9 +420,12 @@ export interface AnthropicPayload {
    */
   context_management?: unknown;
   /**
-   * Beta headers the emitted `context_management` edits require
-   * (e.g. 'compact-2026-01-12', 'context-management-2025-06-27'). Pass as the
-   * `anthropic-beta` header / SDK `betas` option.
+   * Beta headers the payload needs: the ones the emitted `context_management`
+   * edits require (e.g. 'compact-2026-01-12', 'context-management-2025-06-27'),
+   * 'mid-conversation-system-clear-at-2026-08-21' when a message is
+   * turn-scoped (`clear_at`), and 'compact-2026-09-04' when `appendOnly`
+   * replays a signed on-demand compaction block. Pass as the `anthropic-beta`
+   * header / SDK `betas` option.
    */
   betas?: string[];
 }

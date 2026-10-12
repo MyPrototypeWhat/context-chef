@@ -4,6 +4,8 @@ import type { AnthropicPayload, Message } from '../types';
 import { estimateObject } from '../utils/tokenUtils';
 import {
   AnthropicAdapter,
+  type AnthropicCompactionBlock,
+  anthropicCompactionMessage,
   anthropicServerContextManagement,
   fromAnthropic,
 } from './anthropicAdapter';
@@ -957,3 +959,213 @@ function getFirstBlock(result: AnthropicPayload, messageIndex: number): unknown 
   const content = result.messages[messageIndex].content;
   return Array.isArray(content) ? content[0] : undefined;
 }
+
+describe('AnthropicAdapter — turn-scoped system messages', () => {
+  const CLEAR_AT_BETA = 'mid-conversation-system-clear-at-2026-08-21';
+  const reminder = 'Request independent reads in one turn.';
+
+  it('sends clear_at on a positional system message marked _clear_at, with its beta', () => {
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'Fix the failing test.' },
+      { role: 'system', content: reminder, _positional: true, _clear_at: 'next_user_message' },
+    ]);
+
+    expect(result.messages[1]).toEqual({
+      role: 'system',
+      clear_at: 'next_user_message',
+      content: [{ type: 'text', text: reminder }],
+    });
+    expect(result.betas).toEqual([CLEAR_AT_BETA]);
+  });
+
+  it('asks for no beta when no message is turn-scoped', () => {
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'Fix the failing test.' },
+      { role: 'system', content: reminder, _positional: true },
+    ]);
+
+    expect(result).not.toHaveProperty('betas');
+    expect(JSON.stringify(result)).not.toContain('clear_at');
+  });
+
+  it('puts a breakpoint meant for a turn-scoped message on the turn before it', () => {
+    // A cleared message is in no cache key, and the API rejects cache_control on one.
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'c1' },
+      { role: 'system', content: 'Exit 137.', _positional: true, _clear_at: 'next_user_message' },
+      {
+        role: 'system',
+        content: reminder,
+        _positional: true,
+        _clear_at: 'next_user_message',
+        _cache_breakpoint: true,
+      },
+    ]);
+
+    expect(getContentBlocks(result, 2)).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'c1',
+        content: 'result',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+    expect(getContentBlocks(result, 3)).toEqual([{ type: 'text', text: 'Exit 137.' }]);
+    expect(getContentBlocks(result, 4)).toEqual([{ type: 'text', text: reminder }]);
+  });
+
+  it('drops clear_at from a turn-scoped message it has to hoist', () => {
+    const result = new AnthropicAdapter({ logger: { warn: vi.fn() } }).compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+      { role: 'system', content: reminder, _positional: true, _clear_at: 'next_user_message' },
+    ]);
+
+    expect(result.system).toEqual([{ type: 'text', text: reminder }]);
+    expect(result).not.toHaveProperty('betas');
+  });
+});
+
+describe('fromAnthropic — keepPositionalSystem', () => {
+  const sent = [
+    { role: 'system', content: 'You are helpful.' },
+    { role: 'user', content: 'Fix the failing test.' },
+    { role: 'system', content: [{ type: 'text', text: 'The repo uses pnpm.' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'Running the tests.' }] },
+    { role: 'user', content: 'Go on.' },
+    {
+      role: 'system',
+      clear_at: 'next_user_message',
+      content: [{ type: 'text', text: 'Request independent reads in one turn.' }],
+    },
+  ] as unknown as MessageParam[];
+
+  const withoutOrigin = (history: Message[]) =>
+    history.map(({ _anthropic_origin: _origin, ...message }) => message);
+
+  it("keeps the host's own mid-stream system messages where they were", () => {
+    const { system, history } = fromAnthropic(sent, undefined, { keepPositionalSystem: true });
+
+    expect(system).toEqual([{ role: 'system', content: 'You are helpful.' }]);
+    expect(withoutOrigin(history)).toEqual([
+      { role: 'user', content: 'Fix the failing test.' },
+      { role: 'system', content: 'The repo uses pnpm.', _positional: true },
+      { role: 'assistant', content: 'Running the tests.' },
+      { role: 'user', content: 'Go on.' },
+      {
+        role: 'system',
+        content: 'Request independent reads in one turn.',
+        _positional: true,
+        _clear_at: 'next_user_message',
+      },
+    ]);
+  });
+
+  it('reads clear_at "never" as a system message that stays', () => {
+    const { history } = fromAnthropic(
+      [
+        { role: 'user', content: 'q' },
+        { role: 'system', clear_at: 'never', content: 'Keep answers short.' },
+      ] as unknown as MessageParam[],
+      undefined,
+      { keepPositionalSystem: true },
+    );
+
+    expect(history[1]).toEqual({
+      role: 'system',
+      content: 'Keep answers short.',
+      _positional: true,
+    });
+  });
+
+  it('round-trips a payload with positional and turn-scoped system messages', () => {
+    const anthropic = new AnthropicAdapter();
+    const payload = anthropic.compile([
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'q' },
+      { role: 'system', content: 'The repo uses pnpm.', _positional: true },
+      { role: 'assistant', content: 'a' },
+      { role: 'user', content: 'Go on.' },
+      { role: 'system', content: 'Exit 137.', _positional: true, _clear_at: 'next_user_message' },
+    ]);
+
+    const back = fromAnthropic(payload.messages, payload.system, { keepPositionalSystem: true });
+
+    expect(anthropic.compile([...back.system, ...back.history])).toEqual(payload);
+  });
+
+  it('skips them by default, as 4.x does', () => {
+    const { history } = fromAnthropic(sent);
+
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+  });
+});
+
+describe('anthropicCompactionMessage', () => {
+  const block: AnthropicCompactionBlock = {
+    type: 'compaction',
+    content: 'Summary so far.',
+    signature: 'SIG_C',
+    tool_changes: [{ type: 'tool_removal', name: 'grep' }],
+  };
+
+  it('replays the signed block verbatim, first in messages', () => {
+    const result = new AnthropicAdapter().compile([
+      anthropicCompactionMessage(block),
+      {
+        role: 'assistant',
+        content: 'Kept.',
+        thinking: { thinking: 'Kept reasoning.', signature: 'SIG_K' },
+      },
+      { role: 'user', content: 'Now do the same for Ingredient.' },
+    ]);
+
+    expect(result.messages[0]).toEqual({ role: 'assistant', content: [block] });
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'thinking', thinking: 'Kept reasoning.', signature: 'SIG_K' },
+      { type: 'text', text: 'Kept.' },
+    ]);
+  });
+
+  it('is the message fromAnthropic parses the block into', () => {
+    const { history } = fromAnthropic([
+      { role: 'assistant', content: [block] },
+      { role: 'user', content: 'next' },
+    ] as unknown as MessageParam[]);
+
+    // history[0] is the placeholder user turn ensureValidHistory opens with.
+    expect(anthropicCompactionMessage(block)).toEqual(history[1]);
+    expect(anthropicCompactionMessage(block)).toMatchObject({
+      role: 'assistant',
+      content: '',
+      _anthropic_compaction: 'Summary so far.',
+      pinned: true,
+      _anthropic_origin: { blocks: [block], part: 0, parts: 1 },
+    });
+  });
+
+  it("does not share the caller's block", () => {
+    const own = structuredClone(block);
+    const message = anthropicCompactionMessage(own);
+    own.content = 'Changed afterwards.';
+
+    const result = new AnthropicAdapter().compile([message, { role: 'user', content: 'next' }]);
+    expect(result.messages[0]).toEqual({ role: 'assistant', content: [block] });
+  });
+
+  it('inlines the summary on targets without compaction blocks', () => {
+    const payload = new OpenAIAdapter().compile([
+      anthropicCompactionMessage(block),
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(JSON.stringify(payload)).toContain('Summary so far.');
+    expect(JSON.stringify(payload)).not.toContain('SIG_C');
+  });
+});

@@ -1,4 +1,4 @@
-import { sourceEvents } from '../../prefix';
+import { eventAnchor, sourceEvents } from '../../prefix';
 import { Prompts } from '../../prompts';
 import type { Phase } from '../context';
 import { escapeXmlAttribute } from '../xml';
@@ -12,8 +12,10 @@ import { escapeXmlAttribute } from '../xml';
  *
  * Under `appendOnly`, 'tail' (its default there) makes them an event on the
  * system channel: appended once when a skill is activated or switched, with
- * a tombstone once none is active. An explicit 'after_system' keeps the
- * system message, and each change to it is a `system` checkpoint.
+ * a tombstone once none is active — or, with `clearAt` on Anthropic, a
+ * turn-scoped reminder in every request while one is. An explicit
+ * 'after_system' keeps the system message, and each change to it is a
+ * `system` checkpoint.
  */
 export const skillPhase: Phase = {
   name: 'skill',
@@ -22,20 +24,25 @@ export const skillPhase: Phase = {
     const skillActive = instructions.length > 0;
 
     if (ctx.prefix && placement === 'tail') {
+      const { ledger, history, clearAt } = ctx.prefix;
       const skill = escapeXmlAttribute(name ?? '');
-      ctx.skillEvents = sourceEvents(ctx.prefix.ledger, [
-        {
-          source: 'skill',
-          current: skillActive
-            ? {
-                channel: 'system',
-                render: (rev) => Prompts.getSkillEvent(skill, instructions, rev),
-              }
-            : undefined,
-          tombstone: (rev) =>
-            Prompts.getWithdrawnBlock('skill_instructions', rev, Prompts.SKILL_WITHDRAWN),
-        },
-      ]);
+      ctx.skillEvents = sourceEvents(
+        ledger,
+        [
+          {
+            source: 'skill',
+            current: skillActive
+              ? {
+                  channel: 'system',
+                  render: (rev) => Prompts.getSkillEvent(skill, instructions, rev),
+                }
+              : undefined,
+            tombstone: (rev) =>
+              Prompts.getWithdrawnBlock('skill_instructions', rev, Prompts.SKILL_WITHDRAWN),
+          },
+        ],
+        clearAt ? { anchor: eventAnchor(history, ledger.head?.cut ?? 0) } : undefined,
+      );
     } else {
       ctx.skillMessages =
         skillActive && placement === 'after_system'

@@ -363,7 +363,9 @@ export interface ChefConfig {
    * dynamic state, guardrail instructions) sitting inside the cached prefix
    * silently invalidates prompt caching on every change. Anthropic-only:
    * it is the one provider with explicit breakpoints to audit against.
-   * Zero cost on other targets. Default false.
+   * With `appendOnly`, only the system prompt is audited: what the chef put
+   * in the messages stays where it was sent. Zero cost on other targets.
+   * Default false.
    */
   cacheAudit?: boolean;
   /**
@@ -404,7 +406,13 @@ export interface ChefConfig {
    * It changes defaults, never explicit choices: an unset `skillPlacement` is
    * `'tail'` and an unset `memoryPlacement` `'before_history_tail'`, both
    * events. An explicit `'after_system'` keeps them in the system prompt,
-   * where each change is a `system` checkpoint.
+   * where each change is a `system` checkpoint. A guardrail `prefill` with
+   * no `prefillMode` is asked for as an instruction on targets without native
+   * prefill (OpenAI, Gemini), along with the guardrail's other instructions.
+   *
+   * On Anthropic, the thinking an unsigned checkpoint invalidated is not sent
+   * again; with `clearAt` (see {@link AppendOnlyConfig}) the system-channel
+   * sources become turn-scoped reminders.
    *
    * `true` is `{}`. Off by default, which compiles exactly what 4.x compiles.
    * Persist `snapshot().prefixLedger` along with the history when the chef
@@ -624,6 +632,8 @@ export class ContextChef {
   private _forceOverflow = false;
   /** What was appended to the window and what was sent; only when `appendOnly` is on. */
   private _prefixLedger?: PrefixLedger;
+  /** `appendOnly: { clearAt: true }`: system-channel sources are turn-scoped reminders on Anthropic. */
+  private readonly _clearAt: boolean;
   /**
    * `appendOnly`, memory as events: the entries the model wrote through
    * {@link handleTool}, as its last write left each one (`null`: it deleted
@@ -725,6 +735,7 @@ export class ContextChef {
     // keeps them in the system prompt.
     this.skillPlacement = config.skillPlacement ?? (config.appendOnly ? 'tail' : 'after_system');
     if (config.appendOnly) this._prefixLedger = new PrefixLedger();
+    this._clearAt = typeof config.appendOnly === 'object' && config.appendOnly.clearAt === true;
     this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
     // Before anything is wired: a handoff budget that cannot work is a config
     // error, and it should surface at the line that wrote it. An unset prompt
@@ -1006,6 +1017,9 @@ export class ContextChef {
       get ledger() {
         return chef._prefixLedger;
       },
+      get clearAt() {
+        return chef._clearAt;
+      },
       get slots() {
         return chef._slots;
       },
@@ -1199,7 +1213,8 @@ export class ContextChef {
    * With `appendOnly`, the state is appended once after the turn it was set in
    * (`'last_user'`: its own user message; `'system'`: a positional system
    * message, never the top-level system prompt) and only again when it
-   * changes, as the next revision (`<dynamic_state rev="2">`).
+   * changes, as the next revision (`<dynamic_state rev="2">`). With `clearAt`
+   * on Anthropic, `'system'` state is said in every request, turn-scoped.
    */
   public setDynamicState<T>(
     schema: z.ZodType<T>,
@@ -1490,7 +1505,8 @@ export class ContextChef {
    * was announced in, and sent there from then on. Re-announcing it with new
    * content or a new channel appends the next revision
    * (`<announcement rev="2" id="…">`) and leaves the earlier one in place;
-   * re-announcing it unchanged appends nothing.
+   * re-announcing it unchanged appends nothing. With `clearAt` on Anthropic,
+   * a system-channel announcement is said again in every request, turn-scoped.
    *
    * Upsert by `id`: re-announcing the same id replaces the content and channel
    * while keeping the original insertion position, so the rendered block stays
@@ -1536,7 +1552,10 @@ export class ContextChef {
    * By default the next compile() carries no trace of it. With `appendOnly`
    * the earlier statement stays where it was sent — the window only grows —
    * and the next compile appends a tombstone after it saying it was withdrawn
-   * (`<announcement rev="…" id="…" withdrawn="true">`).
+   * (`<announcement rev="…" id="…" withdrawn="true">`). With
+   * `appendOnly: { clearAt: true }` on Anthropic, a system-channel
+   * announcement is a turn-scoped reminder instead, and retracting it just
+   * stops the reminders.
    */
   public retractAnnouncement(id: string): boolean {
     return this._announcements.delete(id);

@@ -25,6 +25,20 @@ import type { ITargetAdapter } from './targetAdapter';
 
 // ─── Input: Anthropic → IR ───
 
+/** Options for {@link fromAnthropic}. */
+export interface FromAnthropicOptions {
+  /**
+   * Keep the mid-conversation `role: "system"` messages in `history`, where
+   * they were, as positional system messages (`_positional`, plus
+   * `_clear_at` for a turn-scoped one), so they are sent again unchanged.
+   * For the system messages your own code writes: a payload the chef
+   * compiled also holds the chef's announcements and events, which it adds
+   * again by itself. Default `false`: they are skipped, as in 4.x, and a
+   * history that had one changes where it was.
+   */
+  keepPositionalSystem?: boolean;
+}
+
 /**
  * Converts Anthropic Messages API messages to ContextChef IR.
  * Separates system messages from conversation history.
@@ -38,7 +52,9 @@ import type { ITargetAdapter } from './targetAdapter';
  * output — announcements and the like) are SKIPPED, not parsed into history:
  * they are volatile channel content whose ownership stays with the chef state
  * that injected it; round-tripping them as durable history would bake them
- * into the cached prefix and defeat `retractAnnouncement()`.
+ * into the cached prefix and defeat `retractAnnouncement()`. Pass
+ * `keepPositionalSystem` for the ones you wrote yourself; `history` then
+ * holds system messages too.
  *
  * @param messages - Anthropic chat messages (user/assistant with content blocks)
  * @param system - Optional top-level system text blocks
@@ -50,9 +66,20 @@ import type { ITargetAdapter } from './targetAdapter';
 export function fromAnthropic(
   messages: SDKMessageParam[],
   system?: SDKTextBlockParam[],
-): ParsedMessages {
+  options?: FromAnthropicOptions & { keepPositionalSystem?: false },
+): ParsedMessages;
+export function fromAnthropic(
+  messages: SDKMessageParam[],
+  system: SDKTextBlockParam[] | undefined,
+  options: FromAnthropicOptions,
+): { system: Message[]; history: Message[] };
+export function fromAnthropic(
+  messages: SDKMessageParam[],
+  system?: SDKTextBlockParam[],
+  options: FromAnthropicOptions = {},
+): { system: Message[]; history: Message[] } {
   const systemMsgs: Message[] = [];
-  const history: HistoryMessage[] = [];
+  const history: Message[] = [];
 
   // Top-level system blocks
   if (system) {
@@ -71,18 +98,27 @@ export function fromAnthropic(
     // re-rendered every compile until retracted — and are SKIPPED: feeding
     // them back as durable history would bake volatile text into the cached
     // prefix and defeat retractAnnouncement(). Ownership stays with the chef
-    // state that injected it. (The SDK role union predates mid-conversation
-    // system messages, hence the widened view.)
+    // state that injected it — unless the caller says it wrote them. (The SDK
+    // role union predates mid-conversation system messages, hence the
+    // widened view.)
     if ((msg as { role: string }).role === 'system') {
+      const text =
+        typeof msg.content === 'string'
+          ? msg.content
+          : msg.content
+              .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+              .map((b) => b.text)
+              .join('\n');
       if (history.length === 0) {
-        const text =
-          typeof msg.content === 'string'
-            ? msg.content
-            : msg.content
-                .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-                .map((b) => b.text)
-                .join('\n');
         systemMsgs.push({ role: 'system', content: text });
+      } else if (options.keepPositionalSystem) {
+        const turnScoped = (msg as { clear_at?: unknown }).clear_at === 'next_user_message';
+        history.push({
+          role: 'system',
+          content: text,
+          _positional: true,
+          ...(turnScoped ? { _clear_at: 'next_user_message' as const } : {}),
+        });
       }
       continue;
     }
@@ -232,8 +268,9 @@ export function fromAnthropic(
   }
 
   // Sanitize at boundary: enforce IR invariants before handing to caller.
-  // Cast is safe — ensureValidHistory only inserts user/tool messages, never system.
-  return { system: systemMsgs, history: ensureValidHistory(history) as HistoryMessage[] };
+  // Without keepPositionalSystem the history holds no system message, as the
+  // first overload says: ensureValidHistory only inserts user/tool messages.
+  return { system: systemMsgs, history: ensureValidHistory(history) };
 }
 
 /**
@@ -268,6 +305,33 @@ function stampOrigin(parsed: HistoryMessage[], blocks: SDKContentBlockParam[]): 
       hash: irHash(msg),
     };
   });
+}
+
+/** A compaction block as on-demand compaction (beta `compact-2026-09-04`) returns it. */
+export interface AnthropicCompactionBlock {
+  type: 'compaction';
+  content: string;
+  signature: string;
+  tool_changes?: unknown;
+}
+
+/**
+ * The history message that replays `block` verbatim: every later request has
+ * to send it unchanged, first in `messages`, in place of the messages it
+ * summarized. It is the message `fromAnthropic` parses the block into — the
+ * summary in `_anthropic_compaction`, the signed block in
+ * `_anthropic_origin`, pinned — so the Anthropic target sends the block
+ * itself and the other targets inline the summary.
+ */
+export function anthropicCompactionMessage(block: AnthropicCompactionBlock): HistoryMessage {
+  const message: HistoryMessage = {
+    role: 'assistant',
+    content: '',
+    _anthropic_compaction: block.content,
+    pinned: true,
+  };
+  stampOrigin([message], [block as unknown as SDKContentBlockParam]);
+  return message;
 }
 
 // ─── Output: IR → Anthropic ───
@@ -306,15 +370,56 @@ function replayOrigin(
   if (!intact) return undefined;
 
   const content = (head.blocks as SDKContentBlockParam[]).map(withoutCacheControl);
-  if (group.some((msg) => msg._cache_breakpoint)) {
-    // Thinking blocks can't carry a breakpoint; the last other block caches the whole message.
-    const last = [...content]
-      .reverse()
-      .find((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
-    if (last) (last as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
-  }
+  if (group.some((msg) => msg._cache_breakpoint)) cacheLastBlock(content);
   const role = messages[start].role === 'assistant' ? 'assistant' : 'user';
   return { message: { role, content }, parts: head.parts };
+}
+
+/** Thinking blocks can't carry a breakpoint; the last other block caches the whole message. */
+function cacheLastBlock(content: SDKContentBlockParam[]): void {
+  const last = [...content]
+    .reverse()
+    .find((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
+  if (last) (last as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+}
+
+/**
+ * Puts a breakpoint meant for a turn-scoped message on the message before it
+ * that is not turn-scoped: a cleared message is part of no cache key, and the
+ * API rejects `cache_control` on one.
+ */
+function breakpointBefore(chatMessages: SDKMessageParam[]): void {
+  for (let i = chatMessages.length - 1; i >= 0; i--) {
+    const { content, clear_at } = chatMessages[i] as SDKMessageParam & { clear_at?: unknown };
+    if (clear_at !== undefined) continue;
+    if (Array.isArray(content)) cacheLastBlock(content);
+    return;
+  }
+}
+
+/**
+ * An assistant message's thinking blocks, ahead of everything else it says.
+ * The API accepts a thinking block only with the signature it was returned
+ * with, so one without a signature is not sent at all.
+ */
+function thinkingBlocks(msg: Message): SDKContentBlockParam[] {
+  const blocks: SDKContentBlockParam[] = [];
+  if (msg.thinking?.signature) {
+    const thinkingBlock: SDKThinkingBlockParam = {
+      type: 'thinking',
+      thinking: msg.thinking.thinking,
+      signature: msg.thinking.signature,
+    };
+    blocks.push(thinkingBlock);
+  }
+  if (msg.redacted_thinking) {
+    const redactedBlock: SDKRedactedThinkingBlockParam = {
+      type: 'redacted_thinking',
+      data: msg.redacted_thinking.data,
+    };
+    blocks.push(redactedBlock);
+  }
+  return blocks;
 }
 
 /** Converts IR attachments to Anthropic image/document content blocks. */
@@ -368,6 +473,12 @@ export interface AnthropicServerContextManagement {
   betas: string[];
 }
 
+/** Turn-scoped system messages (`clear_at`). */
+const CLEAR_AT_BETA = 'mid-conversation-system-clear-at-2026-08-21';
+
+/** On-demand compaction, and every request that replays the signed block it returned. */
+export const ON_DEMAND_COMPACTION_BETA = 'compact-2026-09-04';
+
 /** Maps an edits config to the `anthropic-beta` values its edit types require. */
 function computeAnthropicBetas(config: unknown): string[] {
   const betas = new Set<string>();
@@ -411,6 +522,7 @@ export class AnthropicAdapter implements ITargetAdapter {
     // Consecutive positional system messages after a user turn are fine
     // (the API treats them as one section).
     let afterUserTurn = false;
+    let turnScoped = false;
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
@@ -434,14 +546,21 @@ export class AnthropicAdapter implements ITargetAdapter {
 
       if (msg.role === 'system') {
         const sysObj: SDKTextBlockParam = { type: 'text', text: msg.content };
+        // Turn-scoped only where it stays a positional message: hoisted, it would never clear.
+        const clearAt = msg._positional && afterUserTurn && msg._clear_at === 'next_user_message';
         if (msg._cache_breakpoint) {
-          sysObj.cache_control = { type: 'ephemeral' };
+          if (clearAt) breakpointBefore(chatMessages);
+          else sysObj.cache_control = { type: 'ephemeral' };
         }
         if (msg._positional && afterUserTurn) {
           // Mid-conversation `role: "system"` messages are an API feature newer
           // than the SDK's MessageParam role union — cast at this one emission
           // point rather than widening the type everywhere.
-          chatMessages.push({ role: 'system', content: [sysObj] } as unknown as SDKMessageParam);
+          const positional = clearAt
+            ? { role: 'system', clear_at: 'next_user_message', content: [sysObj] }
+            : { role: 'system', content: [sysObj] };
+          chatMessages.push(positional as unknown as SDKMessageParam);
+          if (clearAt) turnScoped = true;
           continue;
         }
         if (msg._positional && !this._positionalHoistWarned) {
@@ -477,21 +596,7 @@ export class AnthropicAdapter implements ITargetAdapter {
           content.push(block);
         } else if (msg.tool_calls) {
           // Prepend thinking blocks before tool_use blocks (Anthropic requirement)
-          if (msg.thinking) {
-            const thinkingBlock: SDKThinkingBlockParam = {
-              type: 'thinking',
-              thinking: msg.thinking.thinking,
-              signature: msg.thinking.signature ?? '',
-            };
-            content.push(thinkingBlock);
-          }
-          if (msg.redacted_thinking) {
-            const redactedBlock: SDKRedactedThinkingBlockParam = {
-              type: 'redacted_thinking',
-              data: msg.redacted_thinking.data,
-            };
-            content.push(redactedBlock);
-          }
+          content.push(...thinkingBlocks(msg));
           const textBlock: SDKTextBlockParam = { type: 'text', text: msg.content || '' };
           content.push(textBlock);
           // Attachments after text, before tool_use blocks
@@ -509,21 +614,7 @@ export class AnthropicAdapter implements ITargetAdapter {
           }
         } else {
           // Prepend thinking blocks before text block
-          if (msg.thinking) {
-            const thinkingBlock: SDKThinkingBlockParam = {
-              type: 'thinking',
-              thinking: msg.thinking.thinking,
-              signature: msg.thinking.signature ?? '',
-            };
-            content.push(thinkingBlock);
-          }
-          if (msg.redacted_thinking) {
-            const redactedBlock: SDKRedactedThinkingBlockParam = {
-              type: 'redacted_thinking',
-              data: msg.redacted_thinking.data,
-            };
-            content.push(redactedBlock);
-          }
+          content.push(...thinkingBlocks(msg));
           const block: SDKTextBlockParam = { type: 'text', text: msg.content };
           if (msg._cache_breakpoint) {
             block.cache_control = { type: 'ephemeral' };
@@ -542,6 +633,7 @@ export class AnthropicAdapter implements ITargetAdapter {
     return {
       system: systemMessages.length > 0 ? systemMessages : undefined,
       messages: chatMessages,
+      ...(turnScoped ? { betas: [CLEAR_AT_BETA] } : {}),
     };
   }
 }

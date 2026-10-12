@@ -17,11 +17,26 @@ import type { Phase } from '../context';
  * the last system layer: the Anthropic target hoisted them there anyway, and
  * Chat Completions no longer moves them down as the history grows. New
  * options are then a `system` checkpoint, like any other system prompt change.
+ * On a target without native prefill, an unset `prefillMode` means
+ * 'instruction' there: its adapter would append the prefill to whichever user
+ * message is last, a different one every turn.
  */
 export const assemblePhase: Phase = {
   name: 'assemble',
   async run(ctx, host) {
-    const options = host.guardrailOptions;
+    let options = host.guardrailOptions;
+    if (ctx.prefix && options?.prefill && !ctx.target.nativePrefill) {
+      if (options.prefillMode === undefined) options = { ...options, prefillMode: 'instruction' };
+      else if (options.prefillMode === 'native') {
+        host.warnOnce(
+          'append-only-native-prefill',
+          "[context-chef] appendOnly: the guardrail's prefillMode 'native' on a target without " +
+            'native prefill: its adapter folds the prefill into the last user message of each ' +
+            'request, a different message every turn, so each request stops repeating the one ' +
+            "before. Leave prefillMode unset or set 'instruction' (warned once).",
+        );
+      }
+    }
     const nativePrefill = options?.prefillMode === 'instruction' ? undefined : options?.prefill;
     const guardrailLayer: Message[] = [];
     if (options?.placement === 'last_user') {

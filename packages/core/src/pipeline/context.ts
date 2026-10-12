@@ -45,6 +45,12 @@ export interface ResolvedTarget {
   adapter: ITargetAdapter;
   /** The Anthropic target — the one provider with server-side context management and cache breakpoints. */
   isAnthropicTarget: boolean;
+  /**
+   * The model continues a trailing assistant message. False for the built-in
+   * OpenAI and Gemini adapters, which turn it into an instruction appended to
+   * the last user message instead.
+   */
+  nativePrefill: boolean;
   /** `contextManagement.strategy: 'server'` AND a target that implements it. */
   serverManaged: boolean;
 }
@@ -66,6 +72,11 @@ export interface PrefixCompile {
   readonly history: Message[];
   /** The checkpoints this compile applied, in order, as `prefix:break` reported them. */
   readonly breaks: NonNullable<PrefixMeta['break']>[];
+  /**
+   * `appendOnly: { clearAt: true }` on the Anthropic target: system-channel
+   * sources are turn-scoped reminders in every request.
+   */
+  readonly clearAt: boolean;
   /** What the payload sends ahead of the window, read once `adapt` built it. */
   sent?: PrefixSent;
 }
@@ -212,6 +223,8 @@ export interface PipelineHost {
    * `ctx.prefix.ledger`, which is absent for a nested compile too.
    */
   readonly ledger?: PrefixLedger;
+  /** `appendOnly: { clearAt: true }`. */
+  readonly clearAt: boolean;
 
   readonly slots: SlotRegistry;
   readonly assembler: Assembler;

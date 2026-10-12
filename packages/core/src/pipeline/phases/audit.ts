@@ -7,14 +7,18 @@ import type { Phase } from '../context';
  * kind, NOT the position: as history grows the same misconfiguration drifts
  * through message indices, and a positional key would re-warn every compile
  * and grow the seen-set unboundedly. The kind space is fixed
- * (markers × placements), so the set is bounded too.
+ * (markers × placements), so the set is bounded too. Under `appendOnly` the
+ * events in `messages` stay where they were sent, so only the system prompt
+ * is audited.
  */
 export const auditPhase: Phase = {
   name: 'audit',
   async run(ctx, host) {
     if (!host.cacheAudit || !ctx.target.isAnthropicTarget) return;
 
-    for (const issue of auditAnthropicCachePlacement(ctx.requirePayload() as AnthropicPayload)) {
+    const payload = ctx.requirePayload() as AnthropicPayload;
+    const issues = auditAnthropicCachePlacement(payload, { appendOnly: ctx.prefix !== undefined });
+    for (const issue of issues) {
       host.warnOnce(
         `cache-audit:${issue.dedupeKey}`,
         `[context-chef] cache audit — ${issue.location}: ${issue.message}`,

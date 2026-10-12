@@ -85,12 +85,11 @@ function digest(message: Message): string {
     message._gemini_thought_signature,
     message._openai_reasoning,
     message._positional,
+    message._clear_at,
   ];
   const hash = createHash('sha256').update(canonical(wire)).digest('hex').substring(0, 16);
   return `${message.role.charAt(0)}:${hash}`;
 }
-
-const isReplyDigest = (key: string): boolean => key.startsWith('a:');
 
 /**
  * Whether a message placed at `end` follows a user turn: the last message
@@ -108,14 +107,17 @@ export function followsUserTurn(end: number, initial: (i: number) => string): bo
 /**
  * The messages of the entries that render at one place: user events, then
  * system events (a positional system message must not be followed by a user
- * turn), then turn-scoped ones, since `clear_at` applies per message.
+ * turn), then turn-scoped ones (`_clear_at`), since `clear_at` applies per
+ * message.
  *
  * A positional system message is only valid right after a user turn. When
  * neither the group's own user event nor the message before the group is
  * one — an empty window, a reply right before — the system events are said
  * as user messages instead, 4.x's fallback; the entries keep their channel.
- * A pure function of the group and what precedes it, so a tail renders the
- * same bytes once answered.
+ * A user message cannot be turn-scoped, so turn-scoped entries are only
+ * appended where they stay system messages (`turnScopedAt()`). A pure
+ * function of the group and what precedes it, so a tail renders the same
+ * bytes once answered.
  */
 export function renderGroup(
   entries: readonly PrefixCandidate[],
@@ -128,14 +130,16 @@ export function renderGroup(
   const positional = afterUserTurn || user.length > 0;
   const messages: Message[] = [];
   if (user.length > 0) messages.push({ role: 'user', content: text(user) });
-  for (const part of [system, turnScoped]) {
-    if (part.length === 0) continue;
+  const say = (part: readonly PrefixCandidate[], scope: Pick<Message, '_clear_at'>) => {
+    if (part.length === 0) return;
     messages.push(
       positional
-        ? { role: 'system', content: text(part), _positional: true }
+        ? { role: 'system', content: text(part), _positional: true, ...scope }
         : { role: 'user', content: text(part) },
     );
-  }
+  };
+  say(system, {});
+  say(turnScoped, { _clear_at: 'next_user_message' });
   return messages;
 }
 
@@ -154,12 +158,19 @@ function mergeRanges(ranges: Range[]): Range[] {
 /**
  * Where an entry anchored at each host index renders, as the host index it
  * sits before: the first assistant message at or after the anchor, or
- * `length` while unanswered. Anchors past `length` have no place.
+ * `length` while unanswered — and ahead of the host's system messages right
+ * before that place, from the anchor on, since a user message must not
+ * follow a mid-conversation system message. `role(i)` is the role initial of
+ * host message `i`. Anchors past `length` have no place.
  */
-function anchorPlaces(length: number, isReply: (index: number) => boolean): number[] {
+function anchorPlaces(length: number, role: (index: number) => string): number[] {
   const place = new Array<number>(length + 1);
   place[length] = length;
-  for (let i = length - 1; i >= 0; i--) place[i] = isReply(i) ? i : place[i + 1];
+  for (let i = length - 1; i >= 0; i--) {
+    const initial = role(i);
+    const ahead = initial === 'a' || (initial === 's' && place[i + 1] === i + 1);
+    place[i] = ahead ? i : place[i + 1];
+  }
   return place;
 }
 
@@ -187,7 +198,8 @@ function groupEntries(
  * of its own messages; the ledger never copies them.
  *
  * An entry renders before the first assistant message at or after its anchor,
- * the reply to the request that carried it. Until that reply exists it is
+ * the reply to the request that carried it, and ahead of the host's own
+ * system messages right before that. Until that reply exists it is
  * provisional and renders at the current tail; once answered, the group it
  * rendered in is fixed. Finality is read off the history, not stored.
  *
@@ -363,6 +375,31 @@ export class PrefixLedger {
   }
 
   /**
+   * The entries of the group an entry anchored at `anchor` joins, oldest
+   * first: what the request being built says there so far.
+   */
+  entriesAt(anchor: number): PrefixEntry[] {
+    const at = this.places()[anchor];
+    return (at === undefined ? undefined : this.groups().get(at)) ?? [];
+  }
+
+  /**
+   * Whether turn-scoped entries appended at `anchor` along with `candidates`
+   * would be sent as turn-scoped system messages. A positional system message
+   * needs a user turn right before it — the group's own user event, or a user
+   * or tool message ahead of the group; without one the group says its
+   * system entries as user messages, which cannot be turn-scoped.
+   */
+  turnScopedAt(anchor: number, candidates: readonly PrefixCandidate[]): boolean {
+    const at = this.places()[anchor];
+    if (at === undefined) return false;
+    const group = [...(this.groups().get(at) ?? []), ...candidates];
+    if (group.some((entry) => entry.channel === 'user')) return true;
+    const { window, starts } = this.render();
+    return followsUserTurn(starts[at], (k) => window[k].role.charAt(0));
+  }
+
+  /**
    * Concept three: a rewrite of what was already sent, applied to the history
    * being compiled. `hostIndex` is a host index: the first host message that
    * changed, or for a compaction `head.cut`, the first message kept. The
@@ -535,20 +572,26 @@ export class PrefixLedger {
   /** Where an entry anchored at each host index renders, over the history being compiled. */
   private places(): number[] {
     const history = this.history;
-    return anchorPlaces(history.length, (i) => history[i].role === 'assistant');
+    return anchorPlaces(history.length, (i) => history[i].role.charAt(0));
   }
 
   private groups(): Map<number, PrefixEntry[]> {
     return groupEntries(this.entries, this.places());
   }
 
-  /** The window, and the messages each group rendered as, by the host index it renders before. */
-  private render(): { window: Message[]; groups: Map<number, Message[]> } {
+  /**
+   * The window; the messages each group rendered as, by the host index it
+   * renders before; and where in the window a group before each host index
+   * starts (`starts[i]`, from `head.cut` on).
+   */
+  private render(): { window: Message[]; groups: Map<number, Message[]>; starts: number[] } {
     const history = this.history;
     const groups = this.groups();
     const window: Message[] = [...(this._head?.replacement ?? [])];
     const rendered = new Map<number, Message[]>();
+    const starts: number[] = [];
     for (let i = this.cut; i <= history.length; i++) {
+      starts[i] = window.length;
       const group = groups.get(i);
       if (group) {
         const afterUserTurn = followsUserTurn(window.length, (k) => window[k].role.charAt(0));
@@ -558,7 +601,7 @@ export class PrefixLedger {
       }
       if (i < history.length) window.push(history[i]);
     }
-    return { window, groups: rendered };
+    return { window, groups: rendered, starts };
   }
 
   private digestOf(message: Message): string {
@@ -591,10 +634,10 @@ export class PrefixLedger {
     const { head, seen } = committed;
     const cut = head?.cut ?? 0;
     const length = cut + seen.length;
-    // An entry kept past a compaction has no reply before the cut, or it was summarized.
+    // An entry kept past a compaction renders after the cut, or it was summarized.
     const groups = groupEntries(
       committed.entries,
-      anchorPlaces(length, (i) => i >= cut && isReplyDigest(seen[i - cut])),
+      anchorPlaces(length, (i) => (i >= cut ? seen[i - cut].charAt(0) : 'u')),
     );
     const keys = (head?.replacement ?? []).map(digest);
     for (let i = cut; i <= length; i++) {

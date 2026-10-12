@@ -297,12 +297,19 @@ function replaceEventGroup(
  * everything appended at one place as one user message and one positional
  * system message, and that group replaces the one the `prefix` phase
  * rendered there.
+ *
+ * With `clearAt` on Anthropic, the system-channel sources are turn-scoped
+ * reminders in every request instead, rendered as one more system message.
+ * A reminder needs a user turn right before it; a request without one (an
+ * empty window, a compile right after a reply) goes without.
  */
 function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCompile): Message[] {
   const { ledger } = prefix;
   const { isAnthropicTarget } = ctx.target;
   const channelOf = (channel: AnnouncementChannel): PrefixEntry['channel'] =>
     announcementChannel(channel, isAnthropicTarget) === 'system' ? 'system' : 'user';
+  const anchor = eventAnchor(prefix.history, ledger.head?.cut ?? 0);
+  const turnScoped = prefix.clearAt ? { anchor } : undefined;
 
   const standing = host.announcements;
   const ids = new Set(standing.map((a) => a.id));
@@ -314,7 +321,7 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
   const dynamicStateXml = host.dynamicStateXml;
   const implicitContextXml = ctx.implicitContextXml;
 
-  const stated = sourceEvents(ledger, [
+  const sources: PushSource[] = [
     {
       source: 'dynamic-state',
       current: dynamicStateXml
@@ -341,7 +348,8 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
       }),
     ),
     ...retracted.map((id) => announcementSource(id)),
-  ]);
+  ];
+  const stated = sourceEvents(ledger, sources, turnScoped);
   // The `handoff` phase only sets the notice once per window: it is news every time it is here.
   const notice = ctx.handoffNotice;
   if (notice) {
@@ -352,20 +360,32 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
     });
   }
   // Skill instructions and memory introduce themselves: no anchor line for them, as in 4.x.
-  const anchors = (['user', 'system'] as const)
-    .filter((channel) => stated.some((event) => event.channel === channel))
-    .map((channel) => ({ channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] }));
-  const events = [
+  // One for each message that states something: user, system, turn-scoped system.
+  const anchors: PrefixCandidate[] = [];
+  for (const [channel, clearAt] of [
+    ['user', false],
+    ['system', false],
+    ['system', true],
+  ] as const) {
+    if (!stated.some((event) => event.channel === channel && !!event.clearAt === clearAt)) continue;
+    const anchorLine = { channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] };
+    anchors.push(clearAt ? { ...anchorLine, clearAt } : anchorLine);
+  }
+  let events = [
     ...ctx.skillEvents,
     ...ctx.memoryEvents,
     ...stated,
     ...anchors,
-    ...sourceEvents(ledger, [guardrailSource(ctx)]),
+    ...sourceEvents(ledger, [guardrailSource(ctx)], turnScoped),
   ];
+  // With no user turn right before it, a reminder would be said as a user message, which
+  // cannot be turn-scoped: it waits for the next request that has one.
+  if (events.some((event) => event.clearAt) && !ledger.turnScopedAt(anchor, events)) {
+    events = events.filter((event) => !event.clearAt);
+  }
 
   let messages = ctx.messages;
   if (events.length > 0) {
-    const anchor = eventAnchor(prefix.history, ledger.head?.cut ?? 0);
     const before = ledger.renderedAt(anchor);
     ledger.append(events, anchor);
     const trailing = prefix.history.length - anchor + ctx.guardrailMessages.length;

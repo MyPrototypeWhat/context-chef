@@ -12,13 +12,17 @@ export {
 export {
   AnthropicAdapter,
   type AnthropicAdapterOptions,
+  type AnthropicCompactionBlock,
   type AnthropicServerContextManagement,
+  anthropicCompactionMessage,
   anthropicServerContextManagement,
+  type FromAnthropicOptions,
   fromAnthropic,
 } from './adapters/anthropicAdapter';
 export {
   auditAnthropicCachePlacement,
   type CacheAuditIssue,
+  type CacheAuditOptions,
 } from './adapters/anthropicCacheAudit';
 export { fromGemini, GeminiAdapter, type GeminiAdapterOptions } from './adapters/geminiAdapter';
 export { fromOpenAI, OpenAIAdapter, type OpenAIAdapterOptions } from './adapters/openAIAdapter';
