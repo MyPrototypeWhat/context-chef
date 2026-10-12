@@ -843,7 +843,8 @@ export class Janitor {
    *   open breaker, since a blocking strategy is never applied while it is
    *   open and so can never earn its way out. The breaker counts the overflow,
    *   not the step: a chain whose fallback rescues the window has succeeded,
-   *   however loudly its first strategy failed.
+   *   however loudly its first strategy failed — unless a step landed
+   *   `partial`, whose own failure stays counted.
    * - The window lineage moves forward exactly when a result lands, so
    *   `windowId` identifies a window that really existed.
    *
@@ -934,7 +935,9 @@ export class Janitor {
     // zero — whichever step of a chain did the work. A summarize() that threw
     // still warns and still counted, but a reset() that rescued the window
     // behind it must not be locked out three failures later. A partial result
-    // landed without the step it needed, so what that step counted stays.
+    // landed without a step it needed, so what that step counted stays — even
+    // when a later step, a reset() say, rescued the window. `background()`
+    // credits its job before that step runs, so the count is that step's alone.
     if (!result.meta.partial) this._consecutiveFailures = 0;
 
     // This result is entering the window: it closes the window the strategy

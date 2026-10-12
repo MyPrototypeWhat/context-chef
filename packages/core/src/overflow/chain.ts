@@ -4,6 +4,7 @@
  */
 
 import type { Message } from '../types';
+import { extractPinnedMessages } from './turns';
 import { type OverflowInput, type OverflowResult, type OverflowStrategy, unchanged } from './types';
 
 /**
@@ -48,9 +49,10 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
         for (const message of result.span) span.add(message);
         summary = result.summary;
         // Pinned messages that are still in the window stay protected for the
-        // strategies that come after this one.
-        const inWindow = new Set(history);
-        pinned = input.pinned.filter((m) => inWindow.has(m));
+        // strategies that come after this one. Read off the window as the
+        // runner reads its own: a landed background job put back its copies,
+        // not the objects the host handed in.
+        pinned = extractPinnedMessages(history);
 
         if (input.tokenizer(history) <= input.budget.trigger) {
           reason = undefined;

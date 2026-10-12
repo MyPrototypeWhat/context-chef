@@ -540,6 +540,48 @@ describe('chain()', () => {
 
     expect(result.meta).toMatchObject({ changed: true, partial: true });
   });
+
+  it.each([
+    ['without appendOnly', {}],
+    ['under appendOnly', { appendOnly: true as const }],
+  ])('keeps for the next step what a landed job put back as pinned, though the host handed in copies (%s)', async (_, mode) => {
+    const inBackground = background(
+      summarize({
+        compressionModel: async () => '<summary>S1</summary>',
+        split: 'recent-turns',
+        preserveRecentMessages: 1,
+      }),
+    );
+    const [strategy] = attached(chain(inBackground, reset()));
+    const source: Message[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2', pinned: true },
+      { role: 'assistant', content: 'a2' },
+      { role: 'user', content: 'q3' },
+    ];
+    await strategy.apply(
+      makeInput({ history: source, pinned: extractPinnedMessages(source), ...mode }),
+    );
+    await vi.waitFor(() => {
+      if (!inBackground.pendingJob?.settled) throw new Error('not settled');
+    });
+
+    // The job lands [S1, q2, q3, a3, q4], its q2 the object it read, not the host's copy. That
+    // is still over the trigger, so reset() runs on it.
+    const current: Message[] = [
+      ...source.map((message) => ({ ...message })),
+      { role: 'assistant', content: 'a3' },
+      { role: 'user', content: 'q4' },
+    ];
+    const result = await strategy.apply(
+      makeInput({ history: current, pinned: extractPinnedMessages(current), ...mode }),
+    );
+
+    expect(result.meta.strategy).toBe('chain(background(summarize)>reset)');
+    expect(result.history[0].content).toContain('Context window reset');
+    expect(result.history.slice(1).map((message) => message.content)).toEqual(['q2']);
+  });
 });
 
 describe('background()', () => {

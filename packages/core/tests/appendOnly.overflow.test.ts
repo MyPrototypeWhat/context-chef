@@ -1033,6 +1033,17 @@ const stuckFirst = (compressionModel: CompressionModel) => {
   );
 };
 
+/** `inBackground`, its model throwing on the calls listed (1 is the first). */
+const failingOn =
+  (...failing: number[]) =>
+  (compressionModel: CompressionModel) => {
+    let calls = 0;
+    return inBackground(async (messages) => {
+      if (failing.includes(++calls)) throw new Error('model down');
+      return compressionModel(messages);
+    });
+  };
+
 /** `converse`, letting a background job finish between compiles. */
 async function converseSettling<P extends TargetPayload = AnthropicPayload>(
   chef: ContextChef,
@@ -1274,6 +1285,37 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
     expect(payloads[4].messages[0]).toEqual(text('user', SUMMARY(1)));
     expect(payloads[4].messages).toHaveLength(18);
     expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+  });
+
+  it('credits the job before its refit: a failure counted before the job does not stay', async () => {
+    // The job started at q4 fails. The one started at q5 lands at q12, and summarizing what it
+    // leaves fails.
+    const { chef } = chefWith({}, failingOn(1, 3));
+
+    const payloads = await converseSettling(chef, [1, 2, 3, 4, 5, 12].map(asked));
+
+    expect(payloads[5].messages[0]).toEqual(text('user', SUMMARY(1)));
+    expect(payloads[5].messages).toHaveLength(16);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+  });
+
+  it('leaves the breaker shut after a refit fails one failure short of it', async () => {
+    const { chef } = chefWith({}, failingOn(2));
+    const fresh = chef.snapshot();
+    chef.restore({
+      ...fresh,
+      modules: { ...fresh.modules, janitor: { ...fresh.modules.janitor, consecutiveFailures: 2 } },
+    });
+
+    // The job started at q4 lands at q11, and summarizing what it leaves fails.
+    const payloads = await converseSettling(chef, [1, 2, 3, 4, 11].map(asked));
+    expect(payloads[4].messages).toHaveLength(16);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+
+    // At q12 that window, 18 messages, is past the raw window again: it is summarized, not sent.
+    const [next] = await converse(chef, [asked(12)]);
+    expect(next.messages).toEqual([text('user', SUMMARY(2)), text('user', 'q12')]);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
   });
 
   it('reads no report once a checkpoint changed the request it came back for', async () => {

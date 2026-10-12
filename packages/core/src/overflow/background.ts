@@ -157,13 +157,15 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
    * overflow, covering what either summarized and leaving what the second
    * left. When the second changes nothing, the job still lands, but `partial`:
    * the window is past the raw context window all the same, and whatever
-   * failure the second counted stays counted.
+   * failure the second counted stays counted. The job is credited before the
+   * second runs, so that failure is the only one counted.
    */
   const fitLanded = async (
     landed: OverflowResult,
     input: OverflowInput,
   ): Promise<OverflowResult> => {
     if (input.tokenizer(landed.history) <= input.budget.limit) return landed;
+    runner.succeed();
     const steps = built.get(landed) ?? [landed];
     const again = await inner.apply({
       ...input,
