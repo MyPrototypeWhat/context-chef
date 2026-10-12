@@ -130,9 +130,9 @@ async function overflowWindow(
  *
  * Waiting consumes no reported usage, so the compile that ends the turn
  * still acts on it — except one that predates the last landing, which the
- * first reading after it drops (E10), waiting or not. The reported usage
- * describes the previous request, so the window being sent is also counted
- * here, and the larger of the two decides.
+ * first reading after it drops (E10), waiting or not. A report describes the
+ * request it came back for, so what was added to the window since the last
+ * committed one is counted on top of it.
  */
 function compactionTiming(
   prefix: PrefixCompile,
@@ -143,8 +143,8 @@ function compactionTiming(
   if (!inToolTurn(prefix)) return 'now';
   if (forced) return 'collapse';
   host.dropStaleUsage();
-  const { current, limit } = host.readBudget(window);
-  return Math.max(current, host.estimateTokens(window)) > limit ? 'collapse' : 'wait';
+  const { current, limit } = host.readRequestBudget(window, window.slice(prefix.ledger.stable()));
+  return current > limit ? 'collapse' : 'wait';
 }
 
 /**

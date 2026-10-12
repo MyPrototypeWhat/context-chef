@@ -1,3 +1,5 @@
+import type { Message } from '../types';
+
 /**
  * A fast, zero-dependency token estimator.
  * While exact token counting requires model-specific tokenizers (like `tiktoken` or Anthropic's tokenizer),
@@ -39,4 +41,26 @@ export function estimateObject(obj: unknown): number {
     return estimate(obj);
   }
   return estimate(JSON.stringify(obj, skipDuplicateContent));
+}
+
+/**
+ * What one attachment counts for in {@link estimateMessages}: about an image
+ * at the size Anthropic scales images down to. Providers bill media by their
+ * own formulas (image tiles, document pages), and the base64 counted as text
+ * would overstate an image hundreds of times.
+ */
+export const ATTACHMENT_TOKENS = 1_600;
+
+/**
+ * {@link estimateObject} over messages, with each attachment at a flat
+ * {@link ATTACHMENT_TOKENS} instead of its data.
+ */
+export function estimateMessages(messages: readonly Message[]): number {
+  let attachments = 0;
+  const text = JSON.stringify(messages, (key, value) => {
+    if (key !== 'attachments') return skipDuplicateContent(key, value);
+    attachments += Array.isArray(value) ? value.length : 0;
+    return undefined;
+  });
+  return estimate(text) + attachments * ATTACHMENT_TOKENS;
 }

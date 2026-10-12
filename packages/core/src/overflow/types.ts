@@ -103,7 +103,8 @@ export interface OverflowInput {
    * tool turn is still going, and the model asked for a new window or the
    * window outgrew the raw context window. Keep no turn: summarize every one,
    * the turn in progress included, into the summary message (pinned messages
-   * still go back after it). Read by the built-in strategies.
+   * still go back after it) — but a tool call still waiting for its result,
+   * which the result must follow. Read by the built-in strategies.
    */
   collapse?: true;
   /**

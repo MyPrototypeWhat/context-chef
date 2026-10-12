@@ -1086,8 +1086,8 @@ export class ContextChef {
       readBudget(history) {
         return chef.janitor.readBudget(history);
       },
-      estimateTokens(history) {
-        return chef.janitor.estimateTokens(history);
+      readRequestBudget(history, appended) {
+        return chef.janitor.readRequestBudget(history, appended);
       },
       dropStaleUsage() {
         chef.janitor.dropStaleUsage();

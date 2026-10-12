@@ -464,6 +464,51 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     expect(collapsed.messages).toEqual([text('user', SUMMARY(1))]);
   });
 
+  it.each([
+    ['with', true],
+    ['without', false],
+  ])('counts an attachment at a flat cost, so a screenshot loop keeps waiting (%s usage reports)', async (_, reports) => {
+    // A 300 KB PNG per step: its base64 counted as text would be some 120,000 tokens.
+    const shot = (id: string): Message => ({
+      role: 'tool',
+      content: 'screenshot',
+      tool_call_id: id,
+      attachments: [{ mediaType: 'image/png', data: 'A'.repeat(400_000) }],
+    });
+    const { chef, compressionModel, breaks } = chefWith({ janitor: { contextWindow: 200_000 } });
+    const history: Message[] = [user('Click through the app.')];
+    await converse(chef, [history]);
+
+    for (let i = 1; i <= 3; i++) {
+      history.push(call(`t${i}`, `SIG_C${i}`), shot(`t${i}`));
+      // What the provider reported for the request before this one.
+      if (reports) chef.reportTokenUsage(3000 * i);
+      await converse(chef, [[...history]]);
+    }
+
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(breaks).toEqual([]);
+  });
+
+  it.each([
+    ['feedFirst', 'waits', 0],
+    ['max', 'collapses', 1],
+    ['tokenizerFirst', 'collapses', 1],
+  ] as const)('respects usagePreference %s: the window being sent %s', async (usagePreference, _, summaries) => {
+    const steps: Message[][] = [[user('q1')]];
+    for (let i = 1; i <= 5; i++) {
+      steps.push([...steps[i - 1], call(`t${i}`, `SIG_C${i}`), result(`t${i}`, `r${i}`)]);
+    }
+    const { chef, compressionModel } = chefWith({ janitor: { ...JANITOR, usagePreference } });
+    await converse(chef, steps.slice(0, 5));
+
+    // 11 messages are 110 by the tokenizer; 30 reported plus the 2 sent since are 50.
+    chef.reportTokenUsage(30);
+    await converse(chef, [steps[5]]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(summaries);
+  });
+
   it('collapses the whole window into one user message once it outgrows the raw window', async () => {
     const steps: Message[][] = [[user('q1')]];
     for (let i = 1; i <= 5; i++) {
@@ -517,6 +562,31 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     expect(next.messages).toEqual([...collapsed.messages, answer(2), text('user', 'q3')]);
   });
 
+  it('keeps a tool call still waiting for its result when it collapses, so the result follows it', async () => {
+    const pending = [...asked(2), call('t1', 'SIG_C1')];
+    const { chef, compressionModel } = chefWith();
+    await converse(chef, [asked(1), asked(2)]);
+
+    chef.requestNewContext();
+    const [collapsed, next] = await converse(chef, [pending, [...pending, result('t1', 'r1')]]);
+
+    // The call was signed over what the summary replaced: it goes without its thinking.
+    const unsigned = {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '' },
+        { type: 'tool_use', id: 't1', name: 'search', input: {} },
+      ],
+    };
+    expect(summarized(compressionModel, 1)).toEqual(asked(2));
+    expect(collapsed.messages).toEqual([text('user', SUMMARY(1)), unsigned]);
+    expect(collapsed.meta?.prefix?.break).toEqual({ ...COMPACTED, strippedThinking: 1 });
+    expect(next.messages).toEqual([
+      ...collapsed.messages,
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r1' }] },
+    ]);
+  });
+
   it('keeps the request a new window asked for between turns answers', async () => {
     const { chef } = chefWith();
     await converse(chef, [asked(1), asked(2)]);
@@ -560,6 +630,26 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
       const payloads = await converse(chef, steps);
 
       expect(payloads[5].messages).toEqual([text('user', RESET(payloads[4].meta?.windowId))]);
+    });
+
+    it('keeps a tool call still waiting for its result after the notice', async () => {
+      const pending = [...asked(2), call('t1', 'SIG_C1')];
+      const { chef } = chefWith({ overflow: undefined });
+      const [, before] = await converse(chef, [asked(1), asked(2)]);
+
+      chef.requestNewContext();
+      const [collapsed] = await converse(chef, [pending]);
+
+      expect(collapsed.messages).toEqual([
+        text('user', RESET(before.meta?.windowId)),
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: '' },
+            { type: 'tool_use', id: 't1', name: 'search', input: {} },
+          ],
+        },
+      ]);
     });
   });
 });

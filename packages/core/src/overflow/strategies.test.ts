@@ -230,6 +230,26 @@ describe('summarize()', () => {
     expect(result.span).toEqual(messages);
   });
 
+  it('keeps a tool call still waiting for its result when it collapses the window', async () => {
+    const [strategy] = attached(summarize({ compressionModel: model }));
+    const call: Message = {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        { id: 't1', type: 'function', function: { name: 'search', arguments: '{}' } },
+        { id: 't2', type: 'function', function: { name: 'search', arguments: '{}' } },
+      ],
+    };
+    // One of its two results is in.
+    const answered: Message = { role: 'tool', content: 'r1', tool_call_id: 't1' };
+    const messages = [...history(3), call, answered];
+
+    const result = await strategy.apply(makeInput({ history: messages, collapse: true }));
+
+    expect(result.history.slice(1)).toEqual([call, answered]);
+    expect(result.span).toEqual(history(3));
+  });
+
   it('declines a forced overflow with only the pending turn in the window', async () => {
     const [strategy] = attached(summarize({ compressionModel: model }));
 

@@ -212,6 +212,25 @@ function forcedSplit(history: Message[]): number | null {
 }
 
 /**
+ * Where a COLLAPSE cuts (`appendOnly`, a window that cannot wait): after every
+ * turn, the one in progress included — except a tool call still waiting for
+ * a result, which stays as the first kept turn. The result arrives next, and
+ * it needs its call before it.
+ */
+function collapseSplit(history: Message[]): number {
+  const turns = groupIntoTurns(history);
+  for (let t = turns.length - 1; t >= 0; t--) {
+    const { startIndex, endIndex } = turns[t];
+    const first = history[startIndex];
+    if (first.role === 'system') continue;
+    const answered = new Set(history.slice(startIndex + 1, endIndex).map((m) => m.tool_call_id));
+    const waiting = first.tool_calls?.some((call) => !answered.has(call.id)) ?? false;
+    return waiting ? startIndex : history.length;
+  }
+  return history.length;
+}
+
+/**
  * The engine behind {@link summarize} and `anchored()`.
  *
  * @internal Construct it through the factories — they are the public surface.
@@ -256,9 +275,8 @@ export class SummarizingStrategy implements OverflowStrategy {
 
   async apply(input: OverflowInput): Promise<OverflowResult> {
     const { history } = input;
-    // Collapsing keeps no turn: the one in progress goes into the summary too.
     const splitIndex = input.collapse
-      ? history.length
+      ? collapseSplit(history)
       : input.forced
         ? forcedSplit(history)
         : this.splitIndex(input);
@@ -266,9 +284,11 @@ export class SummarizingStrategy implements OverflowStrategy {
       return unchanged(
         input,
         this.name,
-        input.forced
-          ? 'a forced overflow needs a turn to compress and a turn to answer in — the window holds one'
-          : 'no turn boundary above the preserved tail',
+        input.collapse
+          ? 'nothing to collapse ahead of the tool call waiting for its result'
+          : input.forced
+            ? 'a forced overflow needs a turn to compress and a turn to answer in — the window holds one'
+            : 'no turn boundary above the preserved tail',
       );
     }
 
@@ -293,7 +313,7 @@ export class SummarizingStrategy implements OverflowStrategy {
       }
       const notice = resetNotice(input.window);
       return {
-        history: [renderSummaryMessage(notice), ...pinnedInSpan],
+        history: [renderSummaryMessage(notice), ...pinnedInSpan, ...toKeep],
         evicted,
         span: toCompress,
         summary: notice,

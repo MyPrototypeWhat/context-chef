@@ -21,7 +21,7 @@ import {
 } from '../../overflow/types';
 import { Prompts } from '../../prompts';
 import type { ChefLogger, CompactOptions, Message } from '../../types';
-import { estimateObject } from '../../utils/tokenUtils';
+import { estimateMessages, estimateObject } from '../../utils/tokenUtils';
 import { LEGACY_VOCABULARY, type Vocabulary } from '../../vocabulary';
 
 /**
@@ -747,12 +747,36 @@ export class Janitor {
   }
 
   /**
-   * The runner's own count of `history` — the configured tokenizer, or the
-   * built-in heuristic — leaving out the reported usage, which describes a
-   * request already sent.
+   * The budget of the request about to be sent, read before the usage report
+   * that will describe it: for a caller deciding whether the window still
+   * fits (`appendOnly`, while a compaction waits for a tool turn to end).
+   *
+   * `current` is the last reported usage plus a local count of `appended`,
+   * the messages that report does not cover yet; with no report, a local
+   * count of the whole `history`. The local count is the tokenizer, or the
+   * built-in heuristic with each attachment at a flat `ATTACHMENT_TOKENS`.
+   * `usagePreference` applies as in {@link readBudget}: `'tokenizerFirst'`
+   * ignores the report, and under `'max'` a tokenizer's count of the whole
+   * history wins when it is larger. Consumes nothing.
    */
-  public estimateTokens(history: Message[]): number {
-    return (this.config.tokenizer ?? estimateObject)(history);
+  public readRequestBudget(history: Message[], appended: Message[]): BudgetInfo {
+    const limit = this.config.contextWindow;
+    const trigger = limit * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
+    const { tokenizer, usagePreference = 'max' } = this.config;
+    const count = tokenizer ?? estimateMessages;
+    const fed = usagePreference === 'tokenizerFirst' ? null : this._externalTokenUsage;
+
+    let current: number;
+    if (fed === null) {
+      current = count(history);
+    } else if (tokenizer && usagePreference === 'max') {
+      // A tokenizer's count of the whole history is a second opinion; the larger wins.
+      current = Math.max(tokenizer(history), fed + tokenizer(appended));
+    } else {
+      current = fed + count(appended);
+    }
+
+    return { limit, current, trigger, remaining: trigger - current };
   }
 
   /**

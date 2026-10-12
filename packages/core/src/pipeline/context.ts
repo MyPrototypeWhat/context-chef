@@ -270,8 +270,12 @@ export interface PipelineHost {
   ): Promise<OverflowResult>;
   /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
   readBudget(history: Message[]): BudgetInfo;
-  /** The runner's own count of `history`, without the reported usage. */
-  estimateTokens(history: Message[]): number;
+  /**
+   * The runner's reading of the request about to be sent: the last reported
+   * usage plus a local count of `appended`, what that report does not cover.
+   * Consumes nothing.
+   */
+  readRequestBudget(history: Message[], appended: Message[]): BudgetInfo;
   /**
    * Drops a reported usage that may predate the last landed compression,
    * once (E10), as the runner's own budget check does.
