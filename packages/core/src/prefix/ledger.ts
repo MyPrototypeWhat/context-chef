@@ -251,7 +251,10 @@ export class PrefixLedger {
   private history: readonly Message[] = [];
   /** Set by `reset()`: the next `reconcile()` applies a `ledger` checkpoint at 0. */
   private restarted = false;
-  /** Leading window messages the last usage report covers: the window committed when it came. */
+  /**
+   * Leading window messages the last usage report covers: the window
+   * committed when it came, cut back to what every commit since kept of it.
+   */
   private _reported?: number;
   /**
    * From the first `reconcile()` after a commit until the next commit: the
@@ -307,8 +310,10 @@ export class PrefixLedger {
   /**
    * A usage report came back for the window last committed: until the next
    * one, the report covers that many leading messages of the window, however
-   * many compiles commit after it without a report. Survives a rollback — the
-   * report describes what was sent, not what a failed compile built.
+   * many compiles commit after it without a report — fewer once one of them
+   * commits a window that changed a message it covered, since the report
+   * never saw the new one. Survives a rollback — the report describes what
+   * was sent, not what a failed compile built.
    */
   markReported(): void {
     this._reported = this.keys(this.pending?.committed ?? this.capture()).length;
@@ -533,8 +538,12 @@ export class PrefixLedger {
     return Math.min(same, this.pending?.at ?? same);
   }
 
-  /** Records what a compile used: digests of `history` from `head.cut` on, and `sent`. */
+  /**
+   * Records what a compile used: digests of `history` from `head.cut` on, and
+   * `sent`. The last usage report no longer covers what this window changed.
+   */
   commit(history: readonly Message[], sent?: PrefixSent): void {
+    if (this._reported !== undefined) this._reported = Math.min(this._reported, this.stable());
     this.history = [...history];
     this.seen = history.slice(this.cut).map((message) => this.digestOf(message));
     if (sent) this._lastSent = plainSent(sent);

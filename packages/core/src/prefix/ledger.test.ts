@@ -1055,6 +1055,24 @@ describe('PrefixLedger — usage reports', () => {
     ledger.reset();
     expect(ledger.reported).toBeUndefined();
   });
+
+  it('keeps it through a failed compile, and cuts it back to what a commit kept', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 3)); // [q1, r1, q2]
+    ledger.markReported();
+    const edited = [turns[0], assistant('r1 (edited)'), turns[2]];
+
+    // Nothing a failed compile built was sent: the report still covers [q1, r1, q2].
+    ledger.reconcile(edited);
+    ledger.rollback();
+    expect(ledger.reported).toBe(3);
+
+    // The same length, r1 changed: the report covers q1 alone, whatever is appended after it.
+    compile(ledger, edited);
+    expect(ledger.reported).toBe(1);
+    compile(ledger, [...edited, ...turns.slice(3, 5)]);
+    expect(ledger.reported).toBe(1);
+  });
 });
 
 describe('PrefixLedger — snapshot', () => {

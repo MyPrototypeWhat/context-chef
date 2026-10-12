@@ -132,7 +132,8 @@ async function overflowWindow(
  * still acts on it — except one that predates the last landing, which the
  * first reading after it drops (E10), waiting or not. A report describes the
  * request it came back for, possibly several compiles ago, so everything the
- * window gained since that request is counted on top of it.
+ * window gained since that request, or changed in what it held, is counted on
+ * top of it.
  */
 function compactionTiming(
   prefix: PrefixCompile,
@@ -143,8 +144,12 @@ function compactionTiming(
   if (!inToolTurn(prefix)) return 'now';
   if (forced) return 'collapse';
   host.dropStaleUsage();
-  // A usage fed past `reportTokenUsage()` is taken to cover the window last committed.
-  const covered = prefix.ledger.reported ?? prefix.ledger.stable();
+  // A report covers no message this compile changed. A usage fed past
+  // `reportTokenUsage()` is taken to cover the window last committed.
+  const covered = Math.min(
+    prefix.ledger.reported ?? Number.POSITIVE_INFINITY,
+    prefix.ledger.stable(),
+  );
   const { current, limit } = host.readRequestBudget(window, window.slice(covered));
   return current > limit ? 'collapse' : 'wait';
 }

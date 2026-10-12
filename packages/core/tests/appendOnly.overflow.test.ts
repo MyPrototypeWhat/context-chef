@@ -521,28 +521,39 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
       content: 'x'.repeat(8000),
       tool_call_id: id,
     });
-    const steps: Message[][] = [[user('Read every file.')]];
+    const task = user('Read every file.');
+    const steps: Message[][] = [[task]];
     for (let i = 1; i <= 6; i++) {
       steps.push([...steps[i - 1], call(`t${i}`, `SIG_C${i}`), read(`t${i}`)]);
     }
 
-    /** Model calls after each compile of steps 1–6, each compiled `times` times. */
-    async function collapses(reports: 'every' | 'once' | 'none', times = 1): Promise<number[]> {
+    /**
+     * Model calls after each compile of `histories` from the second on, each
+     * compiled `times` times. `reported(i)` says whether usage came back for
+     * the request before history `i`.
+     */
+    async function modelCalls(
+      histories: Message[][],
+      reported: (i: number) => boolean,
+      times = 1,
+    ): Promise<number[]> {
       const { chef, compressionModel } = chefWith({ janitor: { contextWindow: 10_000 } });
-      await converse(chef, [steps[0]]);
+      await converse(chef, [histories[0]]);
       const calls: number[] = [];
-      for (let i = 1; i <= 6; i++) {
+      for (let i = 1; i < histories.length; i++) {
         // What the provider reported for the request before this one, counted the same way.
-        if (reports === 'every' || (reports === 'once' && i === 1)) {
-          chef.reportTokenUsage(estimateMessages(steps[i - 1]));
-        }
+        if (reported(i)) chef.reportTokenUsage(estimateMessages(histories[i - 1]));
         for (let n = 0; n < times; n++) {
-          await converse(chef, [steps[i]]);
+          await converse(chef, [histories[i]]);
           calls.push(compressionModel.mock.calls.length);
         }
       }
       return calls;
     }
+
+    /** Model calls after each compile of steps 1–6, each compiled `times` times. */
+    const collapses = (reports: 'every' | 'once' | 'none', times = 1) =>
+      modelCalls(steps, (i) => reports === 'every' || (reports === 'once' && i === 1), times);
 
     it.each([
       'every',
@@ -554,6 +565,58 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
 
     it('reads a retry the same way as the compile before it', async () => {
       expect(await collapses('once', 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]);
+    });
+
+    describe('and never a message the host changed since', () => {
+      // 2,558 reported for `running`; the result that replaced its placeholder is 12,015.
+      const running = [...steps[1], call('t2', 'SIG_C2'), result('t2', 'running…')];
+      const filled = [...steps[1], call('t2', 'SIG_C2'), result('t2', 'x'.repeat(40_000))];
+
+      it('counts a tool result filled in since the report', async () => {
+        expect(await modelCalls([steps[0], steps[1], running, filled], () => true)).toEqual([
+          0, 0, 1,
+        ]);
+      });
+
+      it('collapses the first compile of it, so a rejected request is not sent again', async () => {
+        // The provider rejects a request past the raw window: nothing comes back for it.
+        const histories = [steps[0], steps[1], running, filled, filled, filled];
+        expect(await modelCalls(histories, (i) => i <= 3)).toEqual([0, 0, 1, 1, 1]);
+      });
+
+      it('counts a tool step the host ran again since the report', async () => {
+        // 2,559 reported for `failed`; the step that replaced its last two messages is 12,071.
+        const failed = [...steps[1], call('t2', 'SIG_C2'), result('t2', 'Error: timeout')];
+        const rerun = [...steps[1], call('t3', 'SIG_C3'), result('t3', 'x'.repeat(40_000))];
+
+        expect(await modelCalls([steps[0], steps[1], failed, rerun], () => true)).toEqual([
+          0, 0, 1,
+        ]);
+      });
+
+      it('counts what took the place of a step dropped since the report', async () => {
+        const two = [task, call('t1', 'SIG_C1'), result('t1', 'x'.repeat(2000))];
+        two.push(call('t2', 'SIG_C2'), result('t2', 'x'.repeat(2000)));
+        const one = two.slice(0, 3);
+        const grown = [...one, call('t3', 'SIG_C3'), result('t3', 'x'.repeat(20_000))];
+        grown.push(call('t4', 'SIG_C4'), result('t4', 'x'.repeat(20_000)));
+
+        // 1,355 reported for `two`, of which `grown` still starts with 3 messages: 1,355 +
+        // 12,142 is past the raw window. Its last 2 messages alone (6,071) would fit.
+        expect(await modelCalls([steps[0], two, one, grown], (i) => i === 2)).toEqual([0, 0, 1]);
+      });
+
+      it('counts a message edited in a compile that fit, once a later one does not', async () => {
+        const placeholder = [task, call('t1', 'SIG_C1'), result('t1', 'running…')];
+        const edited = [...placeholder.slice(0, 2), result('t1', 'x'.repeat(25_000))];
+        const next = [...edited, call('t2', 'SIG_C2'), result('t2', 'x'.repeat(12_000))];
+
+        // 87 reported for `placeholder`, and nothing since. `edited`, the same length, waits
+        // at 87 + 7,515; `next` is 87 + 11,186. Its last 2 messages alone (3,671) would fit.
+        expect(await modelCalls([steps[0], placeholder, edited, next], (i) => i === 2)).toEqual([
+          0, 0, 1,
+        ]);
+      });
     });
   });
 
