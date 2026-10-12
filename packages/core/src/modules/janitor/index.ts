@@ -16,6 +16,7 @@ import {
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
+  type OverflowWire,
   type WindowLineage,
 } from '../../overflow/types';
 import { Prompts } from '../../prompts';
@@ -780,12 +781,19 @@ export class Janitor {
    *   post-compression suppression) and applies the strategy regardless — the
    *   `new_context` path. The circuit breaker still applies: a strategy that
    *   just failed three times in a row does not get hammered on request.
+   *   `collapse` and `wire` go to the strategy as they are
+   *   ({@link OverflowInput}); the compile pipeline sets them under `appendOnly`.
    */
   public async overflow(
     history: Message[],
-    options: { signal?: AbortSignal; force?: boolean } = {},
+    options: {
+      signal?: AbortSignal;
+      force?: boolean;
+      collapse?: boolean;
+      wire?: OverflowWire;
+    } = {},
   ): Promise<OverflowResult> {
-    const { signal, force = false } = options;
+    const { signal, force = false, collapse = false, wire } = options;
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
       evicted: [],
@@ -832,6 +840,8 @@ export class Janitor {
       pinned: extractPinnedMessages(prepared.history),
       window: this._window,
       forced: force,
+      ...(collapse ? { collapse: true as const } : {}),
+      ...(wire ? { wire } : {}),
       signal,
     });
     if (!result.meta.changed) return result;

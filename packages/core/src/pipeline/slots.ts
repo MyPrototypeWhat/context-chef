@@ -34,7 +34,11 @@ export interface SlotHandlers {
     budget: BudgetInfo;
     // biome-ignore lint/suspicious/noConfusingVoidType: `void | false` is the veto contract — a handler returns nothing, or false to skip overflow.
   }) => void | false | Promise<void | false>;
-  /** Runs after the overflow phase. `result` is null when the phase was skipped. */
+  /**
+   * Runs after the overflow phase. `result` is null when the phase was
+   * skipped, or under `appendOnly` while a compaction waits for a tool turn
+   * to end.
+   */
   'after-overflow': (ctx: {
     history: Message[];
     result: OverflowResult | null;

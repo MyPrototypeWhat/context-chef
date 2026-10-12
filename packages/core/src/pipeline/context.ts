@@ -2,7 +2,13 @@ import type { Announcement, ChefConfig, ChefEvents, SkillPlacement, ToolsMode } 
 import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
 import type { Memory, MemoryEntry } from '../modules/memory';
-import type { BudgetInfo, HandoffConfig, OverflowResult, WindowLineage } from '../overflow/types';
+import type {
+  BudgetInfo,
+  HandoffConfig,
+  OverflowResult,
+  OverflowWire,
+  WindowLineage,
+} from '../overflow/types';
 import type { PrefixCandidate, PrefixLedger, PrefixMeta, PrefixSent } from '../prefix';
 import type {
   CompileMeta,
@@ -255,9 +261,13 @@ export interface PipelineHost {
 
   /**
    * One overflow pass through the Janitor runner (client-side overflow).
-   * `force` applies the strategy whatever the budget says.
+   * `force` applies the strategy whatever the budget says; `collapse` and
+   * `wire` are handed to it (`OverflowInput`).
    */
-  overflow(history: Message[], signal?: AbortSignal, force?: boolean): Promise<OverflowResult>;
+  overflow(
+    history: Message[],
+    options: { signal?: AbortSignal; force?: boolean; collapse?: boolean; wire?: OverflowWire },
+  ): Promise<OverflowResult>;
   /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
   readBudget(history: Message[]): BudgetInfo;
   /**

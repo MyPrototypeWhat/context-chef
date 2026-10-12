@@ -435,7 +435,9 @@ export class PrefixLedger {
    * `'compaction'` only), it replaces `host[0, cut)`: entries rendering before
    * `host[cut]` went into the summary, later ones stay where they are. `seen`
    * is cut back to what still holds until the next `commit()`. Unless the head
-   * is signed, thinking in `host[hostIndex, length)` is stripped for good.
+   * is signed, thinking in `host[hostIndex, length)` is stripped for good, and
+   * so is the thinking of host messages the replacement carries over (pinned
+   * ones put back after a summary, found by identity).
    *
    * `system` and `tools` change what comes before every message, not the
    * messages: entries, `seen` and the head stay, and `hostIndex` is `head.cut`
@@ -478,10 +480,14 @@ export class PrefixLedger {
     const signed = head?.signed ?? false;
     const stripped: Range | undefined =
       !signed && hostIndex < length ? [hostIndex, length] : undefined;
+    // Host messages an unsigned head puts back after its summary (pinned ones)
+    // were signed over what the summary replaced, too.
+    const carried = head && !signed ? this.carriedOver(head) : [];
     // Indices past the history are forgotten: a message appended there later is a new one.
     this._stripped = mergeRanges([
       ...this._stripped.map(([from, until]): Range => [from, Math.min(until, length)]),
       ...(stripped ? [stripped] : []),
+      ...carried,
     ]);
 
     // Every entry kept renders before host[hostIndex].
@@ -591,6 +597,15 @@ export class PrefixLedger {
       return { reason: 'ledger', hostIndex: history.length };
     }
     return undefined;
+  }
+
+  /** The host messages before `head.cut` that `head.replacement` carries, one range each. */
+  private carriedOver(head: PrefixHead): Range[] {
+    const before = this.history.slice(0, head.cut);
+    return head.replacement.flatMap((message): Range[] => {
+      const index = before.indexOf(message);
+      return index === -1 ? [] : [[index, index + 1]];
+    });
   }
 
   /** Where an entry anchored at each host index renders, over the history being compiled. */

@@ -7,7 +7,7 @@
  * events stay with the runner ({@link Janitor}) — a strategy is pure policy.
  */
 
-import type { ChefLogger, Message } from '../types';
+import type { ChefLogger, Message, TargetPayload } from '../types';
 
 /**
  * Token budget of one compile, as read by the overflow runner.
@@ -98,7 +98,39 @@ export interface OverflowInput {
    * leaving only what the pending request needs.
    */
   forced?: boolean;
+  /**
+   * `appendOnly`: the window cannot wait for the turn in progress to end — a
+   * tool turn is still going, and the model asked for a new window or the
+   * window outgrew the raw context window. Keep no turn: summarize every one,
+   * the turn in progress included, into the summary message (pinned messages
+   * still go back after it). Read by the built-in strategies.
+   */
+  collapse?: true;
+  /**
+   * `appendOnly`, on a target whose provider signs a compaction over what was
+   * sent: `history` as the previous requests sent it. Absent before anything
+   * was sent, and on other targets. Read by signed strategies.
+   */
+  wire?: OverflowWire;
   signal?: AbortSignal;
+}
+
+/**
+ * The window as it went over the wire, for a strategy whose checkpoint the
+ * provider signs over those bytes (an on-demand compaction).
+ */
+export interface OverflowWire {
+  /** The compile target the bytes are for (`'anthropic'`). */
+  readonly target: string;
+  /**
+   * `history[0, end)` as the target payload sent it — same messages, the
+   * thinking unsigned checkpoints stripped left out — with the system prompt
+   * and tools the last payload carried. `end` indexes the `history` the
+   * overflow phase handed the runner, before any `onBeforeCompress` hook.
+   * Request-level betas the strategy adds itself; the payload carries only
+   * the ones its messages need.
+   */
+  renderPrefix(end: number): TargetPayload;
 }
 
 /** What a strategy did to the window. */

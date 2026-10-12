@@ -812,7 +812,7 @@ describe('appendOnly: where events go', () => {
     const [payload] = await converse(chef, [turn1]);
 
     const moved = warn.mock.calls.filter(([message]) =>
-      String(message).includes('an after-assemble handler moved or rewrote the events'),
+      String(message).includes('the events at the end of the window were moved or rewritten'),
     );
     expect(moved).toHaveLength(1);
     expect(contents(payload)).toEqual([

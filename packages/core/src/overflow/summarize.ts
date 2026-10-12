@@ -254,7 +254,12 @@ export class SummarizingStrategy implements OverflowStrategy {
 
   async apply(input: OverflowInput): Promise<OverflowResult> {
     const { history } = input;
-    const splitIndex = input.forced ? forcedSplit(history) : this.splitIndex(input);
+    // Collapsing keeps no turn: the one in progress goes into the summary too.
+    const splitIndex = input.collapse
+      ? history.length
+      : input.forced
+        ? forcedSplit(history)
+        : this.splitIndex(input);
     if (splitIndex === null || splitIndex <= 0) {
       return unchanged(
         input,

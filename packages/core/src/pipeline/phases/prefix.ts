@@ -22,17 +22,15 @@ function thinkingBlocks(message: Message): number {
   return (message.thinking ? 1 : 0) + (message.redacted_thinking ? 1 : 0);
 }
 
-/** Thinking blocks in the host range `brk` stripped that no earlier checkpoint had stripped. */
-function newlyStrippedThinking(
-  history: readonly Message[],
-  brk: PrefixBreak,
-  strippedBefore: ReadonlyArray<readonly [number, number]>,
-): number {
-  if (!brk.stripped) return 0;
-  const [from, until] = brk.stripped;
+type Ranges = ReadonlyArray<readonly [number, number]>;
+
+/** Thinking blocks in host messages the ranges stripped `now` cover and `before` did not. */
+function newlyStrippedThinking(history: readonly Message[], now: Ranges, before: Ranges): number {
   let count = 0;
-  for (let i = from; i < until; i++) {
-    if (!strippedBefore.some(([f, u]) => f <= i && i < u)) count += thinkingBlocks(history[i]);
+  for (const [from, until] of now) {
+    for (let i = from; i < until; i++) {
+      if (!before.some(([f, u]) => f <= i && i < u)) count += thinkingBlocks(history[i]);
+    }
   }
   return count;
 }
@@ -66,16 +64,22 @@ function prefixMeta(stable: number, breaks: PrefixCompile['breaks']): PrefixMeta
 }
 
 /**
- * Reports a checkpoint this compile applied: `prefix:break` now, and
+ * Reports a checkpoint this compile just applied: `prefix:break` now, and
  * `meta.prefix.break` once the payload exists. `strippedBefore` is
  * `ledger.stripped` from before the checkpoint, so only the thinking it newly
  * strips is counted, and only on the Anthropic target — the one that strips.
+ *
+ * The event carries the window the checkpoint applied to: a `history` or
+ * `ledger` checkpoint, found before overflow, the window the compile started
+ * in; a compaction the window it opens, as `CompileMeta.windowId` does; a
+ * `system` or `tools` checkpoint, found once the payload exists, the
+ * payload's window.
  */
 export async function reportPrefixBreak(
   ctx: CompileContext,
   host: PipelineHost,
   brk: PrefixBreak,
-  strippedBefore: ReadonlyArray<readonly [number, number]>,
+  strippedBefore: Ranges,
 ): Promise<void> {
   const prefix = ctx.prefix;
   if (!prefix) {
@@ -88,7 +92,7 @@ export async function reportPrefixBreak(
     at: brk.at,
     signed: brk.signed,
     strippedThinking: ctx.target.isAnthropicTarget
-      ? newlyStrippedThinking(prefix.history, brk, strippedBefore)
+      ? newlyStrippedThinking(prefix.history, prefix.ledger.stripped, strippedBefore)
       : 0,
   };
   prefix.breaks.push(reported);

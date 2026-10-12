@@ -202,6 +202,34 @@ describe('summarize()', () => {
     expect(forced.span).toHaveLength(4);
   });
 
+  it('summarizes every turn, the last one included, when it collapses the window', async () => {
+    const [strategy] = attached(
+      summarize({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: 3 }),
+    );
+    const input = makeInput({ collapse: true, forced: true });
+
+    const result = await strategy.apply(input);
+
+    expect(result.meta.changed).toBe(true);
+    expect(result.history).toHaveLength(1);
+    expect(result.history[0].content).toContain('THE SUMMARY');
+    expect(result.span).toEqual(input.history);
+    expect(result.evicted).toEqual(input.history);
+  });
+
+  it('still puts pinned messages back after the summary when it collapses', async () => {
+    const [strategy] = attached(summarize({ compressionModel: model }));
+    const messages = history(5);
+    messages[1] = { ...messages[1], pinned: true };
+
+    const result = await strategy.apply(
+      makeInput({ history: messages, pinned: [messages[1]], collapse: true }),
+    );
+
+    expect(result.history.slice(1)).toEqual([messages[1]]);
+    expect(result.span).toEqual(messages);
+  });
+
   it('declines a forced overflow with only the pending turn in the window', async () => {
     const [strategy] = attached(summarize({ compressionModel: model }));
 

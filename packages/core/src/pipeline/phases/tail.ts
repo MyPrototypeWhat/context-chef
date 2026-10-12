@@ -251,9 +251,11 @@ function guardrailSource(ctx: CompileContext): PushSource {
  * `messages` with the event group at the end of the window — `before`, as
  * the `prefix` phase rendered it — replaced by `after`, the same group with
  * this compile's `events` in it. Only `trailing` messages follow that group:
- * the prefill the history ends with, if any, then the guardrail's. If an
- * `after-assemble` handler moved or rewrote the group, only `events` go in
- * front of those, so nothing it left is sent twice.
+ * the prefill the history ends with, if any, then the guardrail's. If a slot
+ * handler moved or rewrote the group — an `after-assemble` one, or one that
+ * edited the history in place (overflow itself only ever hands on the
+ * ledger's window) — only `events` go in front of those, so nothing it left
+ * is sent twice.
  */
 function replaceEventGroup(
   messages: Message[],
@@ -275,10 +277,11 @@ function replaceEventGroup(
 
   host.warnOnce(
     'append-only-events-moved',
-    '[context-chef] appendOnly: an after-assemble handler moved or rewrote the events at the ' +
-      "end of the window, so this compile's new events were added there on their own. " +
-      'The payload no longer matches the window the ledger records, so the next compile may ' +
-      'not start with it (warned once).',
+    '[context-chef] appendOnly: the events at the end of the window were moved or rewritten ' +
+      'after the ledger rendered them — by an after-assemble handler, or a slot handler that ' +
+      "edited the history in place — so this compile's new events were added there on their " +
+      'own. The payload no longer matches the window the ledger records, so the next compile ' +
+      'may not start with it (warned once).',
   );
   const added = renderGroup(
     events,

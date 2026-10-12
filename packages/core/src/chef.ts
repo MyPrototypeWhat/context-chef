@@ -414,6 +414,14 @@ export interface ChefConfig {
    * again; with `clearAt` (see {@link AppendOnlyConfig}) the system-channel
    * sources become turn-scoped reminders.
    *
+   * Overflow reads the window, and a compaction that lands is a checkpoint
+   * too: its summary (with the pinned messages it put back) replaces the
+   * messages it summarized in every later window, and the window is not
+   * summarized again until it is over budget once more. While a tool turn is
+   * in progress it waits for the turn to end, unless the window outgrew the
+   * raw `contextWindow` or a new one was asked for ({@link requestNewContext});
+   * then the whole window, the turn in progress included, becomes one summary.
+   *
    * `true` is `{}`. Off by default, which compiles exactly what 4.x compiles.
    * Persist `snapshot().prefixLedger` along with the history when the chef
    * does not outlive a request.
@@ -558,10 +566,16 @@ export interface ChefEvents {
   /**
    * `appendOnly`: something rewrote what was already sent, and this compile
    * applied it as a checkpoint. `at` is the window index of the first message
-   * it changed — `0` when the system prompt or tools did; unless `signed`, the
-   * thinking from there on is invalid, and `strippedThinking` counts the
-   * blocks dropped for it (Anthropic only). A compile that fails after
-   * reporting one is rolled back, so the next compile reports it again.
+   * it changed — `0` when the system prompt or tools did, or a compaction;
+   * unless `signed`, the thinking from there on is invalid, and
+   * `strippedThinking` counts the blocks dropped for it (Anthropic only). A
+   * compile that fails after reporting one is rolled back, so the next
+   * compile reports it again.
+   *
+   * `windowId` is the window the checkpoint applied to. A compaction opens a
+   * new one and carries its id, the payload's `CompileMeta.windowId`; a
+   * `history` or `ledger` checkpoint found before it in the same compile
+   * carries the id of the window that compile started in.
    */
   'prefix:break': NonNullable<PrefixMeta['break']> & { windowId?: string };
 }
@@ -1061,8 +1075,8 @@ export class ContextChef {
       get handoff() {
         return chef._handoff;
       },
-      overflow(history, signal, force) {
-        return chef.janitor.overflow(history, { signal, force });
+      overflow(history, options) {
+        return chef.janitor.overflow(history, options);
       },
       readBudget(history) {
         return chef.janitor.readBudget(history);
@@ -1762,6 +1776,10 @@ export class ContextChef {
    * The request is consumed by one compile, whether or not the window actually
    * changed (a strategy may decline; the circuit breaker may be open). Call it
    * again if it must be retried.
+   *
+   * With `appendOnly`, a request made in the middle of a tool turn — the
+   * history the next compile sees ends in tool results — collapses the whole
+   * window, that turn included, into one summary.
    */
   public requestNewContext(): this {
     this._forceOverflow = true;

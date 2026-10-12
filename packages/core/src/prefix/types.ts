@@ -120,7 +120,9 @@ export interface PrefixBreak {
   readonly signed: boolean;
   /**
    * The host range `[from, until)` this checkpoint stripped thinking from.
-   * Absent when signed or empty. It may overlap ranges stripped earlier.
+   * Absent when signed or empty. It may overlap ranges stripped earlier. An
+   * unsigned compaction also strips the host messages its head carries over,
+   * which `PrefixLedger.stripped` holds and this range does not.
    */
   readonly stripped?: readonly [number, number];
 }
