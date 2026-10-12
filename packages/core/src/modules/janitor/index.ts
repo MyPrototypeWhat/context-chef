@@ -845,10 +845,10 @@ export class Janitor {
    *   post-compression suppression) and applies the strategy regardless — the
    *   `new_context` path. The circuit breaker still applies: a strategy that
    *   just failed three times in a row does not get hammered on request.
-   *   `appendOnly`, `collapse` and `wire` go to the strategy as they are
-   *   ({@link OverflowInput}); the compile pipeline sets them under `appendOnly`.
-   *   `collapse` skips the budget test too: the caller found that the window
-   *   cannot wait.
+   *   `appendOnly`, `pastLimit`, `collapse` and `wire` go to the strategy as
+   *   they are ({@link OverflowInput}); the compile pipeline sets them under
+   *   `appendOnly`. `pastLimit` and `collapse` skip the budget test too: the
+   *   caller read the request about to be sent and found that it cannot wait.
    */
   public async overflow(
     history: Message[],
@@ -856,11 +856,19 @@ export class Janitor {
       signal?: AbortSignal;
       force?: boolean;
       appendOnly?: boolean;
+      pastLimit?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;
     } = {},
   ): Promise<OverflowResult> {
-    const { signal, force = false, appendOnly = false, collapse = false, wire } = options;
+    const {
+      signal,
+      force = false,
+      appendOnly = false,
+      pastLimit = false,
+      collapse = false,
+      wire,
+    } = options;
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
       evicted: [],
@@ -888,7 +896,7 @@ export class Janitor {
       );
     }
 
-    const regardless = force || collapse;
+    const regardless = force || pastLimit || collapse;
     const prepared = await this._prepareOverflow(history, regardless);
     // The swap-in path runs under a plain reading: `_prepareOverflow` declined
     // to overflow, and the strategy is being called only to let the finished
@@ -909,6 +917,7 @@ export class Janitor {
       window: this._window,
       forced: force,
       ...(appendOnly ? { appendOnly: true as const } : {}),
+      ...(pastLimit ? { pastLimit: true as const } : {}),
       ...(collapse ? { collapse: true as const } : {}),
       ...(wire ? { wire } : {}),
       signal,

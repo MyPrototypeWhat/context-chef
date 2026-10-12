@@ -2,7 +2,7 @@
  * `background()` — summarize off-turn and swap the result in later.
  */
 
-import { sameContent } from '../pipeline/checks';
+import { wireDigest } from '../prefix/ledger';
 import type { Message } from '../types';
 import { messagesEquivalent } from './turns';
 import {
@@ -50,10 +50,11 @@ function commonSuffixLength(a: readonly Message[], b: readonly Message[]): numbe
  *
  * The `appendOnly` window only grows at its end until a checkpoint rewrites
  * it, so there a job is fresh exactly while `source` is still the start of
- * the window, message for message as `checkPrefixContinuity` compares them —
- * the ledger renders its events anew on every compile. A 4.x history may be
- * recreated and compacted in place, so only the two ends of the span are
- * compared, by content.
+ * the window: every message the same on the wire, as the ledger compares
+ * them — it renders its events anew on every compile, and a host may move a
+ * cache breakpoint — and pinned exactly when it was, since the job
+ * summarized what was not. A 4.x history may be recreated and compacted in
+ * place, so only the two ends of the span are compared, by content.
  */
 function stillApplies(
   source: readonly Message[],
@@ -64,7 +65,12 @@ function stillApplies(
   if (input.appendOnly) {
     return (
       source.length <= history.length &&
-      source.every((message, i) => message === history[i] || sameContent(message, history[i]))
+      source.every(
+        (message, i) =>
+          message === history[i] ||
+          (!message.pinned === !history[i].pinned &&
+            wireDigest(message) === wireDigest(history[i])),
+      )
     );
   }
   return (
@@ -100,9 +106,12 @@ export interface BackgroundOverflowStrategy extends OverflowStrategy {
  * job starts and lands only there, never while a tool turn is in progress.
  * It still applies while the window it ran on is the start of the current
  * one — the window only grew; a checkpoint that rewrote anything in it, the
- * turns the job kept included, makes it stale. A window that collapses
- * cannot wait for a job: `inner` collapses it on the spot, and the job, on
- * an earlier window, is dropped.
+ * turns the job kept included, makes it stale. Two windows cannot wait a
+ * compile for a job. One that collapses gets `inner` on the spot, and any
+ * job, on an earlier window, is dropped. A request past the raw context
+ * window (`pastLimit`) takes a finished job that still applies, and
+ * otherwise gets `inner` on the spot too, in place of a job starting, in
+ * flight or gone stale.
  *
  * Background state does not survive `snapshot()` / `restore()`.
  */
@@ -112,6 +121,20 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
   const name = `background(${inner.name})`;
   /** A result this strategy returned → the inner result it was built from, for `commit`. */
   const rebased = new WeakMap<OverflowResult, OverflowResult>();
+
+  /**
+   * `inner` applied on this compile, reported under this strategy's name, for
+   * a window that cannot wait for a job. Any job is dropped; a finished one
+   * did its work, it just has no window left to land in.
+   */
+  const now = async (input: OverflowInput): Promise<OverflowResult> => {
+    if (job?.result?.meta.changed) runner.succeed();
+    job = undefined;
+    const result = await inner.apply(input);
+    const named: OverflowResult = { ...result, meta: { ...result.meta, strategy: name } };
+    rebased.set(named, result);
+    return named;
+  };
 
   const start = (input: OverflowInput): void => {
     const started: BackgroundJob = { settled: false, result: null, source: input.history };
@@ -156,18 +179,8 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
     name,
 
     async apply(input: OverflowInput): Promise<OverflowResult> {
-      if (input.collapse) {
-        // A finished job did its work; the collapse only leaves it no window to land in.
-        if (job?.result?.meta.changed) runner.succeed();
-        job = undefined;
-        const collapsed = await inner.apply(input);
-        const named: OverflowResult = { ...collapsed, meta: { ...collapsed.meta, strategy: name } };
-        rebased.set(named, collapsed);
-        return named;
-      }
-      if (job) {
-        // Job still running — don't stack a second evaluation on top of it.
-        if (!job.settled) return unchanged(input, name, 'background compression in flight');
+      if (input.collapse) return now(input);
+      if (job?.settled) {
         const finished = job;
         job = undefined;
         const swapped = swapIn(finished, input);
@@ -181,10 +194,14 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
         // is not over the trigger: the runner then called in only to give the
         // finished job its chance, and starting another one would buy a
         // summary nobody asked for.
-        if (!input.forced && input.budget.remaining >= 0) {
+        if (!input.forced && !input.pastLimit && input.budget.remaining >= 0) {
           return unchanged(input, name, 'within budget — the finished job no longer applies');
         }
+      } else if (job && !input.pastLimit) {
+        // Job still running — don't stack a second evaluation on top of it.
+        return unchanged(input, name, 'background compression in flight');
       }
+      if (input.pastLimit) return now(input);
       start(input);
       return unchanged(input, name, 'background compression started');
     },

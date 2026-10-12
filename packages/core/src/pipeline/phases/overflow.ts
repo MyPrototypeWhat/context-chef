@@ -109,6 +109,7 @@ async function overflowWindow(
     signal: ctx.signal,
     force: forced,
     appendOnly: true,
+    pastLimit: timing === 'past-limit',
     collapse: timing === 'collapse',
     wire: wireOf(ctx, prefix),
   });
@@ -124,26 +125,39 @@ async function overflowWindow(
 
 /**
  * `appendOnly`: when a compaction may land (D3). Between turns, as in 4.x.
- * While a tool turn is in progress it waits for the turn to end: the turns it
- * keeps lose their thinking, and the one in progress still needs it. It
- * cannot wait once the model asked for a new window or the window being sent
- * is past the raw context window; then it collapses the whole window.
- *
- * Waiting consumes no reported usage, so the compile that ends the turn
- * still acts on it — except one that predates the last landing, which the
- * first reading after it drops (E10), waiting or not. A report describes the
- * request it came back for, possibly several compiles ago, so everything the
- * window gained since that request, or changed in what it held, is counted on
- * top of it.
+ * There, once the request about to be sent is past the raw context window
+ * (`'past-limit'`), nothing may wait for a later compile, a background job
+ * included, and the runner's own verdict, which may read only an earlier
+ * report, does not decide. While a tool turn is in progress
+ * it waits for the turn to end: the turns it keeps lose their thinking, and
+ * the one in progress still needs it. It cannot wait once the model asked
+ * for a new window or the request is past the raw context window; then it
+ * collapses the whole window.
  */
 function compactionTiming(
   prefix: PrefixCompile,
   host: PipelineHost,
   window: Message[],
   forced: boolean,
-): 'now' | 'wait' | 'collapse' {
-  if (!inToolTurn(prefix)) return 'now';
-  if (forced) return 'collapse';
+): 'now' | 'past-limit' | 'wait' | 'collapse' {
+  const midTurn = inToolTurn(prefix);
+  if (midTurn && forced) return 'collapse';
+  const past = pastLimit(prefix, host, window);
+  if (!midTurn) return past ? 'past-limit' : 'now';
+  return past ? 'collapse' : 'wait';
+}
+
+/**
+ * Whether the request about to be sent is past the raw context window.
+ *
+ * Reading consumes no reported usage, so a compile that waits leaves it for
+ * the one that ends the turn — except one that predates the last landing,
+ * which the first reading after it drops (E10). A report describes the
+ * request it came back for, possibly several compiles ago, so everything the
+ * window gained since that request, or changed in what it held, is counted on
+ * top of it.
+ */
+function pastLimit(prefix: PrefixCompile, host: PipelineHost, window: Message[]): boolean {
   host.dropStaleUsage();
   // A report covers no message this compile changed. A usage fed past
   // `reportTokenUsage()` is taken to cover the window last committed.
@@ -152,7 +166,7 @@ function compactionTiming(
     prefix.ledger.stable(),
   );
   const { current, limit } = host.readRequestBudget(window, window.slice(covered));
-  return current > limit ? 'collapse' : 'wait';
+  return current > limit;
 }
 
 /**

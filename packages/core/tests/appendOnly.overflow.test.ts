@@ -1022,24 +1022,32 @@ describe('appendOnly overflow: an event stays with the turn it follows', () => {
   });
 });
 
-describe('appendOnly overflow: background() lands a job while the window only grew', () => {
-  const inBackground = (compressionModel: CompressionModel) =>
-    background(keepLast(1)(compressionModel));
+const inBackground = (compressionModel: CompressionModel) =>
+  background(keepLast(1)(compressionModel));
 
-  /** `converse`, letting a background job finish between compiles. */
-  async function converseSettling<P extends TargetPayload = AnthropicPayload>(
-    chef: ContextChef,
-    turns: Message[][],
-    target = 'anthropic',
-  ): Promise<P[]> {
-    const payloads: P[] = [];
-    for (const history of turns) {
-      payloads.push(...(await converse<P>(chef, [history], target)));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    return payloads;
+/** `inBackground`, its first job never finishing. */
+const stuckFirst = (compressionModel: CompressionModel) => {
+  let calls = 0;
+  return inBackground((messages) =>
+    ++calls === 1 ? new Promise<string>(() => {}) : compressionModel(messages),
+  );
+};
+
+/** `converse`, letting a background job finish between compiles. */
+async function converseSettling<P extends TargetPayload = AnthropicPayload>(
+  chef: ContextChef,
+  turns: Message[][],
+  target = 'anthropic',
+): Promise<P[]> {
+  const payloads: P[] = [];
+  for (const history of turns) {
+    payloads.push(...(await converse<P>(chef, [history], target)));
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  return payloads;
+}
 
+describe('appendOnly overflow: background() lands a job while the window only grew', () => {
   it('lands the job at the next compile, its events rendered anew, the turns since kept', async () => {
     const { chef, compressionModel, breaks } = chefWith({}, inBackground);
     chef.setDynamicState(State, { step: 1 });
@@ -1123,14 +1131,49 @@ describe('appendOnly overflow: background() lands a job while the window only gr
     expect(breaks.map((b) => b.reason)).toEqual(['history', 'compaction']);
   });
 
+  it('lands on Anthropic without the thinking of the turns it kept and the turns since', async () => {
+    const { chef, breaks, invariants } = chefWith({}, (model) => background(keepLast(3)(model)));
+
+    // The job starts at asked(4) and keeps [q3, a3, q4]; a4 and q5 arrive before it lands.
+    const payloads = await converseSettling(chef, [1, 2, 3, 4, 5, 6].map(asked));
+
+    expect(payloads[4].messages).toEqual([
+      text('user', SUMMARY(1)),
+      text('user', 'q3'),
+      text('assistant', 'a3'),
+      text('user', 'q4'),
+      text('assistant', 'a4'),
+      text('user', 'q5'),
+    ]);
+    expect(payloads[4].meta?.prefix?.break).toEqual({ ...COMPACTED, strippedThinking: 2 });
+    expect(signatures(payloads[5])).toEqual(['SIG_5']);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+    expectAppendOnly(payloads.slice(0, 4));
+    expectAppendOnly(payloads.slice(4));
+    expect(invariants).toEqual([]);
+  });
+
+  it('lands a job however the host moved what no provider is sent, a cache breakpoint here', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+    // The host marks its newest message for caching, on a copy, every compile.
+    const marked = (n: number) =>
+      asked(n).map((m, i, all) => (i === all.length - 1 ? { ...m, _cache_breakpoint: true } : m));
+
+    const payloads = await converseSettling<OpenAIPayload>(
+      chef,
+      [1, 2, 3, 4, 5, 6, 7, 8].map(marked),
+      'openai',
+    );
+
+    // Jobs start at 7 and 8 messages (q4, q7) and land on the next compile.
+    expect(payloads.map((p) => p.messages.length)).toEqual([2, 4, 6, 8, 5, 7, 9, 5]);
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction', 'compaction']);
+  });
+
   it('collapses a tool turn that cannot wait at once, whatever job is running', async () => {
     // The job started at q4 never finishes.
-    const { chef, compressionModel } = chefWith({}, (model) => {
-      let calls = 0;
-      return inBackground((messages) =>
-        ++calls === 1 ? new Promise<string>(() => {}) : model(messages),
-      );
-    });
+    const { chef, compressionModel } = chefWith({}, stuckFirst);
     const loop = [...asked(4), call('t1', 'SIG_C1'), result('t1', 'r1')];
     await converseSettling(chef, [asked(1), asked(2), asked(3), asked(4)]);
 
@@ -1141,6 +1184,65 @@ describe('appendOnly overflow: background() lands a job while the window only gr
     expect(summarized(compressionModel, 1)).toEqual(loop);
     expect(collapsed.messages).toEqual([text('user', SUMMARY(1))]);
     expect(collapsed.meta?.prefix?.break?.reason).toBe('compaction');
+  });
+});
+
+describe('appendOnly overflow: a request past the raw window at a turn boundary lands now', () => {
+  it('summarizes at once when a background job would only start', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+
+    // The host compiles again only at q7: 13 messages, past the raw window of 10.
+    const payloads = await converseSettling(chef, [asked(1), asked(2), asked(7)]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[2].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q7')]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('summarizes at once rather than wait for the job in flight', async () => {
+    const { chef, compressionModel } = chefWith({}, stuckFirst);
+
+    // The job started at q4 never finishes; q5 (9 messages) still fits, q6 (11) does not.
+    const payloads = await converseSettling(chef, [1, 2, 3, 4, 5, 6].map(asked));
+
+    expect(payloads[4].messages).toHaveLength(9);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(summarized(compressionModel, 1)).toEqual(asked(6).slice(0, 10));
+    expect(payloads[5].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q6')]);
+  });
+
+  it('summarizes at once in place of a job a checkpoint made stale', async () => {
+    const { chef, compressionModel, breaks } = chefWith({}, inBackground);
+    const edited = asked(6).map((m) => (m.content === 'q2' ? user('q2, edited') : m));
+
+    const payloads = await converseSettling(chef, [asked(1), asked(2), asked(3), asked(4), edited]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(summarized(compressionModel, 2).map((m) => m.content)).toContain('q2, edited');
+    expect(payloads[4].messages).toEqual([text('user', SUMMARY(2)), text('user', 'q6')]);
+    expect(breaks.map((b) => b.reason)).toEqual(['history', 'compaction']);
+  });
+
+  it('summarizes what the last usage report did not see, whatever that report says', async () => {
+    // No tokenizer: the runner's own reading is the report alone.
+    const { chef, compressionModel } = chefWith({
+      janitor: { contextWindow: 1000, triggerRatio: 0.5 },
+    });
+    // The host ran a whole tool step and came back with the next question in one go.
+    const resumed = [
+      ...asked(2),
+      call('t1', 'SIG_C1'),
+      result('t1', 'x'.repeat(8000)),
+      reply('a2', 'SIG_2'),
+      user('q3'),
+    ];
+    await converse(chef, [asked(1), asked(2)]);
+
+    chef.reportTokenUsage(100);
+    const [compacted] = await converse(chef, [resumed]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(compacted.messages).toEqual([text('user', SUMMARY(1)), text('user', 'q3')]);
   });
 });
 

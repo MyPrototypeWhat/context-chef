@@ -796,6 +796,106 @@ describe("appendOnly: the chef's events in the window", () => {
       expect(strategy.pendingJob?.settled).toBe(false);
     });
 
+    it.each([
+      ['a cache breakpoint', { _cache_breakpoint: true }],
+      ['host metadata', { trace: 'request-7' }],
+    ])('lands a job however the host moved %s, which no provider is sent', async (_, field) => {
+      const [strategy] = attached(inBackground());
+      // The host puts it on a copy of the newest message, every compile.
+      await strategy.apply(
+        makeInput({
+          history: [...source.slice(0, 6), { ...source[6], ...field }],
+          appendOnly: true,
+        }),
+      );
+      await settled(strategy);
+
+      const current = [...again(source), reply('a3'), { ...user('q4'), ...field }];
+      const landed = await strategy.apply(makeInput({ history: current, appendOnly: true }));
+
+      expect(landed.meta.changed).toBe(true);
+      expect(landed.history.slice(1)).toEqual(current.slice(6));
+    });
+
+    it('drops a job once a message it summarized was pinned since', async () => {
+      const [strategy] = attached(inBackground());
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+      await settled(strategy);
+
+      const current = [...again(source), reply('a3'), user('q4')];
+      current[3] = { ...current[3], pinned: true };
+      const stale = await strategy.apply(
+        makeInput({ history: current, appendOnly: true, pinned: extractPinnedMessages(current) }),
+      );
+
+      expect(stale.meta.changed).toBe(false);
+    });
+
+    describe('when the request is past the raw context window (pastLimit)', () => {
+      const pastLimit = (messages: Message[]) =>
+        makeInput({ history: messages, appendOnly: true, pastLimit: true });
+
+      it('runs the inner strategy now instead of starting a job', async () => {
+        const [strategy] = attached(inBackground());
+
+        const now = await strategy.apply(pastLimit(source));
+
+        expect(now.meta).toMatchObject({ changed: true, strategy: 'background(summarize)' });
+        expect(now.history.slice(1)).toEqual([source[6]]);
+        expect(strategy.pendingJob).toBeUndefined();
+      });
+
+      it('runs the inner strategy now instead of waiting for the job in flight, which it drops', async () => {
+        const compressionModel = vi
+          .fn<(messages: Message[]) => Promise<string>>()
+          .mockImplementationOnce(() => new Promise<string>(() => {}))
+          .mockResolvedValue('<summary>NOW</summary>');
+        const [strategy] = attached(
+          background(
+            summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+          ),
+        );
+        await strategy.apply(makeInput({ history: source, appendOnly: true }));
+
+        const current = [...again(source), reply('a3'), user('q4')];
+        const now = await strategy.apply(pastLimit(current));
+
+        expect(now.history[0].content).toContain('NOW');
+        expect(now.history.slice(1)).toEqual([current[8]]);
+        expect(strategy.pendingJob).toBeUndefined();
+      });
+
+      it('runs the inner strategy now in place of a stale job, credited once, whatever the runner read', async () => {
+        const [strategy, runner] = attached(inBackground());
+        await strategy.apply(makeInput({ history: source, appendOnly: true }));
+        await settled(strategy);
+
+        const current = [...again(source), reply('a3'), user('q4')];
+        current[3] = { ...current[3], content: 'edited' };
+        // The runner's own reading, an earlier report, is under the trigger.
+        const now = await strategy.apply({
+          ...pastLimit(current),
+          budget: { limit: 30, current: 10, trigger: 20, remaining: 10 },
+        });
+
+        expect(now.meta.changed).toBe(true);
+        expect(now.span).toContain(current[3]);
+        expect(runner.successes).toBe(1);
+        expect(strategy.pendingJob).toBeUndefined();
+      });
+
+      it('still lands a finished job that applies: its summary is paid for', async () => {
+        const [strategy] = attached(inBackground());
+        await strategy.apply(makeInput({ history: source, appendOnly: true }));
+        await settled(strategy);
+
+        const current = [...again(source), reply('a3'), user('q4')];
+        const landed = await strategy.apply(pastLimit(current));
+
+        expect(landed.history.slice(1)).toEqual(current.slice(6));
+      });
+    });
+
     it('still compares only the ends of the span it summarized without appendOnly (4.x)', async () => {
       const [strategy] = attached(inBackground());
       await strategy.apply(makeInput({ history: history(7) }));

@@ -212,7 +212,10 @@ export interface Message {
    * the prefix ledger rendered into the window, not a host message. Overflow
    * cuts on it: `groupIntoTurns` puts an event in the turn it follows, so a
    * strategy never keeps an event without the turn it belongs to. No adapter
-   * sends it.
+   * sends it, but what overflow hands back to the host carries it
+   * (`onCompress`'s `compressedMessages`, an archived span, what a
+   * `compressionModel` is given): strip it from a stored span before loading
+   * that span back into a history, or its messages are grouped as events.
    */
   _chef_event?: true;
   /**

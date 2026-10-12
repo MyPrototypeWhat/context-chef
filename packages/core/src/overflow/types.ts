@@ -107,6 +107,14 @@ export interface OverflowInput {
    */
   appendOnly?: true;
   /**
+   * `appendOnly`, between turns: the request about to be sent is past the
+   * raw context window (`budget.limit`), by the pipeline's reading of it —
+   * the last usage report plus what that report does not cover. Nothing may
+   * wait for a later compile: a strategy that would (`background()`) acts on
+   * this one. The runner skips its own budget verdict.
+   */
+  pastLimit?: true;
+  /**
    * `appendOnly`: the window cannot wait for the turn in progress to end — a
    * tool turn is still going, and the model asked for a new window or the
    * window outgrew the raw context window. Keep no turn: summarize every one,

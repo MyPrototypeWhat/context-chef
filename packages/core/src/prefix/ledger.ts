@@ -55,16 +55,18 @@ function sameAsKept(value: unknown, kept: unknown): boolean {
 }
 
 /**
- * Digest of the fields of a host message that reach some provider's wire.
- * Anything else — breakpoints, pinning, host metadata — is not an edit.
- * `_anthropic_origin` counts by identity: dropping or replacing it makes the
- * Anthropic target rebuild the message from IR instead of replaying it.
+ * Digest of the fields of a message that reach some provider's wire: two
+ * messages with the same digest are the same message to the model. Anything
+ * else — breakpoints, pinning, host metadata, the `_chef_event` mark — is not
+ * an edit. `_anthropic_origin` counts by identity: dropping or replacing it
+ * makes the Anthropic target rebuild the message from IR instead of
+ * replaying it.
  *
  * The role's initial leads in clear: where an entry renders depends on which
  * host messages are replies, and `seen` is all a restored ledger knows of the
  * history it committed.
  */
-function digest(message: Message): string {
+export function wireDigest(message: Message): string {
   const origin = message._anthropic_origin;
   const wire = [
     message.role,
@@ -669,7 +671,7 @@ export class PrefixLedger {
   private digestOf(message: Message): string {
     let key = this.digests.get(message);
     if (key === undefined) {
-      key = digest(message);
+      key = wireDigest(message);
       this.digests.set(message, key);
     }
     return key;
@@ -706,12 +708,12 @@ export class PrefixLedger {
         opensAfterUserTurn(head),
       ),
     );
-    const keys = (head?.replacement ?? []).map(digest);
+    const keys = (head?.replacement ?? []).map(wireDigest);
     for (let i = cut; i <= length; i++) {
       const group = groups.get(i);
       if (group) {
         const afterUserTurn = followsUserTurn(keys.length, (k) => keys[k].charAt(0));
-        keys.push(...renderGroup(group, afterUserTurn).map(digest));
+        keys.push(...renderGroup(group, afterUserTurn).map(wireDigest));
       }
       if (i < length) keys.push(seen[i - cut]);
     }

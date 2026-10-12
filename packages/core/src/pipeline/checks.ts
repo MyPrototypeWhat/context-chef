@@ -130,7 +130,7 @@ export interface PrefixContinuity {
 const PREFIX_HEAD_FIELDS = ['system', 'systemInstruction', 'instructions', 'tools'] as const;
 
 /** Key order and cache breakpoints don't change what the model saw. */
-export function sameContent(a: unknown, b: unknown): boolean {
+function sameContent(a: unknown, b: unknown): boolean {
   const canonical = (value: unknown) =>
     JSON.stringify(Assembler.orderKeysDeterministically(value), (key, v) =>
       key === 'cache_control' ? undefined : v,
