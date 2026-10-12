@@ -23,6 +23,7 @@ import {
   type ChefConfig,
   type ChefEvents,
   ContextChef,
+  chain,
   checkPrefixContinuity,
   fromAnthropic,
   InMemoryBackend,
@@ -31,6 +32,7 @@ import {
   type OverflowInput,
   type OverflowStrategy,
   Prompts,
+  reset,
   server,
   summarize,
 } from '../src/index';
@@ -84,6 +86,11 @@ const answer = (i: number) => ({
 });
 /** The message the `n`th summary is sent as. */
 const SUMMARY = (n: number) => Prompts.getCompactSummaryWrapper(`SUMMARY ${n}`);
+/** The message that stands in for window `id` when it was reset rather than summarized. */
+const RESET = (id: string | undefined) =>
+  Prompts.getCompactSummaryWrapper(
+    `Context window reset (window ${id}). Earlier conversation was cleared from the window.`,
+  );
 
 const ANCHOR = Prompts.EVENT_STATE_ANCHOR;
 const State = z.object({ step: z.number() });
@@ -305,6 +312,26 @@ describe('appendOnly overflow: an unsigned compaction strips the thinking it inv
     expectAppendOnly([compacted, next]);
   });
 
+  it('strips the thinking of a head built from copies of the window', async () => {
+    // The hook hands the strategy copies: no kept message is the window's own, so the head is all of it.
+    const { chef } = chefWith(
+      { janitor: { ...JANITOR, onBeforeCompress: (history) => history.map((m) => ({ ...m })) } },
+      keepLast(3),
+    );
+
+    const [, , , compacted, next] = await converse(chef, [1, 2, 3, 4, 5].map(asked));
+
+    expect(compacted.messages).toEqual([
+      text('user', SUMMARY(1)),
+      text('user', 'q3'),
+      text('assistant', 'a3'),
+      text('user', 'q4'),
+    ]);
+    expect(compacted.meta?.prefix?.break).toEqual({ ...COMPACTED, strippedThinking: 1 });
+    expect(signatures(next)).toEqual(['SIG_4']);
+    expectAppendOnly([compacted, next]);
+  });
+
   it('strips nothing on other targets, which have no signature check', async () => {
     const pinned = [...asked(4)];
     pinned[1] = { ...pinned[1], pinned: true };
@@ -388,6 +415,55 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     expect(compacted.messages).toEqual([text('user', SUMMARY(1)), text('user', 'q3')]);
   });
 
+  it('drops a usage reported from before a landing once, also while it waits', async () => {
+    // No tokenizer: the reported usage alone puts these windows over the trigger of 500.
+    const { chef, compressionModel, breaks } = chefWith({
+      janitor: { contextWindow: 1000, triggerRatio: 0.5 },
+    });
+    const loop = [...asked(3), call('t1', 'SIG_C1'), result('t1', 'r1')];
+    const done = [...loop, reply('a3', 'SIG_3'), user('q4')];
+    await converse(chef, [asked(1), asked(2)]);
+    chef.reportTokenUsage(600);
+    await converse(chef, [asked(3)]);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+
+    // 100 for the compacted request: the first reading after the landing drops it, here while
+    // the compaction waits. 600 for the tool step's request, which the boundary compile acts on.
+    chef.reportTokenUsage(100);
+    await converse(chef, [loop]);
+    chef.reportTokenUsage(600);
+    const [compacted] = await converse(chef, [done]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(compacted.messages).toEqual([text('user', SUMMARY(2)), text('user', 'q4')]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction', 'compaction']);
+  });
+
+  it('waits while the tool call the history ends with has no result yet', async () => {
+    const { chef, compressionModel, breaks } = chefWith();
+
+    // 8 messages, the last a tool call the host has not run.
+    await converse(chef, [asked(1), asked(2), asked(3), [...loop1, call('t2', 'SIG_C2')]]);
+
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(breaks).toEqual([]);
+  });
+
+  it('collapses once the window being sent is past the raw window, however little was reported', async () => {
+    const { chef, compressionModel } = chefWith({
+      janitor: { contextWindow: 1000, triggerRatio: 0.5 },
+    });
+    const fetched = [...asked(2), call('t1', 'SIG_C1'), result('t1', 'x'.repeat(8000))];
+    await converse(chef, [asked(1), asked(2)]);
+
+    // The last request was small; this one carries some 2,400 tokens of tool output.
+    chef.reportTokenUsage(100);
+    const [collapsed] = await converse(chef, [fetched]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(collapsed.messages).toEqual([text('user', SUMMARY(1))]);
+  });
+
   it('collapses the whole window into one user message once it outgrows the raw window', async () => {
     const steps: Message[][] = [[user('q1')]];
     for (let i = 1; i <= 5; i++) {
@@ -450,6 +526,41 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
 
     expect(compacted.messages).toEqual([text('user', SUMMARY(1)), text('user', 'q3')]);
     expect(compacted.meta?.prefix?.break).toEqual({ ...COMPACTED, strippedThinking: 0 });
+  });
+
+  describe('without a compression model (the 4.x default)', () => {
+    const steps: Message[][] = [[user('q1')]];
+    for (let i = 1; i <= 5; i++) {
+      steps.push([...steps[i - 1], call(`t${i}`, `SIG_C${i}`), result(`t${i}`, `r${i}`)]);
+    }
+
+    it('leaves a reset notice in place of a window the model asked to close', async () => {
+      const asking = [
+        ...asked(2),
+        call('n1', 'SIG_N', 'new_context'),
+        result('n1', 'Starting a new context window.'),
+      ];
+      const { chef } = chefWith({ overflow: undefined });
+      const [, before] = await converse(chef, [asked(1), asked(2)]);
+
+      chef.requestNewContext();
+      const [collapsed, next] = await converse(chef, [
+        asking,
+        [...asking, reply('a2', 'SIG_2'), user('q3')],
+      ]);
+
+      expect(collapsed.messages).toEqual([text('user', RESET(before.meta?.windowId))]);
+      expect(collapsed.meta?.prefix?.break).toEqual({ ...COMPACTED, strippedThinking: 0 });
+      expect(next.messages).toEqual([...collapsed.messages, answer(2), text('user', 'q3')]);
+    });
+
+    it('leaves a reset notice in place of a window past the raw window', async () => {
+      const { chef } = chefWith({ overflow: undefined });
+
+      const payloads = await converse(chef, steps);
+
+      expect(payloads[5].messages).toEqual([text('user', RESET(payloads[4].meta?.windowId))]);
+    });
   });
 });
 
@@ -552,6 +663,56 @@ describe('appendOnly overflow: after a compaction the window is stated again', (
       ['compaction', 3],
       ['compaction', 1],
     ]);
+  });
+});
+
+describe('appendOnly overflow: strategies that keep no turn', () => {
+  it('lands reset() as a head of its notice, the pending request dropped as in 4.x', async () => {
+    const { chef, breaks } = chefWith({}, () => reset());
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5].map(asked));
+
+    expect(payloads[3].messages).toEqual([text('user', RESET(payloads[2].meta?.windowId))]);
+    expect(payloads[4].messages).toEqual([...payloads[3].messages, answer(4), text('user', 'q5')]);
+    expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([['compaction', 0]]);
+    expectAppendOnly(payloads.slice(3));
+  });
+
+  it('lands the reset() a chain falls back to, with the pinned messages after its notice', async () => {
+    const pinned = [...asked(4)];
+    pinned[2] = { ...pinned[2], pinned: true };
+    const { chef } = chefWith({}, () =>
+      chain(
+        summarize({
+          compressionModel: async () => {
+            throw new Error('model down');
+          },
+        }),
+        reset(),
+      ),
+    );
+
+    const payloads = await converse(
+      chef,
+      [1, 2, 3, 4].map((n) => pinned.slice(0, 2 * n - 1)),
+    );
+
+    expect(payloads[3].messages).toEqual([
+      text('user', RESET(payloads[2].meta?.windowId)),
+      text('user', 'q2'),
+    ]);
+  });
+
+  it('keeps only the last turn when summarize() has no compression model', async () => {
+    const { chef } = chefWith({}, () =>
+      summarize({ split: 'recent-turns', preserveRecentMessages: 1 }),
+    );
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5].map(asked));
+
+    expect(payloads[3].messages).toEqual([text('user', 'q4')]);
+    expect(payloads[3].meta?.prefix?.break).toEqual({ ...COMPACTED, strippedThinking: 0 });
+    expect(payloads[4].messages).toEqual([text('user', 'q4'), answer(4), text('user', 'q5')]);
   });
 });
 

@@ -9,6 +9,7 @@
 
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
+import { resetNotice } from './reset';
 import { renderSummaryMessage, summarizeHistory } from './summary';
 import { groupIntoTurns, type Turn } from './turns';
 import {
@@ -54,7 +55,8 @@ export interface SummarizeOptions {
   /**
    * Async hook to call a low-cost LLM (e.g. gpt-4o-mini) to summarize the
    * evicted span. Without one the span is dropped: the messages leave the
-   * window and only the runner's `onCompress` sees a placeholder summary.
+   * window and only the runner's `onCompress` sees a placeholder summary. A
+   * window collapsed under `appendOnly` keeps the `reset()` notice instead.
    *
    * Contract: may reject. A rejection counts toward the runner's circuit
    * breaker and leaves history unchanged.
@@ -283,9 +285,20 @@ export class SummarizingStrategy implements OverflowStrategy {
 
     // No compression model: drop the span, keeping pinned messages. The
     // runner reports the boundary through `onCompress` with a placeholder
-    // summary — nothing is inserted into history.
+    // summary — nothing is inserted into history. A collapsed window would be
+    // left with no turn at all, so the reset notice stands in for it.
     if (!this.options.compressionModel) {
-      return { history: [...pinnedInSpan, ...toKeep], evicted, span: toCompress, meta };
+      if (!input.collapse) {
+        return { history: [...pinnedInSpan, ...toKeep], evicted, span: toCompress, meta };
+      }
+      const notice = resetNotice(input.window);
+      return {
+        history: [renderSummaryMessage(notice), ...pinnedInSpan],
+        evicted,
+        span: toCompress,
+        summary: notice,
+        meta,
+      };
     }
 
     const summary = await this.summarizeSpan(toCompress, toKeep, input.window.current);

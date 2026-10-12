@@ -1,5 +1,11 @@
 import { withoutThinking } from '../../adapters/anthropicAdapter';
-import { type PrefixBreak, type PrefixMeta, type PrefixSent, plainSent } from '../../prefix';
+import {
+  type PrefixBreak,
+  type PrefixLedger,
+  type PrefixMeta,
+  type PrefixSent,
+  plainSent,
+} from '../../prefix';
 import type { Message, TargetPayload } from '../../types';
 import type { PrefixComparable } from '../checks';
 import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
@@ -22,15 +28,51 @@ function thinkingBlocks(message: Message): number {
   return (message.thinking ? 1 : 0) + (message.redacted_thinking ? 1 : 0);
 }
 
-type Ranges = ReadonlyArray<readonly [number, number]>;
+/**
+ * How a message's thinking is known in any copy of the message: its
+ * signature, and a redacted block's data. The phases since `prefix` work on
+ * copies, and a strategy may copy what it keeps.
+ */
+function thinkingKeys(message: Message): string[] {
+  const keys: string[] = [];
+  if (message.thinking?.signature) keys.push(`signature:${message.thinking.signature}`);
+  if (message.redacted_thinking) keys.push(`redacted:${message.redacted_thinking.data}`);
+  return keys;
+}
 
-/** Thinking blocks in host messages the ranges stripped `now` cover and `before` did not. */
-function newlyStrippedThinking(history: readonly Message[], now: Ranges, before: Ranges): number {
+/**
+ * The messages whose thinking unsigned checkpoints invalidated: host messages
+ * in a stripped range, and every message of an unsigned head. Nothing in such
+ * a head was signed over what comes before it now — a pinned message put
+ * back after the summary, or a copy a strategy kept of a later turn.
+ */
+function invalidatedMessages(history: readonly Message[], ledger: PrefixLedger): Message[] {
+  const stripped = ledger.stripped.flatMap(([from, until]) => history.slice(from, until));
+  const head = ledger.head;
+  return head && !head.signed ? [...stripped, ...head.replacement] : stripped;
+}
+
+/** The thinking `ledger` has invalidated over `history`, by key: what is never sent again. */
+export function invalidatedThinking(
+  history: readonly Message[],
+  ledger: PrefixLedger,
+): Set<string> {
+  return new Set(invalidatedMessages(history, ledger).flatMap(thinkingKeys));
+}
+
+/** Thinking blocks of the messages whose thinking is invalidated now and was not `before`. */
+function newlyStrippedThinking(
+  history: readonly Message[],
+  ledger: PrefixLedger,
+  before: ReadonlySet<string>,
+): number {
+  const counted = new Set(before);
   let count = 0;
-  for (const [from, until] of now) {
-    for (let i = from; i < until; i++) {
-      if (!before.some(([f, u]) => f <= i && i < u)) count += thinkingBlocks(history[i]);
-    }
+  for (const message of invalidatedMessages(history, ledger)) {
+    const keys = thinkingKeys(message).filter((key) => !counted.has(key));
+    if (keys.length === 0) continue;
+    for (const key of keys) counted.add(key);
+    count += thinkingBlocks(message);
   }
   return count;
 }
@@ -65,9 +107,10 @@ function prefixMeta(stable: number, breaks: PrefixCompile['breaks']): PrefixMeta
 
 /**
  * Reports a checkpoint this compile just applied: `prefix:break` now, and
- * `meta.prefix.break` once the payload exists. `strippedBefore` is
- * `ledger.stripped` from before the checkpoint, so only the thinking it newly
- * strips is counted, and only on the Anthropic target — the one that strips.
+ * `meta.prefix.break` once the payload exists. `before` is
+ * `invalidatedThinking()` from before the checkpoint, so only the thinking it
+ * newly strips is counted, and only on the Anthropic target — the one that
+ * strips.
  *
  * The event carries the window the checkpoint applied to: a `history` or
  * `ledger` checkpoint, found before overflow, the window the compile started
@@ -79,7 +122,7 @@ export async function reportPrefixBreak(
   ctx: CompileContext,
   host: PipelineHost,
   brk: PrefixBreak,
-  strippedBefore: Ranges,
+  before: ReadonlySet<string>,
 ): Promise<void> {
   const prefix = ctx.prefix;
   if (!prefix) {
@@ -92,7 +135,7 @@ export async function reportPrefixBreak(
     at: brk.at,
     signed: brk.signed,
     strippedThinking: ctx.target.isAnthropicTarget
-      ? newlyStrippedThinking(prefix.history, prefix.ledger.stripped, strippedBefore)
+      ? newlyStrippedThinking(prefix.history, prefix.ledger, before)
       : 0,
   };
   prefix.breaks.push(reported);
@@ -120,7 +163,7 @@ export const prefixPhase: Phase = {
     // Every committed compile records what it sent, so a ledger without it has
     // never seen one.
     const fresh = ledger.lastSent === undefined;
-    const strippedBefore = ledger.stripped;
+    const before = invalidatedThinking(history, ledger);
     const { window, break: brk } = ledger.reconcile(history);
     const clearAt = host.clearAt && ctx.target.isAnthropicTarget;
     ctx.prefix = { ledger, history, breaks: [], clearAt };
@@ -140,7 +183,7 @@ export const prefixPhase: Phase = {
         );
       }
     }
-    await reportPrefixBreak(ctx, host, brk, strippedBefore);
+    await reportPrefixBreak(ctx, host, brk, before);
   },
 };
 
@@ -156,16 +199,16 @@ export async function reconcilePrefixSent(ctx: CompileContext, host: PipelineHos
 
   // A copy, read before the after-adapt handlers: what is compared is what is committed.
   prefix.sent = plainSent(sentAhead(ctx.requirePayload(), ctx.systemLayers.length));
-  const strippedBefore = prefix.ledger.stripped;
+  const before = invalidatedThinking(prefix.history, prefix.ledger);
   const brk = prefix.ledger.reconcileSent(prefix.sent);
-  if (brk) await reportPrefixBreak(ctx, host, brk, strippedBefore);
+  if (brk) await reportPrefixBreak(ctx, host, brk, before);
   ctx.meta.prefix = prefixMeta(prefix.ledger.stable(), prefix.breaks);
 }
 
 /**
- * `appendOnly` on Anthropic: `messages` without the thinking an unsigned
- * checkpoint stripped, so it is never sent again. A message holding a block
- * from a stripped host range loses all its thinking. Blocks are known by
+ * `appendOnly` on Anthropic: `messages` without the thinking unsigned
+ * checkpoints invalidated (`invalidatedThinking`), so it is never sent again.
+ * A message holding such a block loses all its thinking. Blocks are known by
  * their signature (a redacted one by its data) rather than by message: the
  * phases since `prefix` work on copies of the host's messages. The host's
  * own objects are never touched; one `fromAnthropic` parsed is still
@@ -175,22 +218,11 @@ export function withoutStrippedThinking(ctx: CompileContext, messages: Message[]
   const prefix = ctx.prefix;
   if (!prefix || !ctx.target.isAnthropicTarget) return messages;
 
-  const signatures = new Set<string>();
-  const redacted = new Set<string>();
-  for (const [from, until] of prefix.ledger.stripped) {
-    for (const message of prefix.history.slice(from, until)) {
-      if (message.thinking?.signature) signatures.add(message.thinking.signature);
-      if (message.redacted_thinking) redacted.add(message.redacted_thinking.data);
-    }
-  }
-  if (signatures.size === 0 && redacted.size === 0) return messages;
-
-  return messages.map((message) => {
-    const stripped =
-      (message.thinking?.signature !== undefined && signatures.has(message.thinking.signature)) ||
-      (message.redacted_thinking !== undefined && redacted.has(message.redacted_thinking.data));
-    return stripped ? withoutThinking(message) : message;
-  });
+  const invalid = invalidatedThinking(prefix.history, prefix.ledger);
+  if (invalid.size === 0) return messages;
+  return messages.map((message) =>
+    thinkingKeys(message).some((key) => invalid.has(key)) ? withoutThinking(message) : message,
+  );
 }
 
 /**

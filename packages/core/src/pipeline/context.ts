@@ -270,6 +270,13 @@ export interface PipelineHost {
   ): Promise<OverflowResult>;
   /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
   readBudget(history: Message[]): BudgetInfo;
+  /** The runner's own count of `history`, without the reported usage. */
+  estimateTokens(history: Message[]): number;
+  /**
+   * Drops a reported usage that may predate the last landed compression,
+   * once (E10), as the runner's own budget check does.
+   */
+  dropStaleUsage(): void;
   /**
    * Reads and clears the pending `requestNewContext()` flag. Read-and-clear
    * because the request belongs to exactly one compile, whatever that compile

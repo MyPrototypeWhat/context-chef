@@ -3,7 +3,7 @@ import type { OverflowResult, OverflowWire } from '../../overflow/types';
 import type { PrefixHead } from '../../prefix';
 import type { Message, ToolDefinition } from '../../types';
 import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
-import { reportPrefixBreak, withoutStrippedThinking } from './prefix';
+import { invalidatedThinking, reportPrefixBreak, withoutStrippedThinking } from './prefix';
 
 /**
  * Budget check + the installed overflow strategy.
@@ -114,21 +114,25 @@ async function overflowWindow(
   if (!result.meta.changed) return result;
 
   const head = compactionHead(ctx.history, result.history, prefix);
-  const strippedBefore = prefix.ledger.stripped;
+  const before = invalidatedThinking(prefix.history, prefix.ledger);
   const brk = prefix.ledger.checkpoint('compaction', head.cut, head);
   ctx.history = prefix.ledger.window();
-  await reportPrefixBreak(ctx, host, brk, strippedBefore);
+  await reportPrefixBreak(ctx, host, brk, before);
   return result;
 }
 
 /**
  * `appendOnly`: when a compaction may land (D3). Between turns, as in 4.x.
- * While a tool turn is in progress — the host history ends in tool results —
- * it waits for the turn to end: the turns it keeps lose their thinking, and
- * the one in progress still needs it. It cannot wait once the model asked for
- * a new window or the window outgrew the raw context window; then it
- * collapses the whole window. Waiting reads the budget without consuming it,
- * so the usage last reported still counts on the compile that ends the turn.
+ * While a tool turn is in progress it waits for the turn to end: the turns it
+ * keeps lose their thinking, and the one in progress still needs it. It
+ * cannot wait once the model asked for a new window or the window being sent
+ * is past the raw context window; then it collapses the whole window.
+ *
+ * Waiting consumes no reported usage, so the compile that ends the turn
+ * still acts on it — except one that predates the last landing, which the
+ * first reading after it drops (E10), waiting or not. The reported usage
+ * describes the previous request, so the window being sent is also counted
+ * here, and the larger of the two decides.
  */
 function compactionTiming(
   prefix: PrefixCompile,
@@ -138,14 +142,22 @@ function compactionTiming(
 ): 'now' | 'wait' | 'collapse' {
   if (!inToolTurn(prefix)) return 'now';
   if (forced) return 'collapse';
-  const budget = host.readBudget(window);
-  return budget.current > budget.limit ? 'collapse' : 'wait';
+  host.dropStaleUsage();
+  const { current, limit } = host.readBudget(window);
+  return Math.max(current, host.estimateTokens(window)) > limit ? 'collapse' : 'wait';
 }
 
-/** Whether the host history after the head ends in tool results, past any system messages. */
+/**
+ * Whether a tool turn is in progress: the host history after the head ends,
+ * past any system messages, in tool results or in tool calls not answered yet.
+ */
 function inToolTurn({ history, ledger }: PrefixCompile): boolean {
   for (let i = history.length - 1; i >= (ledger.head?.cut ?? 0); i--) {
-    if (history[i].role !== 'system') return history[i].role === 'tool';
+    const message = history[i];
+    if (message.role === 'system') continue;
+    return (
+      message.role === 'tool' || (message.role === 'assistant' && !!message.tool_calls?.length)
+    );
   }
   return false;
 }

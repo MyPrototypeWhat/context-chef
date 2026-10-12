@@ -861,32 +861,6 @@ describe('PrefixLedger — checkpoints', () => {
     expect(ledger.head?.signed).toBe(true);
   });
 
-  it.each([
-    false,
-    true,
-  ])('strips the host messages an unsigned head carries over (signed: %s)', (signed) => {
-    const history = turns.slice(0, 7);
-    const ledger = following(history);
-    ledger.reconcile(history);
-
-    // r1 was put back after the summary, as a pinned message is.
-    const brk = ledger.checkpoint('compaction', 5, {
-      cut: 5,
-      replacement: [user('<summary/>'), history[1]],
-      signed,
-    });
-
-    expect(ledger.stripped).toEqual(
-      signed
-        ? []
-        : [
-            [1, 2],
-            [5, 7],
-          ],
-    );
-    expect(brk.stripped).toEqual(signed ? undefined : [5, 7]);
-  });
-
   it('refuses a checkpoint it cannot apply', () => {
     const ledger = new PrefixLedger();
     ledger.reconcile(turns.slice(0, 3));

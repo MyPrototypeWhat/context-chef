@@ -747,6 +747,31 @@ export class Janitor {
   }
 
   /**
+   * The runner's own count of `history` — the configured tokenizer, or the
+   * built-in heuristic — leaving out the reported usage, which describes a
+   * request already sent.
+   */
+  public estimateTokens(history: Message[]): number {
+    return (this.config.tokenizer ?? estimateObject)(history);
+  }
+
+  /**
+   * E10: right after a successful compression, a reported usage may still
+   * describe the payload from before it, and acting on it would compress the
+   * summary again. The first budget check after one drops it — the
+   * overflow's own, or a caller that reads the budget without running the
+   * overflow (`appendOnly`, while a compaction waits for a tool turn to end).
+   * Does nothing at any other time.
+   *
+   * @internal
+   */
+  public dropStaleUsage(): void {
+    if (!this._reportedUsageStale) return;
+    this._reportedUsageStale = false;
+    this._externalTokenUsage = null;
+  }
+
+  /**
    * Compresses the rolling history when the token budget is exceeded.
    *
    * {@link overflow} without the reporting — kept as the 4.x entry point.
@@ -783,6 +808,8 @@ export class Janitor {
    *   just failed three times in a row does not get hammered on request.
    *   `collapse` and `wire` go to the strategy as they are
    *   ({@link OverflowInput}); the compile pipeline sets them under `appendOnly`.
+   *   `collapse` skips the budget test too: the caller found that the window
+   *   cannot wait.
    */
   public async overflow(
     history: Message[],
@@ -821,14 +848,15 @@ export class Janitor {
       );
     }
 
-    const prepared = await this._prepareOverflow(history, force);
+    const regardless = force || collapse;
+    const prepared = await this._prepareOverflow(history, regardless);
     // The swap-in path runs under a plain reading: `_prepareOverflow` declined
     // to overflow, and the strategy is being called only to let the finished
     // job in.
     const budget = prepared.budget ?? (pendingSwap ? this.readBudget(prepared.history) : null);
     if (!budget) {
       return idle(
-        force ? 'nothing to overflow — history is empty' : 'within budget',
+        regardless ? 'nothing to overflow — history is empty' : 'within budget',
         prepared.history,
       );
     }
@@ -933,16 +961,10 @@ export class Janitor {
   private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
     if (history.length === 0) return null;
 
-    // E10: right after a successful compression, a reported usage may still
-    // describe the payload from before it, and acting on it would compress the
-    // summary again. Drop it for this one check, but still check: a host that
-    // kept the compressed history is under budget by its own count, and a host
-    // that passes its full history again gets it compressed again.
-    if (this._reportedUsageStale) {
-      this._reportedUsageStale = false;
-      this._externalTokenUsage = null;
-    }
-
+    // Still check after dropping it: a host that kept the compressed history is
+    // under budget by its own count, and a host that passes its full history
+    // again gets it compressed again.
+    this.dropStaleUsage();
     const budget = this.readBudget(history);
     this._externalTokenUsage = null;
     return force || budget.remaining < 0 ? budget : null;

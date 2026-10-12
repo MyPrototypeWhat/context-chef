@@ -568,9 +568,14 @@ export interface ChefEvents {
    * applied it as a checkpoint. `at` is the window index of the first message
    * it changed — `0` when the system prompt or tools did, or a compaction;
    * unless `signed`, the thinking from there on is invalid, and
-   * `strippedThinking` counts the blocks dropped for it (Anthropic only). A
-   * compile that fails after reporting one is rolled back, so the next
-   * compile reports it again.
+   * `strippedThinking` counts the blocks dropped for it (Anthropic only).
+   *
+   * A compile that fails after reporting one rolls the ledger back, so the
+   * next compile meets a `history`, `ledger`, `system` or `tools` checkpoint
+   * again and reports it again. A compaction is not undone that way: the
+   * overflow runner's state — the window lineage, the strategy's state, the
+   * archive, `onCompress` — stays as the failed compile left it, and the next
+   * compile runs the overflow afresh.
    *
    * `windowId` is the window the checkpoint applied to. A compaction opens a
    * new one and carries its id, the payload's `CompileMeta.windowId`; a
@@ -1080,6 +1085,12 @@ export class ContextChef {
       },
       readBudget(history) {
         return chef.janitor.readBudget(history);
+      },
+      estimateTokens(history) {
+        return chef.janitor.estimateTokens(history);
+      },
+      dropStaleUsage() {
+        chef.janitor.dropStaleUsage();
       },
       takeForcedOverflow() {
         const forced = chef._forceOverflow;

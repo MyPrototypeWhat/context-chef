@@ -38,6 +38,12 @@ export interface SlotHandlers {
    * Runs after the overflow phase. `result` is null when the phase was
    * skipped, or under `appendOnly` while a compaction waits for a tool turn
    * to end.
+   *
+   * Under `appendOnly`, `history` is the window being sent and
+   * `result.history` may not be: a result that landed is re-rendered from the
+   * ledger (events at the start of what it kept go with the summary), and one
+   * that did not land leaves the window as it was, whatever history the
+   * strategy or an `onBeforeCompress` hook produced.
    */
   'after-overflow': (ctx: {
     history: Message[];

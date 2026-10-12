@@ -75,7 +75,11 @@ export interface PrefixHead {
   readonly cut: number;
   /** The summary message or signed compaction message, plus re-inserted pinned messages. */
   readonly replacement: readonly Message[];
-  /** An on-demand compaction block signed by the provider: later turns keep their thinking. */
+  /**
+   * An on-demand compaction block signed by the provider: later turns keep
+   * their thinking. Unsigned, none of the thinking `replacement` carries is
+   * valid either (a pinned message put back, a copy of a later turn).
+   */
   readonly signed: boolean;
 }
 
@@ -120,9 +124,7 @@ export interface PrefixBreak {
   readonly signed: boolean;
   /**
    * The host range `[from, until)` this checkpoint stripped thinking from.
-   * Absent when signed or empty. It may overlap ranges stripped earlier. An
-   * unsigned compaction also strips the host messages its head carries over,
-   * which `PrefixLedger.stripped` holds and this range does not.
+   * Absent when signed or empty. It may overlap ranges stripped earlier.
    */
   readonly stripped?: readonly [number, number];
 }

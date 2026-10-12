@@ -12,7 +12,8 @@ import {
 } from './types';
 
 /**
- * The stub that stands in for the evicted conversation.
+ * The stub that stands in for the evicted conversation. `summarize()` leaves
+ * the same one when it collapses a window with no compression model.
  *
  * The ids name the window that was just reset and the one before it — the
  * runner opens the next window only once this result lands, so at the moment
@@ -25,7 +26,7 @@ import {
  * runner appends its citation to this notice — that line carries the archive
  * fact, and the address to go with it.
  */
-function defaultNotice(window: WindowLineage): string {
+export function resetNotice(window: WindowLineage): string {
   const lineage = window.previous
     ? `window ${window.current}; previous ${window.previous}`
     : `window ${window.current}`;
@@ -63,7 +64,7 @@ export function reset(options: ResetOptions = {}): OverflowStrategy {
       if (evicted.length === 0) {
         return unchanged(input, 'reset', 'history holds nothing but pinned messages');
       }
-      const notice = options.notice ?? defaultNotice(input.window);
+      const notice = options.notice ?? resetNotice(input.window);
       // input.pinned is already turn-scoped and in original order.
       const kept = input.pinned.filter((m) => input.history.includes(m));
       return {
