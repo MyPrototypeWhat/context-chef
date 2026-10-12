@@ -44,6 +44,7 @@ import type {
   TargetPayload,
   ToolDefinition,
 } from '../src/types';
+import { estimateMessages } from '../src/utils/tokenUtils';
 
 const silent: ChefLogger = { warn: () => {} };
 const THREE = ['anthropic', 'openai', 'gemini'] as const;
@@ -485,9 +486,75 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
       if (reports) chef.reportTokenUsage(3000 * i);
       await converse(chef, [[...history]]);
     }
+    // The turn ends: the trigger is read the same way.
+    if (reports) chef.reportTokenUsage(12_000);
+    await converse(chef, [[...history, reply('Done.', 'SIG_D'), user('Thanks.')]]);
 
     expect(compressionModel).not.toHaveBeenCalled();
     expect(breaks).toEqual([]);
+  });
+
+  it('still counts the base64 of an attachment without appendOnly (4.x)', async () => {
+    const shot: Message = {
+      role: 'tool',
+      content: 'screenshot',
+      tool_call_id: 't1',
+      attachments: [{ mediaType: 'image/png', data: 'A'.repeat(400_000) }],
+    };
+    // Some 120,000 tokens of base64 against a trigger of 70,000.
+    const { chef, compressionModel } = chefWith({
+      appendOnly: false,
+      janitor: { contextWindow: 100_000 },
+    });
+
+    await converse(chef, [
+      [user('q1'), call('t1', 'SIG_C1'), shot, reply('a1', 'SIG_1'), user('q2')],
+    ]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a usage report covers the request it came back for, however long ago', () => {
+    // 8,000 characters of text a step, some 2,400 tokens, against a raw window of 10,000.
+    const read = (id: string): Message => ({
+      role: 'tool',
+      content: 'x'.repeat(8000),
+      tool_call_id: id,
+    });
+    const steps: Message[][] = [[user('Read every file.')]];
+    for (let i = 1; i <= 6; i++) {
+      steps.push([...steps[i - 1], call(`t${i}`, `SIG_C${i}`), read(`t${i}`)]);
+    }
+
+    /** Model calls after each compile of steps 1–6, each compiled `times` times. */
+    async function collapses(reports: 'every' | 'once' | 'none', times = 1): Promise<number[]> {
+      const { chef, compressionModel } = chefWith({ janitor: { contextWindow: 10_000 } });
+      await converse(chef, [steps[0]]);
+      const calls: number[] = [];
+      for (let i = 1; i <= 6; i++) {
+        // What the provider reported for the request before this one, counted the same way.
+        if (reports === 'every' || (reports === 'once' && i === 1)) {
+          chef.reportTokenUsage(estimateMessages(steps[i - 1]));
+        }
+        for (let n = 0; n < times; n++) {
+          await converse(chef, [steps[i]]);
+          calls.push(compressionModel.mock.calls.length);
+        }
+      }
+      return calls;
+    }
+
+    it.each([
+      'every',
+      'once',
+      'none',
+    ] as const)('collapses at step 5 with reports %s', async (reports) => {
+      expect(await collapses(reports)).toEqual([0, 0, 0, 0, 1, 1]);
+    });
+
+    it('reads a retry the same way as the compile before it', async () => {
+      expect(await collapses('once', 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]);
+    });
   });
 
   it.each([

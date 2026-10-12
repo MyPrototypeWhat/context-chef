@@ -80,6 +80,7 @@ import type {
   ToolDefinition,
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
+import { estimateMessages } from './utils/tokenUtils';
 import { objectToXml } from './utils/xmlGenerator';
 import { resolveVocabulary, type Vocabulary } from './vocabulary';
 
@@ -837,6 +838,8 @@ export class ContextChef {
       logger: config.logger,
       ...janitorConfig,
       vocabulary: this._vocabulary,
+      // appendOnly counts each attachment at a flat cost in every budget reading, not by its base64.
+      ...(config.appendOnly ? { estimate: estimateMessages } : {}),
       archive,
       strategy,
       onCompress: async (summary, truncatedCount, details) => {
@@ -1314,12 +1317,17 @@ export class ContextChef {
    * Call this after each LLM response with the token usage reported by the API.
    * On the next compile(), if this value exceeds contextWindow, compression is triggered.
    *
+   * With `appendOnly` the report is taken to describe the request last
+   * compiled; until the next one, what the window gained since is counted on
+   * top of it.
+   *
    * @example
    * const response = await openai.chat.completions.create({ ... });
    * chef.reportTokenUsage(response.usage.prompt_tokens);
    */
   public reportTokenUsage(tokenCount: number): this {
     this.janitor.feedTokenUsage(tokenCount);
+    this._prefixLedger?.markReported();
     return this;
   }
 

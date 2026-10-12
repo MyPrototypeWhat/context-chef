@@ -251,6 +251,8 @@ export class PrefixLedger {
   private history: readonly Message[] = [];
   /** Set by `reset()`: the next `reconcile()` applies a `ledger` checkpoint at 0. */
   private restarted = false;
+  /** Leading window messages the last usage report covers: the window committed when it came. */
+  private _reported?: number;
   /**
    * From the first `reconcile()` after a commit until the next commit: the
    * state committed, which `stable()` compares with and `rollback()` returns
@@ -275,6 +277,7 @@ export class PrefixLedger {
     ledger.seen = [...copy.seen];
     ledger._lastSent = copy.lastSent;
     ledger.restarted = copy.restarted === true;
+    ledger._reported = copy.reported;
     return ledger;
   }
 
@@ -291,6 +294,24 @@ export class PrefixLedger {
   /** The system prompt and tools last committed. */
   get lastSent(): PrefixSent | undefined {
     return this._lastSent;
+  }
+
+  /**
+   * How many leading messages of the window the last usage report covers
+   * (`markReported()`); `undefined` before any report.
+   */
+  get reported(): number | undefined {
+    return this._reported;
+  }
+
+  /**
+   * A usage report came back for the window last committed: until the next
+   * one, the report covers that many leading messages of the window, however
+   * many compiles commit after it without a report. Survives a rollback — the
+   * report describes what was sent, not what a failed compile built.
+   */
+  markReported(): void {
+    this._reported = this.keys(this.pending?.committed ?? this.capture()).length;
   }
 
   private get cut(): number {
@@ -554,6 +575,7 @@ export class PrefixLedger {
     this.seen = [];
     this.history = [];
     this.restarted = true;
+    this._reported = undefined;
   }
 
   /** Plain data, safe for `structuredClone` and JSON. */
@@ -566,6 +588,7 @@ export class PrefixLedger {
       seen: this.seen,
       ...(this._lastSent ? { lastSent: this._lastSent } : {}),
       ...(this.restarted ? { restarted: true as const } : {}),
+      ...(this._reported !== undefined ? { reported: this._reported } : {}),
     });
   }
 

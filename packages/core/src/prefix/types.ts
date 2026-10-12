@@ -109,6 +109,8 @@ export interface PrefixLedgerSnapshot {
   readonly lastSent?: PrefixSent;
   /** `reset()` since the last compile: the next one reports a `ledger` checkpoint at 0. */
   readonly restarted?: true;
+  /** Leading window messages the last usage report covers (`PrefixLedger.markReported()`). */
+  readonly reported?: number;
 }
 
 /** A checkpoint the ledger applied. */

@@ -1035,6 +1035,28 @@ describe('PrefixLedger — reset', () => {
   });
 });
 
+describe('PrefixLedger — usage reports', () => {
+  it('records how much of the window the last report covers, until the next one', () => {
+    const ledger = new PrefixLedger();
+    expect(ledger.reported).toBeUndefined();
+    compile(ledger, turns.slice(0, 1), [state('E1')]); // [q1, E1]
+    ledger.markReported();
+
+    // Two more compiles commit without a report: it still covers [q1, E1].
+    compile(ledger, turns.slice(0, 3));
+    compile(ledger, turns.slice(0, 5));
+    expect(ledger.reported).toBe(2);
+    expect(PrefixLedger.fromSnapshot(JSON.parse(JSON.stringify(ledger.snapshot()))).reported).toBe(
+      2,
+    );
+
+    ledger.markReported();
+    expect(ledger.reported).toBe(6);
+    ledger.reset();
+    expect(ledger.reported).toBeUndefined();
+  });
+});
+
 describe('PrefixLedger — snapshot', () => {
   it('round-trips through JSON to the same window and the same validation', () => {
     const sent: PrefixSent = { system: [{ type: 'text', text: 'S' }], tools: [] };

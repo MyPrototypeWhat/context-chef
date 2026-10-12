@@ -21,7 +21,7 @@ import {
 } from '../../overflow/types';
 import { Prompts } from '../../prompts';
 import type { ChefLogger, CompactOptions, Message } from '../../types';
-import { estimateMessages, estimateObject } from '../../utils/tokenUtils';
+import { estimateObject } from '../../utils/tokenUtils';
 import { LEGACY_VOCABULARY, type Vocabulary } from '../../vocabulary';
 
 /**
@@ -374,6 +374,15 @@ interface JanitorConfigBase {
    * @internal
    */
   vocabulary?: Vocabulary;
+
+  /**
+   * The count the runner falls back to without a `tokenizer`, for every
+   * reading. `ContextChef` passes `estimateMessages` under `appendOnly`
+   * (attachments at a flat cost); unset, the 4.x `estimateObject`.
+   *
+   * @internal
+   */
+  estimate?: (messages: Message[]) => number;
 }
 
 /**
@@ -614,6 +623,11 @@ export class Janitor {
     return this.config.logger ?? console;
   }
 
+  /** The count every reading falls back to without a tokenizer. */
+  private get _estimate(): (messages: Message[]) => number {
+    return this.config.estimate ?? estimateObject;
+  }
+
   /**
    * The services the installed strategy reports through. Failure accounting is
    * the runner's (one breaker per Janitor, whatever strategy is installed);
@@ -740,7 +754,7 @@ export class Janitor {
           current = Math.max(tokenizerTokens, fedTokens ?? 0);
       }
     } else {
-      current = fedTokens ?? estimateObject(history);
+      current = fedTokens ?? this._estimate(history);
     }
 
     return { limit, current, trigger, remaining: trigger - current };
@@ -754,7 +768,8 @@ export class Janitor {
    * `current` is the last reported usage plus a local count of `appended`,
    * the messages that report does not cover yet; with no report, a local
    * count of the whole `history`. The local count is the tokenizer, or the
-   * built-in heuristic with each attachment at a flat `ATTACHMENT_TOKENS`.
+   * built-in heuristic (`estimateMessages` under `appendOnly`: each
+   * attachment at a flat `ATTACHMENT_TOKENS`).
    * `usagePreference` applies as in {@link readBudget}: `'tokenizerFirst'`
    * ignores the report, and under `'max'` a tokenizer's count of the whole
    * history wins when it is larger. Consumes nothing.
@@ -763,7 +778,7 @@ export class Janitor {
     const limit = this.config.contextWindow;
     const trigger = limit * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
     const { tokenizer, usagePreference = 'max' } = this.config;
-    const count = tokenizer ?? estimateMessages;
+    const count = tokenizer ?? this._estimate;
     const fed = usagePreference === 'tokenizerFirst' ? null : this._externalTokenUsage;
 
     let current: number;
@@ -888,7 +903,7 @@ export class Janitor {
     const result = await this._strategy.apply({
       history: prepared.history,
       budget,
-      tokenizer: this.config.tokenizer ?? estimateObject,
+      tokenizer: this.config.tokenizer ?? this._estimate,
       pinned: extractPinnedMessages(prepared.history),
       window: this._window,
       forced: force,
