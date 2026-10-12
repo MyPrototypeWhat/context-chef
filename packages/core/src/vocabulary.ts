@@ -55,6 +55,11 @@ export interface Vocabulary {
   readonly memoryBlockHeader: string;
   /** The injected memory block: header, data, key guidance. */
   memoryBlock(coreMemoryXml: string, existingKeys: string[], allowedKeys?: string[]): string;
+  /**
+   * `appendOnly`: what memory changed since the snapshot the window holds —
+   * a header, then a `<memory>` block of the changed and removed entries.
+   */
+  memoryDelta(memoryXml: string): string;
   /** The marker left in place of offloaded tool output. */
   offloadPlaceholder(args: OffloadPlaceholderArgs): string;
   /** The continuation framing around a compression summary. */
@@ -75,6 +80,7 @@ export const LEGACY_VOCABULARY: Vocabulary = Object.freeze({
   memoryBlockHeader: Prompts.MEMORY_BLOCK_HEADER,
   memoryBlock: (coreMemoryXml, existingKeys, allowedKeys) =>
     Prompts.getMemoryBlock(coreMemoryXml, existingKeys, allowedKeys),
+  memoryDelta: (memoryXml) => `${Prompts.MEMORY_DELTA_HEADER}\n${memoryXml}`,
   offloadPlaceholder: ({ uri, totalLines, totalChars, head, tail, physicalPath }) =>
     Prompts.getVFSOffloadReminder(uri, totalLines, totalChars, head, tail, physicalPath ?? null),
   summaryWrapper: (summary) => Prompts.getCompactSummaryWrapper(summary),
@@ -88,6 +94,7 @@ export const UNIFIED_VOCABULARY: Vocabulary = Object.freeze({
   memoryBlockHeader: Prompts.CONTEXT_MEMORY_BLOCK_HEADER,
   memoryBlock: (coreMemoryXml, existingKeys, allowedKeys) =>
     Prompts.getContextMemoryBlock(coreMemoryXml, existingKeys, allowedKeys),
+  memoryDelta: (memoryXml) => `${Prompts.CONTEXT_MEMORY_DELTA_HEADER}\n${memoryXml}`,
   offloadPlaceholder: ({ uri, totalLines, totalChars, head, tail, physicalPath }) =>
     Prompts.getContextOffloadReminder(
       uri,

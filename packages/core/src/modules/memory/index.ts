@@ -182,7 +182,8 @@ export interface MemoryConfig {
    * Defaults to `'after_system'` (current behavior). Set to
    * `'before_history_tail'` to keep memory text out of the top-level system
    * parameter so provider-level cache breakpoints on history survive memory
-   * mutations.
+   * mutations. Under `ChefConfig.appendOnly` the default is
+   * `'before_history_tail'`, where the data becomes events in the conversation.
    *
    * See {@link MemoryPlacement} for the full rationale.
    */
@@ -348,6 +349,8 @@ export class Memory {
   async compileArtifacts(): Promise<{
     /** Keys swept this call (onMemoryExpired / onMemoryChanged already fired). */
     expiredKeys: string[];
+    /** Post-sweep entries, before the selector. */
+    live: MemoryEntry[];
     /** Post-sweep entries with the selector applied exactly once. */
     selected: MemoryEntry[];
     /** `<memory>` XML for the selected entries, or '' when none. */
@@ -368,9 +371,11 @@ export class Memory {
       }
     }
 
-    const selected = this.selector ? this.selector(live) : live;
+    // A copy: a selector may sort or trim its argument in place.
+    const selected = this.selector ? this.selector([...live]) : live;
     return {
       expiredKeys,
+      live,
       selected,
       dataXml: this._renderXml(selected),
       toolDefinitions: [...this._toolDefinitions],

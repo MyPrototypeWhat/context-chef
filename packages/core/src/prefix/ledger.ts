@@ -337,6 +337,15 @@ export class PrefixLedger {
   }
 
   /**
+   * Every entry still in the window that speaks for `source`, oldest first:
+   * all the window says from it, for a source whose statements add up rather
+   * than replace each other.
+   */
+  appended(source: InjectionSource): PrefixEntry[] {
+    return this.entries.filter((entry) => entry.sources.includes(source));
+  }
+
+  /**
    * Every source an entry still in the window speaks for, in the order they
    * first appear: how a caller finds one that went quiet since.
    */

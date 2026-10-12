@@ -23,7 +23,8 @@ import { escapeXmlAttribute } from '../xml';
  * fixed inner order — skill instructions, memory data, dynamic state,
  * implicit context, announcements, anchor, guardrail — so callers reading the
  * final user message can rely on the layout. Under `appendOnly` the same
- * sources become events, appended in the same order only when they changed.
+ * sources become events, appended in the same order only when they changed;
+ * the `skill` and `memory` phases decide theirs.
  */
 export const tailPhase: Phase = {
   name: 'tail',
@@ -290,11 +291,12 @@ function replaceEventGroup(
  * `appendOnly`: each push source is compared with the last thing the window
  * holds from it, and only what changed is appended — at the end of the host
  * history, or before the assistant prefill it ends with — in the stitch's
- * order: dynamic state, implicit context, announcements, the anchor line on
- * each channel that carried state, the guardrail. Events never merge into a
- * host message: the ledger renders everything appended at one place as one
- * user message and one positional system message, and that group replaces
- * the one the `prefix` phase rendered there.
+ * order: skill instructions, memory, dynamic state, implicit context,
+ * announcements, the anchor line on each channel that carried state, the
+ * guardrail. Events never merge into a host message: the ledger renders
+ * everything appended at one place as one user message and one positional
+ * system message, and that group replaces the one the `prefix` phase
+ * rendered there.
  */
 function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCompile): Message[] {
   const { ledger } = prefix;
@@ -349,10 +351,17 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
       sources: ['handoff'],
     });
   }
+  // Skill instructions and memory introduce themselves: no anchor line for them, as in 4.x.
   const anchors = (['user', 'system'] as const)
     .filter((channel) => stated.some((event) => event.channel === channel))
     .map((channel) => ({ channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] }));
-  const events = [...stated, ...anchors, ...sourceEvents(ledger, [guardrailSource(ctx)])];
+  const events = [
+    ...ctx.skillEvents,
+    ...ctx.memoryEvents,
+    ...stated,
+    ...anchors,
+    ...sourceEvents(ledger, [guardrailSource(ctx)]),
+  ];
 
   let messages = ctx.messages;
   if (events.length > 0) {
@@ -363,7 +372,5 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
     const after = ledger.renderedAt(anchor);
     messages = replaceEventGroup(messages, trailing, before, after, events, host);
   }
-  // Skill instructions and memory data are not events: they keep the 4.x stitch.
-  const tailXml = [ctx.skillTailXml, ctx.memoryTailDataXml].filter(Boolean).join('\n\n');
-  return host.assembler.compile(messages, { tailXml: tailXml || undefined }).messages;
+  return host.assembler.compile(messages).messages;
 }

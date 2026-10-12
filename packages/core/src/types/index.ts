@@ -359,7 +359,15 @@ export interface CompileOptions {
 
 /** Metadata returned by compile() for observability. */
 export interface CompileMeta {
-  /** Memory keys that were injected into the system prompt this turn. */
+  /**
+   * Memory keys that were injected into the system prompt this turn.
+   *
+   * With `ChefConfig.appendOnly`, where memory is stated as events, the keys
+   * the snapshot or delta this compile appended speaks for — a removed key
+   * included — and empty when it appended none: the window already holds the
+   * rest. An explicit `memoryPlacement: 'after_system'` reports the keys the
+   * system prompt carries, as without `appendOnly`.
+   */
   injectedMemoryKeys: string[];
   /** Memory keys that expired and were removed this turn. */
   memoryExpiredKeys: string[];

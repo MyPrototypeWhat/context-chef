@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { z } from 'zod';
 import { Assembler, type DynamicStatePlacement } from './modules/assembler';
 import { Guardrail, type GuardrailOptions } from './modules/guardrail';
@@ -112,6 +113,9 @@ export interface Announcement {
  *   never touched — the right trade for agents that switch modes frequently —
  *   at the cost of re-sending the instruction tokens in the uncacheable tail
  *   on every single request.
+ *
+ * With `ChefConfig.appendOnly`, `'tail'` is the default and the instructions
+ * are an event, sent once per activation or switch (see {@link ContextChef.activateSkill}).
  */
 export type SkillPlacement = 'after_system' | 'tail';
 
@@ -211,6 +215,10 @@ export type ToolsMode = 'legacy' | 'unified';
 /**
  * {@link MemoryConfig} with `store` optional: at the chef level a shared
  * {@link ChefConfig.store} can supply it instead.
+ *
+ * With {@link ChefConfig.appendOnly}, an unset `memoryPlacement` is
+ * `'before_history_tail'`: memory is stated as events in the conversation
+ * rather than in the system prompt (see `appendOnly`).
  */
 export type ChefMemoryConfig = Omit<MemoryConfig, 'store'> & { store?: MemoryConfig['store'] };
 
@@ -256,7 +264,8 @@ export interface ChefConfig {
   contextTool?: ContextToolPolicyConfig;
   /**
    * Where the active skill's instructions land. Defaults to `'after_system'`,
-   * which is bit-for-bit compatible with pre-hot-plug behavior.
+   * which is bit-for-bit compatible with pre-hot-plug behavior — and to
+   * `'tail'` with `appendOnly`, where the instructions are an event.
    *
    * `'after_system'` puts the instructions in the cacheable prefix — cheap to
    * re-send, but each activation or mode switch invalidates the whole cached
@@ -370,6 +379,21 @@ export interface ChefConfig {
    * ledger); anything that rewrites what was sent — an edited history, a new
    * system prompt or tool list, a cleared history — is a checkpoint, reported
    * through `prefix:break` and `CompileMeta.prefix`.
+   *
+   * What the chef adds is appended once, as an event, where it became true:
+   * dynamic state, implicit context, announcements, the guardrail, skill
+   * instructions. Memory is pulled first: the window starts with one snapshot
+   * of what the memory `selector` picks, and after that only what the model
+   * was not told is appended, as a delta — your own `getMemory().set()` /
+   * `delete()` and TTL expiry, never what the model wrote through
+   * {@link ContextChef.handleTool}, whose tool result already says so. A
+   * selector that picks nothing pushes nothing; with `tools: 'unified'` the
+   * model reads `context://memory/*` itself.
+   *
+   * It changes defaults, never explicit choices: an unset `skillPlacement` is
+   * `'tail'` and an unset `memoryPlacement` `'before_history_tail'`, both
+   * events. An explicit `'after_system'` keeps them in the system prompt,
+   * where each change is a `system` checkpoint.
    *
    * `true` is `{}`. Off by default, which compiles exactly what 4.x compiles.
    * Persist `snapshot().prefixLedger` along with the history when the chef
@@ -589,6 +613,14 @@ export class ContextChef {
   private _forceOverflow = false;
   /** What was appended to the window and what was sent; only when `appendOnly` is on. */
   private _prefixLedger?: PrefixLedger;
+  /**
+   * `appendOnly`: memory entries the model wrote through {@link handleTool},
+   * as its last write left each one (`null`: it deleted the key). Its tool
+   * result told it, so the `memory` phase does not push them back.
+   */
+  private _modelMemoryWrites = new Map<string, MemoryEntry | null>();
+  /** Set inside {@link handleTool}: the memory writes made there are the model's. */
+  private readonly _modelToolCall = new AsyncLocalStorage<true>();
   /** The shared context store from `ChefConfig.store`, if one was passed. */
   private readonly _store?: Store;
   private readonly _toolsMode: ToolsMode;
@@ -678,7 +710,10 @@ export class ContextChef {
     this.logger = config.logger;
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
-    this.skillPlacement = config.skillPlacement ?? 'after_system';
+    // appendOnly changes defaults, never explicit choices: unset, skill
+    // instructions and memory data are events; an explicit 'after_system'
+    // keeps them in the system prompt.
+    this.skillPlacement = config.skillPlacement ?? (config.appendOnly ? 'tail' : 'after_system');
     if (config.appendOnly) this._prefixLedger = new PrefixLedger();
     this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
     // Before anything is wired: a handoff budget that cannot work is a config
@@ -800,7 +835,10 @@ export class ContextChef {
       this.memory = new Memory({
         ...config.memory,
         store: memoryStore,
+        memoryPlacement:
+          config.memory.memoryPlacement ?? (config.appendOnly ? 'before_history_tail' : undefined),
         onMemoryChanged: async (event) => {
+          if (this._modelToolCall.getStore()) await this._recordModelMemoryWrite(event.key);
           if (userOnChanged) await userOnChanged(event);
           await this.emitter.emit('memory:changed', event, this._currentSignal);
         },
@@ -964,12 +1002,22 @@ export class ContextChef {
       get memory() {
         return chef.memory;
       },
+      get modelMemoryWrites() {
+        return chef._modelMemoryWrites;
+      },
+      forgetModelMemoryWrites(keys) {
+        if (!keys) chef._modelMemoryWrites.clear();
+        else for (const key of keys) chef._modelMemoryWrites.delete(key);
+      },
       get skill() {
         return {
           name: chef._activeSkill?.name,
           instructions: chef._skillInstructions,
           placement: chef.skillPlacement,
         };
+      },
+      get vocabulary() {
+        return chef._vocabulary;
       },
       emit(event, payload, signal) {
         return chef.emitter.emit(event, payload, signal);
@@ -1311,6 +1359,10 @@ export class ContextChef {
    * write to a read-only namespace and a veto from `onMemoryUpdate` all come
    * back as `Error: …` text the model can read and correct. Only a tool name
    * this chef does not own throws — guard with {@link ownsTool}.
+   *
+   * With `appendOnly`, the memory writes made here are the model's own: the
+   * tool result tells it, so they are not pushed back as a memory delta.
+   * Writes your code makes at the same time are told apart.
    */
   public handleTool(call: ContextToolCall): Promise<string> {
     if (!this.ownsTool(call?.name)) {
@@ -1319,7 +1371,13 @@ export class ContextChef {
           'Guard the call with chef.ownsTool(name) and dispatch the rest yourself.',
       );
     }
-    return dispatchContextTool(this._contextToolHost, call);
+    return this._modelToolCall.run(true, () => dispatchContextTool(this._contextToolHost, call));
+  }
+
+  /** `appendOnly`: `key` as the model's memory write inside {@link handleTool} left it. */
+  private async _recordModelMemoryWrite(key: string): Promise<void> {
+    if (!this._prefixLedger || !this.memory) return;
+    this._modelMemoryWrites.set(key, await this.memory.getEntry(key));
   }
 
   // ─── Skill API ─────────────────────────────────────────────────────────
@@ -1359,6 +1417,12 @@ export class ContextChef {
    * sandwich on the next `compile()` as a dedicated `{ role: 'system' }`
    * message — or, under `ChefConfig.skillPlacement: 'tail'`, at the head of
    * the tail stitch instead. Pruner state is NOT touched (Skill ⊥ Pruner).
+   *
+   * With `appendOnly` (and `skillPlacement` unset or `'tail'`), the next
+   * compile appends the instructions once, as a positional system message
+   * after the latest turn (`<skill_instructions rev="1" skill="NAME">`). A
+   * switch appends the next revision, which says it replaces the earlier
+   * one; `null` appends a tombstone. Both stay where they were sent.
    */
   public activateSkill(skill: Skill | string | null): this {
     if (skill === null) {
@@ -1766,6 +1830,8 @@ export class ContextChef {
     // snapshot from before this field simply had not noticed anything yet.
     this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
     this._prefixLedger = ledger;
+    // The restored history need not hold the turns that told the model of its writes.
+    this._modelMemoryWrites.clear();
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);

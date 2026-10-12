@@ -1,9 +1,9 @@
 import type { Announcement, ChefConfig, ChefEvents, SkillPlacement, ToolsMode } from '../chef';
 import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
-import type { Memory } from '../modules/memory';
+import type { Memory, MemoryEntry } from '../modules/memory';
 import type { BudgetInfo, HandoffConfig, OverflowResult, WindowLineage } from '../overflow/types';
-import type { PrefixLedger, PrefixMeta, PrefixSent } from '../prefix';
+import type { PrefixCandidate, PrefixLedger, PrefixMeta, PrefixSent } from '../prefix';
 import type {
   CompileMeta,
   CompileOptions,
@@ -12,6 +12,7 @@ import type {
   TargetPayload,
   ToolDefinition,
 } from '../types';
+import type { Vocabulary } from '../vocabulary';
 import type { SlotRegistry } from './slots';
 
 /**
@@ -109,9 +110,13 @@ export class CompileContext {
   memoryMessages: Message[] = [];
   memoryTailDataXml = '';
   memoryTools: ToolDefinition[] = [];
+  /** `appendOnly`: the memory snapshot or delta for `tail` to append. */
+  memoryEvents: PrefixCandidate[] = [];
 
   skillMessages: Message[] = [];
   skillTailXml = '';
+  /** `appendOnly`: the skill instructions or their tombstone, for `tail` to append. */
+  skillEvents: PrefixCandidate[] = [];
 
   guardrailMessages: Message[] = [];
   guardrailTailXml = '';
@@ -213,7 +218,21 @@ export interface PipelineHost {
   readonly guardrail: Guardrail;
   readonly guardrailOptions?: GuardrailOptions;
   readonly memory: Memory | null;
+  /**
+   * `appendOnly`: the memory entries the model wrote through `handleTool`,
+   * each as its last write left it (`null`: deleted). The tool result told
+   * the model, so the `memory` phase does not push them back.
+   */
+  readonly modelMemoryWrites: ReadonlyMap<string, MemoryEntry | null>;
+  /**
+   * Stops counting the model's writes to `keys` — all of them when omitted —
+   * as told: an event states those keys now, or a checkpoint may have dropped
+   * the turns that made them.
+   */
+  forgetModelMemoryWrites(keys?: readonly string[]): void;
   readonly skill: { name?: string; instructions: string; placement: SkillPlacement };
+  /** The session's model-facing wording. */
+  readonly vocabulary: Vocabulary;
 
   emit<K extends keyof ChefEvents>(
     event: K,

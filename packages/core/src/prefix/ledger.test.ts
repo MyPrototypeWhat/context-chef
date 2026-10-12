@@ -233,6 +233,27 @@ describe('PrefixLedger — events are appended once', () => {
     expect(ledger.sources()).toEqual(['announcement:a', 'dynamic-state']);
   });
 
+  it('lists what the window still holds from one source, oldest first', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>'), announce]); // @1, answered by r1
+    compile(ledger, turns.slice(0, 3), [state('<state>B</state>')]); // @3, answered by r2
+    compile(ledger, turns.slice(0, 5), [guardrail, state('<state>C</state>')]); // @5
+
+    expect(ledger.appended('dynamic-state').map((e) => e.content)).toEqual([
+      '<state>A</state>',
+      '<state>B</state>',
+      '<state>C</state>',
+    ]);
+    expect(ledger.appended('handoff')).toEqual([]);
+
+    // Editing q3 drops what renders after it.
+    ledger.reconcile([...turns.slice(0, 4), user('q3, edited')]);
+    expect(ledger.appended('dynamic-state').map((e) => e.content)).toEqual([
+      '<state>A</state>',
+      '<state>B</state>',
+    ]);
+  });
+
   it('renders the group an entry anchored somewhere would join', () => {
     const ledger = new PrefixLedger();
     compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]); // @1, answered by r1

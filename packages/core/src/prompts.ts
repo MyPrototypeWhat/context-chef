@@ -499,6 +499,19 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
   },
 
   /**
+   * `appendOnly`: the line a memory delta opens with. The snapshot the window
+   * started with stays where it was sent, so the delta says its entries take
+   * the place of the ones recalled there; a removed entry is
+   * `<entry key="…" removed="true"/>`.
+   */
+  MEMORY_DELTA_HEADER:
+    'Your memory changed. These entries replace what you recalled under the same keys:',
+
+  /** The `tools: 'unified'` counterpart of {@link Prompts.MEMORY_DELTA_HEADER}. */
+  CONTEXT_MEMORY_DELTA_HEADER:
+    'Memory (context://memory/*) changed. These entries replace the earlier ones under the same keys:',
+
+  /**
    * System-level instruction explaining cleared tool results.
    * Prevents the model from interpreting placeholders as errors.
    * Auto-injected by the middleware when tool-result compaction is active.
@@ -553,11 +566,27 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
   GUARDRAIL_RESTATED:
     'These output format instructions replace any given earlier in this conversation.',
 
+  /**
+   * `appendOnly`: the active skill's instructions as an event. `name` is
+   * already escaped. A switch leaves the earlier skill's block in place, so
+   * from the second revision on it says which one counts.
+   */
+  getSkillEvent: (name: string, instructions: string, rev: number): string =>
+    Prompts.getEventBlock(
+      `<skill_instructions skill="${name}">\n${rev > 1 ? `${Prompts.SKILL_RESTATED}\n\n` : ''}` +
+        `${instructions}\n</skill_instructions>`,
+      rev,
+    ),
+
+  SKILL_RESTATED: 'These skill instructions replace any given earlier in this conversation.',
+
   /** `appendOnly`: what a tombstone says, per source. */
   DYNAMIC_STATE_WITHDRAWN: 'The task state was cleared.',
   IMPLICIT_CONTEXT_WITHDRAWN: 'No implicit context is attached any more.',
   ANNOUNCEMENT_WITHDRAWN: 'This announcement was withdrawn and no longer applies.',
   GUARDRAIL_WITHDRAWN: 'The output format instructions given earlier no longer apply.',
+  SKILL_WITHDRAWN:
+    'No skill is active any more: the skill instructions given earlier no longer apply.',
   /** The guardrail left the user channel for the end of the system prompt. */
   GUARDRAIL_MOVED:
     'The output format instructions given earlier are replaced by the ones in the system prompt.',
