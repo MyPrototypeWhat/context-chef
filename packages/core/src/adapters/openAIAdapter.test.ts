@@ -1,6 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions';
 import { describe, expect, it } from 'vitest';
 import type { Message, OpenAIPayload } from '../types';
+import { fromAnthropic } from './anthropicAdapter';
 import { fromOpenAI, OpenAIAdapter } from './openAIAdapter';
 
 interface OAIMsg {
@@ -506,5 +507,32 @@ describe('OpenAIAdapter — positional system messages', () => {
     const result = adapter.compile([...messages]);
 
     expect(JSON.stringify(result)).not.toContain('_positional');
+  });
+});
+
+describe('OpenAIAdapter — Anthropic-parsed history', () => {
+  it('never leaks _anthropic_origin into the wire payload', () => {
+    const { history } = fromAnthropic([
+      { role: 'user', content: 'Look this up' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Checking.' },
+          { type: 'tool_use', id: 'toolu_1', name: 'search', input: { q: 'chef' } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'found it' }],
+      },
+    ]);
+    expect(history.some((m) => m._anthropic_origin)).toBe(true);
+
+    const result = adapter.compile(history);
+
+    for (const msg of toPlainMessages(result)) {
+      expect(msg).not.toHaveProperty('_anthropic_origin');
+    }
+    expect(JSON.stringify(result)).not.toContain('_anthropic_origin');
   });
 });

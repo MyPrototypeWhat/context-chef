@@ -227,6 +227,7 @@ export class OpenAIAdapter implements ITargetAdapter {
         attachments,
         pinned: _pinned,
         _anthropic_compaction,
+        _anthropic_origin,
         _gemini_thought_signature,
         _openai_reasoning,
         ...cleanMsg
