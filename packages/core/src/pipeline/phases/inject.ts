@@ -29,6 +29,11 @@ export const injectPhase: Phase = {
       }
     }
 
+    // appendOnly: both reach the window as events the `tail` phase appends —
+    // dynamic state on its placement's channel, implicit context on the user
+    // channel — so neither becomes a system message after the history here.
+    if (ctx.prefix) return;
+
     // For system placement, append implicit_context directly to the dynamic
     // state message (the Assembler only handles last_user injection).
     let dynamicState = host.dynamicState;

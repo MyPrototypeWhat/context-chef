@@ -317,6 +317,24 @@ export class PrefixLedger {
   }
 
   /**
+   * Every source an entry still in the window speaks for, in the order they
+   * first appear: how a caller finds one that went quiet since.
+   */
+  sources(): InjectionSource[] {
+    return [...new Set(this.entries.flatMap((entry) => entry.sources))];
+  }
+
+  /**
+   * The messages of the group an entry anchored at `anchor` joins, as the
+   * window renders them now; empty when no entry renders there yet.
+   */
+  renderedAt(anchor: number): Message[] {
+    const at = this.places()[anchor];
+    const group = at === undefined ? undefined : this.groups().get(at);
+    return group ? renderGroup(group) : [];
+  }
+
+  /**
    * Concept three: a rewrite of what was already sent, applied to the history
    * being compiled. `hostIndex` is a host index: the first host message that
    * changed, or for a compaction `head.cut`, the first message kept. The

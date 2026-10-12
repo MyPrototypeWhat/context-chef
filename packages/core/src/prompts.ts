@@ -509,4 +509,40 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
     'Messages showing "[Old tool result content cleared]" indicate the tool executed successfully — ' +
     'the output was removed to save space, not due to any error. ' +
     'Focus on the recent tool results which are preserved in full.',
+
+  // ─── System state at the tail ───
+  // By default the state blocks (dynamic state, implicit context,
+  // announcements) are rendered again at the tail on every compile, so the
+  // model only ever sees the current ones. Under `appendOnly` each block is
+  // an event: appended once, when it changes, and left where it was sent, so
+  // earlier versions stay in the window and the wording says which counts.
+
+  /** The line after the state blocks of the tail stitch. */
+  STATE_ANCHOR: 'Above is the current system state. Use it to guide your next action.',
+
+  /** `appendOnly`: the line after the state blocks one compile appends. */
+  EVENT_STATE_ANCHOR:
+    'Above is the current system state. Each block supersedes any earlier block of its kind ' +
+    '(same tag and id). Use it to guide your next action.',
+
+  /**
+   * `appendOnly`: a state block (`<tag …>…</tag>`) as an event, its revision
+   * the first attribute: the version of that block before it in the window
+   * carries `rev - 1`.
+   */
+  getEventBlock: (xml: string, rev: number): string =>
+    xml.replace(/^<([\w-]+)/, `<$1 rev="${rev}"`),
+
+  /**
+   * `appendOnly`: the tombstone of a state block whose source went quiet.
+   * `id` is the block's id attribute, already escaped.
+   */
+  getWithdrawnBlock: (tag: string, rev: number, note: string, id?: string): string =>
+    `<${tag} rev="${rev}"${id === undefined ? '' : ` id="${id}"`} withdrawn="true">${note}</${tag}>`,
+
+  /** `appendOnly`: what a tombstone says, per source. */
+  DYNAMIC_STATE_WITHDRAWN: 'The task state was cleared.',
+  IMPLICIT_CONTEXT_WITHDRAWN: 'No implicit context is attached any more.',
+  ANNOUNCEMENT_WITHDRAWN: 'This announcement was withdrawn and no longer applies.',
+  GUARDRAIL_WITHDRAWN: 'The output format instructions given earlier no longer apply.',
 };

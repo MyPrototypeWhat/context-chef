@@ -1000,6 +1000,9 @@ export class ContextChef {
       shapeMemoryParts(dataXml, injectedMemoryKeys) {
         return chef._shapeMemorySandwichParts(dataXml, injectedMemoryKeys);
       },
+      get announcements() {
+        return [...chef._announcements.values()];
+      },
       resolveAnnouncementChannels(isAnthropicTarget, extra) {
         return chef._resolveAnnouncementChannels(isAnthropicTarget, extra);
       },
@@ -1125,6 +1128,11 @@ export class ContextChef {
    *     preventing "Lost in the Middle" state drift in long conversations.
    *   - `'system'`: Injects as a standalone system message at the bottom of the sandwich.
    *     Suitable for short conversations or global configuration that doesn't need recency boost.
+   *
+   * With `appendOnly`, the state is appended once after the turn it was set in
+   * (`'last_user'`: its own user message; `'system'`: a positional system
+   * message, never the top-level system prompt) and only again when it
+   * changes, as the next revision (`<dynamic_state rev="2">`).
    */
   public setDynamicState<T>(
     schema: z.ZodType<T>,
@@ -1399,6 +1407,12 @@ export class ContextChef {
    * subsequent payloads instead of lingering as an obsolete turn the model
    * keeps re-reading.
    *
+   * With `appendOnly` it is an event instead: appended once, after the turn it
+   * was announced in, and sent there from then on. Re-announcing it with new
+   * content or a new channel appends the next revision
+   * (`<announcement rev="2" id="…">`) and leaves the earlier one in place;
+   * re-announcing it unchanged appends nothing.
+   *
    * Upsert by `id`: re-announcing the same id replaces the content and channel
    * while keeping the original insertion position, so the rendered block stays
    * stable as announcements are updated.
@@ -1418,7 +1432,7 @@ export class ContextChef {
    *   over everything before it. Either channel re-renders the announcement
    *   at the new tail on every compile, so the turn it sat in last time
    *   changes, and replaying that turn's thinking fails the check (a 400 on
-   *   accounts created on or after 2026-08-31).
+   *   accounts created on or after 2026-08-31). `appendOnly` avoids that.
    *
    * Detecting the delta is userland policy, not chef mechanism:
    *
@@ -1439,7 +1453,11 @@ export class ContextChef {
 
   /**
    * Removes a standing announcement. Returns true when one was removed.
-   * The next compile() carries no trace of it.
+   *
+   * By default the next compile() carries no trace of it. With `appendOnly`
+   * the earlier statement stays where it was sent — the window only grows —
+   * and the next compile appends a tombstone after it saying it was withdrawn
+   * (`<announcement rev="…" id="…" withdrawn="true">`).
    */
   public retractAnnouncement(id: string): boolean {
     return this._announcements.delete(id);

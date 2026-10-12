@@ -1,145 +1,27 @@
+import type { Announcement, AnnouncementChannel } from '../../chef';
 import { Assembler } from '../../modules/assembler';
+import { eventAnchor, type PrefixEntry, type PushSource, sourceEvents } from '../../prefix';
+import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { checkTailInvariants, tailInsertionIndex } from '../checks';
-import type { Phase } from '../context';
+import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
+import { escapeXmlAttribute } from '../xml';
 
 /**
  * Tail stitch + announcements.
  *
- * Volatile content lands closest to the LLM generation point. The stitch is
- * composed in a fixed inner order — skill instructions, memory data, dynamic
- * state, implicit context, announcements, anchor — so callers reading the
- * final user message can rely on the layout.
+ * Volatile content lands closest to the LLM generation point, composed in a
+ * fixed inner order — skill instructions, memory data, dynamic state,
+ * implicit context, announcements, anchor, guardrail — so callers reading the
+ * final user message can rely on the layout. Under `appendOnly` the same
+ * sources become events, appended in the same order only when they changed.
  */
 export const tailPhase: Phase = {
   name: 'tail',
   async run(ctx, host) {
     const { isAnthropicTarget } = ctx.target;
-    // The handoff notice rides along as an announcement of this compile only —
-    // same rendering, same channel resolution, no standing state.
-    const announcementXml = host.resolveAnnouncementChannels(
-      isAnthropicTarget,
-      ctx.handoffNotice && [ctx.handoffNotice],
-    );
-    const tailParts = ctx.tailParts;
-
-    // skillPlacement 'tail': standing mode instructions lead the stitch, so
-    // the model reads "who you are right now" before the state it applies to.
-    if (ctx.skillTailXml) {
-      tailParts.push(ctx.skillTailXml);
-    }
-    if (ctx.memoryTailDataXml) {
-      tailParts.push(ctx.memoryTailDataXml);
-    }
-    {
-      let dynamicTailAdded = false;
-      if (host.dynamicStatePlacement === 'last_user') {
-        if (host.dynamicStateXml) {
-          tailParts.push(host.dynamicStateXml);
-          dynamicTailAdded = true;
-        }
-        if (ctx.implicitContextXml) {
-          tailParts.push(ctx.implicitContextXml);
-          dynamicTailAdded = true;
-        }
-      }
-      // Announcements are system-state statements too, so they do trigger the
-      // anchor — unlike skill instructions and memory data.
-      if (announcementXml.tailXml) {
-        tailParts.push(announcementXml.tailXml);
-        dynamicTailAdded = true;
-      }
-      // The anchor refers specifically to dynamic state / implicit context /
-      // announcements. Memory data already self-introduces via the active
-      // vocabulary's `memoryBlockHeader` (legacy: "You recall the following
-      // from previous conversations:"; unified: "Memory (context://memory/*)
-      // currently holds:"), and skill instructions are self-describing inside
-      // their own tag, so an anchor for those alone is redundant and reads as
-      // noise to the model. Every Vocabulary must keep a self-introducing
-      // header — the cache audit derives its memory markers from the same
-      // field, so the two stay in step by construction.
-      if (dynamicTailAdded) {
-        tailParts.push('Above is the current system state. Use it to guide your next action.');
-      }
-    }
-    // Guardrail enforce-XML in 'last_user' placement: appended as the FINAL
-    // tail element (after the anchor) — a standing output-format instruction,
-    // not system state, so it sits closest to generation.
-    if (ctx.guardrailTailXml) {
-      tailParts.push(ctx.guardrailTailXml);
-    }
-
     const preTail = ctx.messages;
-    const tailXml = tailParts.join('\n\n');
-    const rawPayload = host.assembler.compile(preTail, { tailXml: tailXml || undefined });
-
-    // System-channel announcements: ONE positional system message placed after
-    // the conversational tail of the ASSEMBLED result — deliberately after the
-    // assembler ran, because the tail stitch either merged into the last user
-    // message or added a new user message for a tool-result tail. Scanning the
-    // result puts the announcement after that user content (a system message
-    // following the user turn is the shape Anthropic documents) and still
-    // before any trailing assistant prefill. Same last-user/tool scan the
-    // Assembler uses; kept inline rather than widening the Assembler's
-    // internal API.
-    const assembled = [...rawPayload.messages];
-    if (announcementXml.systemXml) {
-      let tail = -1;
-      for (let i = assembled.length - 1; i >= 0; i--) {
-        if (assembled[i].role === 'user' || assembled[i].role === 'tool') {
-          tail = i;
-          break;
-        }
-      }
-      if (tail !== -1) {
-        assembled.splice(
-          tail + 1,
-          0,
-          Assembler.orderKeysDeterministically<Message>({
-            role: 'system',
-            content: announcementXml.systemXml,
-            _positional: true,
-          }),
-        );
-      } else {
-        // No conversational tail at all. The degrade below is an ANTHROPIC-only
-        // constraint: a positional system message that precedes every user turn
-        // is invalid on that API, and the adapter's hoist fallback would land
-        // the volatile text back in the cacheable prefix (the exact failure
-        // this channel exists to avoid). Other targets accept a leading inline
-        // system message (OpenAI natively; Gemini via the adapter's user
-        // degrade), so they keep the positional shape.
-        let insertAt = assembled.length;
-        while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
-        if (isAnthropicTarget) {
-          host.warnOnce(
-            'announcement-no-tail',
-            '[context-chef] system-channel announcements need a conversational tail ' +
-              '(a user or tool message) to attach after — none exists, and the Anthropic ' +
-              'API rejects a leading mid-conversation system message, so the announcements ' +
-              'were delivered as a user message instead (warned once).',
-          );
-          assembled.splice(
-            insertAt,
-            0,
-            Assembler.orderKeysDeterministically<Message>({
-              role: 'user',
-              content: announcementXml.systemXml,
-            }),
-          );
-        } else {
-          assembled.splice(
-            insertAt,
-            0,
-            Assembler.orderKeysDeterministically<Message>({
-              role: 'system',
-              content: announcementXml.systemXml,
-              _positional: true,
-            }),
-          );
-        }
-      }
-    }
+    const assembled = ctx.prefix ? appendEvents(ctx, host, ctx.prefix) : stitchTail(ctx, host);
 
     // Pre-flight the positional-system placement contract on the Anthropic
     // target so the diagnostic reaches THIS chef's logger, once per instance.
@@ -147,8 +29,9 @@ export const tailPhase: Phase = {
     // adapters are process-wide registry singletons — their warn-once fires
     // for the first chef in the process only, and ChefConfig.logger never
     // reaches them. Chef-injected announcements can't trip this (their
-    // insertion point is always after a user/tool message); it catches
-    // hand-written `_positional` messages in history.
+    // insertion point is always after a user/tool message, unless an
+    // appendOnly window holds none yet); it catches hand-written
+    // `_positional` messages in history.
     if (isAnthropicTarget && !host.hasWarned('positional-hoist')) {
       for (let i = 0; i < assembled.length; i++) {
         const msg = assembled[i];
@@ -186,3 +69,287 @@ export const tailPhase: Phase = {
     }
   },
 };
+
+/** The 4.x tail: one stitch merged into (or after) the last user turn, every compile. */
+function stitchTail(ctx: CompileContext, host: PipelineHost): Message[] {
+  const { isAnthropicTarget } = ctx.target;
+  // The handoff notice rides along as an announcement of this compile only —
+  // same rendering, same channel resolution, no standing state.
+  const announcementXml = host.resolveAnnouncementChannels(
+    isAnthropicTarget,
+    ctx.handoffNotice && [ctx.handoffNotice],
+  );
+  const tailParts = ctx.tailParts;
+
+  // skillPlacement 'tail': standing mode instructions lead the stitch, so
+  // the model reads "who you are right now" before the state it applies to.
+  if (ctx.skillTailXml) {
+    tailParts.push(ctx.skillTailXml);
+  }
+  if (ctx.memoryTailDataXml) {
+    tailParts.push(ctx.memoryTailDataXml);
+  }
+  {
+    let dynamicTailAdded = false;
+    if (host.dynamicStatePlacement === 'last_user') {
+      if (host.dynamicStateXml) {
+        tailParts.push(host.dynamicStateXml);
+        dynamicTailAdded = true;
+      }
+      if (ctx.implicitContextXml) {
+        tailParts.push(ctx.implicitContextXml);
+        dynamicTailAdded = true;
+      }
+    }
+    // Announcements are system-state statements too, so they do trigger the
+    // anchor — unlike skill instructions and memory data.
+    if (announcementXml.tailXml) {
+      tailParts.push(announcementXml.tailXml);
+      dynamicTailAdded = true;
+    }
+    // The anchor refers specifically to dynamic state / implicit context /
+    // announcements. Memory data already self-introduces via the active
+    // vocabulary's `memoryBlockHeader` (legacy: "You recall the following
+    // from previous conversations:"; unified: "Memory (context://memory/*)
+    // currently holds:"), and skill instructions are self-describing inside
+    // their own tag, so an anchor for those alone is redundant and reads as
+    // noise to the model. Every Vocabulary must keep a self-introducing
+    // header — the cache audit derives its memory markers from the same
+    // field, so the two stay in step by construction.
+    if (dynamicTailAdded) {
+      tailParts.push(Prompts.STATE_ANCHOR);
+    }
+  }
+  // Guardrail enforce-XML in 'last_user' placement: appended as the FINAL
+  // tail element (after the anchor) — a standing output-format instruction,
+  // not system state, so it sits closest to generation.
+  if (ctx.guardrailTailXml) {
+    tailParts.push(ctx.guardrailTailXml);
+  }
+
+  const tailXml = tailParts.join('\n\n');
+  const rawPayload = host.assembler.compile(ctx.messages, { tailXml: tailXml || undefined });
+
+  // System-channel announcements: ONE positional system message placed after
+  // the conversational tail of the ASSEMBLED result — deliberately after the
+  // assembler ran, because the tail stitch either merged into the last user
+  // message or added a new user message for a tool-result tail. Scanning the
+  // result puts the announcement after that user content (a system message
+  // following the user turn is the shape Anthropic documents) and still
+  // before any trailing assistant prefill. Same last-user/tool scan the
+  // Assembler uses; kept inline rather than widening the Assembler's
+  // internal API.
+  const assembled = [...rawPayload.messages];
+  if (announcementXml.systemXml) {
+    let tail = -1;
+    for (let i = assembled.length - 1; i >= 0; i--) {
+      if (assembled[i].role === 'user' || assembled[i].role === 'tool') {
+        tail = i;
+        break;
+      }
+    }
+    if (tail !== -1) {
+      assembled.splice(
+        tail + 1,
+        0,
+        Assembler.orderKeysDeterministically<Message>({
+          role: 'system',
+          content: announcementXml.systemXml,
+          _positional: true,
+        }),
+      );
+    } else {
+      // No conversational tail at all. The degrade below is an ANTHROPIC-only
+      // constraint: a positional system message that precedes every user turn
+      // is invalid on that API, and the adapter's hoist fallback would land
+      // the volatile text back in the cacheable prefix (the exact failure
+      // this channel exists to avoid). Other targets accept a leading inline
+      // system message (OpenAI natively; Gemini via the adapter's user
+      // degrade), so they keep the positional shape.
+      let insertAt = assembled.length;
+      while (insertAt > 0 && assembled[insertAt - 1].role === 'assistant') insertAt--;
+      if (isAnthropicTarget) {
+        host.warnOnce(
+          'announcement-no-tail',
+          '[context-chef] system-channel announcements need a conversational tail ' +
+            '(a user or tool message) to attach after — none exists, and the Anthropic ' +
+            'API rejects a leading mid-conversation system message, so the announcements ' +
+            'were delivered as a user message instead (warned once).',
+        );
+        assembled.splice(
+          insertAt,
+          0,
+          Assembler.orderKeysDeterministically<Message>({
+            role: 'user',
+            content: announcementXml.systemXml,
+          }),
+        );
+      } else {
+        assembled.splice(
+          insertAt,
+          0,
+          Assembler.orderKeysDeterministically<Message>({
+            role: 'system',
+            content: announcementXml.systemXml,
+            _positional: true,
+          }),
+        );
+      }
+    }
+  }
+  return assembled;
+}
+
+const ANNOUNCEMENT = 'announcement:';
+
+/** One announcement as 4.x renders it inside `<announcements>`. */
+const announcementBlock = (announcement: Announcement): string =>
+  `<announcement id="${escapeXmlAttribute(announcement.id)}">\n${announcement.content}\n</announcement>`;
+
+const announcementSource = (id: string, current?: PushSource['current']): PushSource => ({
+  source: `${ANNOUNCEMENT}${id}`,
+  current,
+  tombstone: (rev) =>
+    Prompts.getWithdrawnBlock(
+      'announcement',
+      rev,
+      Prompts.ANNOUNCEMENT_WITHDRAWN,
+      escapeXmlAttribute(id),
+    ),
+});
+
+/**
+ * The guardrail at 'last_user' is an instruction, not state: no revision, no
+ * anchor line. At 'system' its instructions are the last system layer, so
+ * the event channel neither restates nor withdraws them; an event sent
+ * earlier is withdrawn only once there are no instructions at all.
+ */
+function guardrailSource(ctx: CompileContext, host: PipelineHost): PushSource[] {
+  const options = host.guardrailOptions;
+  if (options && options.placement !== 'last_user' && host.guardrail.instructions(options)) {
+    return [];
+  }
+  const instructions = ctx.guardrailTailXml;
+  return [
+    {
+      source: 'guardrail',
+      current: instructions ? { channel: 'user', render: () => instructions } : undefined,
+      tombstone: () => Prompts.GUARDRAIL_WITHDRAWN,
+    },
+  ];
+}
+
+/**
+ * `messages` with the event group at the end of the window — `before`, as
+ * the `prefix` phase rendered it — replaced by `after`. Only assistant
+ * prefills follow that group: the history's own, then the guardrail's. If an
+ * `after-assemble` handler moved it, `after` goes in front of the prefills
+ * all the same, and the payload no longer is the window the ledger records.
+ */
+function replaceEventGroup(
+  messages: Message[],
+  before: Message[],
+  after: Message[],
+  host: PipelineHost,
+): Message[] {
+  let end = messages.length;
+  while (end > 0 && messages[end - 1].role === 'assistant') end--;
+  const start = end - before.length;
+  const found =
+    start >= 0 &&
+    before.every(
+      (message, i) =>
+        Assembler.stringifyPayload(messages[start + i]) === Assembler.stringifyPayload(message),
+    );
+  if (!found) {
+    host.warnOnce(
+      'append-only-events-moved',
+      '[context-chef] appendOnly: the events at the end of the window are not where the ledger ' +
+        'rendered them (an after-assemble handler moved or rewrote them), so the new ones were ' +
+        'added before the trailing prefill; this payload is not the window the ledger records, ' +
+        'and the next compile will not repeat it (warned once).',
+    );
+  }
+  return [...messages.slice(0, found ? start : end), ...after, ...messages.slice(end)];
+}
+
+/**
+ * `appendOnly`: each push source is compared with the last thing the window
+ * holds from it, and only what changed is appended — at the end of the host
+ * history, or before the assistant prefill it ends with — in the stitch's
+ * order: dynamic state, implicit context, announcements, the anchor line on
+ * each channel that carried state, the guardrail. Events never merge into a
+ * host message: the ledger renders everything appended at one place as one
+ * user message and one positional system message, and that group replaces
+ * the one the `prefix` phase rendered there.
+ */
+function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCompile): Message[] {
+  const { ledger } = prefix;
+  const { isAnthropicTarget } = ctx.target;
+  // `resolveAnnouncementChannels`' rule: 'auto' is system on Anthropic, user elsewhere.
+  const channelOf = (channel: AnnouncementChannel): PrefixEntry['channel'] =>
+    channel === 'system' || (channel === 'auto' && isAnthropicTarget) ? 'system' : 'user';
+
+  const standing = host.announcements;
+  const ids = new Set(standing.map((a) => a.id));
+  const retracted = ledger
+    .sources()
+    .filter((source) => source.startsWith(ANNOUNCEMENT))
+    .map((source) => source.slice(ANNOUNCEMENT.length))
+    .filter((id) => !ids.has(id));
+  const dynamicStateXml = host.dynamicStateXml;
+  const implicitContextXml = ctx.implicitContextXml;
+
+  const stated = sourceEvents(ledger, [
+    {
+      source: 'dynamic-state',
+      current: dynamicStateXml
+        ? {
+            channel: host.dynamicStatePlacement === 'system' ? 'system' : 'user',
+            render: (rev) => Prompts.getEventBlock(dynamicStateXml, rev),
+          }
+        : undefined,
+      tombstone: (rev) =>
+        Prompts.getWithdrawnBlock('dynamic_state', rev, Prompts.DYNAMIC_STATE_WITHDRAWN),
+    },
+    {
+      source: 'implicit-context',
+      current: implicitContextXml
+        ? { channel: 'user', render: (rev) => Prompts.getEventBlock(implicitContextXml, rev) }
+        : undefined,
+      tombstone: (rev) =>
+        Prompts.getWithdrawnBlock('implicit_context', rev, Prompts.IMPLICIT_CONTEXT_WITHDRAWN),
+    },
+    ...standing.map((a) =>
+      announcementSource(a.id, {
+        channel: channelOf(a.channel),
+        render: (rev) => Prompts.getEventBlock(announcementBlock(a), rev),
+      }),
+    ),
+    ...retracted.map((id) => announcementSource(id)),
+  ]);
+  // The `handoff` phase only sets the notice once per window: it is news every time it is here.
+  const notice = ctx.handoffNotice;
+  if (notice) {
+    stated.push({
+      channel: channelOf(notice.channel),
+      content: announcementBlock(notice),
+      sources: ['handoff'],
+    });
+  }
+  const anchors = (['user', 'system'] as const)
+    .filter((channel) => stated.some((event) => event.channel === channel))
+    .map((channel) => ({ channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] }));
+  const events = [...stated, ...anchors, ...sourceEvents(ledger, guardrailSource(ctx, host))];
+
+  let messages = ctx.messages;
+  if (events.length > 0) {
+    const anchor = eventAnchor(prefix.history, ledger.head?.cut ?? 0);
+    const before = ledger.renderedAt(anchor);
+    ledger.append(events, anchor);
+    messages = replaceEventGroup(messages, before, ledger.renderedAt(anchor), host);
+  }
+  // Skill instructions and memory data are not events: they keep the 4.x stitch.
+  const tailXml = [ctx.skillTailXml, ctx.memoryTailDataXml].filter(Boolean).join('\n\n');
+  return host.assembler.compile(messages, { tailXml: tailXml || undefined }).messages;
+}

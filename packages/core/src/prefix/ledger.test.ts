@@ -220,6 +220,36 @@ describe('PrefixLedger — events are appended once', () => {
     expect(ledger.lastAppended('announcement:b')).toBeUndefined();
   });
 
+  it('lists the sources the window still holds entries for, first appearance first', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [announce, state('<state>A</state>')]); // @1, answered by r1
+    compile(ledger, turns.slice(0, 3), [guardrail, announce]); // @3
+
+    expect(ledger.sources()).toEqual(['announcement:a', 'dynamic-state', 'guardrail']);
+
+    // Editing q2 drops what renders after it: the guardrail is gone, the announcement stays.
+    const edited = [...turns.slice(0, 2), user('q2, edited')];
+    ledger.reconcile(edited);
+    expect(ledger.sources()).toEqual(['announcement:a', 'dynamic-state']);
+  });
+
+  it('renders the group an entry anchored somewhere would join', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]); // @1, answered by r1
+    const history = [...turns.slice(0, 3), assistant('prefill')];
+    ledger.reconcile(history);
+
+    expect(ledger.renderedAt(1)).toEqual([user('<state>A</state>')]);
+    expect(ledger.renderedAt(3)).toEqual([]);
+    ledger.append([announce, state('<state>B</state>')], 3);
+    // Before the prefill at host[3], user events first.
+    expect(ledger.renderedAt(3)).toEqual([
+      user('<state>B</state>'),
+      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+    ]);
+    expect(ledger.renderedAt(4)).toEqual([]);
+  });
+
   it('rejects an anchor outside the window', () => {
     const ledger = new PrefixLedger();
     ledger.reconcile(turns.slice(0, 3));

@@ -1,3 +1,4 @@
+export { eventAnchor, type PushSource, revisionOf, sourceEvents } from './events';
 export { PrefixLedger, plainSent } from './ledger';
 export type {
   AppendOnlyConfig,

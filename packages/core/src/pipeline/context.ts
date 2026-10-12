@@ -128,7 +128,8 @@ export class CompileContext {
    * delivered by `tail` through the announcement channel. It lives on the
    * compile rather than on the chef so it cannot outlive the payload it was
    * written for: no leakage into `getAnnouncements()`, into a snapshot, or
-   * into the next compile.
+   * into the next compile. Under `appendOnly`, `tail` appends it to the
+   * ledger as an event, sent where it was appended from then on.
    */
   handoffNotice?: Announcement;
 
@@ -243,6 +244,8 @@ export interface PipelineHost {
     dataXml: string,
     injectedMemoryKeys: string[],
   ): { topMessages: Message[]; tailDataXml: string };
+  /** The standing announcements, in insertion order. */
+  readonly announcements: readonly Announcement[];
   /**
    * Standing announcements split by channel, with `extra` (the handoff notice)
    * appended for this compile only.

@@ -91,13 +91,15 @@ const wire = (payload: TargetPayload): string => {
 const comparable = (payload: TargetPayload): string =>
   Assembler.stringifyPayload({ ...payload, meta: { ...payload.meta, windowId: undefined } });
 
-/** A session whose ledger holds an event P3 would append: dynamic state, sent with turn 1. */
+/**
+ * A session whose ledger holds an event sent with turn 1. Its source is the
+ * handoff notice, which is never stated again or withdrawn: a source the chef
+ * keeps state for would be compared with it on the next compile.
+ */
 function sessionWithEvent(): ChefSnapshot {
   const ledger = new PrefixLedger();
   ledger.reconcile(turn1);
-  ledger.append([
-    { channel: 'user', content: '<state>step 1</state>', sources: ['dynamic-state'] },
-  ]);
+  ledger.append([{ channel: 'user', content: '<state>step 1</state>', sources: ['handoff'] }]);
   ledger.commit(turn1);
   return { ...chefWith().setHistory(turn1).snapshot(), prefixLedger: ledger.snapshot() };
 }
