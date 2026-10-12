@@ -308,7 +308,7 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
   const { isAnthropicTarget } = ctx.target;
   const channelOf = (channel: AnnouncementChannel): PrefixEntry['channel'] =>
     announcementChannel(channel, isAnthropicTarget) === 'system' ? 'system' : 'user';
-  const anchor = eventAnchor(prefix.history, ledger.head?.cut ?? 0);
+  const anchor = eventAnchor(prefix.history, ledger.head);
   const turnScoped = prefix.clearAt ? { anchor } : undefined;
 
   const standing = host.announcements;

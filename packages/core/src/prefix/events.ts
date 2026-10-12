@@ -1,6 +1,6 @@
 import type { Message } from '../types';
-import type { PrefixLedger } from './ledger';
-import type { InjectionSource, PrefixCandidate, PrefixEntry } from './types';
+import { opensAfterUserTurn, type PrefixLedger } from './ledger';
+import type { InjectionSource, PrefixCandidate, PrefixEntry, PrefixHead } from './types';
 
 /**
  * A push source as one compile sees it: what it says now, and the tombstone
@@ -171,15 +171,23 @@ function isPrefill(message: Message): boolean {
  * Where a compile's events anchor: the end of the host history, or the slot
  * before the one prefill it ends with — never inside the head. Never before
  * a reply: an entry anchored there would join the group that reply answered,
- * whose bytes its signature covers. Ahead of the host's own system messages
- * the history (or the prefill) ends with: a user message must not follow a
- * mid-conversation system message.
+ * whose bytes its signature covers. Ahead of a run of the host's own system
+ * messages the history (or the prefill) ends with, when that run follows a
+ * user turn: it stays positional, and a user message must not follow it. A
+ * run after a reply is hoisted; the events go behind it, or they would make
+ * it positional and change the system prompt. The ledger places entries by
+ * the same rule.
  */
-export function eventAnchor(history: readonly Message[], cut: number): number {
+export function eventAnchor(history: readonly Message[], head?: PrefixHead): number {
+  const cut = head?.cut ?? 0;
   const aheadOfSystem = (end: number) => {
     let at = end;
     while (at > cut && history[at - 1].role === 'system') at--;
-    return at;
+    if (at === end) return end;
+    const before = at > cut ? history[at - 1].role : undefined;
+    const afterUserTurn =
+      before === undefined ? opensAfterUserTurn(head) : before === 'user' || before === 'tool';
+    return afterUserTurn ? at : end;
   };
   const anchor = aheadOfSystem(history.length);
   return anchor > cut && isPrefill(history[anchor - 1]) ? aheadOfSystem(anchor - 1) : anchor;

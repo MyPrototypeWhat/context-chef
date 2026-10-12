@@ -46,8 +46,9 @@ export type InjectionSource =
 /**
  * Something the chef appended to the window, and where. An entry renders
  * before the first assistant message at or after its anchor — the reply to
- * the request that carried it — and ahead of the host's own system messages
- * right before that. Until that reply exists the entry is provisional:
+ * the request that carried it — and ahead of a run of the host's own system
+ * messages right before that, when the run follows a user turn (one after a
+ * reply is hoisted). Until that reply exists the entry is provisional:
  * nothing signed depends on it, so it renders at the current tail, wherever
  * the host history has grown to.
  */

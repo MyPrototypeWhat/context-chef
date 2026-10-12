@@ -8,6 +8,7 @@ import {
   anthropicCompactionMessage,
   anthropicServerContextManagement,
   fromAnthropic,
+  withoutThinking,
 } from './anthropicAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
 
@@ -900,6 +901,52 @@ describe('fromAnthropic → AnthropicAdapter verbatim replay', () => {
     );
 
     expect(JSON.stringify(result.messages)).not.toContain('SIG_A');
+  });
+
+  it('replays every other block of the original once withoutThinking took the thinking out', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.map((m) => (m.role === 'assistant' ? withoutThinking(m) : m)),
+    );
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'tool_use', id: 'call_1', name: 'weather', input: { city: 'Oslo' } },
+      { type: 'tool_use', id: 'call_2', name: 'weather', input: { city: 'Rome' } },
+    ]);
+    expect(getContentBlocks(result, 2)).toHaveLength(3);
+  });
+
+  it('never replays an original that held nothing but thinking as an empty message', () => {
+    const result = roundTrip(
+      [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }] },
+      ],
+      (history) => history.map((m) => (m.role === 'assistant' ? withoutThinking(m) : m)),
+    );
+
+    expect(getContentBlocks(result, 1)).not.toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('SIG_A');
+  });
+
+  it('leaves a message its original no longer matches to the IR rebuild, without its thinking', () => {
+    const result = roundTrip(
+      [
+        { role: 'user', content: 'q' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: '', signature: 'SIG_A' },
+            { type: 'text', text: 'Answer.' },
+          ],
+        },
+      ],
+      (history) =>
+        history.map((m) =>
+          m.role === 'assistant' ? withoutThinking({ ...m, content: 'Edited.' }) : m,
+        ),
+    );
+
+    expect(getContentBlocks(result, 1)).toEqual([{ type: 'text', text: 'Edited.' }]);
   });
 
   it('rebuilds the rest of a user message when one of its parts was removed', () => {

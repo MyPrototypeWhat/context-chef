@@ -6,6 +6,13 @@ import type { AnthropicPayload, TargetPayload } from '../../types';
 import type { Phase } from '../context';
 import { reconcilePrefixSent, withoutStrippedThinking } from './prefix';
 
+/** Whether two lists of host ranges hold the same ranges. */
+const sameRanges = (
+  a: ReadonlyArray<readonly [number, number]>,
+  b: ReadonlyArray<readonly [number, number]>,
+): boolean =>
+  a.length === b.length && a.every(([from, until], i) => from === b[i][0] && until === b[i][1]);
+
 /** `betas` with `more` added, each once. */
 const withBetas = (betas: string[] | undefined, more: readonly string[]): string[] => [
   ...new Set([...(betas ?? []), ...more]),
@@ -60,8 +67,15 @@ export const adaptPhase: Phase = {
 
     ctx.payload = payload;
     // appendOnly: a changed system prompt or tool list is a checkpoint; then meta.prefix.
-    if (await reconcilePrefixSent(ctx, host)) {
-      // Every thinking block was signed over what was sent before: none of them goes out.
+    const strippedBefore = ctx.prefix?.ledger.stripped ?? [];
+    await reconcilePrefixSent(ctx, host);
+    const prefix = ctx.prefix;
+    if (
+      prefix &&
+      ctx.target.isAnthropicTarget &&
+      !sameRanges(strippedBefore, prefix.ledger.stripped)
+    ) {
+      // That checkpoint stripped thinking signed over what was sent before: render without it.
       payload.messages = render().messages;
     }
 

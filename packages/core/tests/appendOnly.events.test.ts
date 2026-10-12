@@ -18,11 +18,13 @@ import {
   type ChefEvents,
   ContextChef,
   checkPrefixContinuity,
+  OpenAIAdapter,
   Prompts,
 } from '../src/index';
 import type {
   AnthropicPayload,
   ChefLogger,
+  ITargetAdapter,
   Message,
   OpenAIPayload,
   TargetPayload,
@@ -541,6 +543,43 @@ describe('appendOnly: a source is appended again only when what it says changed'
       .withGuardrails({ prefill: '<out>' });
 
     const payload = await chef.setHistory(turn1).compile({ target: 'openai' });
+
+    expect(contents(payload)).toEqual([
+      'You are terse.',
+      `Find the release date.\n\n${Prompts.getPrefillEnforcement('<out>')}`,
+    ]);
+  });
+
+  // The adapter says whether it has a native prefill; the chef does not guess from its class.
+  it.each([
+    ['a subclass of a built-in adapter', new (class extends OpenAIAdapter {})()],
+    [
+      'a wrapper that says it has none',
+      { nativePrefill: false, compile: (m: Message[]) => new OpenAIAdapter().compile(m) },
+    ],
+  ] as Array<
+    [string, ITargetAdapter]
+  >)('asks for the prefill with the instructions through %s', async (_name, target) => {
+    const { chef } = chefWith();
+    chef.withGuardrails({ prefill: '<out>' });
+
+    const payloads: TargetPayload[] = [];
+    for (const history of [turn1, turn2, turn3]) {
+      payloads.push(await chef.setHistory(history).compile({ target }));
+    }
+
+    expectAppendOnly(payloads);
+    for (const payload of payloads) {
+      expect(occurrences(payload, Prompts.getPrefillEnforcement('<out>'))).toBe(1);
+    }
+  });
+
+  it('leaves the prefill to a wrapper that does not say it has no native prefill', async () => {
+    const { chef } = chefWith();
+    chef.withGuardrails({ prefill: '<out>' });
+    const wrapper: ITargetAdapter = { compile: (m) => new OpenAIAdapter().compile(m) };
+
+    const payload = await chef.setHistory(turn1).compile({ target: wrapper });
 
     expect(contents(payload)).toEqual([
       'You are terse.',

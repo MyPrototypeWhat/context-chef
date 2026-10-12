@@ -41,7 +41,7 @@ export const skillPhase: Phase = {
               Prompts.getWithdrawnBlock('skill_instructions', rev, Prompts.SKILL_WITHDRAWN),
           },
         ],
-        clearAt ? { anchor: eventAnchor(history, ledger.head?.cut ?? 0) } : undefined,
+        clearAt ? { anchor: eventAnchor(history, ledger.head) } : undefined,
       );
     } else {
       ctx.skillMessages =

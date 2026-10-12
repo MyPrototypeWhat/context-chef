@@ -310,6 +310,15 @@ export type TargetProvider = BuiltinTargetProvider | (string & {});
  */
 export interface ITargetAdapter {
   compile(messages: Message[]): TargetPayload;
+  /**
+   * Whether the provider continues a trailing assistant message (a prefill).
+   * `false` when `compile()` turns one into an instruction instead, as the
+   * built-in OpenAI and Gemini adapters do; with `ChefConfig.appendOnly` the
+   * chef then asks for a guardrail prefill with the guardrail's other
+   * instructions. Unset means it does. A wrapper should pass on the value of
+   * the adapter it wraps.
+   */
+  readonly nativePrefill?: boolean;
 }
 
 // ─── Input adapter types ───

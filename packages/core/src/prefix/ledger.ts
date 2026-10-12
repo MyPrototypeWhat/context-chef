@@ -156,19 +156,42 @@ function mergeRanges(ranges: Range[]): Range[] {
 }
 
 /**
+ * Whether the window opens after a user turn: what `head` puts in front of
+ * `host[head.cut]` ends with one. Without a head, nothing comes first.
+ */
+export function opensAfterUserTurn(head?: PrefixHead): boolean {
+  const replacement = head?.replacement ?? [];
+  return followsUserTurn(replacement.length, (k) => replacement[k].role.charAt(0));
+}
+
+/**
  * Where an entry anchored at each host index renders, as the host index it
  * sits before: the first assistant message at or after the anchor, or
- * `length` while unanswered — and ahead of the host's system messages right
- * before that place, from the anchor on, since a user message must not
- * follow a mid-conversation system message. `role(i)` is the role initial of
- * host message `i`. Anchors past `length` have no place.
+ * `length` while unanswered. A run of the host's own system messages right
+ * before that place that follows a user turn stays positional, and a user
+ * message must not follow it, so the entry goes in front of it (from the
+ * anchor on); a run after a reply is hoisted, and the entry stays behind it.
+ * `role(i)` is the role initial of host message `i`; `opening` says whether
+ * the window opens after a user turn (`opensAfterUserTurn`). Anchors past
+ * `length` have no place.
  */
-function anchorPlaces(length: number, role: (index: number) => string): number[] {
+function anchorPlaces(
+  length: number,
+  cut: number,
+  role: (index: number) => string,
+  opening: boolean,
+): number[] {
+  const positional: boolean[] = [];
+  let afterUserTurn = opening;
+  for (let i = cut; i < length; i++) {
+    const initial = role(i);
+    if (initial === 's') positional[i] = afterUserTurn;
+    else afterUserTurn = initial === 'u' || initial === 't';
+  }
   const place = new Array<number>(length + 1);
   place[length] = length;
   for (let i = length - 1; i >= 0; i--) {
-    const initial = role(i);
-    const ahead = initial === 'a' || (initial === 's' && place[i + 1] === i + 1);
+    const ahead = role(i) === 'a' || (positional[i] === true && place[i + 1] === i + 1);
     place[i] = ahead ? i : place[i + 1];
   }
   return place;
@@ -198,10 +221,11 @@ function groupEntries(
  * of its own messages; the ledger never copies them.
  *
  * An entry renders before the first assistant message at or after its anchor,
- * the reply to the request that carried it, and ahead of the host's own
- * system messages right before that. Until that reply exists it is
- * provisional and renders at the current tail; once answered, the group it
- * rendered in is fixed. Finality is read off the history, not stored.
+ * the reply to the request that carried it, and ahead of a run of the host's
+ * own system messages right before that if the run follows a user turn.
+ * Until that reply exists it is provisional and renders at the current tail;
+ * once answered, the group it rendered in is fixed. Finality is read off the
+ * history, not stored.
  *
  * Anchors are positions, validated by per-message digests (`seen`). When the
  * history stops matching, the ledger does not try to realign old entries: it
@@ -572,7 +596,12 @@ export class PrefixLedger {
   /** Where an entry anchored at each host index renders, over the history being compiled. */
   private places(): number[] {
     const history = this.history;
-    return anchorPlaces(history.length, (i) => history[i].role.charAt(0));
+    return anchorPlaces(
+      history.length,
+      this.cut,
+      (i) => history[i].role.charAt(0),
+      opensAfterUserTurn(this._head),
+    );
   }
 
   private groups(): Map<number, PrefixEntry[]> {
@@ -637,7 +666,12 @@ export class PrefixLedger {
     // An entry kept past a compaction renders after the cut, or it was summarized.
     const groups = groupEntries(
       committed.entries,
-      anchorPlaces(length, (i) => (i >= cut ? seen[i - cut].charAt(0) : 'u')),
+      anchorPlaces(
+        length,
+        cut,
+        (i) => (i >= cut ? seen[i - cut].charAt(0) : 'u'),
+        opensAfterUserTurn(head),
+      ),
     );
     const keys = (head?.replacement ?? []).map(digest);
     for (let i = cut; i <= length; i++) {

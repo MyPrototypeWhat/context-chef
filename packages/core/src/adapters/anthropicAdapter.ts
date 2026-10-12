@@ -35,6 +35,11 @@ export interface FromAnthropicOptions {
    * compiled also holds the chef's announcements and events, which it adds
    * again by itself. Default `false`: they are skipped, as in 4.x, and a
    * history that had one changes where it was.
+   *
+   * A system message's text blocks are joined with `\n` into one, and it is
+   * sent back as one text block. The chef only ever sends one, but if you
+   * sent several in one system message yourself, the next request changes
+   * there.
    */
   keepPositionalSystem?: boolean;
 }
@@ -334,6 +339,32 @@ export function anthropicCompactionMessage(block: AnthropicCompactionBlock): His
   return message;
 }
 
+const isThinkingBlock = (block: { type: string }): boolean =>
+  block.type === 'thinking' || block.type === 'redacted_thinking';
+
+/**
+ * A copy of `message` without its thinking. Removing thinking is the one
+ * edit the signature check allows, so when the message still matches the
+ * original it was parsed from, the original loses only its thinking blocks
+ * and the Anthropic target goes on replaying every other block as it was
+ * sent: server tool blocks, citations, separate text blocks. A message its
+ * original no longer matches is rebuilt from IR, as before.
+ */
+export function withoutThinking(message: Message): Message {
+  const { thinking: _thinking, redacted_thinking: _redacted, ...rest } = message;
+  const origin = message._anthropic_origin;
+  if (!origin || origin.hash !== irHash(message)) return rest;
+  const blocks = (origin.blocks as SDKContentBlockParam[] | undefined)?.filter(
+    (block) => !isThinkingBlock(block),
+  );
+  // Nothing but thinking: nothing left to replay.
+  if (blocks?.length === 0) return rest;
+  return {
+    ...rest,
+    _anthropic_origin: { ...origin, ...(blocks ? { blocks } : {}), hash: irHash(rest) },
+  };
+}
+
 // ─── Output: IR → Anthropic ───
 
 /**
@@ -377,9 +408,7 @@ function replayOrigin(
 
 /** Thinking blocks can't carry a breakpoint; the last other block caches the whole message. */
 function cacheLastBlock(content: SDKContentBlockParam[]): void {
-  const last = [...content]
-    .reverse()
-    .find((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
+  const last = [...content].reverse().find((b) => !isThinkingBlock(b));
   if (last) (last as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
 }
 

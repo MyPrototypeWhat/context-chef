@@ -225,6 +225,85 @@ describe('appendOnly on Anthropic: an unsigned checkpoint strips the thinking it
     expect(history[1].thinking).toEqual({ thinking: '', signature: 'SIG_B' });
   });
 
+  describe('a stripped turn fromAnthropic parsed', () => {
+    const toolUse = { type: 'tool_use', id: 't1', name: 'search', input: { q: 'release' } };
+    const toolResult = { type: 'tool_result', tool_use_id: 't1', content: '2026-09-28' };
+    const searched = [
+      { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'price' } },
+      {
+        type: 'web_search_tool_result',
+        tool_use_id: 'srv_1',
+        content: [{ type: 'web_search_result', url: 'https://example.com', title: 'Price' }],
+      },
+      { type: 'text', text: 'Found ' },
+      {
+        type: 'text',
+        text: 'it.',
+        citations: [
+          { type: 'web_search_result_location', url: 'https://example.com', cited_text: '$40' },
+        ],
+      },
+    ];
+    const sent = [
+      { role: 'user', content: 'Find the release date.' },
+      {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }, toolUse],
+      },
+      { role: 'user', content: [toolResult] },
+      {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: '', signature: 'SIG_B' }, ...searched],
+      },
+      { role: 'user', content: 'And the price?' },
+    ] as unknown as MessageParam[];
+    const later = [
+      ...sent,
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_C' },
+          { type: 'text', text: 'About $40.' },
+        ],
+      },
+      { role: 'user', content: 'Thanks.' },
+    ] as unknown as MessageParam[];
+
+    it('sends every block but the thinking as it was sent, from then on', async () => {
+      const { chef, breaks } = chefWith();
+
+      // A chef that never saw the conversation: the replies' thinking is stripped.
+      const payloads = await converse(chef, [
+        fromAnthropic(sent).history,
+        fromAnthropic(later).history,
+      ]);
+
+      expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([['ledger', 2]]);
+      for (const payload of payloads) {
+        expect(payload.messages.slice(1, 4)).toEqual([
+          { role: 'assistant', content: [toolUse] },
+          { role: 'user', content: [toolResult] },
+          { role: 'assistant', content: searched },
+        ]);
+      }
+      expect(signatures(payloads[1])).toEqual(['SIG_C']);
+      expectAppendOnly(payloads);
+    });
+
+    it('rebuilds one whose IR the host changed since from IR, as before', async () => {
+      const { chef } = chefWith();
+      const { history } = fromAnthropic(later);
+      await converse(chef, [history.slice(0, 1), history]);
+
+      // The edit is a checkpoint at the reply; its original blocks no longer say what it says.
+      const edited = [...history];
+      edited[5] = { ...history[5], content: 'About $45.' };
+      const [payload] = await converse(chef, [edited]);
+
+      expect(payload.messages[5]).toEqual(text('assistant', 'About $45.'));
+    });
+  });
+
   it('strips a redacted thinking block, known by its data', async () => {
     const { chef } = chefWith();
     const answered: Message = {
@@ -274,6 +353,29 @@ describe('appendOnly on Anthropic: an unsigned checkpoint strips the thinking it
 
     expect(payload.meta?.prefix?.break).toMatchObject({ reason: 'history', strippedThinking: 0 });
     expect(occurrences(payload, 'Reasoning signed SIG_2.')).toBe(1);
+  });
+
+  it.each([
+    ['gemini', 'GSIG_2'],
+    ['openai-responses', 'ENC_2'],
+  ])('leaves the signed reasoning %s replays alone after a checkpoint', async (target, kept) => {
+    const signed: Message = {
+      ...reply('It is 2026-09-28.', 'SIG_2'),
+      _gemini_thought_signature: 'GSIG_2',
+      _openai_reasoning: [
+        { type: 'reasoning', id: 'rs_2', encrypted_content: 'ENC_2', summary: [] },
+      ],
+    };
+    const history = [...turn2, signed, user('And the price?')];
+    const { chef } = chefWith();
+    await converse(chef, [turn1, turn2, history], target);
+
+    const edited = [...history];
+    edited[2] = result('t1', '2026-09-29');
+    const [payload] = await converse(chef, [edited], target);
+
+    expect(payload.meta?.prefix?.break).toMatchObject({ reason: 'history', strippedThinking: 0 });
+    expect(occurrences(payload, kept)).toBe(1);
   });
 
   it.each([
@@ -582,6 +684,34 @@ describe("appendOnly and the host's own system messages", () => {
     ]);
     expectAppendOnly(payloads);
     expect(breaks).toEqual([]);
+  });
+
+  it('leaves events after a system message that follows a reply, which is hoisted anyway', async () => {
+    // In front of it, the event would make it positional, and the next turn hoist it again:
+    // two `system` checkpoints, each stripping every thinking block.
+    const { chef, breaks } = chefWith();
+    const answered = [...turn1, reply('It is 2026-09-28.', 'SIG_1'), NOTE];
+    // Hoisting the host's note changes the system prompt once: a `system` checkpoint.
+    await converse(chef, [turn1, answered]);
+    expect(breaks.map((b) => b.reason)).toEqual(['system']);
+
+    chef.announce('tools', SEARCH_V2);
+    const payloads = await converse(chef, [answered, [...answered, user('And the price?')]]);
+
+    expect(breaks.map((b) => b.reason)).toEqual(['system']);
+    for (const payload of payloads) {
+      expect(payload.system).toEqual([
+        { type: 'text', text: 'You are terse.' },
+        { type: 'text', text: 'The repo uses pnpm.' },
+      ]);
+    }
+    const event = `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}`;
+    expect(payloads[0].messages.slice(2)).toEqual([text('user', event)]);
+    // Unanswered, it moved behind the next turn.
+    expect(payloads[1].messages.slice(2)).toEqual([
+      Q2,
+      { role: 'system', content: [{ type: 'text', text: event }] },
+    ]);
   });
 
   it('keeps one parsed with keepPositionalSystem where it was, turn scope included', async () => {

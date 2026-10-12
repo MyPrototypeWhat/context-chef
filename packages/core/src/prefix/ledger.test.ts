@@ -342,6 +342,39 @@ describe('PrefixLedger — events are appended once', () => {
     expect(next.stable).toBe(4);
   });
 
+  it('leaves a group behind a system message that follows a reply, which is hoisted anyway', () => {
+    const note: Message = { role: 'system', content: 'The repo uses pnpm.', _positional: true };
+    const ledger = new PrefixLedger();
+    const history = [user('q1'), assistant('r1'), note];
+    compile(ledger, history.slice(0, 1));
+    ledger.reconcile(history);
+    ledger.append([state('<state>A</state>')], 2);
+
+    const sent = [user('q1'), assistant('r1'), note, user('<state>A</state>')];
+    expect(ledger.window()).toEqual(sent);
+    ledger.commit(history);
+    expect(compile(PrefixLedger.fromSnapshot(ledger.snapshot()), history).stable).toBe(4);
+  });
+
+  it.each([
+    ['a user turn: in front of it', user('<summary/>'), true],
+    ['a reply: behind it', assistant('<compaction/>'), false],
+  ])('places a group by what the head before a system message at the cut ends with — %s', (_name, head, ahead) => {
+    const note: Message = { role: 'system', content: 'The repo uses pnpm.', _positional: true };
+    const ledger = new PrefixLedger();
+    const history = [user('q1'), assistant('r1'), note];
+    compile(ledger, history.slice(0, 2));
+    ledger.reconcile(history);
+    ledger.checkpoint('compaction', 2, { cut: 2, replacement: [head], signed: false });
+    ledger.append([state('<state>A</state>')], 2);
+
+    const event = user('<state>A</state>');
+    const sent = ahead ? [head, event, note] : [head, note, event];
+    expect(ledger.window()).toEqual(sent);
+    ledger.commit(history);
+    expect(compile(PrefixLedger.fromSnapshot(ledger.snapshot()), history).stable).toBe(3);
+  });
+
   it('lists the entries of the group an entry anchored somewhere would join', () => {
     const ledger = new PrefixLedger();
     compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]);

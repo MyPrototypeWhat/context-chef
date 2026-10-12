@@ -1,3 +1,4 @@
+import { withoutThinking } from '../../adapters/anthropicAdapter';
 import { type PrefixBreak, type PrefixMeta, type PrefixSent, plainSent } from '../../prefix';
 import type { Message, TargetPayload } from '../../types';
 import type { PrefixComparable } from '../checks';
@@ -143,15 +144,11 @@ export const prefixPhase: Phase = {
  * `appendOnly`, once `adapt` built the payload: a system prompt or tool list
  * other than the one last sent is a checkpoint at 0 that keeps the entries
  * and strips every thinking block after the head. Then `meta.prefix` is
- * written. Returns whether the payload's messages still hold thinking the
- * checkpoint stripped, and have to be rendered again. Off: nothing.
+ * written. Off: nothing.
  */
-export async function reconcilePrefixSent(
-  ctx: CompileContext,
-  host: PipelineHost,
-): Promise<boolean> {
+export async function reconcilePrefixSent(ctx: CompileContext, host: PipelineHost): Promise<void> {
   const prefix = ctx.prefix;
-  if (!prefix) return false;
+  if (!prefix) return;
 
   // A copy, read before the after-adapt handlers: what is compared is what is committed.
   prefix.sent = plainSent(sentAhead(ctx.requirePayload(), ctx.systemLayers.length));
@@ -159,7 +156,6 @@ export async function reconcilePrefixSent(
   const brk = prefix.ledger.reconcileSent(prefix.sent);
   if (brk) await reportPrefixBreak(ctx, host, brk, strippedBefore);
   ctx.meta.prefix = prefixMeta(prefix.ledger.stable(), prefix.breaks);
-  return ctx.target.isAnthropicTarget && brk?.stripped !== undefined;
 }
 
 /**
@@ -168,9 +164,8 @@ export async function reconcilePrefixSent(
  * from a stripped host range loses all its thinking. Blocks are known by
  * their signature (a redacted one by its data) rather than by message: the
  * phases since `prefix` work on copies of the host's messages. The host's
- * own objects are never touched; one `fromAnthropic` parsed no longer
- * matches its original once its thinking is gone, so the adapter rebuilds
- * it from IR instead of replaying it.
+ * own objects are never touched; one `fromAnthropic` parsed is still
+ * replayed from its original, minus the thinking blocks (`withoutThinking`).
  */
 export function withoutStrippedThinking(ctx: CompileContext, messages: Message[]): Message[] {
   const prefix = ctx.prefix;
@@ -190,9 +185,7 @@ export function withoutStrippedThinking(ctx: CompileContext, messages: Message[]
     const stripped =
       (message.thinking?.signature !== undefined && signatures.has(message.thinking.signature)) ||
       (message.redacted_thinking !== undefined && redacted.has(message.redacted_thinking.data));
-    if (!stripped) return message;
-    const { thinking: _thinking, redacted_thinking: _redacted, ...rest } = message;
-    return rest;
+    return stripped ? withoutThinking(message) : message;
   });
 }
 

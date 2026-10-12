@@ -1,8 +1,5 @@
 import { adapterRegistry } from '../../adapters/adapterRegistry';
 import { AnthropicAdapter } from '../../adapters/anthropicAdapter';
-import { GeminiAdapter } from '../../adapters/geminiAdapter';
-import { OpenAIAdapter } from '../../adapters/openAIAdapter';
-import { OpenAIResponsesAdapter } from '../../adapters/openAIResponsesAdapter';
 import type { Phase } from '../context';
 
 /**
@@ -26,6 +23,8 @@ export const startPhase: Phase = {
     // management decision below is per-target.
     const target = ctx.options.target ?? host.defaultTarget ?? 'openai';
     const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
+    // The adapter's own word: unset, the model continues a trailing assistant message.
+    const nativePrefill = adapter.nativePrefill !== false;
     const isAnthropicTarget = target === 'anthropic' || adapter instanceof AnthropicAdapter;
     const serverManaged = host.contextManagement?.strategy === 'server' && isAnthropicTarget;
     if (host.contextManagement?.strategy === 'server' && !isAnthropicTarget) {
@@ -36,13 +35,6 @@ export const startPhase: Phase = {
           'to client-side compression for this target. Only the Anthropic target is server-managed.',
       );
     }
-
-    // A custom adapter is taken at its word: whatever it does with a trailing assistant message.
-    const nativePrefill = !(
-      adapter instanceof OpenAIAdapter ||
-      adapter instanceof OpenAIResponsesAdapter ||
-      adapter instanceof GeminiAdapter
-    );
 
     ctx.target = { adapter, isAnthropicTarget, nativePrefill, serverManaged };
   },

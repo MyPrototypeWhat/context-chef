@@ -45,11 +45,7 @@ export interface ResolvedTarget {
   adapter: ITargetAdapter;
   /** The Anthropic target — the one provider with server-side context management and cache breakpoints. */
   isAnthropicTarget: boolean;
-  /**
-   * The model continues a trailing assistant message. False for the built-in
-   * OpenAI and Gemini adapters, which turn it into an instruction appended to
-   * the last user message instead.
-   */
+  /** The model continues a trailing assistant message: the adapter's `nativePrefill`, unset meaning yes. */
   nativePrefill: boolean;
   /** `contextManagement.strategy: 'server'` AND a target that implements it. */
   serverManaged: boolean;
