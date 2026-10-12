@@ -48,6 +48,25 @@ export function groupIntoTurns(history: Message[]): Turn[] {
   return turns;
 }
 
+/**
+ * Where the turn starts whose tool calls are still waiting for results, when
+ * the history ends with one (system messages after it aside);
+ * `history.length` otherwise. Its results arrive next and need the calls
+ * before them, so a cut that drops everything else has to keep that turn.
+ */
+export function waitingCallStart(history: Message[]): number {
+  const turns = groupIntoTurns(history);
+  for (let t = turns.length - 1; t >= 0; t--) {
+    const { startIndex, endIndex } = turns[t];
+    const first = history[startIndex];
+    if (first.role === 'system') continue;
+    const answered = new Set(history.slice(startIndex + 1, endIndex).map((m) => m.tool_call_id));
+    const waiting = first.tool_calls?.some((call) => !answered.has(call.id)) ?? false;
+    return waiting ? startIndex : history.length;
+  }
+  return history.length;
+}
+
 // ─── Constraint pinning ───
 
 /**

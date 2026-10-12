@@ -11,7 +11,7 @@ import { Prompts } from '../prompts';
 import type { Message } from '../types';
 import { resetNotice } from './reset';
 import { renderSummaryMessage, summarizeHistory } from './summary';
-import { groupIntoTurns, type Turn } from './turns';
+import { groupIntoTurns, type Turn, waitingCallStart } from './turns';
 import {
   detachedRunner,
   type OverflowInput,
@@ -212,25 +212,6 @@ function forcedSplit(history: Message[]): number | null {
 }
 
 /**
- * Where a COLLAPSE cuts (`appendOnly`, a window that cannot wait): after every
- * turn, the one in progress included — except a tool call still waiting for
- * a result, which stays as the first kept turn. The result arrives next, and
- * it needs its call before it.
- */
-function collapseSplit(history: Message[]): number {
-  const turns = groupIntoTurns(history);
-  for (let t = turns.length - 1; t >= 0; t--) {
-    const { startIndex, endIndex } = turns[t];
-    const first = history[startIndex];
-    if (first.role === 'system') continue;
-    const answered = new Set(history.slice(startIndex + 1, endIndex).map((m) => m.tool_call_id));
-    const waiting = first.tool_calls?.some((call) => !answered.has(call.id)) ?? false;
-    return waiting ? startIndex : history.length;
-  }
-  return history.length;
-}
-
-/**
  * The engine behind {@link summarize} and `anchored()`.
  *
  * @internal Construct it through the factories — they are the public surface.
@@ -275,8 +256,10 @@ export class SummarizingStrategy implements OverflowStrategy {
 
   async apply(input: OverflowInput): Promise<OverflowResult> {
     const { history } = input;
+    // A collapse summarizes every turn, the one in progress included — but a
+    // tool call still waiting for its result, which stays as the first kept turn.
     const splitIndex = input.collapse
-      ? collapseSplit(history)
+      ? waitingCallStart(history)
       : input.forced
         ? forcedSplit(history)
         : this.splitIndex(input);

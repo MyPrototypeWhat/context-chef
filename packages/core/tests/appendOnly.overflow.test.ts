@@ -587,6 +587,46 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     ]);
   });
 
+  it.each([
+    ['reset()', () => reset(), true],
+    [
+      'chain(summarize(), reset())',
+      () =>
+        chain(
+          summarize({
+            compressionModel: async () => {
+              throw new Error('model down');
+            },
+          }),
+          reset(),
+        ),
+      true,
+    ],
+    ['anchored()', (compressionModel: CompressionModel) => anchored({ compressionModel }), false],
+  ])('keeps a tool call still waiting for its result when %s collapses', async (_, strategy, resets) => {
+    const pending = [...asked(2), call('t1', 'SIG_C1')];
+    const { chef } = chefWith({}, strategy);
+    const [, before] = await converse(chef, [asked(1), asked(2)]);
+
+    chef.requestNewContext();
+    const [collapsed, next] = await converse(chef, [pending, [...pending, result('t1', 'r1')]]);
+
+    expect(collapsed.messages).toEqual([
+      text('user', resets ? RESET(before.meta?.windowId) : SUMMARY(1)),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '' },
+          { type: 'tool_use', id: 't1', name: 'search', input: {} },
+        ],
+      },
+    ]);
+    expect(next.messages).toEqual([
+      ...collapsed.messages,
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r1' }] },
+    ]);
+  });
+
   it('keeps the request a new window asked for between turns answers', async () => {
     const { chef } = chefWith();
     await converse(chef, [asked(1), asked(2)]);

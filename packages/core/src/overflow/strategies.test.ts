@@ -366,6 +366,23 @@ describe('reset()', () => {
     expect(result.meta.windowId).toBe('w_first');
   });
 
+  it('keeps a tool call still waiting for its result when it collapses the window, and only then', async () => {
+    const call: Message = {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 't1', type: 'function', function: { name: 'search', arguments: '{}' } }],
+    };
+    const messages = [...history(3), call];
+    const [strategy] = attached(reset());
+
+    const collapsed = await strategy.apply(makeInput({ history: messages, collapse: true }));
+    const evicted = await strategy.apply(makeInput({ history: messages }));
+
+    expect(collapsed.history.slice(1)).toEqual([call]);
+    expect(collapsed.evicted).toEqual(history(3));
+    expect(evicted.history).toHaveLength(1);
+  });
+
   it('uses a caller notice verbatim', async () => {
     const [strategy] = attached(reset({ notice: 'Starting over.' }));
 
