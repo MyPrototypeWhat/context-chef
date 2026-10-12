@@ -540,7 +540,7 @@ chef.setHistory(safeHistory);
 
 > **边界契约**：所有 input adapter（`fromOpenAI` / `fromAnthropic` / `fromGemini`，以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`）都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize：IR 是内部协议，直接构造或 mutate 出来的 history 视为已满足契约。如果不确定，显式用 `ensureValidHistory(...)` 包一下。
 >
-> 用 `fromAnthropic` 解析的 history，只要没被改动，就会逐字节原样发回 Anthropic：所有 thinking 块、分开的 text 块、同一条 user 消息里的并行 tool result，以及 IR 不建模的块（server tool use、web search 结果）都保持进来时的样子，只有 cache breakpoint 会换成 chef 自己的。Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking 块连同它之前的全部内容签名，2026-08-31 及之后创建的账号上，只要较早的某一轮和模型当时看到的不一致，API 就返回 400。解析出的消息一旦被改动（tool result 被清除、thinking 被剥离），就会像以前一样从 IR 字段重建。
+> 用 `fromAnthropic` 解析的 history，只要没被改动，就会逐字节原样发回 Anthropic：所有 thinking 块、分开的 text 块、同一条 user 消息里的并行 tool result，以及 IR 不建模的块（server tool use、web search 结果）都保持进来时的样子，只有 cache breakpoint 会换成 chef 自己的。Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking 块连同它之前的全部内容签名，2026-08-31 及之后创建的账号上，只要较早的某一轮和模型当时看到的不一致，API 就返回 400。解析出的消息一旦被改动（tool result 被清除、thinking 被剥离），就会像以前一样从 IR 字段重建。尾部注入和客户端 overflow 仍会改动之前的轮次；在 append-only 模式上线前，可以在请求里设置 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`（beta `thinking-binding-controls-2026-08-01`），让对不上的 thinking 被丢掉而不是整个请求失败——见 [Claude thinking 前缀校验](https://myprototypewhat.github.io/context-chef/zh/guide/thinking-prefix)。
 
 #### `chef.clearHistory(): this`
 

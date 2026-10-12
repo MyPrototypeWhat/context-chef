@@ -22,7 +22,7 @@ const { system, history } = fromGemini(geminiContents, systemInstruction);
 chef.setSystemPrompt(system).setHistory(history);
 ```
 
-**`fromAnthropic` 解析的历史原样回放。** 用 `fromAnthropic` 解析的历史，只要没被改动过，编译回 Anthropic target 时就逐字节一致：每个 thinking block、各自独立的 text block、IR 不建模的块（server tool use、web search 结果、compaction block 的签名）都原样保留，并行 tool result 和其后的用户文本也仍在同一条 user message 里。每条解析出的消息在 `Message._anthropic_origin` 里记录自己的来源。之所以这样做，是因为 Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking block 连同它之前的全部内容做签名，在 2026-08-31 及之后创建的账号上，只要更早的某一轮和模型当时看到的不一致，API 就返回 400。你改动过的消息（清掉了 tool result、剥掉了 thinking）照旧从 IR 字段重建；原消息里的 `cache_control` 标记会被 chef 自己的断点替换。
+**`fromAnthropic` 解析的历史原样回放。** 用 `fromAnthropic` 解析的历史，只要没被改动过，编译回 Anthropic target 时就逐字节一致：每个 thinking block、各自独立的 text block、IR 不建模的块（server tool use、web search 结果、compaction block 的签名）都原样保留，并行 tool result 和其后的用户文本也仍在同一条 user message 里。每条解析出的消息在 `Message._anthropic_origin` 里记录自己的来源。之所以这样做，是因为 Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking block 连同它之前的全部内容做签名，在 2026-08-31 及之后创建的账号上，只要更早的某一轮和模型当时看到的不一致，API 就返回 400。你改动过的消息（清掉了 tool result、剥掉了 thinking）照旧从 IR 字段重建；原消息里的 `cache_control` 标记会被 chef 自己的断点替换。还有哪些功能会改动之前的轮次，以及 `drop_block` 安全网，见 [Claude thinking 前缀校验](/zh/guide/thinking-prefix)。
 
 多模态内容（图片、文件）自动转换为 IR `attachments` 字段：
 
