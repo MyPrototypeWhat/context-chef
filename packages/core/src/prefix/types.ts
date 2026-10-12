@@ -34,34 +34,29 @@ export type InjectionSource =
   | 'pinned'
   | `announcement:${string}`;
 
-/** Something the chef appended to the window, and where. */
+/**
+ * Something the chef appended to the window, and where. An entry renders
+ * before the first assistant message at or after its anchor — the reply to
+ * the request that carried it. Until that reply exists the entry is
+ * provisional: nothing signed depends on it, so it renders at the current
+ * tail, wherever the host history has grown to.
+ */
 export interface PrefixEntry {
-  /** Sits immediately before `host[anchor]` (absolute host index; the host length is the tail). */
+  /** The host length when it was appended: it sits before `host[anchor]` or later (absolute index). */
   readonly anchor: number;
   readonly channel: 'system' | 'user';
   /** What `sources` said: their current state, or the withdrawal notice of a tombstone. */
   readonly content: string;
-  /**
-   * The sources this entry speaks for. A checkpoint empties it on the entries
-   * it keeps: they are still replayed, but no longer any source's last word,
-   * so the caller re-states current state.
-   */
+  /** The sources this entry speaks for. */
   readonly sources: readonly InjectionSource[];
   /** Turn-scoped (`clear_at`); only on the system channel. */
   readonly clearAt?: true;
   /** A tombstone: `sources` were withdrawn and `content` says so. */
   readonly withdrawn?: true;
-  /**
-   * Rendered into the same message as the entry before it. One `append()`
-   * call puts consecutive entries of one channel into one message; a later
-   * call at the same anchor starts a new one, so the message already sent
-   * stays as it was.
-   */
-  readonly joined?: true;
 }
 
-/** An entry to append; the ledger sets the anchor and how it joins its neighbours. */
-export type PrefixCandidate = Omit<PrefixEntry, 'anchor' | 'joined'>;
+/** An entry to append; the ledger sets the anchor. */
+export type PrefixCandidate = Omit<PrefixEntry, 'anchor'>;
 
 /** The latest compaction checkpoint, which replaced the start of the window. */
 export interface PrefixHead {
@@ -75,7 +70,10 @@ export interface PrefixHead {
 
 export type PrefixBreakReason = 'compaction' | 'history' | 'system' | 'tools' | 'ledger';
 
-/** The top-level system prompt and tools of a sent payload. */
+/**
+ * The top-level system prompt and tools of a sent payload. Plain data, as on
+ * the wire: the ledger keeps a JSON copy, so functions and `undefined` drop out.
+ */
 export interface PrefixSent {
   readonly system?: unknown;
   readonly tools?: unknown;
@@ -96,7 +94,10 @@ export interface PrefixLedgerSnapshot {
 /** A checkpoint the ledger applied. */
 export interface PrefixBreak {
   readonly reason: PrefixBreakReason;
-  /** Window index of the first message the checkpoint changed; `0` for compaction, system and tools. */
+  /**
+   * Window index (rendered messages) of the first host message the checkpoint
+   * changed, after it was applied; `0` for compaction, system and tools.
+   */
   readonly at: number;
   readonly signed: boolean;
   /**
@@ -107,7 +108,7 @@ export interface PrefixBreak {
 }
 
 export interface PrefixReconcile {
-  /** `head.replacement`, then host messages with the entries spliced in. */
+  /** `head.replacement`, then host messages with the entries rendered among them. */
   readonly window: Message[];
   /** Present when the ledger no longer matched what it is replayed over; already applied. */
   readonly break?: PrefixBreak;

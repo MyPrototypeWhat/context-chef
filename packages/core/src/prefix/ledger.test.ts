@@ -1,8 +1,9 @@
 /**
  * The window is rebuilt from (host history, ledger) on every compile:
  * `head.replacement`, then host messages from `head.cut` on, with each entry
- * placed immediately before `host[anchor]`. Every expectation below is
- * worked out by hand from those host indices.
+ * rendered before the first assistant message at or after its anchor — the
+ * reply to the request that carried it — or at the tail while unanswered.
+ * Every expectation below is worked out by hand from those host indices.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -22,6 +23,12 @@ const state = (content: string): PrefixCandidate => ({
   content,
   sources: ['dynamic-state'],
 });
+
+const guardrail: PrefixCandidate = {
+  channel: 'user',
+  content: '<guardrail/>',
+  sources: ['guardrail'],
+};
 
 const announce: PrefixCandidate = {
   channel: 'system',
@@ -49,7 +56,7 @@ function compile(
 ) {
   const { break: brk } = ledger.reconcile(history, sent);
   if (events.length > 0) ledger.append(events);
-  const window = ledger.window(history);
+  const window = ledger.window();
   ledger.commit(history, sent);
   return { window, break: brk };
 }
@@ -73,7 +80,7 @@ describe('PrefixLedger — events are appended once', () => {
     expect(again.window[0]).toBe(history[0]);
   });
 
-  it('keeps an appended entry at its anchor while the host history grows', () => {
+  it('keeps an appended entry in place once the model answered it', () => {
     const ledger = new PrefixLedger();
     compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]);
     const next = compile(ledger, turns.slice(0, 5));
@@ -89,7 +96,7 @@ describe('PrefixLedger — events are appended once', () => {
     ]);
   });
 
-  it('appends a second entry at the same anchor when state changed between two compiles', () => {
+  it('adds a state change at the same length to the unanswered tail', () => {
     const ledger = new PrefixLedger();
     const history = turns.slice(0, 3);
     compile(ledger, history, [state('<state>A</state>')]);
@@ -98,33 +105,86 @@ describe('PrefixLedger — events are appended once', () => {
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
     ledger.append([state('<state>B</state>')]);
 
-    expect(shape(ledger.window(history))).toEqual([
+    expect(shape(ledger.window())).toEqual([
       'user:q1',
       'assistant:r1',
       'user:q2',
-      'user:<state>A</state>',
-      'user:<state>B</state>',
+      'user:<state>A</state>\n\n<state>B</state>',
     ]);
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>B</state>');
   });
 
-  it('renders one append as at most one message per channel, keeping each source’s text', () => {
+  it('renders user events, then system events, then turn-scoped ones, one message each', () => {
     const ledger = new PrefixLedger();
-    const history = [user('q1')];
-    ledger.reconcile(history);
+    ledger.reconcile([user('q1')]);
     ledger.append([
-      state('<state>A</state>'),
-      { channel: 'user', content: '<guardrail/>', sources: ['guardrail'] },
       { channel: 'system', content: '<skill name="x"/>', sources: ['skill'] },
+      state('<state>A</state>'),
+      { ...announce, clearAt: true },
+      guardrail,
     ]);
 
-    expect(ledger.window(history)).toEqual([
+    expect(ledger.window()).toEqual([
       user('q1'),
       { role: 'user', content: '<state>A</state>\n\n<guardrail/>' },
       { role: 'system', content: '<skill name="x"/>', _positional: true },
+      { role: 'system', content: '<announcement id="a"/>', _positional: true },
     ]);
     expect(ledger.lastAppended('guardrail')?.content).toBe('<guardrail/>');
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
+  });
+
+  it('puts a user event appended after a system one before it while the request is unanswered', () => {
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 3);
+    compile(ledger, history, [announce]);
+
+    ledger.reconcile(history);
+    ledger.append([state('<state>A</state>')]);
+
+    expect(shape(ledger.window()).slice(-2)).toEqual([
+      'user:<state>A</state>',
+      'system:<announcement id="a"/>',
+    ]);
+  });
+
+  it('moves unanswered events past a user turn the host appended, with no break', () => {
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 3);
+    compile(ledger, history, [announce]);
+    const next = compile(ledger, [...history, user('q2 again')]);
+
+    expect(next.break).toBeUndefined();
+    expect(shape(next.window)).toEqual([
+      'user:q1',
+      'assistant:r1',
+      'user:q2',
+      'user:q2 again',
+      'system:<announcement id="a"/>',
+    ]);
+  });
+
+  it('freezes the tail the model answered, byte for byte', () => {
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 3);
+    compile(ledger, history, [state('<state>A</state>')]); // @3
+    const unanswered = [...history, user('q2 again')];
+    const sent = compile(ledger, unanswered, [guardrail, announce]); // @4
+    expect(shape(sent.window).slice(-2)).toEqual([
+      'user:<state>A</state>\n\n<guardrail/>',
+      'system:<announcement id="a"/>',
+    ]);
+
+    const answered = [...unanswered, assistant('r2'), user('q3')];
+    const next = compile(ledger, answered, [state('<state>C</state>')]); // @6
+
+    expect(next.break).toBeUndefined();
+    expect(next.window.slice(0, sent.window.length)).toEqual(sent.window);
+    expect(shape(next.window.slice(sent.window.length))).toEqual([
+      'assistant:r2',
+      'user:q3',
+      'user:<state>C</state>',
+    ]);
   });
 
   it('records a withdrawal as a tombstone entry, the source’s last word', () => {
@@ -164,8 +224,8 @@ describe('PrefixLedger — events are appended once', () => {
 describe('PrefixLedger — reconcile reports a break and checkpoints it', () => {
   it('reports a `history` break where the host edited an earlier message', () => {
     const ledger = new PrefixLedger();
-    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]); // entry @3
-    compile(ledger, turns.slice(0, 5), [state('<state>B</state>')]); // entry @5
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]); // @3, answered by r2
+    compile(ledger, turns.slice(0, 5), [state('<state>B</state>')]); // @5, unanswered
 
     const edited = turns.slice(0, 5);
     edited[4] = user('q3 (edited)');
@@ -181,20 +241,26 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
       'assistant:r2',
       'user:q3 (edited)',
     ]);
-    // The entry before the break stays in the window but no longer speaks for
-    // its source: the caller re-states current state at the tail.
-    expect(ledger.lastAppended('dynamic-state')).toBeUndefined();
+    // Still visible, so still the source's last word.
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
   });
 
   it('reports a `history` break when the host history is shorter than what was seen', () => {
     const ledger = new PrefixLedger();
-    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]); // entry @3
-    compile(ledger, turns.slice(0, 5), [state('<state>B</state>')]); // entry @5
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]); // @3
+    compile(ledger, turns.slice(0, 5), [state('<state>B</state>')]); // @5
 
     const next = compile(ledger, turns.slice(0, 3));
 
-    expect(next.break).toEqual({ reason: 'history', at: 3, signed: false });
-    expect(shape(next.window)).toEqual(['user:q1', 'assistant:r1', 'user:q2']);
+    // Back at length 3, the window is the one sent at length 3: A is unanswered again.
+    expect(next.break).toEqual({ reason: 'history', at: 4, signed: false });
+    expect(shape(next.window)).toEqual([
+      'user:q1',
+      'assistant:r1',
+      'user:q2',
+      'user:<state>A</state>',
+    ]);
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
   });
 
   it('reports `system` and `tools` breaks, ignoring key order and cache_control', () => {
@@ -225,6 +291,42 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
       signed: false,
       stripped: [0, 3],
     });
+  });
+
+  it.each([
+    { signed: false, replacement: [user('<summary/>')] },
+    {
+      signed: true,
+      replacement: [
+        { role: 'assistant', content: '', _anthropic_compaction: 'summary' } as Message,
+      ],
+    },
+  ])('strips everything after a head (signed: $signed) when the system changes', ({
+    signed,
+    replacement,
+  }) => {
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 7);
+    const sent: PrefixSent = { system: 'S', tools: [] };
+    ledger.reconcile(history, sent);
+    ledger.checkpoint('compaction', 3, { cut: 3, replacement, signed });
+    ledger.append([state('<state>A</state>')]); // @7
+    ledger.commit(history, sent);
+
+    const system = compile(ledger, history, [], { ...sent, system: 'S2' });
+    expect(system.break).toEqual({ reason: 'system', at: 0, signed: false, stripped: [3, 7] });
+    // The head stays; only what came after it is re-based.
+    expect(ledger.head).toMatchObject({ cut: 3, signed });
+    expect(shape(system.window)).toEqual([
+      ...shape(replacement),
+      'assistant:r2',
+      'user:q3',
+      'assistant:r3',
+      'user:q4',
+    ]);
+
+    const tools = compile(ledger, history, [], { system: 'S2', tools: [{ name: 'search' }] });
+    expect(tools.break).toEqual({ reason: 'tools', at: 0, signed: false, stripped: [3, 7] });
   });
 
   it('reports a `ledger` break when the history is shorter than head.cut', () => {
@@ -271,60 +373,74 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
       'user:q3',
     ]);
   });
+});
 
-  it('reports a `ledger` break when a system event is followed by a user message', () => {
-    const ledger = new PrefixLedger();
-    const history = turns.slice(0, 3);
-    compile(ledger, history, [announce]);
-    const next = compile(ledger, [...history, user('q2 again')]);
+describe('PrefixLedger — what counts as an edit of a host message', () => {
+  const origin = { blocks: [{ type: 'text', text: 'r1' }], part: 0, parts: 1, hash: 'h' };
+  const answered = (r1: Message): Message[] => [user('q1'), r1, user('q2')];
 
-    expect(next.break).toEqual({ reason: 'ledger', at: 3, signed: false, stripped: [3, 4] });
-    expect(shape(next.window)).toEqual(['user:q1', 'assistant:r1', 'user:q2', 'user:q2 again']);
-  });
-
-  it('lets a turn-scoped (clearAt) system event be followed by a user message', () => {
-    const ledger = new PrefixLedger();
-    const history = turns.slice(0, 3);
-    compile(ledger, history, [{ ...announce, clearAt: true }]);
-    const next = compile(ledger, [...history, user('q2 again')]);
-
-    expect(next.break).toBeUndefined();
-    expect(shape(next.window).slice(-2)).toEqual([
-      'system:<announcement id="a"/>',
-      'user:q2 again',
-    ]);
-  });
-
-  it('ignores key order and chef bookkeeping fields when comparing host messages', () => {
+  it('ignores key order, breakpoints, pinning and host metadata', () => {
     const ledger = new PrefixLedger();
     compile(ledger, [
-      user('q1'),
+      { role: 'user', content: 'q1', id: 'm1' },
       { role: 'assistant', content: 'r1', _cache_breakpoint: true },
-      { role: 'user', content: 'q2', extra: { v: 1, cache_control: { type: 'ephemeral' } } },
+      { role: 'user', content: 'q2', meta: { at: 1 } },
     ]);
 
     const replayed: Message[] = [
-      { content: 'q1', role: 'user', pinned: true },
-      { role: 'assistant', content: 'r1', _anthropic_origin: { part: 0, parts: 1, hash: 'h' } },
-      { role: 'user', content: 'q2', extra: { v: 1 } },
+      { content: 'q1', role: 'user', id: 'm1-renamed', pinned: true },
+      { role: 'assistant', content: 'r1' },
+      { role: 'user', content: 'q2', meta: { at: 2 }, savedBy: 'host' },
     ];
     expect(ledger.reconcile(replayed).break).toBeUndefined();
+  });
 
-    // A provider field reaches its wire, so it counts.
-    const resigned = [...replayed];
-    resigned[1] = { ...replayed[1], _gemini_thought_signature: 'sig' };
+  it('counts a provider field, since it reaches its wire', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, answered(assistant('r1')));
+
+    const resigned = answered({ ...assistant('r1'), _gemini_thought_signature: 'sig' });
     expect(ledger.reconcile(resigned).break).toMatchObject({ reason: 'history', at: 1 });
+  });
+
+  it('counts the Anthropic origin by identity, not by its stored blocks', () => {
+    const withOrigin = { ...assistant('r1'), _anthropic_origin: origin };
+    const ledger = () => {
+      const fresh = new PrefixLedger();
+      compile(fresh, answered(withOrigin));
+      return fresh;
+    };
+
+    const breakpointInBlocks = {
+      ...withOrigin,
+      _anthropic_origin: {
+        ...origin,
+        blocks: [{ type: 'text', text: 'r1', cache_control: { type: 'ephemeral' } }],
+      },
+    };
+    expect(ledger().reconcile(answered(breakpointInBlocks)).break).toBeUndefined();
+
+    // Same IR fields, but the Anthropic target now rebuilds the message instead of replaying it.
+    expect(ledger().reconcile(answered(assistant('r1'))).break).toMatchObject({
+      reason: 'history',
+      at: 1,
+    });
+    const reparsed = { ...withOrigin, _anthropic_origin: { ...origin, hash: 'h2' } };
+    expect(ledger().reconcile(answered(reparsed)).break).toMatchObject({
+      reason: 'history',
+      at: 1,
+    });
   });
 });
 
 describe('PrefixLedger — checkpoints', () => {
-  it('drops entries at or after the break and resets every source’s last content', () => {
+  it('drops entries after the break; the ones kept before it still count', () => {
     const ledger = new PrefixLedger();
-    compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]); // @1
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>')]); // @1, answered by r1
     compile(ledger, turns.slice(0, 3), [
       state('<state>B</state>'),
       { ...announce, channel: 'user' },
-    ]); // @3
+    ]); // @3, answered by r2
     const history = turns.slice(0, 5);
     ledger.reconcile(history);
 
@@ -335,7 +451,7 @@ describe('PrefixLedger — checkpoints', () => {
       signed: false,
       stripped: [2, 5],
     });
-    expect(shape(ledger.window(history))).toEqual([
+    expect(shape(ledger.window())).toEqual([
       'user:q1',
       'user:<state>A</state>',
       'assistant:r1',
@@ -343,12 +459,76 @@ describe('PrefixLedger — checkpoints', () => {
       'assistant:r2',
       'user:q3',
     ]);
-    expect(ledger.lastAppended('dynamic-state')).toBeUndefined();
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>A</state>');
     expect(ledger.lastAppended('announcement:a')).toBeUndefined();
+  });
 
-    ledger.append([state('<state>C</state>')]);
-    expect(ledger.lastAppended('dynamic-state')?.content).toBe('<state>C</state>');
-    expect(shape(ledger.window(history)).at(-1)).toBe('user:<state>C</state>');
+  it('drops an entry that moved past the edited message to the reply after it', () => {
+    const ledger = new PrefixLedger();
+    const history = turns.slice(0, 3);
+    compile(ledger, history, [announce]); // @3
+    // Two follow-ups before the reply: the event renders after both, right before r2.
+    const followUps = [...history, user('q2 again'), user('q2 once more'), assistant('r2')];
+    compile(ledger, followUps);
+
+    const edited = [...followUps];
+    edited[4] = user('q2 once more (edited)');
+    const next = compile(ledger, edited);
+
+    expect(next.break).toEqual({ reason: 'history', at: 4, signed: false, stripped: [4, 6] });
+    expect(shape(next.window)).toEqual([
+      'user:q1',
+      'assistant:r1',
+      'user:q2',
+      'user:q2 again',
+      'user:q2 once more (edited)',
+      'assistant:r2',
+    ]);
+    expect(ledger.lastAppended('announcement:a')).toBeUndefined();
+  });
+
+  it('leaves a withdrawn source’s statement as its last word when the tombstone is dropped', () => {
+    const skill: PrefixCandidate = {
+      channel: 'system',
+      content: '<skill name="x"/>',
+      sources: ['skill'],
+    };
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [skill]); // @1
+    compile(ledger, turns.slice(0, 3), [
+      { ...skill, content: '<skill name="x" withdrawn="true"/>', withdrawn: true },
+    ]); // @3
+    compile(ledger, turns.slice(0, 5));
+
+    const edited = turns.slice(0, 5);
+    edited[2] = user('q2 (edited)');
+    const next = compile(ledger, edited);
+
+    expect(next.break).toMatchObject({ reason: 'history', at: 3 });
+    expect(shape(next.window)).toEqual([
+      'user:q1',
+      'system:<skill name="x"/>',
+      'assistant:r1',
+      'user:q2 (edited)',
+      'assistant:r2',
+      'user:q3',
+    ]);
+    // The caller sees the skill still stated, and appends a fresh tombstone.
+    expect(ledger.lastAppended('skill')).toMatchObject({ content: '<skill name="x"/>' });
+    expect(ledger.lastAppended('skill')?.withdrawn).toBeUndefined();
+  });
+
+  it('reports the break index in rendered messages, two events in one message counting once', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>'), guardrail]); // @1, one message
+    compile(ledger, turns.slice(0, 5));
+
+    const edited = turns.slice(0, 5);
+    edited[2] = user('q2 (edited)');
+    const next = compile(ledger, edited);
+
+    expect(next.break).toEqual({ reason: 'history', at: 3, signed: false, stripped: [2, 5] });
+    expect(next.window[3]).toBe(edited[2]);
   });
 
   it('replaces host [0, cut) with a compaction head and re-bases the entries after the cut', () => {
@@ -368,7 +548,7 @@ describe('PrefixLedger — checkpoints', () => {
 
     expect(brk).toEqual({ reason: 'compaction', at: 0, signed: false, stripped: [3, 7] });
     // E1 and E2 sat inside the summarized span (E2 right before host[3]).
-    expect(shape(ledger.window(history))).toEqual([
+    expect(shape(ledger.window())).toEqual([
       'user:<summary/>',
       'assistant:r2',
       'user:q3',
@@ -377,7 +557,7 @@ describe('PrefixLedger — checkpoints', () => {
       'user:q4',
       'user:E4',
     ]);
-    expect(ledger.lastAppended('dynamic-state')).toBeUndefined();
+    expect(ledger.lastAppended('dynamic-state')?.content).toBe('E4');
     ledger.commit(history);
 
     // A summarized message is no longer in the window: editing it is no break.
@@ -396,6 +576,27 @@ describe('PrefixLedger — checkpoints', () => {
     });
   });
 
+  it('keeps an entry that renders after the cut, wherever it was anchored', () => {
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 3), [state('<state>A</state>')]); // @3
+    const history = [...turns.slice(0, 3), user('q2 again'), assistant('r2')];
+    compile(ledger, history); // A renders after "q2 again", before r2
+    ledger.reconcile(history);
+
+    ledger.checkpoint('compaction', 3, {
+      cut: 3,
+      replacement: [user('<summary/>')],
+      signed: false,
+    });
+
+    expect(shape(ledger.window())).toEqual([
+      'user:<summary/>',
+      'user:q2 again',
+      'user:<state>A</state>',
+      'assistant:r2',
+    ]);
+  });
+
   it('records no stripped range for a signed compaction', () => {
     const ledger = new PrefixLedger();
     const history = turns.slice(0, 5);
@@ -411,6 +612,18 @@ describe('PrefixLedger — checkpoints', () => {
     expect(brk).toEqual({ reason: 'compaction', at: 0, signed: true });
     expect(ledger.stripped).toEqual([]);
     expect(ledger.head?.signed).toBe(true);
+  });
+
+  it('refuses a checkpoint it cannot apply', () => {
+    const ledger = new PrefixLedger();
+    ledger.reconcile(turns.slice(0, 3));
+    const head = { cut: 2, replacement: [user('<summary/>')], signed: false };
+
+    expect(() => ledger.checkpoint('compaction', 2)).toThrow(/head/);
+    expect(() => ledger.checkpoint('history', 2, head)).toThrow(/head/);
+    expect(() => ledger.checkpoint('history', 4)).toThrow(RangeError);
+    expect(() => ledger.checkpoint('compaction', 2, { ...head, cut: 4 })).toThrow(RangeError);
+    expect(ledger.head).toBeUndefined();
   });
 
   it('accumulates stripped ranges and never uncovers a message that is still there', () => {
@@ -459,11 +672,7 @@ describe('PrefixLedger — snapshot', () => {
     compile(
       ledger,
       turns.slice(0, 3),
-      [
-        state('<state>A</state>'),
-        { channel: 'user', content: '<guardrail/>', sources: ['guardrail'] },
-        { ...announce, clearAt: true },
-      ],
+      [state('<state>A</state>'), guardrail, { ...announce, clearAt: true }],
       sent,
     );
     compile(
@@ -475,7 +684,7 @@ describe('PrefixLedger — snapshot', () => {
     const history = turns.slice(0, 7);
     ledger.reconcile(history, sent);
     ledger.checkpoint('history', 6);
-    // Cut before both events, so the joined, turn-scoped and tombstone entries all survive.
+    // Cut before both events, so the grouped, turn-scoped and tombstone entries all survive.
     ledger.checkpoint('compaction', 1, {
       cut: 1,
       replacement: [{ role: 'assistant', content: '', _anthropic_compaction: 'summary' }],
@@ -499,6 +708,17 @@ describe('PrefixLedger — snapshot', () => {
     const edited = [...history];
     edited[5] = assistant('r3 (edited)');
     expect(restored.reconcile(edited, sent).break).toMatchObject({ reason: 'history' });
+  });
+
+  it('keeps what was sent as plain JSON', () => {
+    const ledger = new PrefixLedger();
+    const history = [user('q1')];
+    ledger.reconcile(history);
+    const tools = [{ name: 'search', execute: () => 'result' }];
+
+    expect(() => ledger.commit(history, { system: 'S', tools })).not.toThrow();
+    expect(ledger.lastSent).toEqual({ system: 'S', tools: [{ name: 'search' }] });
+    expect(JSON.parse(JSON.stringify(ledger.snapshot())).lastSent).toEqual(ledger.lastSent);
   });
 
   it('refuses a snapshot version it does not know', () => {
