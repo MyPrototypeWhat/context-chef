@@ -31,12 +31,15 @@ import type {
 const silent: ChefLogger = { warn: () => {} };
 const TARGETS = ['anthropic', 'openai', 'gemini', 'openai-responses'] as const;
 type Target = (typeof TARGETS)[number];
+/** Behavior that does not depend on the wire runs on one target of each family. */
+const THREE = ['anthropic', 'openai', 'gemini'] as const;
 
 const user = (content: string): Message => ({ role: 'user', content });
 const reply = (content: string, signature: string): Message => ({
   role: 'assistant',
   content,
-  thinking: { thinking: `Thinking about "${content}"`, signature },
+  // Not the reply's own words: on Anthropic each text should be sent once.
+  thinking: { thinking: `Reasoning signed ${signature}.`, signature },
 });
 const call = (id: string, signature: string): Message => ({
   role: 'assistant',
@@ -66,6 +69,12 @@ const announcement = (id: string, content: string, rev: number) =>
   `<announcement rev="${rev}" id="${id}">\n${content}\n</announcement>`;
 const withdrawnAnnouncement = (id: string, rev: number) =>
   `<announcement rev="${rev}" id="${id}" withdrawn="true">${Prompts.ANNOUNCEMENT_WITHDRAWN}</announcement>`;
+/** A last_user guardrail event; from its second revision on it says it replaces the one before. */
+const outputFormat = (outputTag: string, rev: number) =>
+  `<output_format rev="${rev}">\n${rev > 1 ? `${Prompts.GUARDRAIL_RESTATED}\n\n` : ''}` +
+  `${Prompts.getXMLGuardrail(outputTag)}\n</output_format>`;
+const withdrawnFormat = (rev: number, note: string) =>
+  `<output_format rev="${rev}" withdrawn="true">${note}</output_format>`;
 const SEARCH_V2 = 'Tool search_v2 is available.';
 
 /** Every chef here checks the pipeline invariants and records what it reports. */
@@ -118,9 +127,20 @@ const wire = (payload: TargetPayload): Omit<TargetPayload, 'meta'> => {
   return rest;
 };
 
+/** `text` as it appears inside the serialized wire. */
+const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
+
 /** How often `text` occurs anywhere in what is sent. */
 const occurrences = (payload: TargetPayload, text: string): number =>
-  JSON.stringify(wire(payload)).split(JSON.stringify(text).slice(1, -1)).length - 1;
+  JSON.stringify(wire(payload)).split(escaped(text)).length - 1;
+
+/** Each of `texts` is sent exactly once, in this order, whatever the target's message shape. */
+function expectSentInOrder(payload: TargetPayload, texts: string[]) {
+  const sent = JSON.stringify(wire(payload));
+  for (const text of texts) expect(occurrences(payload, text), text).toBe(1);
+  const at = texts.map((text) => sent.indexOf(escaped(text)));
+  expect(at).toEqual([...at].sort((a, b) => a - b));
+}
 
 describe('appendOnly: what 4.x moved to the tail every turn stays where it was sent', () => {
   // The cases tests/prefixContinuity.test.ts pins for the default mode, where
@@ -275,15 +295,32 @@ describe('appendOnly: what 4.x moved to the tail every turn stays where it was s
 });
 
 describe('appendOnly: a source is appended again only when what it says changed', () => {
-  it('appends a changed state with the next revision, and leaves the old one where it was', async () => {
+  it.each(
+    THREE,
+  )('appends a changed state with the next revision, and leaves the old one where it was (%s)', async (target) => {
+    const { chef } = chefWith();
+
+    const payloads = await converse(chef, [turn1, turn2, turn3], target, (c, turn) =>
+      c.setDynamicState(State, { step: turn === 1 ? 1 : 2 }),
+    );
+
+    expectAppendOnly(payloads);
+    expectSentInOrder(payloads[2], [
+      'Find the release date.',
+      state(1, 1),
+      state(2, 2),
+      'It is 2026-09-28.',
+      'And the price?',
+    ]);
+  });
+
+  it('appends a state changed in the tool loop right after the tool result', async () => {
     const { chef } = chefWith();
 
     const payloads = await converse(chef, [turn1, turn2, turn3], 'openai', (c, turn) =>
       c.setDynamicState(State, { step: turn === 1 ? 1 : 2 }),
     );
 
-    expectAppendOnly(payloads);
-    // Changed in the tool loop: the new block follows the tool result it was set after.
     expect(contents(payloads[2])).toEqual([
       'You are terse.',
       'Find the release date.',
@@ -310,11 +347,11 @@ describe('appendOnly: a source is appended again only when what it says changed'
     ]);
   });
 
-  it('appends nothing more while the state stays the same', async () => {
+  it.each(THREE)('appends nothing more while the state stays the same (%s)', async (target) => {
     const { chef } = chefWith();
     chef.setDynamicState(State, { step: 1 });
 
-    const payloads = await converse(chef, [turn1, turn2, turn3, turn4, turn5], 'anthropic');
+    const payloads = await converse(chef, [turn1, turn2, turn3, turn4, turn5], target);
 
     expectAppendOnly(payloads);
     const last = payloads[payloads.length - 1];
@@ -323,7 +360,27 @@ describe('appendOnly: a source is appended again only when what it says changed'
     expect(occurrences(last, ANCHOR)).toBe(1);
   });
 
-  it('appends a tombstone for a retracted announcement and leaves the statement in place', async () => {
+  it.each(
+    THREE,
+  )('appends a tombstone for a retracted announcement and leaves the statement in place (%s)', async (target) => {
+    const { chef } = chefWith();
+
+    const payloads = await converse(chef, [turn1, turn2, turn3], target, (c, turn) => {
+      if (turn === 1) c.announce('tools', SEARCH_V2, { channel: 'user_tail' });
+      if (turn === 2) c.retractAnnouncement('tools');
+    });
+
+    expectAppendOnly(payloads);
+    expectSentInOrder(payloads[2], [
+      'Find the release date.',
+      `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}`,
+      `${withdrawnAnnouncement('tools', 2)}\n\n${ANCHOR}`,
+      'It is 2026-09-28.',
+      'And the price?',
+    ]);
+  });
+
+  it('sends exactly what it appends: one message per turn on Chat Completions', async () => {
     const { chef } = chefWith();
 
     const payloads = await converse(chef, [turn1, turn2, turn3], 'openai', (c, turn) => {
@@ -331,7 +388,6 @@ describe('appendOnly: a source is appended again only when what it says changed'
       if (turn === 2) c.retractAnnouncement('tools');
     });
 
-    expectAppendOnly(payloads);
     expect(contents(payloads[2])).toEqual([
       'You are terse.',
       'Find the release date.',
@@ -344,12 +400,14 @@ describe('appendOnly: a source is appended again only when what it says changed'
     ]);
   });
 
-  it('withdraws a cleared state and implicit context that stopped coming', async () => {
+  it.each(
+    THREE,
+  )('withdraws a cleared state and implicit context that stopped coming (%s)', async (target) => {
     const { chef } = chefWith();
     let retrieved = 'docs: v2';
     chef.use('before-assemble', (ctx) => ctx.inject(retrieved));
 
-    const payloads = await converse(chef, [turn1, turn3], 'openai', (c, turn) => {
+    const payloads = await converse(chef, [turn1, turn3], target, (c, turn) => {
       if (turn === 1) c.setDynamicState(State, { step: 1 });
       if (turn === 2) {
         c.setDynamicState(z.null(), null);
@@ -358,21 +416,24 @@ describe('appendOnly: a source is appended again only when what it says changed'
     });
 
     expectAppendOnly(payloads);
-    expect(contents(payloads[1]).slice(-1)).toEqual([
+    expectSentInOrder(payloads[1], [
+      'And the price?',
       `<dynamic_state rev="2" withdrawn="true">${Prompts.DYNAMIC_STATE_WITHDRAWN}</dynamic_state>` +
         `\n\n<implicit_context rev="2" withdrawn="true">${Prompts.IMPLICIT_CONTEXT_WITHDRAWN}</implicit_context>` +
         `\n\n${ANCHOR}`,
     ]);
   });
 
-  it('withdraws a last_user guardrail that was cleared, and restates a changed one', async () => {
+  it.each(
+    THREE,
+  )('restates a changed last_user guardrail as replacing the earlier one, and withdraws a cleared one (%s)', async (target) => {
     const { chef } = chefWith();
     const guardrail = (outputTag: string) => ({
       enforceXML: { outputTag },
       placement: 'last_user' as const,
     });
 
-    const payloads = await converse(chef, [turn1, turn2, turn3, turn4], 'openai', (c, turn) => {
+    const payloads = await converse(chef, [turn1, turn2, turn3, turn4], target, (c, turn) => {
       if (turn === 1) c.withGuardrails(guardrail('out'));
       if (turn === 3) c.withGuardrails(guardrail('answer'));
       if (turn === 4) c.withGuardrails(null);
@@ -380,43 +441,45 @@ describe('appendOnly: a source is appended again only when what it says changed'
 
     expectAppendOnly(payloads);
     // An instruction, not system state: no anchor line of its own.
-    expect(contents(payloads[3])).toEqual([
-      'You are terse.',
-      'Find the release date.',
-      Prompts.getXMLGuardrail('out'),
-      '',
-      '2026-09-28',
+    expectSentInOrder(payloads[3], [
+      `<output_format rev="1">\n${Prompts.getXMLGuardrail('out')}\n</output_format>`,
       'It is 2026-09-28.',
       'And the price?',
-      Prompts.getXMLGuardrail('answer'),
+      `<output_format rev="2">\n${Prompts.GUARDRAIL_RESTATED}\n\n${Prompts.getXMLGuardrail('answer')}\n</output_format>`,
       'About $40.',
       'Thanks.',
-      Prompts.GUARDRAIL_WITHDRAWN,
+      withdrawnFormat(3, Prompts.GUARDRAIL_WITHDRAWN),
     ]);
+    expect(occurrences(payloads[3], ANCHOR)).toBe(0);
+    expect(Prompts.GUARDRAIL_RESTATED).toBe(
+      'These output format instructions replace any given earlier in this conversation.',
+    );
   });
 
-  it("leaves a last_user guardrail event alone once the instructions move to 'system'", async () => {
+  it.each(
+    THREE,
+  )("withdraws the last_user guardrail event when the instructions move to 'system', pointing there (%s)", async (target) => {
     const { chef, breaks } = chefWith();
 
-    const [, moved] = await converse(chef, [turn1, turn3], 'openai', (c, turn) =>
-      c.withGuardrails({
-        enforceXML: { outputTag: 'out' },
-        placement: turn === 1 ? 'last_user' : 'system',
-      }),
+    const [, moved] = await converse(chef, [turn1, turn3], target, (c, turn) =>
+      c.withGuardrails(
+        turn === 1
+          ? { enforceXML: { outputTag: 'out' }, placement: 'last_user' }
+          : { enforceXML: { outputTag: 'answer' }, placement: 'system' },
+      ),
     );
 
-    // The same instructions, static now: a `system` checkpoint, and nothing withdrawn.
+    // New options in the system prompt: a `system` checkpoint, and the event says where they went.
     expect(breaks.map((b) => b.reason)).toEqual(['system']);
-    expect(contents(moved)).toEqual([
-      'You are terse.',
-      Prompts.getXMLGuardrail('out'),
-      'Find the release date.',
-      Prompts.getXMLGuardrail('out'),
-      '',
-      '2026-09-28',
-      'It is 2026-09-28.',
+    expect(occurrences(moved, Prompts.getXMLGuardrail('answer'))).toBe(1);
+    expectSentInOrder(moved, [
+      outputFormat('out', 1),
       'And the price?',
+      withdrawnFormat(2, Prompts.GUARDRAIL_MOVED),
     ]);
+    expect(Prompts.GUARDRAIL_MOVED).toBe(
+      'The output format instructions given earlier are replaced by the ones in the system prompt.',
+    );
   });
 
   it("carries a prefillMode 'instruction' prefill with the last_user guardrail, once", async () => {
@@ -454,9 +517,26 @@ describe('appendOnly: a source is appended again only when what it says changed'
         '<implicit_context rev="1">\ndocs: v2\n</implicit_context>',
         announcement('tools', SEARCH_V2, 1),
         ANCHOR,
-        Prompts.getXMLGuardrail('out'),
+        outputFormat('out', 1),
       ].join('\n\n'),
     ]);
+  });
+
+  it.each([
+    ['anthropic', 'system'],
+    ['openai', 'user'],
+    ['gemini', 'user'],
+    ['openai-responses', 'user'],
+  ] as const)("appends an 'auto' announcement on the %s target as a %s event", async (target, channel) => {
+    const { chef } = chefWith();
+    chef.announce('tools', SEARCH_V2);
+
+    await converse(chef, [turn1], target);
+
+    const entries = chef.snapshot().prefixLedger?.entries ?? [];
+    expect(
+      entries.filter((e) => e.sources.includes('announcement:tools')).map((e) => e.channel),
+    ).toEqual([channel]);
   });
 
   it('puts user events before system events, one message per channel', async () => {
@@ -527,34 +607,114 @@ describe('appendOnly: where events go', () => {
     expect(wire(payloads[2])).toEqual(wire(payloads[1]));
   });
 
-  it('replays the same bytes on a retry, and adds a change to the unanswered tail', async () => {
+  it.each(
+    THREE,
+  )('appends after a signed reply the history ends with, never into the group it answered (%s)', async (target) => {
+    const { chef, breaks, invariants } = chefWith();
+    const answered = [...turn1, reply('It is 2026-09-28.', 'SIG_1')];
+
+    // The reply arrived and the host compiled once more, to meter it, before the next question.
+    const [first, , next] = await converse(
+      chef,
+      [turn1, answered, [...answered, user('And the price?')]],
+      target,
+      (c, turn) => c.setDynamicState(State, { step: turn === 1 ? 1 : 2 }),
+    );
+
+    expect(breaks).toEqual([]);
+    expect(invariants).toEqual([]);
+    expectAppendOnly([first, next]);
+    expectSentInOrder(next, [
+      'Find the release date.',
+      `${state(1, 1)}\n\n${ANCHOR}`,
+      'It is 2026-09-28.',
+      'And the price?',
+      `${state(2, 2)}\n\n${ANCHOR}`,
+    ]);
+  });
+
+  it("adds to the group in front of the guardrail's prefill on a retry", async () => {
+    const { chef } = chefWith();
+    chef.withGuardrails({ prefill: '<out>' });
+
+    const [, retried] = (await converse(chef, [turn1, turn1], 'anthropic', (c, turn) =>
+      c.setDynamicState(State, { step: turn }),
+    )) as AnthropicPayload[];
+
+    expect(retried.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Find the release date.' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `${state(1, 1)}\n\n${ANCHOR}\n\n${state(2, 2)}\n\n${ANCHOR}` },
+        ],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: '<out>' }] },
+    ]);
+  });
+
+  it('appends before a prefill that follows a reply, and after the reply', async () => {
+    const { chef } = chefWith();
+    const prefilled = [
+      ...turn1,
+      reply('It is 2026-09-28.', 'SIG_1'),
+      { role: 'assistant' as const, content: 'Also,' },
+    ];
+
+    const [, payload] = (await converse(chef, [turn1, prefilled], 'anthropic', (c, turn) =>
+      c.setDynamicState(State, { step: turn }),
+    )) as AnthropicPayload[];
+
+    expect(payload.messages.map((m) => m.role)).toEqual([
+      'user',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+    expect(payload.messages[1].content).toEqual([
+      { type: 'text', text: `${state(1, 1)}\n\n${ANCHOR}` },
+    ]);
+    expect(payload.messages.slice(3)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: `${state(2, 2)}\n\n${ANCHOR}` }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Also,' }] },
+    ]);
+  });
+
+  it.each(
+    THREE,
+  )('replays the same bytes on a retry, and adds a change to the unanswered tail (%s)', async (target) => {
     const { chef, breaks } = chefWith();
 
     const [, , first, retried] = await converse(
       chef,
       [turn1, turn2, turn3, turn3],
-      'openai',
+      target,
       (c, turn) => {
         if (turn === 3) c.setDynamicState(State, { step: 1 });
       },
     );
     chef.setDynamicState(State, { step: 2 });
-    const [changed] = await converse(chef, [turn3]);
-    const [next] = await converse(chef, [turn4]);
+    const [changed] = await converse(chef, [turn3], target);
+    const [next] = await converse(chef, [turn4], target);
 
     expect(breaks).toEqual([]);
     expect(wire(retried)).toEqual(wire(first));
-    expect(contents(changed).slice(-1)).toEqual([
+    expectSentInOrder(changed, [
+      'And the price?',
       `${state(1, 1)}\n\n${ANCHOR}\n\n${state(2, 2)}\n\n${ANCHOR}`,
     ]);
     expectAppendOnly([changed, next]);
   });
 
-  it('warns, and drops nothing, when an after-assemble handler moved the events it adds to', async () => {
+  it('adds only its own events, with a warning, when an after-assemble handler rewrote the ones before them', async () => {
     const warn = vi.fn();
     const { chef } = chefWith({ logger: { warn } });
+    const rewritten = (content: string) => content.replace('rev=', 'revision=');
     chef.use('after-assemble', (messages) =>
-      messages.filter((m) => !m.content.startsWith('<dynamic_state')),
+      messages.map((m) =>
+        m.content.startsWith('<dynamic_state') ? { ...m, content: rewritten(m.content) } : m,
+      ),
     );
     chef.setDynamicState(State, { step: 1 });
     await converse(chef, [turn1]);
@@ -563,17 +723,27 @@ describe('appendOnly: where events go', () => {
     const [payload] = await converse(chef, [turn1]);
 
     const moved = warn.mock.calls.filter(([message]) =>
-      String(message).includes('appendOnly: the events at the end of the window'),
+      String(message).includes('an after-assemble handler moved or rewrote the events'),
     );
     expect(moved).toHaveLength(1);
     expect(contents(payload)).toEqual([
       'You are terse.',
       'Find the release date.',
-      `${state(1, 1)}\n\n${ANCHOR}\n\n${state(2, 2)}\n\n${ANCHOR}`,
+      `${rewritten(state(1, 1))}\n\n${ANCHOR}`,
+      `${state(2, 2)}\n\n${ANCHOR}`,
+    ]);
+
+    // A system event added on its own right after a user turn stays a system message.
+    chef.announce('tools', SEARCH_V2, { channel: 'system' });
+    const [third] = await converse(chef, [turn1]);
+    expect((third as OpenAIPayload).messages.slice(-1)).toEqual([
+      { role: 'system', content: `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}` },
     ]);
   });
 
-  it('appends the handoff notice once in its window, and keeps it in place', async () => {
+  it.each(
+    THREE,
+  )('appends the handoff notice once in its window, and keeps it in place (%s)', async (target) => {
     const { chef } = chefWith({
       // 10 tokens per message; the notice is due with 50 or fewer left before 100.
       janitor: {
@@ -594,26 +764,20 @@ describe('appendOnly: where events go', () => {
       ],
     ];
 
-    const payloads = await converse(chef, turns);
+    const payloads = await converse(chef, turns, target);
 
     expectAppendOnly(payloads);
     const notice = `<announcement id="__handoff__">\nHANDOFF, 50 tokens left\n</announcement>\n\n${ANCHOR}`;
-    expect(contents(payloads[2]).slice(-1)).toEqual([notice]);
-    expect(contents(payloads[3]).slice(1)).toEqual([
-      'q1',
-      'a1',
-      'q2',
-      'a2',
-      'q3',
-      notice,
-      'a3',
-      'q4',
-    ]);
+    expect(occurrences(payloads[1], 'HANDOFF')).toBe(0);
+    expectSentInOrder(payloads[2], ['q3', notice]);
+    expectSentInOrder(payloads[3], ['q3', notice, 'q4']);
   });
 });
 
 describe('appendOnly: after a checkpoint, the current state is stated again', () => {
-  it('appends what changed and withdraws what went quiet since the last word the window kept', async () => {
+  it.each(
+    THREE,
+  )('appends what changed and withdraws what went quiet since the last word the window kept (%s)', async (target) => {
     const { chef, breaks } = chefWith();
     const setup = (c: ContextChef, turn: number) => {
       if (turn === 1) {
@@ -626,16 +790,16 @@ describe('appendOnly: after a checkpoint, the current state is stated again', ()
         c.retractAnnouncement('tools');
       }
     };
-    await converse(chef, [turn1, turn2, turn3], 'openai', setup);
+    await converse(chef, [turn1, turn2, turn3], target, setup);
 
     // The host rewrote the tool result: what turn 2 appended after it is gone.
     const edited = [...turn3];
     edited[2] = result('t1', '2026-09-29');
-    const [restated] = await converse(chef, [edited]);
+    const [restated] = await converse(chef, [edited], target);
 
+    // [user, events, call, result*, …]: the edited result sits at window index 3.
     expect(breaks.map((b) => [b.reason, b.at])).toEqual([['history', 3]]);
-    expect(contents(restated)).toEqual([
-      'You are terse.',
+    expectSentInOrder(restated, [
       'Find the release date.',
       [
         state(1, 1),
@@ -643,31 +807,132 @@ describe('appendOnly: after a checkpoint, the current state is stated again', ()
         announcement('docs', 'Docs are indexed.', 1),
         ANCHOR,
       ].join('\n\n'),
-      '',
-      '2026-09-29',
       'It is 2026-09-28.',
       'And the price?',
       // Step 2 is news again, `tools` is withdrawn again; `docs` still holds.
       [state(2, 2), withdrawnAnnouncement('tools', 2), ANCHOR].join('\n\n'),
     ]);
-    const [next] = await converse(chef, [
-      [...edited, reply('About $40.', 'SIG_3'), user('Thanks.')],
-    ]);
+    const [next] = await converse(
+      chef,
+      [[...edited, reply('About $40.', 'SIG_3'), user('Thanks.')]],
+      target,
+    );
     expectAppendOnly([restated, next]);
   });
 
-  it('states everything again after clearHistory()', async () => {
+  it('restates on Chat Completions exactly what the window lost', async () => {
+    const { chef } = chefWith();
+    await converse(chef, [turn1, turn2, turn3], 'openai', (c, turn) => {
+      if (turn === 1) {
+        c.setDynamicState(State, { step: 1 });
+        c.announce('tools', SEARCH_V2, { channel: 'user_tail' });
+      }
+      if (turn === 2) c.setDynamicState(State, { step: 2 });
+    });
+
+    const edited = [...turn3];
+    edited[2] = result('t1', '2026-09-29');
+    const [restated] = await converse(chef, [edited]);
+
+    expect(contents(restated)).toEqual([
+      'You are terse.',
+      'Find the release date.',
+      [state(1, 1), announcement('tools', SEARCH_V2, 1), ANCHOR].join('\n\n'),
+      '',
+      '2026-09-29',
+      'It is 2026-09-28.',
+      'And the price?',
+      [state(2, 2), ANCHOR].join('\n\n'),
+    ]);
+  });
+
+  it.each(THREE)('states everything again after clearHistory() (%s)', async (target) => {
     const { chef } = chefWith();
     chef.setDynamicState(State, { step: 1 });
-    await converse(chef, [turn1, turn3]);
+    await converse(chef, [turn1, turn3], target);
 
     chef.clearHistory();
-    const [payload] = await converse(chef, [[user('New topic.')]]);
+    const [payload] = await converse(chef, [[user('New topic.')]], target);
 
-    expect(contents(payload)).toEqual([
-      'You are terse.',
-      'New topic.',
-      `${state(1, 1)}\n\n${ANCHOR}`,
+    expectSentInOrder(payload, ['New topic.', `${state(1, 1)}\n\n${ANCHOR}`]);
+    expect(occurrences(payload, 'Find the release date.')).toBe(0);
+  });
+});
+
+describe('appendOnly: a system event follows a user turn, or is said as a user message', () => {
+  const noHoist = (warn: ReturnType<typeof vi.fn>) =>
+    warn.mock.calls.filter(([message]) => String(message).includes('positional system message'));
+
+  it('says an announcement in an empty window as a user message, then as a system one after the first turn', async () => {
+    const warn = vi.fn();
+    const { chef, breaks } = chefWith({ logger: { warn } });
+    chef.announce('tools', SEARCH_V2);
+    const event = `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}`;
+
+    const [empty, first, second] = (await converse(
+      chef,
+      [[], turn1, [...turn1, reply('It is 2026-09-28.', 'SIG_1'), user('And the price?')]],
+      'anthropic',
+    )) as AnthropicPayload[];
+
+    // Nothing was hoisted into the top-level system prompt, so nothing changed there.
+    expect(breaks).toEqual([]);
+    expect(noHoist(warn)).toEqual([]);
+    for (const payload of [empty, first, second]) {
+      expect(payload.system).toEqual([{ type: 'text', text: 'You are terse.' }]);
+    }
+    expect(empty.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: event }] }]);
+    // Unanswered, the event moved past the first turn (Ruling E); answered, it stays.
+    expect(first.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Find the release date.' }] },
+      { role: 'system', content: [{ type: 'text', text: event }] },
+    ]);
+    expectAppendOnly([first, second]);
+  });
+
+  it('says an event before an assistant greeting as a user message for the rest of the window', async () => {
+    const warn = vi.fn();
+    const { chef, breaks } = chefWith({ logger: { warn } });
+    chef.announce('tools', SEARCH_V2);
+    const greeting: Message = { role: 'assistant', content: 'Hi! What should I look up?' };
+    const event = `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}`;
+
+    const payloads = (await converse(
+      chef,
+      [
+        [greeting],
+        [greeting, ...turn1],
+        [greeting, ...turn1, reply('It is 2026-09-28.', 'SIG_1'), user('And the price?')],
+      ],
+      'anthropic',
+    )) as AnthropicPayload[];
+
+    expect(breaks.filter((b) => b.reason === 'system')).toEqual([]);
+    expect(noHoist(warn)).toEqual([]);
+    expectAppendOnly(payloads);
+    for (const payload of payloads) {
+      expect(payload.system).toEqual([{ type: 'text', text: 'You are terse.' }]);
+      expect(payload.messages.slice(0, 2)).toEqual([
+        { role: 'user', content: [{ type: 'text', text: event }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'Hi! What should I look up?' }] },
+      ]);
+    }
+  });
+
+  it('says a system event appended right after a reply as a user message', async () => {
+    const { chef } = chefWith();
+    const answered = [...turn1, reply('It is 2026-09-28.', 'SIG_1')];
+
+    const [, metered] = (await converse(chef, [turn1, answered], 'anthropic', (c, turn) => {
+      if (turn === 2) c.announce('tools', SEARCH_V2);
+    })) as AnthropicPayload[];
+
+    expect(metered.system).toEqual([{ type: 'text', text: 'You are terse.' }]);
+    expect(metered.messages.slice(-1)).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}` }],
+      },
     ]);
   });
 });

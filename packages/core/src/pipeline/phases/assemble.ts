@@ -30,6 +30,7 @@ export const assemblePhase: Phase = {
     } else if (options && ctx.prefix) {
       const instructions = host.guardrail.instructions(options);
       if (instructions) guardrailLayer.push({ role: 'system', content: instructions });
+      ctx.guardrailInSystemLayers = guardrailLayer.length > 0;
       ctx.guardrailMessages = host.guardrail.apply([], { prefill: nativePrefill });
     } else {
       ctx.guardrailMessages = options ? host.guardrail.apply([], options) : [];

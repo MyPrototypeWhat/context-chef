@@ -1,5 +1,5 @@
 export { eventAnchor, type PushSource, revisionOf, sourceEvents } from './events';
-export { PrefixLedger, plainSent } from './ledger';
+export { followsUserTurn, PrefixLedger, plainSent, renderGroup } from './ledger';
 export type {
   AppendOnlyConfig,
   InjectionSource,

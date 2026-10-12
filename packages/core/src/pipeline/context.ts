@@ -115,6 +115,8 @@ export class CompileContext {
 
   guardrailMessages: Message[] = [];
   guardrailTailXml = '';
+  /** `appendOnly`: the guardrail's instructions are the last system layer ('system' placement). */
+  guardrailInSystemLayers = false;
 
   /** System layers of the sandwich: user system prompt + skill + memory. */
   systemLayers: Message[] = [];

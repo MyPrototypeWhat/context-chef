@@ -250,6 +250,46 @@ describe('PrefixLedger — events are appended once', () => {
     expect(ledger.renderedAt(4)).toEqual([]);
   });
 
+  it('says a system event with no user turn before it as a user message, keeping its channel', () => {
+    const ledger = new PrefixLedger();
+    const empty = compile(ledger, [], [announce]); // @0: nothing before it
+
+    expect(empty.window).toEqual([user('<announcement id="a"/>')]);
+    expect(ledger.lastAppended('announcement:a')?.channel).toBe('system');
+
+    // Still unanswered, it moves past the first turn and follows a user turn now.
+    const next = compile(ledger, [user('q1')]);
+    expect(next.window).toEqual([
+      user('q1'),
+      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+    ]);
+  });
+
+  it('keeps a system event positional behind the user event of its own group', () => {
+    const ledger = new PrefixLedger();
+    const history = [assistant('Hi!')];
+    ledger.reconcile(history);
+    ledger.append([announce, state('<state>A</state>')]);
+
+    expect(ledger.window()).toEqual([
+      assistant('Hi!'),
+      user('<state>A</state>'),
+      { role: 'system', content: '<announcement id="a"/>', _positional: true },
+    ]);
+  });
+
+  it('rebuilds a group said as a user message the same way from what it saw', () => {
+    const ledger = new PrefixLedger();
+    const history = [assistant('Hi!')];
+    compile(ledger, history, [announce]); // after a reply: no user turn before it
+
+    const restored = PrefixLedger.fromSnapshot(ledger.snapshot());
+    const again = compile(restored, history);
+
+    expect(again.window).toEqual([assistant('Hi!'), user('<announcement id="a"/>')]);
+    expect(again.stable).toBe(2);
+  });
+
   it('rejects an anchor outside the window', () => {
     const ledger = new PrefixLedger();
     ledger.reconcile(turns.slice(0, 3));

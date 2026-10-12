@@ -46,7 +46,7 @@ import {
   type SlotName,
   SlotRegistry,
 } from './pipeline';
-import { escapeXmlAttribute } from './pipeline/xml';
+import { announcementChannel, renderAnnouncement } from './pipeline/announcements';
 import {
   type AppendOnlyConfig,
   PrefixLedger,
@@ -1474,22 +1474,12 @@ export class ContextChef {
    */
   private _renderAnnouncements(list: Announcement[]): string {
     if (list.length === 0) return '';
-    const items = list.map(
-      (a) => `<announcement id="${escapeXmlAttribute(a.id)}">\n${a.content}\n</announcement>`,
-    );
-    return `<announcements>\n${items.join('\n\n')}\n</announcements>`;
+    return `<announcements>\n${list.map(renderAnnouncement).join('\n\n')}\n</announcements>`;
   }
 
   /**
-   * Splits standing announcements by their effective channel for one compile.
-   *
-   * `'auto'` routes by TARGET only — chef does not know the model id. The
-   * Anthropic target gets `'system'` because mid-conversation system messages
-   * leave the cached prefix intact and carry operator precedence; every other
-   * target gets `'user_tail'`. Anthropic models WITHOUT mid-conversation system
-   * support (Sonnet 5) must therefore pass `channel: 'user_tail'` explicitly —
-   * mechanism, not policy. So may Sonnet 5.5 / Haiku 5.5 callers whose
-   * announcements go unheeded after tool results (see {@link announce}).
+   * Splits standing announcements by their effective channel for one compile
+   * (see {@link announcementChannel} for how `'auto'` resolves).
    */
   private _resolveAnnouncementChannels(
     isAnthropicTarget: boolean,
@@ -1501,10 +1491,7 @@ export class ContextChef {
     // `extra` is this compile's own (the handoff notice) — rendered last, and
     // never part of the standing set.
     const all = [...this._announcements.values(), ...extra];
-    const autoChannel: Exclude<AnnouncementChannel, 'auto'> = isAnthropicTarget
-      ? 'system'
-      : 'user_tail';
-    const resolved = all.map((a) => (a.channel === 'auto' ? autoChannel : a.channel));
+    const resolved = all.map((a) => announcementChannel(a.channel, isAnthropicTarget));
     return {
       systemXml: this._renderAnnouncements(all.filter((_, i) => resolved[i] === 'system')),
       tailXml: this._renderAnnouncements(all.filter((_, i) => resolved[i] === 'user_tail')),

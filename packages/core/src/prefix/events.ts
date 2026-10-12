@@ -72,11 +72,31 @@ export function sourceEvents(
 }
 
 /**
+ * A prefill: an assistant message the host wrote for the model to continue.
+ * One that carries what only a model's reply has — thinking, tool calls, a
+ * provider's own fields — is a reply, and Anthropic rejects a prefill with
+ * thinking anyway.
+ */
+function isPrefill(message: Message): boolean {
+  return (
+    message.role === 'assistant' &&
+    !message.thinking &&
+    !message.redacted_thinking &&
+    !message.tool_calls?.length &&
+    message._anthropic_origin === undefined &&
+    message._anthropic_compaction === undefined &&
+    message._openai_reasoning === undefined &&
+    message._gemini_thought_signature === undefined
+  );
+}
+
+/**
  * Where a compile's events anchor: the end of the host history, or the slot
- * before the assistant prefill it ends with — never inside the head.
+ * before the one prefill it ends with — never inside the head. Never before
+ * a reply: an entry anchored there would join the group that reply answered,
+ * whose bytes its signature covers.
  */
 export function eventAnchor(history: readonly Message[], cut: number): number {
-  let anchor = history.length;
-  while (anchor > cut && history[anchor - 1].role === 'assistant') anchor--;
-  return anchor;
+  const last = history.length - 1;
+  return last >= cut && isPrefill(history[last]) ? last : history.length;
 }

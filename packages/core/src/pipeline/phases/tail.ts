@@ -1,8 +1,17 @@
-import type { Announcement, AnnouncementChannel } from '../../chef';
+import type { AnnouncementChannel } from '../../chef';
 import { Assembler } from '../../modules/assembler';
-import { eventAnchor, type PrefixEntry, type PushSource, sourceEvents } from '../../prefix';
+import {
+  eventAnchor,
+  followsUserTurn,
+  type PrefixCandidate,
+  type PrefixEntry,
+  type PushSource,
+  renderGroup,
+  sourceEvents,
+} from '../../prefix';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
+import { announcementChannel, renderAnnouncement } from '../announcements';
 import { checkTailInvariants, tailInsertionIndex } from '../checks';
 import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
 import { escapeXmlAttribute } from '../xml';
@@ -29,9 +38,9 @@ export const tailPhase: Phase = {
     // adapters are process-wide registry singletons — their warn-once fires
     // for the first chef in the process only, and ChefConfig.logger never
     // reaches them. Chef-injected announcements can't trip this (their
-    // insertion point is always after a user/tool message, unless an
-    // appendOnly window holds none yet); it catches hand-written
-    // `_positional` messages in history.
+    // insertion point is always after a user/tool message, and an appendOnly
+    // event with none before it is said as a user message); it catches
+    // hand-written `_positional` messages in history.
     if (isAnthropicTarget && !host.hasWarned('positional-hoist')) {
       for (let i = 0; i < assembled.length; i++) {
         const msg = assembled[i];
@@ -202,10 +211,6 @@ function stitchTail(ctx: CompileContext, host: PipelineHost): Message[] {
 
 const ANNOUNCEMENT = 'announcement:';
 
-/** One announcement as 4.x renders it inside `<announcements>`. */
-const announcementBlock = (announcement: Announcement): string =>
-  `<announcement id="${escapeXmlAttribute(announcement.id)}">\n${announcement.content}\n</announcement>`;
-
 const announcementSource = (id: string, current?: PushSource['current']): PushSource => ({
   source: `${ANNOUNCEMENT}${id}`,
   current,
@@ -219,41 +224,45 @@ const announcementSource = (id: string, current?: PushSource['current']): PushSo
 });
 
 /**
- * The guardrail at 'last_user' is an instruction, not state: no revision, no
- * anchor line. At 'system' its instructions are the last system layer, so
- * the event channel neither restates nor withdraws them; an event sent
- * earlier is withdrawn only once there are no instructions at all.
+ * The guardrail at 'last_user' is an instruction, not state: no anchor line,
+ * but a restatement says it replaces the one before. When the instructions
+ * leave the user channel — cleared, or moved into the system layers — the
+ * event sent earlier is withdrawn, pointing at the system prompt in the
+ * second case.
  */
-function guardrailSource(ctx: CompileContext, host: PipelineHost): PushSource[] {
-  const options = host.guardrailOptions;
-  if (options && options.placement !== 'last_user' && host.guardrail.instructions(options)) {
-    return [];
-  }
+function guardrailSource(ctx: CompileContext): PushSource {
   const instructions = ctx.guardrailTailXml;
-  return [
-    {
-      source: 'guardrail',
-      current: instructions ? { channel: 'user', render: () => instructions } : undefined,
-      tombstone: () => Prompts.GUARDRAIL_WITHDRAWN,
-    },
-  ];
+  return {
+    source: 'guardrail',
+    current: instructions
+      ? { channel: 'user', render: (rev) => Prompts.getOutputFormatEvent(instructions, rev) }
+      : undefined,
+    tombstone: (rev) =>
+      Prompts.getWithdrawnBlock(
+        'output_format',
+        rev,
+        ctx.guardrailInSystemLayers ? Prompts.GUARDRAIL_MOVED : Prompts.GUARDRAIL_WITHDRAWN,
+      ),
+  };
 }
 
 /**
  * `messages` with the event group at the end of the window — `before`, as
- * the `prefix` phase rendered it — replaced by `after`. Only assistant
- * prefills follow that group: the history's own, then the guardrail's. If an
- * `after-assemble` handler moved it, `after` goes in front of the prefills
- * all the same, and the payload no longer is the window the ledger records.
+ * the `prefix` phase rendered it — replaced by `after`, the same group with
+ * this compile's `events` in it. Only `trailing` messages follow that group:
+ * the prefill the history ends with, if any, then the guardrail's. If an
+ * `after-assemble` handler moved or rewrote the group, only `events` go in
+ * front of those, so nothing it left is sent twice.
  */
 function replaceEventGroup(
   messages: Message[],
+  trailing: number,
   before: Message[],
   after: Message[],
+  events: readonly PrefixCandidate[],
   host: PipelineHost,
 ): Message[] {
-  let end = messages.length;
-  while (end > 0 && messages[end - 1].role === 'assistant') end--;
+  const end = Math.max(0, messages.length - trailing);
   const start = end - before.length;
   const found =
     start >= 0 &&
@@ -261,16 +270,20 @@ function replaceEventGroup(
       (message, i) =>
         Assembler.stringifyPayload(messages[start + i]) === Assembler.stringifyPayload(message),
     );
-  if (!found) {
-    host.warnOnce(
-      'append-only-events-moved',
-      '[context-chef] appendOnly: the events at the end of the window are not where the ledger ' +
-        'rendered them (an after-assemble handler moved or rewrote them), so the new ones were ' +
-        'added before the trailing prefill; this payload is not the window the ledger records, ' +
-        'and the next compile will not repeat it (warned once).',
-    );
-  }
-  return [...messages.slice(0, found ? start : end), ...after, ...messages.slice(end)];
+  if (found) return [...messages.slice(0, start), ...after, ...messages.slice(end)];
+
+  host.warnOnce(
+    'append-only-events-moved',
+    '[context-chef] appendOnly: an after-assemble handler moved or rewrote the events at the ' +
+      "end of the window, so this compile's new events were added there on their own. " +
+      'The payload no longer matches the window the ledger records, so the next compile may ' +
+      'not start with it (warned once).',
+  );
+  const added = renderGroup(
+    events,
+    followsUserTurn(end, (i) => messages[i].role.charAt(0)),
+  );
+  return [...messages.slice(0, end), ...added, ...messages.slice(end)];
 }
 
 /**
@@ -286,9 +299,8 @@ function replaceEventGroup(
 function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCompile): Message[] {
   const { ledger } = prefix;
   const { isAnthropicTarget } = ctx.target;
-  // `resolveAnnouncementChannels`' rule: 'auto' is system on Anthropic, user elsewhere.
   const channelOf = (channel: AnnouncementChannel): PrefixEntry['channel'] =>
-    channel === 'system' || (channel === 'auto' && isAnthropicTarget) ? 'system' : 'user';
+    announcementChannel(channel, isAnthropicTarget) === 'system' ? 'system' : 'user';
 
   const standing = host.announcements;
   const ids = new Set(standing.map((a) => a.id));
@@ -323,7 +335,7 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
     ...standing.map((a) =>
       announcementSource(a.id, {
         channel: channelOf(a.channel),
-        render: (rev) => Prompts.getEventBlock(announcementBlock(a), rev),
+        render: (rev) => Prompts.getEventBlock(renderAnnouncement(a), rev),
       }),
     ),
     ...retracted.map((id) => announcementSource(id)),
@@ -333,21 +345,23 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
   if (notice) {
     stated.push({
       channel: channelOf(notice.channel),
-      content: announcementBlock(notice),
+      content: renderAnnouncement(notice),
       sources: ['handoff'],
     });
   }
   const anchors = (['user', 'system'] as const)
     .filter((channel) => stated.some((event) => event.channel === channel))
     .map((channel) => ({ channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] }));
-  const events = [...stated, ...anchors, ...sourceEvents(ledger, guardrailSource(ctx, host))];
+  const events = [...stated, ...anchors, ...sourceEvents(ledger, [guardrailSource(ctx)])];
 
   let messages = ctx.messages;
   if (events.length > 0) {
     const anchor = eventAnchor(prefix.history, ledger.head?.cut ?? 0);
     const before = ledger.renderedAt(anchor);
     ledger.append(events, anchor);
-    messages = replaceEventGroup(messages, before, ledger.renderedAt(anchor), host);
+    const trailing = prefix.history.length - anchor + ctx.guardrailMessages.length;
+    const after = ledger.renderedAt(anchor);
+    messages = replaceEventGroup(messages, trailing, before, after, events, host);
   }
   // Skill instructions and memory data are not events: they keep the 4.x stitch.
   const tailXml = [ctx.skillTailXml, ctx.memoryTailDataXml].filter(Boolean).join('\n\n');

@@ -540,9 +540,25 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
   getWithdrawnBlock: (tag: string, rev: number, note: string, id?: string): string =>
     `<${tag} rev="${rev}"${id === undefined ? '' : ` id="${id}"`} withdrawn="true">${note}</${tag}>`,
 
+  /**
+   * `appendOnly`: the last_user guardrail as an event. Its instructions do
+   * not say which ones count, so from the second revision on it says so.
+   */
+  getOutputFormatEvent: (instructions: string, rev: number): string =>
+    Prompts.getEventBlock(
+      `<output_format>\n${rev > 1 ? `${Prompts.GUARDRAIL_RESTATED}\n\n` : ''}${instructions}\n</output_format>`,
+      rev,
+    ),
+
+  GUARDRAIL_RESTATED:
+    'These output format instructions replace any given earlier in this conversation.',
+
   /** `appendOnly`: what a tombstone says, per source. */
   DYNAMIC_STATE_WITHDRAWN: 'The task state was cleared.',
   IMPLICIT_CONTEXT_WITHDRAWN: 'No implicit context is attached any more.',
   ANNOUNCEMENT_WITHDRAWN: 'This announcement was withdrawn and no longer applies.',
   GUARDRAIL_WITHDRAWN: 'The output format instructions given earlier no longer apply.',
+  /** The guardrail left the user channel for the end of the system prompt. */
+  GUARDRAIL_MOVED:
+    'The output format instructions given earlier are replaced by the ones in the system prompt.',
 };

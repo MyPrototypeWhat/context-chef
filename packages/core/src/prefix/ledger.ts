@@ -93,20 +93,48 @@ function digest(message: Message): string {
 const isReplyDigest = (key: string): boolean => key.startsWith('a:');
 
 /**
+ * Whether a message placed at `end` follows a user turn: the last message
+ * before it that is not a system message is a user message or tool results.
+ * `initial(i)` is the role initial of message `i`, as digests lead with it.
+ */
+export function followsUserTurn(end: number, initial: (i: number) => string): boolean {
+  for (let i = end - 1; i >= 0; i--) {
+    const role = initial(i);
+    if (role !== 's') return role === 'u' || role === 't';
+  }
+  return false;
+}
+
+/**
  * The messages of the entries that render at one place: user events, then
  * system events (a positional system message must not be followed by a user
- * turn), then turn-scoped ones, since `clear_at` applies per message. A pure
- * function of the group, so a tail renders the same bytes once answered.
+ * turn), then turn-scoped ones, since `clear_at` applies per message.
+ *
+ * A positional system message is only valid right after a user turn. When
+ * neither the group's own user event nor the message before the group is
+ * one — an empty window, a reply right before — the system events are said
+ * as user messages instead, 4.x's fallback; the entries keep their channel.
+ * A pure function of the group and what precedes it, so a tail renders the
+ * same bytes once answered.
  */
-function renderGroup(entries: readonly PrefixEntry[]): Message[] {
-  const text = (part: PrefixEntry[]) => part.map((e) => e.content).join('\n\n');
+export function renderGroup(
+  entries: readonly PrefixCandidate[],
+  afterUserTurn: boolean,
+): Message[] {
+  const text = (part: readonly PrefixCandidate[]) => part.map((e) => e.content).join('\n\n');
   const user = entries.filter((e) => e.channel === 'user');
   const system = entries.filter((e) => e.channel === 'system' && !e.clearAt);
   const turnScoped = entries.filter((e) => e.channel === 'system' && e.clearAt);
+  const positional = afterUserTurn || user.length > 0;
   const messages: Message[] = [];
   if (user.length > 0) messages.push({ role: 'user', content: text(user) });
   for (const part of [system, turnScoped]) {
-    if (part.length > 0) messages.push({ role: 'system', content: text(part), _positional: true });
+    if (part.length === 0) continue;
+    messages.push(
+      positional
+        ? { role: 'system', content: text(part), _positional: true }
+        : { role: 'user', content: text(part) },
+    );
   }
   return messages;
 }
@@ -270,15 +298,7 @@ export class PrefixLedger {
 
   /** The window as the ledger stands, over the history being compiled. */
   window(): Message[] {
-    const history = this.history;
-    const groups = this.groups();
-    const window: Message[] = [...(this._head?.replacement ?? [])];
-    for (let i = this.cut; i <= history.length; i++) {
-      const group = groups.get(i);
-      if (group) window.push(...renderGroup(group));
-      if (i < history.length) window.push(history[i]);
-    }
-    return window;
+    return this.render().window;
   }
 
   /**
@@ -330,8 +350,7 @@ export class PrefixLedger {
    */
   renderedAt(anchor: number): Message[] {
     const at = this.places()[anchor];
-    const group = at === undefined ? undefined : this.groups().get(at);
-    return group ? renderGroup(group) : [];
+    return (at === undefined ? undefined : this.render().groups.get(at)) ?? [];
   }
 
   /**
@@ -401,7 +420,8 @@ export class PrefixLedger {
       ? 0
       : (this._head?.replacement.length ?? 0) +
         (hostIndex - this.cut) +
-        [...this.groups().values()].reduce((n, group) => n + renderGroup(group).length, 0);
+        // A group is the same number of messages on either channel.
+        [...this.groups().values()].reduce((n, group) => n + renderGroup(group, true).length, 0);
     if (this.pending) this.pending.at = Math.min(this.pending.at, at);
     return { reason, at, signed, ...(stripped ? { stripped } : {}) };
   }
@@ -513,6 +533,25 @@ export class PrefixLedger {
     return groupEntries(this.entries, this.places());
   }
 
+  /** The window, and the messages each group rendered as, by the host index it renders before. */
+  private render(): { window: Message[]; groups: Map<number, Message[]> } {
+    const history = this.history;
+    const groups = this.groups();
+    const window: Message[] = [...(this._head?.replacement ?? [])];
+    const rendered = new Map<number, Message[]>();
+    for (let i = this.cut; i <= history.length; i++) {
+      const group = groups.get(i);
+      if (group) {
+        const afterUserTurn = followsUserTurn(window.length, (k) => window[k].role.charAt(0));
+        const messages = renderGroup(group, afterUserTurn);
+        rendered.set(i, messages);
+        window.push(...messages);
+      }
+      if (i < history.length) window.push(history[i]);
+    }
+    return { window, groups: rendered };
+  }
+
   private digestOf(message: Message): string {
     let key = this.digests.get(message);
     if (key === undefined) {
@@ -551,7 +590,10 @@ export class PrefixLedger {
     const keys = (head?.replacement ?? []).map(digest);
     for (let i = cut; i <= length; i++) {
       const group = groups.get(i);
-      if (group) keys.push(...renderGroup(group).map(digest));
+      if (group) {
+        const afterUserTurn = followsUserTurn(keys.length, (k) => keys[k].charAt(0));
+        keys.push(...renderGroup(group, afterUserTurn).map(digest));
+      }
       if (i < length) keys.push(seen[i - cut]);
     }
     return keys;
