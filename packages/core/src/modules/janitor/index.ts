@@ -937,7 +937,8 @@ export class Janitor {
     // behind it must not be locked out three failures later. A partial result
     // landed without a step it needed, so what that step counted stays — even
     // when a later step, a reset() say, rescued the window. `background()`
-    // credits its job before that step runs, so the count is that step's alone.
+    // credits its job before that step runs, so the job's earlier failures
+    // don't stay.
     if (!result.meta.partial) this._consecutiveFailures = 0;
 
     // This result is entering the window: it closes the window the strategy

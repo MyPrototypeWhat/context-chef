@@ -29,6 +29,7 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
     async apply(input: OverflowInput): Promise<OverflowResult> {
       let history = input.history;
       let pinned = input.pinned;
+      const handed = new Set(input.pinned);
       const evicted: Message[] = [];
       /** Every message any step compressed, in order, each one once. */
       const span = new Set<Message>();
@@ -49,10 +50,11 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
         for (const message of result.span) span.add(message);
         summary = result.summary;
         // Pinned messages that are still in the window stay protected for the
-        // strategies that come after this one. Read off the window as the
-        // runner reads its own: a landed background job put back its copies,
-        // not the objects the host handed in.
-        pinned = extractPinnedMessages(history);
+        // strategies that come after this one: those the caller handed in, and
+        // those the window flags as the runner reads them — a landed
+        // background job put back its own copies, not the host's objects.
+        const derived = new Set(extractPinnedMessages(history));
+        pinned = history.filter((m) => handed.has(m) || derived.has(m));
 
         if (input.tokenizer(history) <= input.budget.trigger) {
           reason = undefined;

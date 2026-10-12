@@ -582,6 +582,31 @@ describe('chain()', () => {
     expect(result.history[0].content).toContain('Context window reset');
     expect(result.history.slice(1).map((message) => message.content)).toEqual(['q2']);
   });
+
+  it('keeps a message the caller pinned for the next step, though nothing flags it', async () => {
+    // Drops the oldest message it was not asked to keep.
+    const dropOne: OverflowStrategy = {
+      name: 'drop-one',
+      async apply(input) {
+        const kept = new Set(input.pinned);
+        const dropped = input.history.find((message) => !kept.has(message)) as Message;
+        return {
+          history: input.history.filter((message) => message !== dropped),
+          evicted: [dropped],
+          span: [dropped],
+          meta: { strategy: 'drop-one', windowId: input.window.current, changed: true },
+        };
+      },
+    };
+    const [strategy] = attached(chain(dropOne, reset()));
+    const messages = history(5);
+
+    // 4 messages after the first step are still over the trigger of 20: reset() runs.
+    const result = await strategy.apply(makeInput({ history: messages, pinned: [messages[4]] }));
+
+    expect(result.history[0].content).toContain('Context window reset');
+    expect(result.history.slice(1)).toEqual([messages[4]]);
+  });
 });
 
 describe('background()', () => {
