@@ -605,11 +605,20 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     expect(compacted.messages).toEqual([text('user', SUMMARY(1)), text('user', 'q3')]);
   });
 
-  it('drops a usage reported from before a landing once, also while it waits', async () => {
+  it('drops a usage reported before a landing once, also while it waits', async () => {
+    // A report of an earlier request that comes back while the first summary is written.
+    let late: (() => void) | undefined;
     // No tokenizer: the reported usage alone puts these windows over the trigger of 500.
-    const { chef, compressionModel, breaks } = chefWith({
-      janitor: { contextWindow: 1000, triggerRatio: 0.5 },
-    });
+    const { chef, compressionModel, breaks } = chefWith(
+      { janitor: { contextWindow: 1000, triggerRatio: 0.5 } },
+      (model) =>
+        keepLast(1)(async (messages) => {
+          late?.();
+          late = undefined;
+          return model(messages);
+        }),
+    );
+    late = () => chef.reportTokenUsage(2000);
     const loop = [...asked(3), call('t1', 'SIG_C1'), result('t1', 'r1')];
     const done = [...loop, reply('a3', 'SIG_3'), user('q4')];
     await converse(chef, [asked(1), asked(2)]);
@@ -617,16 +626,34 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     await converse(chef, [asked(3)]);
     expect(compressionModel).toHaveBeenCalledTimes(1);
 
-    // 100 for the compacted request: the first reading after the landing drops it, here while
-    // the compaction waits. 600 for the tool step's request, which the boundary compile acts on.
-    chef.reportTokenUsage(100);
+    // The 2000, past the raw window, predates the landing: the first reading after it drops
+    // it, here while the compaction waits. 600 for the tool step's request, which the boundary
+    // compile acts on.
     await converse(chef, [loop]);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
     chef.reportTokenUsage(600);
     const [compacted] = await converse(chef, [done]);
 
     expect(compressionModel).toHaveBeenCalledTimes(2);
     expect(compacted.messages).toEqual([text('user', SUMMARY(2)), text('user', 'q4')]);
     expect(breaks.map((b) => b.reason)).toEqual(['compaction', 'compaction']);
+  });
+
+  it('keeps a usage reported after a landing: it counted the compacted request', async () => {
+    // No tokenizer: the reported usage alone puts these windows over the trigger of 500.
+    const { chef, compressionModel } = chefWith({
+      janitor: { contextWindow: 1000, triggerRatio: 0.5 },
+    });
+    await converse(chef, [asked(1), asked(2)]);
+    chef.reportTokenUsage(600);
+    await converse(chef, [asked(3)]);
+
+    // 600 for the compacted request [SUMMARY 1, q3]: the window is over the trigger again.
+    chef.reportTokenUsage(600);
+    const [compacted] = await converse(chef, [asked(4)]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(compacted.messages).toEqual([text('user', SUMMARY(2)), text('user', 'q4')]);
   });
 
   it('waits while the tool call the history ends with has no result yet', async () => {
@@ -726,12 +753,24 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
       reported: (i: number) => boolean,
       times = 1,
     ): Promise<number[]> {
-      const { chef, compressionModel } = chefWith({ janitor: { contextWindow: 10_000 } });
+      // What the window opens with in place of the host messages before `cut`, once a
+      // compaction landed: the request sent is `[...head, ...history.slice(cut)]`.
+      let head: Message[] = [];
+      let cut = 0;
+      const onCompress = (_summary: Message, count: number, details: CompressionDetails) => {
+        head = details.replacement ?? [];
+        cut = count;
+      };
+      const { chef, compressionModel } = chefWith({
+        janitor: { contextWindow: 10_000, onCompress },
+      });
       await converse(chef, [histories[0]]);
       const calls: number[] = [];
       for (let i = 1; i < histories.length; i++) {
         // What the provider reported for the request before this one, counted the same way.
-        if (reported(i)) chef.reportTokenUsage(estimateMessages(histories[i - 1]));
+        if (reported(i)) {
+          chef.reportTokenUsage(estimateMessages([...head, ...histories[i - 1].slice(cut)]));
+        }
         for (let n = 0; n < times; n++) {
           await converse(chef, [histories[i]]);
           calls.push(compressionModel.mock.calls.length);

@@ -797,6 +797,32 @@ describe('overflow — host passes its full history every turn', () => {
   });
 
   it('still ignores a usage report that predates the compression', async () => {
+    // The usage of the request sent before the compression comes back while
+    // the summary is being written.
+    const reporting = async (): Promise<string> => {
+      chef.reportTokenUsage(500);
+      return compressionModel();
+    };
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, compressionModel: reporting },
+    });
+    let compressions = 0;
+    chef.on('compress:end', ({ compressed }) => {
+      if (compressed) compressions++;
+    });
+
+    chef.setHistory(longHistory(8));
+    await chef.compile({ target: 'openai' });
+    expect(compressions).toBe(1);
+
+    // The host now holds the compressed history.
+    chef.setHistory(longHistory(2));
+    await chef.compile({ target: 'openai' });
+    expect(compressions).toBe(1);
+  });
+
+  it('acts on a usage report that comes back after the compression', async () => {
     const chef = new ContextChef({
       logger: silent,
       janitor: { ...runnerConfig, compressionModel },
@@ -808,13 +834,12 @@ describe('overflow — host passes its full history every turn', () => {
 
     chef.setHistory(longHistory(8));
     await chef.compile({ target: 'openai' });
-    expect(compressions).toBe(1);
 
-    // The host now holds the compressed history, but reports the usage of
-    // the request it sent before the compression.
-    chef.setHistory(longHistory(2));
+    // Six messages are 60 by the tokenizer, at the budget; the report of the
+    // compressed request says 500.
+    chef.setHistory(longHistory(6));
     chef.reportTokenUsage(500);
     await chef.compile({ target: 'openai' });
-    expect(compressions).toBe(1);
+    expect(compressions).toBe(2);
   });
 });

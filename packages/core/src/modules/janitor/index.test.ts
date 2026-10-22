@@ -535,18 +535,70 @@ describe('Janitor — E10 after a compression', () => {
     expect(second.length).toBeLessThan(5);
   });
 
-  it('ignores a usage reported right after a compression, then trusts the next one', async () => {
+  it('trusts a usage reported after a compression: it counted the compressed request', async () => {
     const { compressionModel, janitor } = setup();
     await janitor.compress(buildHistory(5));
 
     // 2 × 10 tokens is under the 21-token trigger; only the report says otherwise.
     janitor.feedTokenUsage(999);
     await janitor.compress(buildHistory(2));
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a usage reported while a compression ran, then trusts the next one', async () => {
+    const { compressionModel, janitor } = setup();
+    // The report of the request before it comes back while the summary is being written.
+    compressionModel.mockImplementationOnce(async () => {
+      janitor.feedTokenUsage(999);
+      return '<history_summary>S</history_summary>';
+    });
+    await janitor.compress(buildHistory(5));
+
+    await janitor.compress(buildHistory(2));
     expect(compressionModel).toHaveBeenCalledTimes(1);
 
     janitor.feedTokenUsage(999);
     await janitor.compress(buildHistory(2));
     expect(compressionModel).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a host without a tokenizer that kept the compressed history alone', async () => {
+    const compressionModel = vi.fn(async () => '<summary>S</summary>');
+    const janitor = new Janitor({
+      contextWindow: 10_000,
+      compressionModel,
+      logger: { warn: () => {} },
+    });
+    // Its base64 counts as some 50,000 tokens by the heuristic: only the reports are right.
+    const image: Message = {
+      role: 'user',
+      content: 'look',
+      pinned: true,
+      attachments: [{ mediaType: 'image/png', data: 'A'.repeat(200_000) }],
+    };
+    let history: Message[] = [];
+    for (let i = 0; i < 6; i++) {
+      history.push({ role: 'user', content: `q${i}` }, { role: 'assistant', content: `a${i}` });
+    }
+    history.push(image, { role: 'assistant', content: 'nice' }, { role: 'user', content: 'next' });
+
+    const compressions: number[] = [];
+    for (let turn = 0; turn < 4; turn++) {
+      // What the provider counted for the last request: past the trigger of 7,000 once.
+      janitor.feedTokenUsage(turn === 0 ? 9_000 : 2_500);
+      const before = compressionModel.mock.calls.length;
+      const compressed = await janitor.compress(history);
+      compressions.push(compressionModel.mock.calls.length - before);
+      // The host keeps the compressed history and appends the next turn.
+      history = [
+        ...compressed,
+        { role: 'assistant', content: `r${turn}` },
+        { role: 'user', content: `u${turn}` },
+      ];
+    }
+
+    expect(compressions).toEqual([1, 0, 0, 0]);
   });
 });
 

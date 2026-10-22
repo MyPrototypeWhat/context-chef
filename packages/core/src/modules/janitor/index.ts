@@ -443,9 +443,10 @@ export type JanitorConfig = JanitorConfigWithTokenizer | JanitorConfigWithoutTok
 export interface JanitorSnapshot {
   externalTokenUsage: number | null;
   /**
-   * True right after a successful compression: the next budget check ignores
-   * the reported usage. Named for its pre-4.3 meaning (the next check was
-   * skipped outright); the key is kept so stored snapshots still restore.
+   * True from a successful compression until the next reported usage: the
+   * next budget check ignores a usage fed before the compression landed.
+   * Named for its pre-4.3 meaning (the next check was skipped outright); the
+   * key is kept so stored snapshots still restore.
    */
   suppressNextCompression: boolean;
   consecutiveFailures: number;
@@ -575,8 +576,10 @@ export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
   /**
-   * Set by a successful compression (E10): the next budget check ignores the
-   * reported usage, which may describe the payload from before it.
+   * Set when a compression lands, cleared by the next report (E10): a usage
+   * still held then was fed before the landing, may describe the payload from
+   * before it, and the next budget check ignores it. One fed after the landing
+   * counted the compressed request and is kept.
    */
   private _reportedUsageStale = false;
   /**
@@ -745,6 +748,8 @@ export class Janitor {
    */
   public feedTokenUsage(tokenCount: number): void {
     this._externalTokenUsage = tokenCount;
+    // Fed after the last landing, it describes the compressed window.
+    this._reportedUsageStale = false;
   }
 
   /**
@@ -819,11 +824,12 @@ export class Janitor {
   }
 
   /**
-   * E10: right after a successful compression, a reported usage may still
+   * E10: a usage fed before a compression landed — while it ran — may
    * describe the payload from before it, and acting on it would compress the
-   * summary again. The first budget check after one drops it — the
+   * summary again. The first budget check after the landing drops it — the
    * overflow's own, or a caller that reads the budget without running the
    * overflow (`appendOnly`, while a compaction waits for a tool turn to end).
+   * A usage fed after the landing counted the compressed request and stays.
    * Does nothing at any other time.
    *
    * @internal
@@ -868,9 +874,8 @@ export class Janitor {
    * - The window lineage moves forward exactly when a result lands, so
    *   `windowId` identifies a window that really existed.
    *
-   * @param options `force: true` skips the budget test (and the one-shot
-   *   post-compression suppression) and applies the strategy regardless — the
-   *   `new_context` path. The circuit breaker still applies: a strategy that
+   * @param options `force: true` skips the budget test and applies the
+   *   strategy regardless — the `new_context` path. The circuit breaker still applies: a strategy that
    *   just failed three times in a row does not get hammered on request.
    *   `appendOnly`, `midToolTurn`, `pastLimit`, `collapse` and `wire` go to
    *   the strategy as they are ({@link OverflowInput}); the compile pipeline
@@ -1068,8 +1073,9 @@ export class Janitor {
   private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
     if (history.length === 0) return null;
 
-    // Still check after dropping it: a host that kept the compressed history is
-    // under budget by its own count, and a host that passes its full history
+    // Still check after dropping a usage that predates the last landing: a host
+    // that kept the compressed history is under budget by its own count or a
+    // report of the compressed request, and a host that passes its full history
     // again gets it compressed again.
     this.dropStaleUsage();
     const budget = this.readBudget(history);
