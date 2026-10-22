@@ -1,0 +1,385 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"1\">\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"1\">\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"1\">\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"2\">\nThese output format instructions replace any given earlier in this conversation.\n\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <report> and </report> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 4
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"1\">\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"2\">\nThese output format instructions replace any given earlier in this conversation.\n\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <report> and </report> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <report> and </report> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"1\">\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"2\">\nThese output format instructions replace any given earlier in this conversation.\n\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <report> and </report> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "answer 2",
+          "role": "assistant"
+        },
+        {
+          "content": "question 3",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"3\" withdrawn=\"true\">The output format instructions given earlier are replaced by the ones in the system prompt.</output_format>",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "system",
+        "signed": false,
+        "strippedThinking": 0
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "The following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <report> and </report> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"1\">\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <answer> and </answer> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"2\">\nThese output format instructions replace any given earlier in this conversation.\n\nThe following is an ephemeral message not actually sent by the user. It is provided by the system as a set of reminders and generally important information to pay attention to. Do NOT respond to this message, just act accordingly.\n<EPHEMERAL_MESSAGE>\nCRITICAL OUTPUT FORMAT INSTRUCTIONS:\nYou are acting as an automated system component. Your final output MUST be machine-parseable.\n\n1. You MUST enclose your final answer strictly within exactly one set of <report> and </report> tags.\n2. DO NOT output any text, explanation, or conversational filler outside of these tags.\n3. ANY content outside of these designated XML tags will cause a system parsing failure.\n</EPHEMERAL_MESSAGE>\n</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "answer 2",
+          "role": "assistant"
+        },
+        {
+          "content": "question 3",
+          "role": "user"
+        },
+        {
+          "content": "<output_format rev=\"3\" withdrawn=\"true\">The output format instructions given earlier are replaced by the ones in the system prompt.</output_format>",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 3\"}",
+                "name": "search"
+              },
+              "id": "call_3",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 3",
+          "role": "tool",
+          "tool_call_id": "call_3"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 12
+    }
+  }
+]

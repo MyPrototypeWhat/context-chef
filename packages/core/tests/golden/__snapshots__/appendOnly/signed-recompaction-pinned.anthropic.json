@@ -1,0 +1,580 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 1
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 3
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "betas": ["compact-2026-09-04"],
+      "messages": [
+        {
+          "content": [
+            {
+              "content": "SUMMARY 1",
+              "signature": "SIG_BLOCK_1",
+              "type": "compaction"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<pinned_messages rev=\"1\">\nThese messages were pinned earlier in this conversation. The part of it that held them was compacted, so they are restated here, and replace any pinned messages restated before.\n\n<message role=\"user\">question 2</message>\n</pinned_messages>",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "compaction",
+        "signed": true,
+        "strippedThinking": 0
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "betas": ["compact-2026-09-04"],
+      "messages": [
+        {
+          "content": [
+            {
+              "content": "SUMMARY 1",
+              "signature": "SIG_BLOCK_1",
+              "type": "compaction"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<pinned_messages rev=\"1\">\nThese messages were pinned earlier in this conversation. The part of it that held them was compacted, so they are restated here, and replace any pinned messages restated before.\n\n<message role=\"user\">question 2</message>\n</pinned_messages>",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_3",
+              "thinking": "Look up 3.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 4
+    }
+  },
+  {
+    "payload": {
+      "betas": ["compact-2026-09-04"],
+      "messages": [
+        {
+          "content": [
+            {
+              "content": "SUMMARY 2",
+              "signature": "SIG_BLOCK_2",
+              "type": "compaction"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_3",
+              "thinking": "Answer 3 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 3",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 4",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<pinned_messages rev=\"1\">\nThese messages were pinned earlier in this conversation. The part of it that held them was compacted, so they are restated here, and replace any pinned messages restated before.\n\n<message role=\"user\">question 2</message>\n</pinned_messages>",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "compaction",
+        "signed": true,
+        "strippedThinking": 0
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "betas": ["compact-2026-09-04"],
+      "messages": [
+        {
+          "content": [
+            {
+              "content": "SUMMARY 2",
+              "signature": "SIG_BLOCK_2",
+              "type": "compaction"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_3",
+              "thinking": "Answer 3 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 3",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 4",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<pinned_messages rev=\"1\">\nThese messages were pinned earlier in this conversation. The part of it that held them was compacted, so they are restated here, and replace any pinned messages restated before.\n\n<message role=\"user\">question 2</message>\n</pinned_messages>",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_4",
+              "thinking": "Look up 4.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_4",
+              "input": {
+                "q": "topic 4"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 4",
+              "tool_use_id": "call_4",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 4
+    }
+  }
+]

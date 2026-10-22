@@ -1,0 +1,518 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 4
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            },
+            {
+              "text": "<announcement rev=\"2\" id=\"tools\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            },
+            {
+              "text": "<announcement rev=\"2\" id=\"tools\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 2"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 3"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 10
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            },
+            {
+              "text": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            },
+            {
+              "text": "<announcement rev=\"2\" id=\"tools\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 2"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 3"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 3"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_3",
+                "response": {
+                  "result": "found 3"
+                }
+              }
+            },
+            {
+              "text": "<announcement rev=\"2\" id=\"docs\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 12
+    }
+  }
+]

@@ -1,0 +1,725 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<implicit_context rev=\"2\">\ndocs: v2\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<implicit_context rev=\"2\">\ndocs: v2\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<implicit_context rev=\"2\">\ndocs: v2\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 8
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<implicit_context rev=\"2\">\ndocs: v2\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 10
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<implicit_context rev=\"2\">\ndocs: v2\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_3",
+              "thinking": "Look up 3.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 13
+    }
+  }
+]

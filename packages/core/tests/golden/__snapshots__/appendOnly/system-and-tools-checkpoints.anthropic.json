@@ -1,0 +1,640 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 1
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent. Be brief.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "system",
+        "signed": false,
+        "strippedThinking": 2
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent. Be brief.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent. Be brief.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch a document by id.",
+          "name": "fetch",
+          "parameters": {
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "tools",
+        "signed": false,
+        "strippedThinking": 2
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_3",
+              "thinking": "Look up 3.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent. Be brief.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch a document by id.",
+          "name": "fetch",
+          "parameters": {
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 9
+    }
+  }
+]

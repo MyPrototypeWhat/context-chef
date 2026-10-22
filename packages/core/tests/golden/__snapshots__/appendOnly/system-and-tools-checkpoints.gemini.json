@@ -1,0 +1,604 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      },
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      },
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 1
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent. Be brief."
+          }
+        ]
+      },
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "system",
+        "signed": false,
+        "strippedThinking": 0
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent. Be brief."
+          }
+        ]
+      },
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 2"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 3"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent. Be brief."
+          }
+        ]
+      },
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch a document by id.",
+          "name": "fetch",
+          "parameters": {
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "tools",
+        "signed": false,
+        "strippedThinking": 0
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 2"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 3"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 3"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_3",
+                "response": {
+                  "result": "found 3"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent. Be brief."
+          }
+        ]
+      },
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            },
+            "required": ["q"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch a document by id.",
+          "name": "fetch",
+          "parameters": {
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 9
+    }
+  }
+]

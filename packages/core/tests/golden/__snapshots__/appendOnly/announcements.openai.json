@@ -1,0 +1,379 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 4
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "<announcement rev=\"2\" id=\"tools\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "<announcement rev=\"2\" id=\"tools\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "answer 2",
+          "role": "assistant"
+        },
+        {
+          "content": "question 3",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 10
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"tools\">\nTool fetch is available.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "<announcement rev=\"1\" id=\"docs\">\nThe docs index was rebuilt.\n</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "<announcement rev=\"2\" id=\"tools\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "answer 2",
+          "role": "assistant"
+        },
+        {
+          "content": "question 3",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 3\"}",
+                "name": "search"
+              },
+              "id": "call_3",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 3",
+          "role": "tool",
+          "tool_call_id": "call_3"
+        },
+        {
+          "content": "<announcement rev=\"2\" id=\"docs\" withdrawn=\"true\">This announcement was withdrawn and no longer applies.</announcement>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 12
+    }
+  }
+]

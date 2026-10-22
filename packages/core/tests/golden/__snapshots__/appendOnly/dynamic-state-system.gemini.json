@@ -1,0 +1,515 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            },
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            },
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            },
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            },
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 2"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 3"
+            },
+            {
+              "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 9
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            {
+              "text": "question 1"
+            },
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 1"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_1",
+                "response": {
+                  "result": "found 1"
+                }
+              }
+            },
+            {
+              "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 1"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 2"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 2"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_2",
+                "response": {
+                  "result": "found 2"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "answer 2"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "text": "question 3"
+            },
+            {
+              "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "q": "topic 3"
+                },
+                "name": "search"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "call_3",
+                "response": {
+                  "result": "found 3"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful agent."
+          }
+        ]
+      }
+    },
+    "prefix": {
+      "stable": 12
+    }
+  }
+]

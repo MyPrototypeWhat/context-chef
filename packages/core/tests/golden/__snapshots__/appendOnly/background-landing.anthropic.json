@@ -1,0 +1,766 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 1
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 3
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_3",
+              "thinking": "Look up 3.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 9
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 3",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 4",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "break": {
+        "at": 0,
+        "reason": "compaction",
+        "signed": false,
+        "strippedThinking": 2
+      },
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "answer 3",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 4",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_4",
+              "thinking": "Look up 4.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_4",
+              "input": {
+                "q": "topic 4"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 4",
+              "tool_use_id": "call_4",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 6
+    }
+  }
+]

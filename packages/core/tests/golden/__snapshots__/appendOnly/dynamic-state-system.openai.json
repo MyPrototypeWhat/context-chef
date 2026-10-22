@@ -1,0 +1,375 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 5
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "answer 2",
+          "role": "assistant"
+        },
+        {
+          "content": "question 3",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 9
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": "You are a careful agent.",
+          "role": "system"
+        },
+        {
+          "content": "question 1",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 1\"}",
+                "name": "search"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 1",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "answer 1",
+          "role": "assistant"
+        },
+        {
+          "content": "question 2",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 2\"}",
+                "name": "search"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 2",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        },
+        {
+          "content": "answer 2",
+          "role": "assistant"
+        },
+        {
+          "content": "question 3",
+          "role": "user"
+        },
+        {
+          "content": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "system"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"q\":\"topic 3\"}",
+                "name": "search"
+              },
+              "id": "call_3",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "found 3",
+          "role": "tool",
+          "tool_call_id": "call_3"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 12
+    }
+  }
+]

@@ -1,0 +1,680 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 0
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 2
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 4
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 7
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"3\" withdrawn=\"true\">No skill is active any more: the skill instructions given earlier no longer apply.</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 9
+    }
+  },
+  {
+    "payload": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "question 1",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_1",
+              "thinking": "Look up 1.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "q": "topic 1"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 1",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_1",
+              "thinking": "Answer 1 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 1",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 2",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_2",
+              "thinking": "Look up 2.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "q": "topic 2"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 2",
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_2",
+              "thinking": "Answer 2 from what was found.",
+              "type": "thinking"
+            },
+            {
+              "text": "answer 2",
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "question 3",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "<skill_instructions rev=\"3\" withdrawn=\"true\">No skill is active any more: the skill instructions given earlier no longer apply.</skill_instructions>",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "signature": "SIG_CALL_3",
+              "thinking": "Look up 3.",
+              "type": "thinking"
+            },
+            {
+              "text": "",
+              "type": "text"
+            },
+            {
+              "id": "call_3",
+              "input": {
+                "q": "topic 3"
+              },
+              "name": "search",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "found 3",
+              "tool_use_id": "call_3",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        {
+          "text": "You are a careful agent.",
+          "type": "text"
+        }
+      ]
+    },
+    "prefix": {
+      "stable": 12
+    }
+  }
+]
