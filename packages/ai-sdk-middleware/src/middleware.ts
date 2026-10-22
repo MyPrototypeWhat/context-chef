@@ -1,19 +1,24 @@
 import type {
   LanguageModelV4,
+  LanguageModelV4CallOptions,
   LanguageModelV4Message,
   LanguageModelV4Prompt,
   LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import {
+  type ChefLogger,
   compactMessages,
   createJanitorPool,
+  createPrefixSessionPool,
   DEFAULT_SESSION_KEY,
   flattenForCompression,
   type Janitor,
   type Message,
   normalizeSessionKey,
   objectToXml,
+  type PrefixSession,
   Prompts,
+  type SessionPool,
   type SummarizeHistoryOptions,
   summarizeHistory,
 } from '@context-chef/core';
@@ -25,10 +30,10 @@ import {
   pruneMessages,
 } from 'ai';
 
-import { fromAISDK, toAISDK } from './adapter';
+import { fromAISDK, toAISDK, withoutReasoning } from './adapter';
 import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
-import type { ContextChefOptions, DynamicStateConfig } from './types';
+import type { ContextChefOptions, DynamicStateConfig, PrefixBreakEvent } from './types';
 
 /**
  * Creates a LanguageModelMiddleware that transparently applies
@@ -50,7 +55,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   // Null for truncate/compact/skill/dynamicState-only configurations: no
   // budget checks, no token-usage capture, and none of the Janitor's
   // missing-tokenizer warnings.
-  const janitors = createJanitorPool({
+  const janitorConfig = {
     contextWindow: options.contextWindow,
     compress: options.compress,
     compressionModel: options.compress?.model
@@ -61,19 +66,31 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     onBeforeCompress: options.onBeforeCompress,
     overflow: options.overflow,
     toHostMessages: toAISDK,
-    // In-flight-without-persistence footgun: the summary is discarded each
-    // call and history re-expands, so the payload grows unbounded (and
-    // compression effectively skips every other call via E10 suppression).
-    persistenceWarning: (firedCount) =>
-      `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
-      'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
-      'not persisted, so your message history re-expands on the next call and the payload grows ' +
-      'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
-      'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
-      '`compactModelMessages` for durable compaction.',
     logger,
     maxSessions: options.maxSessions,
-  });
+  };
+  // With appendOnly every session also keeps the prefix ledger its calls are
+  // replayed from — dynamic state alone needs one — so the pool holds
+  // sessions, each with its Janitor when compression is configured.
+  const sessions = options.appendOnly
+    ? createPrefixSessionPool({ ...janitorConfig, withoutThinking: withoutReasoning })
+    : null;
+  const janitors = options.appendOnly
+    ? null
+    : createJanitorPool({
+        ...janitorConfig,
+        // In-flight-without-persistence footgun: the summary is discarded each
+        // call and history re-expands, so the payload grows unbounded (and
+        // compression effectively skips every other call via E10 suppression).
+        persistenceWarning: (firedCount) =>
+          `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
+          'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
+          'not persisted, so your message history re-expands on the next call and the payload grows ' +
+          'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
+          'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
+          '`compactModelMessages` for durable compaction.',
+      });
+  if (options.appendOnly) warnAppendOnlyConfig(options, logger);
 
   let invalidSessionKeyWarned = false;
   const flagInvalidSessionKey = (raw: unknown) => {
@@ -85,16 +102,34 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   };
 
-  const janitorFor = (params: { providerOptions?: Record<string, unknown> }): Janitor | null => {
-    if (!janitors) return null;
+  const sessionKey = (params: { providerOptions?: Record<string, unknown> }): string => {
     const ns = params.providerOptions?.contextChef;
     if (ns != null && typeof ns !== 'object') {
       // Malformed namespace (e.g. contextChef: 'abc') — never a session key.
       flagInvalidSessionKey(ns);
-      return janitors.get(DEFAULT_SESSION_KEY);
+      return DEFAULT_SESSION_KEY;
     }
     const raw = ns ? (ns as Record<string, unknown>).sessionId : undefined;
-    return janitors.get(normalizeSessionKey(raw, flagInvalidSessionKey));
+    return normalizeSessionKey(raw, flagInvalidSessionKey);
+  };
+
+  const janitorFor = (params: { providerOptions?: Record<string, unknown> }): Janitor | null =>
+    janitors ? janitors.get(sessionKey(params)) : null;
+
+  /**
+   * Where a response's input token count goes: the session's Janitor, and
+   * with appendOnly the session's ledger too, which takes it to describe the
+   * call it last compiled. Null when nothing budgets.
+   */
+  const usageFor = (params: {
+    providerOptions?: Record<string, unknown>;
+  }): ((tokens: number) => void) | null => {
+    if (sessions) {
+      const session = sessions.get(sessionKey(params));
+      return session.janitor ? (tokens) => session.reportTokenUsage(tokens) : null;
+    }
+    const janitor = janitorFor(params);
+    return janitor ? (tokens) => janitor.feedTokenUsage(tokens) : null;
   };
 
   // Anti-double-compression guard: when a call opts into Anthropic
@@ -107,6 +142,14 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     if (doubleCompressionWarned) return;
     doubleCompressionWarned = true;
     logger.warn(warning);
+  };
+  /** Whether this call leaves compression to the server (see above). */
+  const yieldsToServer = (params: { providerOptions?: Record<string, unknown> }): boolean => {
+    const warning = options.allowDoubleCompression
+      ? null
+      : serverContextManagementWarning(params.providerOptions);
+    if (warning) warnServerManagedOnce(warning);
+    return warning !== null;
   };
 
   const clearsToolResults = !!options.clear?.some(
@@ -125,43 +168,123 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   }
 
+  /**
+   * Steps 1–3, in both modes: truncate large tool results, compact
+   * mechanically, and split the IR into the standing instructions and the
+   * conversation.
+   */
+  const prepare = async (
+    sent: LanguageModelV4Prompt,
+  ): Promise<{ systemMessages: Message[]; conversation: Message[] }> => {
+    let prompt = sent;
+
+    // 1. Truncate large tool results
+    if (options.truncate) {
+      prompt = await truncateToolResults(prompt, options.truncate, logger);
+    }
+
+    // 2. Compact (mechanical, zero LLM cost) via pruneMessages
+    if (options.compact) {
+      prompt = compactPrompt(prompt, options.compact);
+    }
+
+    // 3. Convert to IR and separate system messages from conversation.
+    // System messages are standing instructions — they must not be
+    // compressed away. Only conversation history goes through compact/compress.
+    const allIR = fromAISDK(prompt);
+    return {
+      systemMessages: allIR.filter((m) => m.role === 'system'),
+      conversation: allIR.filter((m) => m.role !== 'system'),
+    };
+  };
+
+  // The clear explainer is placed after skill messages, just before the
+  // conversation, so the model sees the explanation immediately ahead of the
+  // placeholders it describes.
+  const clearNotice: Message[] = clearsToolResults
+    ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
+    : [];
+
+  const reportBreak = (event: PrefixBreakEvent) => {
+    try {
+      options.onPrefixBreak?.(event);
+    } catch (error) {
+      logger.warn('[context-chef] onPrefixBreak threw — the call goes ahead', error);
+    }
+  };
+
+  /**
+   * `appendOnly`: the session rebuilds the conversation from its ledger — the
+   * head of the last compression, the host's messages, the events appended
+   * among them — so what an earlier call sent is sent again as it was. The
+   * system messages, skill and clear explainer go ahead of it as in 4.x; a
+   * change there is a checkpoint.
+   */
+  const appendOnlyParams = async (
+    params: LanguageModelV4CallOptions,
+    pool: SessionPool<PrefixSession>,
+  ): Promise<LanguageModelV4CallOptions> => {
+    const sessionId = sessionKey(params);
+    const session = pool.get(sessionId);
+    const { systemMessages, conversation } = await prepare(params.prompt);
+    // Cleared before the session compares anything: a placeholder that moves
+    // rewrites a message already sent, a checkpoint it has to see.
+    const history = options.clear?.length
+      ? compactMessages(conversation, { clear: options.clear })
+      : conversation;
+    const ahead = [
+      ...systemMessages,
+      ...(await resolveSkillMessages(options.skill)),
+      ...clearNotice,
+    ];
+    const state = options.dynamicState
+      ? objectToXml(await options.dynamicState.getState(), 'dynamic_state')
+      : undefined;
+
+    const { messages, breaks } = await session.compile({
+      history,
+      // What the model reads ahead of the conversation; provider options
+      // (a cache breakpoint moving) are not part of it.
+      sent: {
+        system: ahead.map((m) => m.content),
+        tools: params.tools?.map((tool) => {
+          if (tool.type !== 'function') return tool;
+          const { providerOptions: _options, ...definition } = tool;
+          return definition;
+        }),
+      },
+      dynamicState: state,
+      overflow: session.janitor !== null && !yieldsToServer(params),
+      signal: params.abortSignal,
+    });
+    for (const brk of breaks) reportBreak({ ...brk, sessionId });
+
+    // A reply that held nothing but reasoning has nothing left to send once stripped.
+    let prompt = toAISDK([...ahead, ...messages]).filter(
+      (m) => m.role !== 'assistant' || m.content.length > 0,
+    );
+    if (options.transformContext) {
+      prompt = await options.transformContext(prompt);
+    }
+    return { ...params, prompt };
+  };
+
   return {
     specificationVersion: 'v4',
 
     transformParams: async ({ params }) => {
+      if (sessions) return appendOnlyParams(params, sessions);
+
       const janitor = janitorFor(params);
-      let { prompt } = params;
-
-      // 1. Truncate large tool results
-      if (options.truncate) {
-        prompt = await truncateToolResults(prompt, options.truncate, logger);
-      }
-
-      // 2. Compact (mechanical, zero LLM cost) via pruneMessages
-      if (options.compact) {
-        prompt = compactPrompt(prompt, options.compact);
-      }
-
-      // 3. Convert to IR and separate system messages from conversation.
-      // System messages are standing instructions — they must not be
-      // compressed away. Only conversation history goes through compact/compress.
-      const allIR = fromAISDK(prompt);
-      const systemMessages = allIR.filter((m) => m.role === 'system');
-      let conversation = allIR.filter((m) => m.role !== 'system');
+      const { systemMessages, conversation: prepared } = await prepare(params.prompt);
+      let conversation = prepared;
 
       // 4. Compress conversation history if over token budget (budgeting
       //    only). Yields to Anthropic server-side context management when
       //    the call declares it (see warnServerManagedOnce above) — every
       //    other step still runs; only this one is skipped.
-      if (janitor) {
-        const serverManagedWarning = options.allowDoubleCompression
-          ? null
-          : serverContextManagementWarning(params.providerOptions);
-        if (serverManagedWarning) {
-          warnServerManagedOnce(serverManagedWarning);
-        } else {
-          conversation = await janitor.compress(conversation);
-        }
+      if (janitor && !yieldsToServer(params)) {
+        conversation = await janitor.compress(conversation);
       }
 
       // 4.5 Placeholder-style clearing (core semantics) — after compress so
@@ -176,16 +299,10 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       //    and BEFORE the conversation history. Empty instructions are
       //    skipped to avoid emitting an empty system message.
       const skillMessages = await resolveSkillMessages(options.skill);
-      // The clear explainer is placed after skill messages, just before the
-      // conversation, so the model sees the explanation immediately ahead of
-      // the placeholders it describes.
-      const clearNotice: Message[] = clearsToolResults
-        ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
-        : [];
       const irMessages = [...systemMessages, ...skillMessages, ...clearNotice, ...conversation];
 
       // 6. Convert back to AI SDK format
-      prompt = toAISDK(irMessages);
+      let prompt = toAISDK(irMessages);
 
       // 7. Dynamic state injection
       if (options.dynamicState) {
@@ -203,11 +320,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     wrapGenerate: async ({ doGenerate, params }) => {
       const result = await doGenerate();
 
-      const janitor = janitorFor(params);
-      if (!janitor) return result;
+      const report = usageFor(params);
+      if (!report) return result;
 
       if (result.usage?.inputTokens?.total != null) {
-        janitor.feedTokenUsage(result.usage.inputTokens.total);
+        report(result.usage.inputTokens.total);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
         logger.warn(
@@ -221,8 +338,8 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     },
 
     wrapStream: async ({ doStream, params }) => {
-      const janitor = janitorFor(params);
-      if (!janitor) return doStream();
+      const report = usageFor(params);
+      if (!report) return doStream();
 
       const { stream, ...rest } = await doStream();
 
@@ -230,7 +347,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         transform(chunk, controller) {
           if (chunk.type === 'finish') {
             if (chunk.usage?.inputTokens?.total != null) {
-              janitor.feedTokenUsage(chunk.usage.inputTokens.total);
+              report(chunk.usage.inputTokens.total);
             } else if (!usageWarned && !options.tokenizer) {
               usageWarned = true;
               logger.warn(
@@ -247,6 +364,54 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       return { ...rest, stream: stream.pipeThrough(transform) };
     },
   };
+}
+
+/**
+ * `appendOnly`: the settings that cost what it is for, warned once per
+ * middleware instance. `clearAt` has nothing to act on here, and a `compact`
+ * or `clear` cut that moves with the conversation rewrites a message an
+ * earlier call sent on nearly every call.
+ */
+function warnAppendOnlyConfig(options: ContextChefOptions, logger: ChefLogger): void {
+  if (typeof options.appendOnly === 'object' && options.appendOnly.clearAt) {
+    logger.warn(
+      '[context-chef] appendOnly: `clearAt` is ignored by the middleware. The provider behind ' +
+        'the model is unknown and may move a mid-conversation system message into the system ' +
+        'prompt, so every event is a user message here, and a user message cannot be ' +
+        'turn-scoped (warned once).',
+    );
+  }
+  const moving = movingRewrites(options);
+  if (moving.length > 0) {
+    logger.warn(
+      `[context-chef] appendOnly: ${moving.join(', ')} ${moving.length > 1 ? 'move' : 'moves'} ` +
+        'with the conversation, rewriting messages earlier calls sent, so nearly every call is a ' +
+        "checkpoint: the provider's prefix cache misses from the rewritten message, and reasoning " +
+        "is stripped from it on. Use 'all', which rewrites each message once before it is first " +
+        "sent, or the provider's own context editing (providerOptions.anthropic.contextManagement) " +
+        '(warned once).',
+    );
+  }
+}
+
+/** The `compact` / `clear` settings whose cut moves with the conversation, as written. */
+function movingRewrites({ compact, clear }: ContextChefOptions): string[] {
+  const moving: string[] = [];
+  if (compact?.reasoning === 'before-last-message') {
+    moving.push("compact.reasoning: 'before-last-message'");
+  }
+  const toolCalls = compact?.toolCalls;
+  const types =
+    typeof toolCalls === 'string' ? [toolCalls] : (toolCalls ?? []).map((entry) => entry.type);
+  for (const type of types) {
+    if (type.startsWith('before-last-')) moving.push(`compact.toolCalls: '${type}'`);
+  }
+  for (const target of clear ?? []) {
+    if (typeof target === 'object' && target.keepRecent !== undefined) {
+      moving.push(`clear: { target: '${target.target}', keepRecent: ${target.keepRecent} }`);
+    }
+  }
+  return moving;
 }
 
 /**
@@ -362,7 +527,7 @@ async function injectDynamicState(
 
   // last_user: inject into the last user message
   const result = [...prompt];
-  const stateBlock = `\n\n${xml}\nAbove is the current system state. Use it to guide your next action.`;
+  const stateBlock = `\n\n${xml}\n${Prompts.STATE_ANCHOR}`;
 
   for (let i = result.length - 1; i >= 0; i--) {
     const msg = result[i];

@@ -305,6 +305,27 @@ export function toAISDK(messages: Message[]): LanguageModelV4Prompt {
   return prompt;
 }
 
+/**
+ * `appendOnly`: `message` without its reasoning, in IR and in the AI SDK
+ * content it round-trips through — what a checkpoint leaves of a reply whose
+ * reasoning was signed over a prefix that changed. A message without
+ * reasoning comes back as it is; a reply that held nothing else is left with
+ * no content.
+ */
+export function withoutReasoning(message: Message): Message {
+  const msg = asAISDK(message);
+  const original = msg._assistantContent;
+  const content = original?.filter((part) => !isReasoningPart(part));
+  const stripped = content !== undefined && content.length !== original?.length;
+  if (!stripped && !msg.thinking && !msg.redacted_thinking) return message;
+  const { thinking: _thinking, redacted_thinking: _redacted, ...rest } = msg;
+  return stripped ? { ...rest, _assistantContent: content } : rest;
+}
+
+/** A reasoning part, or a file the model produced while reasoning. */
+export const isReasoningPart = (part: { type: string }): boolean =>
+  part.type === 'reasoning' || part.type === 'reasoning-file';
+
 export function stringifyToolOutput(output: LanguageModelV4ToolResultOutput): string {
   switch (output.type) {
     case 'text':

@@ -4,6 +4,7 @@ import type {
   ClearTarget,
   IntegrationOverflowOptions,
   Message,
+  PrefixSessionBreak,
   Skill,
   StorageBackend,
   Store,
@@ -186,8 +187,17 @@ export interface DynamicStateConfig {
    * - `'last_user'` (default): Appends to the last user message. Leverages Recency Bias
    *   for maximum attention, preventing "Lost in the Middle" drift in long conversations.
    * - `'system'`: Adds as a standalone system message at the end.
+   *
+   * With {@link ContextChefOptions.appendOnly}, both append the state as its
+   * own user message, once, after the turn it changed in.
    */
   placement?: 'system' | 'last_user';
+}
+
+/** A checkpoint one call applied under {@link ContextChefOptions.appendOnly}. */
+export interface PrefixBreakEvent extends PrefixSessionBreak {
+  /** The session the call belongs to (`providerOptions.contextChef.sessionId`, or the default one). */
+  readonly sessionId: string;
 }
 
 export interface ContextChefOptions {
@@ -221,6 +231,50 @@ export interface ContextChefOptions {
    * threshold on purpose.
    */
   allowDoubleCompression?: boolean;
+  /**
+   * Keep what was sent: each call's prompt repeats the one the session sent
+   * before and only appends to it, so the provider's prefix cache keeps
+   * hitting and a model that signs its reasoning over everything before it
+   * (Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5) can replay it.
+   *
+   * Each session (`providerOptions.contextChef.sessionId`) keeps a ledger of
+   * what its calls sent:
+   * - `dynamicState` is appended as its own user message after the turn it
+   *   changed in, once, and stays there; a change is a new message
+   *   (`<dynamic_state rev="2">`), never an edit of an earlier one. Both
+   *   placements append it this way: the provider is unknown, and one may
+   *   move a mid-conversation system message into the system prompt.
+   * - A compression lands once: on every later call its summary stands in
+   *   for the messages it covers, instead of the history being summarized
+   *   again. It waits for a user-turn boundary, unless a tool loop would send
+   *   a request past `contextWindow`; then the whole loop collapses into the
+   *   summary. `onCompress` is only needed to outlive the process.
+   * - Anything that rewrites what was sent — an edited history, a changed
+   *   system prompt, skill or tool list, a compression, a session the process
+   *   lost — is a checkpoint, reported to {@link onPrefixBreak}. Reasoning
+   *   signed over what changed is removed from the prompt, for good.
+   *
+   * Give each conversation its own `sessionId`: conversations sharing one
+   * rewrite each other's history on every call. Sessions live in the
+   * process, so a restart (or an eviction past `maxSessions`) costs one
+   * checkpoint. `compact` and `clear` settings that move with the
+   * conversation (`'before-last-…'`, `keepRecent`) make nearly every call a
+   * checkpoint, and are warned once; `'all'` and the provider's own context
+   * editing do not. `clearAt` is accepted for `ContextChef` config
+   * compatibility and ignored (warned once): every event here is a user
+   * message. Default: off.
+   */
+  appendOnly?: boolean | { clearAt?: boolean };
+  /**
+   * `appendOnly`: called for each checkpoint a call applies — something
+   * rewrote what an earlier call sent, so the provider's prefix cache misses
+   * from `at` on (an index into the call's conversation, after its system
+   * messages; 0 for a compression or a new system prompt or tool list), and
+   * `strippedThinking` reasoning blocks were removed. `reason` is
+   * `'compaction'`, `'history'`, `'system'`, `'tools'` or `'ledger'` (the
+   * session had no record of the history: a restart, an eviction).
+   */
+  onPrefixBreak?: (event: PrefixBreakEvent) => void;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
