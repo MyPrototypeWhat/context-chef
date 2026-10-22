@@ -10,7 +10,7 @@
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
 import { resetNotice } from './reset';
-import { renderSummaryMessage, summarizeHistory, summaryHead } from './summary';
+import { openingPlaceholder, renderSummaryMessage, summarizeHistory, summaryHead } from './summary';
 import { groupIntoTurns, type Turn, waitingCallStart } from './turns';
 import {
   detachedRunner,
@@ -279,9 +279,11 @@ export class SummarizingStrategy implements OverflowStrategy {
     const toKeep = history.slice(splitIndex);
 
     // Pinned (turn-scoped) messages survive verbatim in all outcomes below,
-    // after the summary — a compaction block among them ahead of it.
-    // The split lands on a turn boundary, so a turn is never half-pinned.
-    const pinnedSet = new Set(input.pinned);
+    // after the summary — a compaction block among them ahead of it, with the
+    // opening placeholder before it. The split lands on a turn boundary, so a
+    // turn is never half-pinned.
+    const opening = openingPlaceholder(toCompress);
+    const pinnedSet = new Set(opening ? [opening, ...input.pinned] : input.pinned);
     const pinnedInSpan = toCompress.filter((m) => pinnedSet.has(m));
     const evicted =
       pinnedInSpan.length === 0 ? toCompress : toCompress.filter((m) => !pinnedSet.has(m));

@@ -32,14 +32,8 @@
     "prefix": { "stable": 3 }
   },
   {
-    "from": 0,
+    "from": 2,
     "messages": [
-      {
-        "parts": [
-          { "text": "[Summary of earlier conversation (compacted server-side)]\nSUMMARY 0\n\n" }
-        ],
-        "role": "model"
-      },
       {
         "parts": [
           {
@@ -56,7 +50,7 @@
     }
   },
   {
-    "from": 2,
+    "from": 3,
     "messages": [
       {
         "parts": [{ "functionCall": { "args": { "q": "topic 2" }, "name": "search" } }],
@@ -69,6 +63,6 @@
         "role": "user"
       }
     ],
-    "prefix": { "stable": 3 }
+    "prefix": { "stable": 4 }
   }
 ]

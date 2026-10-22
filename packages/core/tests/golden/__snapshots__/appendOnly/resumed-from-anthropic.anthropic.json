@@ -66,6 +66,6 @@
         "role": "user"
       }
     ],
-    "prefix": { "stable": 3 }
+    "prefix": { "stable": 4 }
   }
 ]

@@ -2,7 +2,7 @@
  * `reset()` — drop the window and start over.
  */
 
-import { renderSummaryMessage, summaryHead } from './summary';
+import { openingPlaceholder, renderSummaryMessage, summaryHead } from './summary';
 import { waitingCallStart } from './turns';
 import {
   type OverflowInput,
@@ -66,7 +66,9 @@ export function reset(options: ResetOptions = {}): OverflowStrategy {
       // A collapse (`appendOnly`) keeps a tool call still waiting for its
       // result: the result arrives next, and it needs its call before it.
       const end = input.collapse ? waitingCallStart(history) : history.length;
-      const pinnedSet = new Set(input.pinned);
+      // The opening placeholder before a compaction block stays with the block.
+      const opening = openingPlaceholder(history);
+      const pinnedSet = new Set(opening ? [opening, ...input.pinned] : input.pinned);
       const evicted = history.slice(0, end).filter((m) => !pinnedSet.has(m));
       if (evicted.length === 0) {
         return unchanged(input, 'reset', 'history holds nothing but pinned messages');

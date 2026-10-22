@@ -1,4 +1,4 @@
-import { summaryHead } from '../../overflow/summary';
+import { openingPlaceholder, summaryHead } from '../../overflow/summary';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { ensureValidHistory } from '../../utils/ensureValidHistory';
@@ -48,8 +48,11 @@ export interface CompactionPlan {
  * actually shrinks — except when `toKeep` starts with a compaction message
  * (`_anthropic_compaction`, the block an Anthropic compaction returned): that
  * message goes before the summary, `[...system, block, <summary>, ...rest]`,
- * since the API rejects a request with anything ahead of the block. See
- * {@link compactHistory} for the one-shot version, which does this for you.
+ * since the API rejects a request with anything ahead of the block. The
+ * placeholder user turn `fromAnthropic` puts before such a block opens
+ * `toSummarize`; keep it ahead of the block, so text targets still open with
+ * a user turn. See {@link compactHistory} for the one-shot version, which
+ * does both for you.
  *
  * **Input contract:** `history` is a flat `Message[]` with any system messages
  * **inline** (`role: 'system'`). This matches `fromAISDK` output. The direct
@@ -117,11 +120,14 @@ export async function compactHistory(
 ): Promise<Message[]> {
   const { keepRecentTurns, ...summarizeOptions } = options;
   const plan = planCompaction(history, { keepRecentTurns });
+  // The opening placeholder before a compaction block toKeep starts with stays with it.
+  const opening = openingPlaceholder([...plan.toSummarize.slice(0, 1), ...plan.toKeep.slice(0, 1)]);
+  const toSummarize = opening ? plan.toSummarize.slice(1) : plan.toSummarize;
 
   // Nothing old enough to compact — return the original reference untouched.
-  if (plan.toSummarize.length === 0) return history;
+  if (toSummarize.length === 0) return history;
 
-  const summary = await summarizeHistory(plan.toSummarize, compress, summarizeOptions);
+  const summary = await summarizeHistory(toSummarize, compress, summarizeOptions);
   // Summarizer produced nothing usable — leave history intact rather than
   // dropping the old turns behind an empty marker.
   if (!summary.trim()) return history;
@@ -131,5 +137,8 @@ export async function compactHistory(
     content: Prompts.getCompactSummaryWrapper(summary),
   };
 
-  return [...plan.system, ...summaryHead(summaryMessage, plan.toKeep)];
+  return [
+    ...plan.system,
+    ...summaryHead(summaryMessage, opening ? [opening, ...plan.toKeep] : plan.toKeep),
+  ];
 }

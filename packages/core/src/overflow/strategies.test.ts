@@ -1,5 +1,11 @@
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
-import { anthropicCompactionMessage } from '../adapters/anthropicAdapter';
+import {
+  AnthropicAdapter,
+  anthropicCompactionMessage,
+  fromAnthropic,
+} from '../adapters/anthropicAdapter';
+import { OpenAIAdapter } from '../adapters/openAIAdapter';
 import type { Message } from '../types';
 import { anchored } from './anchored';
 import { type BackgroundOverflowStrategy, background } from './background';
@@ -458,6 +464,34 @@ describe('a compaction block the window opens with', () => {
     expect(result.history[0]).toBe(messages[0]);
     expect(result.history[1].content).toContain('Context window reset');
     expect(result.history.slice(2)).toEqual([messages[3]]);
+  });
+
+  it.each([
+    ['summarize()', () => summarize({ compressionModel: model, split: 'recent-turns' }), 'SUMMARY'],
+    ['anchored()', () => anchored({ compressionModel: model, split: 'recent-turns' }), 'SUMMARY'],
+    ['reset()', () => reset(), 'Context window reset'],
+  ])('keeps the opening user turn fromAnthropic puts before it, so text targets still open with one: %s', async (_, build, said) => {
+    const block = { type: 'compaction', content: 'EARLIER', signature: 'SIG_0' };
+    const { history: resumed } = fromAnthropic([
+      { role: 'assistant', content: [block] },
+    ] as unknown as MessageParam[]);
+    const [strategy] = attached(build());
+    const messages = [...resumed, ...history(5)];
+
+    const result = await strategy.apply(
+      makeInput({ history: messages, pinned: extractPinnedMessages(messages) }),
+    );
+
+    expect(result.history[0]).toBe(messages[0]);
+    expect(result.history[1]).toBe(messages[1]);
+    expect(result.history[2].content).toContain(said === 'SUMMARY' ? 'THE SUMMARY' : said);
+    expect(result.evicted).not.toContain(messages[0]);
+    expect(new OpenAIAdapter().compile(result.history).messages[0].role).toBe('user');
+    // The Anthropic target skips it: the block is still the first message it sends.
+    expect(new AnthropicAdapter().compile(result.history).messages[0]).toEqual({
+      role: 'assistant',
+      content: [block],
+    });
   });
 });
 

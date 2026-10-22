@@ -1477,6 +1477,45 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
   });
 });
 
+describe('appendOnly overflow: a history resumed from a compaction block', () => {
+  it.each([
+    'openai',
+    'gemini',
+  ] as const)('keeps the opening user turn before the block on a text target (%s)', async (target) => {
+    const { chef, breaks, invariants } = chefWith();
+    // The block a previous session got back, behind the user turn fromAnthropic opens with.
+    const { history: block } = fromAnthropic([
+      {
+        role: 'assistant',
+        content: [{ type: 'compaction', content: 'EARLIER', signature: 'SIG_0' }],
+      },
+    ] as unknown as MessageParam[]);
+
+    const payloads = await converse(
+      chef,
+      [1, 2, 3, 4, 5].map((n) => [...block, ...asked(n)]),
+      target,
+    );
+
+    expect(breaks.map((b) => b.reason)).toContain('compaction');
+    for (const payload of payloads) {
+      const [first, second] = (payload as OpenAIPayload).messages.filter(
+        (m) => m.role !== 'system',
+      );
+      expect(JSON.stringify(first)).toContain('"role":"user"');
+      expect(JSON.stringify(first)).toContain('[Conversation continues]');
+      expect(JSON.stringify(second)).toContain('EARLIER');
+    }
+    // Each compile that reported no checkpoint repeats the one before it.
+    payloads.forEach((payload, i) => {
+      if (i > 0 && !payload.meta?.prefix?.break) {
+        expect(checkPrefixContinuity(payloads[i - 1], payload)).toEqual({ ok: true });
+      }
+    });
+    expect(invariants).toEqual([]);
+  });
+});
+
 describe('appendOnly overflow: strategies that keep no turn', () => {
   it('lands reset() as a head of its notice, the pending request dropped as in 4.x', async () => {
     const { chef, breaks } = chefWith({}, () => reset());

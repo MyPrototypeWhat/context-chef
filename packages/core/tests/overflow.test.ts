@@ -22,7 +22,13 @@ import {
   server,
   summarize,
 } from '../src/index';
-import type { AnthropicPayload, ChefLogger, Message, TargetPayload } from '../src/types';
+import type {
+  AnthropicPayload,
+  ChefLogger,
+  Message,
+  OpenAIPayload,
+  TargetPayload,
+} from '../src/types';
 
 /** Alias conflicts and no-tokenizer paths warn by design; keep the output clean. */
 const silent: ChefLogger = { warn: () => {} };
@@ -687,6 +693,32 @@ describe('overflow — a history resumed from a compaction block', () => {
     expect(summary).toContain('archived in full at context://vfs/fixed-uri.txt');
     expect(payload.messages).toHaveLength(3);
     expect(JSON.stringify(onCompress.mock.calls[0][0])).toContain('ALIAS EQUIVALENCE');
+  });
+
+  it('keeps the opening user turn before the block, so a text target still opens with it', async () => {
+    const { history } = fromAnthropic([
+      { role: 'assistant', content: [{ type: 'compaction', content: 'EARLIER' }] },
+      ...longHistory(9).map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ] as MessageParam[]);
+
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: runnerConfig,
+      overflow: {
+        strategy: summarize({ compressionModel, preserveRatio: 0.3 }),
+        archive: { store: () => 'context://vfs/fixed-uri.txt' },
+      },
+    }).setHistory(history);
+
+    const payload = (await chef.compile({ target: 'openai' })) as OpenAIPayload;
+
+    expect(payload.messages[0]).toEqual({ role: 'user', content: history[0].content });
+    expect(String(payload.messages[1].content)).toContain('EARLIER');
+    // The summary, with its archive citation, is the message after the block.
+    expect(String(payload.messages[2].content)).toContain('ALIAS EQUIVALENCE');
+    expect(String(payload.messages[2].content)).toContain(
+      'archived in full at context://vfs/fixed-uri.txt',
+    );
   });
 });
 
