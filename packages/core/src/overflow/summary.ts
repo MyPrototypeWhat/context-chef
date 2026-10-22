@@ -159,3 +159,28 @@ export function renderSummaryMessage(
 ): Message {
   return { role: 'user', content: vocabulary.summaryWrapper(summary + citation, lineage) };
 }
+
+const isCompaction = (message: Message): boolean => message._anthropic_compaction !== undefined;
+
+/**
+ * The start of a window a summary rebuilds: the summary (or notice) message,
+ * then the pinned messages put back after it — except a compaction block
+ * among them (`_anthropic_compaction`, pinned as `fromAnthropic` parses it),
+ * which goes first. The API reads nothing before the block and rejects a
+ * request with a message ahead of it (`compaction_block_misplaced`).
+ */
+export function summaryHead(summary: Message, pinned: readonly Message[]): Message[] {
+  if (!pinned.some(isCompaction)) return [summary, ...pinned];
+  return [
+    ...pinned.filter(isCompaction),
+    summary,
+    ...pinned.filter((message) => !isCompaction(message)),
+  ];
+}
+
+/** Where the summary message of a rebuilt window sits: after the compaction blocks kept first. */
+export function summaryIndex(history: readonly Message[]): number {
+  let index = 0;
+  while (index < history.length && isCompaction(history[index])) index++;
+  return index;
+}

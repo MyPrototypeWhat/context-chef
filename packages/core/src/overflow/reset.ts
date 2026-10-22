@@ -2,7 +2,7 @@
  * `reset()` — drop the window and start over.
  */
 
-import { renderSummaryMessage } from './summary';
+import { renderSummaryMessage, summaryHead } from './summary';
 import { waitingCallStart } from './turns';
 import {
   type OverflowInput,
@@ -75,7 +75,7 @@ export function reset(options: ResetOptions = {}): OverflowStrategy {
       // input.pinned is already turn-scoped and in original order.
       const kept = history.slice(0, end).filter((m) => pinnedSet.has(m));
       return {
-        history: [renderSummaryMessage(notice), ...kept, ...history.slice(end)],
+        history: [...summaryHead(renderSummaryMessage(notice), kept), ...history.slice(end)],
         evicted,
         // Nothing was compressed around the pinned messages — the notice
         // stands for exactly what left.

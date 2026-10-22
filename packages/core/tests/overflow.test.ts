@@ -4,6 +4,7 @@
  * runner concerns (budget, breaker, hooks) must keep behaving.
  */
 
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import {
   Assembler,
@@ -12,6 +13,7 @@ import {
   background,
   type ChefConfig,
   ContextChef,
+  fromAnthropic,
   type JanitorConfig,
   type OverflowResult,
   type OverflowRunner,
@@ -19,7 +21,7 @@ import {
   server,
   summarize,
 } from '../src/index';
-import type { ChefLogger, Message, TargetPayload } from '../src/types';
+import type { AnthropicPayload, ChefLogger, Message, TargetPayload } from '../src/types';
 
 /** Alias conflicts and no-tokenizer paths warn by design; keep the output clean. */
 const silent: ChefLogger = { warn: () => {} };
@@ -609,6 +611,38 @@ describe('overflow — v5 review fixes', () => {
 
     expect(payload.messages).toHaveLength(1);
     expect(compressed).toEqual([false]);
+  });
+});
+
+describe('overflow — a history resumed from a compaction block', () => {
+  it('keeps the block first: the summary, and its archive citation, go after it', async () => {
+    const onCompress = vi.fn();
+    // A session stored as Anthropic messages, opening with the block a compaction returned.
+    const { history } = fromAnthropic([
+      { role: 'assistant', content: [{ type: 'compaction', content: 'EARLIER' }] },
+      ...longHistory(9).map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ] as MessageParam[]);
+
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: summarize({ compressionModel, preserveRatio: 0.3 }),
+        archive: { store: () => 'context://vfs/fixed-uri.txt' },
+      },
+    }).setHistory(history);
+
+    const payload = (await chef.compile({ target: 'anthropic' })) as AnthropicPayload;
+
+    expect(payload.messages[0]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'compaction', content: 'EARLIER' }],
+    });
+    const summary = JSON.stringify(payload.messages[1]);
+    expect(summary).toContain('ALIAS EQUIVALENCE');
+    expect(summary).toContain('archived in full at context://vfs/fixed-uri.txt');
+    expect(payload.messages).toHaveLength(3);
+    expect(JSON.stringify(onCompress.mock.calls[0][0])).toContain('ALIAS EQUIVALENCE');
   });
 });
 

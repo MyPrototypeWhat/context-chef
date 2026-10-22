@@ -1,7 +1,7 @@
 import { readAnchorDoc } from '../../overflow/anchored';
 import type { BackgroundOverflowStrategy } from '../../overflow/background';
 import { resolveOverflowStrategy } from '../../overflow/resolve';
-import { renderSummaryMessage } from '../../overflow/summary';
+import { renderSummaryMessage, summaryIndex } from '../../overflow/summary';
 import {
   buildToolNameMap,
   collectPinnedTurnIndices,
@@ -965,9 +965,11 @@ export class Janitor {
     // no summary text, but its first message is the block that stands for it.
     const span = archived.span;
     await this._fireOnCompress(
-      archived.summary === undefined && !archived.meta.signed
-        ? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) }
-        : archived.history[0],
+      archived.summary !== undefined
+        ? archived.history[summaryIndex(archived.history)]
+        : archived.meta.signed
+          ? archived.history[0]
+          : { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) },
       span.length,
       { compressedMessages: span },
     );
@@ -1053,7 +1055,12 @@ export class Janitor {
     if (citation === '' && this._vocabulary.mode === 'legacy') return result;
 
     const history = [...result.history];
-    history[0] = renderSummaryMessage(result.summary, citation, this._vocabulary, this._window);
+    history[summaryIndex(history)] = renderSummaryMessage(
+      result.summary,
+      citation,
+      this._vocabulary,
+      this._window,
+    );
     return { ...result, history };
   }
 

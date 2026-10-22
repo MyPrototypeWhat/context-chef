@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { anthropicCompactionMessage } from '../adapters/anthropicAdapter';
 import type { Message } from '../types';
 import { anchored } from './anchored';
 import { type BackgroundOverflowStrategy, background } from './background';
@@ -406,6 +407,57 @@ describe('reset()', () => {
 
     expect(result.meta.changed).toBe(false);
     expect(result.history).toBe(messages);
+  });
+});
+
+describe('a compaction block the window opens with', () => {
+  const model = async () => '<summary>THE SUMMARY</summary>';
+  // The block a resumed Anthropic session opens with, pinned as fromAnthropic parses it, and a
+  // pinned question after it: q3 is the turn kept.
+  const opened = (): Message[] => {
+    const messages = [
+      anthropicCompactionMessage({ type: 'compaction', content: 'EARLIER', signature: 'SIG_0' }),
+      ...history(5),
+    ];
+    messages[3] = { ...messages[3], pinned: true };
+    return messages;
+  };
+
+  it.each([
+    ['summarize()', () => summarize({ compressionModel: model, split: 'recent-turns' })],
+    ['anchored()', () => anchored({ compressionModel: model, split: 'recent-turns' })],
+  ])('stays first: %s puts its summary after it, and the other pinned messages after that', async (_, build) => {
+    const [strategy] = attached(build());
+    const messages = opened();
+
+    const result = await strategy.apply(
+      makeInput({ history: messages, pinned: extractPinnedMessages(messages) }),
+    );
+
+    expect(result.history.map((m) => m.content)).toEqual([
+      '',
+      result.history[1].content,
+      'msg-3',
+      'msg-5',
+    ]);
+    expect(result.history[0]).toBe(messages[0]);
+    expect(result.history[1].content).toContain('THE SUMMARY');
+  });
+
+  it.each([
+    ['reset()', () => reset(), {}],
+    ['summarize() collapsing without a model', () => summarize(), { collapse: true as const }],
+  ])('stays first: %s puts its notice after it', async (_, build, overrides) => {
+    const [strategy] = attached(build());
+    const messages = opened();
+
+    const result = await strategy.apply(
+      makeInput({ history: messages, pinned: extractPinnedMessages(messages), ...overrides }),
+    );
+
+    expect(result.history[0]).toBe(messages[0]);
+    expect(result.history[1].content).toContain('Context window reset');
+    expect(result.history.slice(2)).toEqual([messages[3]]);
   });
 });
 

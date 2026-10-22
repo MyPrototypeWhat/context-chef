@@ -10,7 +10,7 @@
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
 import { resetNotice } from './reset';
-import { renderSummaryMessage, summarizeHistory } from './summary';
+import { renderSummaryMessage, summarizeHistory, summaryHead } from './summary';
 import { groupIntoTurns, type Turn, waitingCallStart } from './turns';
 import {
   detachedRunner,
@@ -278,7 +278,8 @@ export class SummarizingStrategy implements OverflowStrategy {
     const toCompress = history.slice(0, splitIndex);
     const toKeep = history.slice(splitIndex);
 
-    // Pinned (turn-scoped) messages survive verbatim in all outcomes below.
+    // Pinned (turn-scoped) messages survive verbatim in all outcomes below,
+    // after the summary — a compaction block among them ahead of it.
     // The split lands on a turn boundary, so a turn is never half-pinned.
     const pinnedSet = new Set(input.pinned);
     const pinnedInSpan = toCompress.filter((m) => pinnedSet.has(m));
@@ -296,7 +297,7 @@ export class SummarizingStrategy implements OverflowStrategy {
       }
       const notice = resetNotice(input.window);
       return {
-        history: [renderSummaryMessage(notice), ...pinnedInSpan, ...toKeep],
+        history: [...summaryHead(renderSummaryMessage(notice), pinnedInSpan), ...toKeep],
         evicted,
         span: toCompress,
         summary: notice,
@@ -310,7 +311,7 @@ export class SummarizingStrategy implements OverflowStrategy {
     }
 
     const result: OverflowResult = {
-      history: [renderSummaryMessage(summary), ...pinnedInSpan, ...toKeep],
+      history: [...summaryHead(renderSummaryMessage(summary), pinnedInSpan), ...toKeep],
       evicted,
       span: toCompress,
       summary,

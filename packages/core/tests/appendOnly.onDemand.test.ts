@@ -417,6 +417,50 @@ describe('appendOnly onDemandCompaction(): pinned messages it summarized', () =>
   });
 });
 
+describe('appendOnly onDemandCompaction(): an unsigned compaction after a signed one', () => {
+  const failing = async () => ({ stop_reason: 'end_turn', content: [] });
+
+  it('keeps the block first, the summary of a chained summarize() after it', async () => {
+    const { chef, compact, breaks, invariants } = chefWith({}, (compact, compressionModel) =>
+      chain(
+        onDemandCompaction({ compact }),
+        summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+      ),
+    );
+
+    // Block 1 lands on asked(4); the attempt on asked(6) fails, and summarize() takes over.
+    await converse(chef, [1, 2, 3, 4, 5].map(asked));
+    compact.mockImplementation(failing);
+    const payloads = await converse(chef, [asked(6), asked(7)]);
+
+    expect(payloads[0].messages).toEqual([
+      compacted(1),
+      text('user', SUMMARY(1)),
+      text('user', 'q6'),
+    ]);
+    expect(payloads[1].messages).toEqual([...payloads[0].messages, answer(6), text('user', 'q7')]);
+    expect(breaks.map((b) => [b.reason, b.signed])).toEqual([
+      ['compaction', true],
+      ['compaction', false],
+    ]);
+    expect(invariants).toEqual([]);
+  });
+
+  it('keeps the block first, the notice of a chained reset() after it', async () => {
+    const { chef, compact } = chefWith({}, (compact) =>
+      chain(onDemandCompaction({ compact }), reset()),
+    );
+
+    await converse(chef, [1, 2, 3, 4, 5].map(asked));
+    compact.mockImplementation(failing);
+    const [after] = await converse(chef, [asked(6)]);
+
+    expect(after.messages).toHaveLength(2);
+    expect(after.messages[0]).toEqual(compacted(1));
+    expect(JSON.stringify(after.messages[1])).toContain('Context window reset');
+  });
+});
+
 describe('appendOnly onDemandCompaction(): where nothing can be signed', () => {
   it('runs its fallback on a target that signs nothing', async () => {
     const { chef, compact, compressionModel } = chefWith();

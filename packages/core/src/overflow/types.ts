@@ -182,7 +182,9 @@ export interface OverflowResult {
    * The summary text the strategy produced, WITHOUT the continuation wrapper.
    *
    * When set, `history[0]` is that text rendered through
-   * {@link renderSummaryMessage}: the runner re-renders it in place when the
+   * {@link renderSummaryMessage} — or the message after the compaction blocks
+   * (`_anthropic_compaction`) the result keeps first, since nothing may come
+   * before one (`summaryHead`): the runner re-renders it in place when the
    * archive post-step has a citation to append, which is why the raw text
    * travels alongside the message instead of only inside it.
    */
