@@ -150,14 +150,16 @@ export interface CompressionDetails {
    */
   compressedMessages: Message[];
   /**
-   * `appendOnly` only: the messages the window now opens with in place of
-   * `compressedMessages` — the summary (or the signed compaction block), the
-   * pinned messages put back after it, and whatever it kept of an earlier
-   * head. To persist the compaction, write these back in that order where the
-   * compressed messages were: the next compile then reads the history as one
-   * that took the compaction in, with nothing to report. Under `appendOnly`,
-   * `compressedMessages` and the count leave out the chef's own events, which
-   * the host never had.
+   * `appendOnly` only: what to write back, in this order, where
+   * `compressedMessages` were, to persist the compaction — the summary (or
+   * the signed compaction block), the pinned messages put back after it, and
+   * whatever it kept of an earlier head. The next compile then reads the
+   * history as one that took the compaction in, with nothing to report; from
+   * then on they are the host's messages, sent with their thinking stripped
+   * as it was in the head. Under `appendOnly`, `compressedMessages` and the
+   * count leave out the chef's own events, which the host never had — but a
+   * summary the host did not write back is summarized again by a later
+   * compaction, and shows up in that one's `compressedMessages`.
    */
   replacement?: Message[];
 }

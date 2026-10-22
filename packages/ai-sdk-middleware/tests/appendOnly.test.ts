@@ -671,6 +671,10 @@ describe('appendOnly: construction warnings', () => {
 
     expect(warnings(warn, 'appendOnly')).toHaveLength(1);
     expect(warn.mock.calls[0][0]).toContain(named);
+    // Once a compression landed, the rewrite reaches what it summarized: it lands again every call.
+    expect(warn.mock.calls[0][0]).toContain(
+      'drops its summary, and the conversation is summarized again on every call',
+    );
   });
 
   it("does not warn for settings that rewrite each message once ('all')", () => {

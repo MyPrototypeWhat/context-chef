@@ -108,8 +108,10 @@ export function warnAppendOnlyConfig(options: ContextChefOptions, logger: ChefLo
       `[context-chef] appendOnly: ${moving.join(', ')} ${moving.length > 1 ? 'move' : 'moves'} ` +
         'with the conversation, rewriting messages earlier calls sent, so nearly every call is a ' +
         "checkpoint: the provider's prefix cache misses from the rewritten message, and signed " +
-        "reasoning is stripped from it on. Use 'all', which rewrites each message once before it " +
-        "is first sent, or the provider's own context editing " +
+        'reasoning is stripped from it on. Once a compression has landed, a rewrite that reaches ' +
+        'a message it summarized also drops its summary, and the conversation is summarized ' +
+        "again on every call. Use 'all', which rewrites each message once before it is first " +
+        "sent, or the provider's own context editing " +
         '(providerOptions.anthropic.contextManagement).',
     );
   }

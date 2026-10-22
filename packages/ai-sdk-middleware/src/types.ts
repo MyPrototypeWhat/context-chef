@@ -345,13 +345,15 @@ export interface ContextChefOptions {
    * records by `toolCallId`; user/assistant text is not modified by those
    * steps.
    *
-   * With {@link appendOnly}, `details.replacement` holds the messages the
-   * session now sends in place of `compressedMessages` (the summary, as a
-   * user message). To persist the compaction, write exactly these back where
-   * the compressed messages were: the next call reads your history as one
-   * that took it in, and sends the same prompt with nothing to report.
+   * With {@link appendOnly}, `details.replacement` is what to write back,
+   * exactly and in order, where `compressedMessages` were, to persist the
+   * compaction (the summary, as a user message): the next call reads your
+   * history as one that took it in, with nothing to report. From then on it
+   * is your message, sent with any signed reasoning in it stripped.
    * `compressedMessages` and the count hold only your messages, never the
-   * events the session appended among them.
+   * events the session appended among them — with one exception: a summary
+   * you did not write back is summarized again by a later compression, and
+   * shows up in that one's `compressedMessages`.
    */
   onCompress?: (
     summary: string,
