@@ -584,6 +584,16 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     expect(compile(new PrefixLedger(), turns.slice(0, 1)).break).toBeUndefined();
   });
 
+  it('reports nothing for an assistant message nothing follows yet: a prefill answered nothing', () => {
+    const prefill = assistant('{"answer":');
+    expect(compile(new PrefixLedger(), [user('q1'), prefill]).break).toBeUndefined();
+    // Once something follows it, it is a reply this ledger never saw.
+    expect(compile(new PrefixLedger(), [user('q1'), prefill, user('q2')]).break).toMatchObject({
+      reason: 'ledger',
+      at: 0,
+    });
+  });
+
   it('reports a `ledger` break for an entry anchored past the end of the history', () => {
     const ledger = new PrefixLedger();
     ledger.reconcile(turns.slice(0, 3));
@@ -1023,6 +1033,20 @@ describe('PrefixLedger — reset', () => {
     expect(
       compile(ledger, [...fresh, assistant('ok'), user('more')], [], sent).break,
     ).toBeUndefined();
+  });
+
+  it('has nothing to start over from before its first commit', () => {
+    const ledger = new PrefixLedger();
+    ledger.reset();
+    expect(compile(ledger, [user('q1')]).break).toBeUndefined();
+
+    // A compile that failed committed nothing either.
+    const failed = new PrefixLedger();
+    failed.reconcile([user('q1')]);
+    failed.append([state('<state>A</state>')]);
+    failed.rollback();
+    failed.reset();
+    expect(compile(failed, [user('q1')]).break).toBeUndefined();
   });
 
   it('carries a reset the next compile has not met through a snapshot', () => {

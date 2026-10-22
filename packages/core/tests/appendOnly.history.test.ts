@@ -417,6 +417,17 @@ describe('appendOnly on, a ledger that never saw the conversation', () => {
     expect(breaks).toEqual([]);
     expect(payload.meta?.prefix).toEqual({ stable: 0 });
   });
+
+  it('starts one that opens on a prefill, or right after clearHistory(), with nothing to report', async () => {
+    const prefilled = chefWith();
+    const cleared = chefWith().clearHistory();
+    const breaks = [breaksOf(prefilled), breaksOf(cleared)];
+
+    await compileAt(prefilled, [...turn1, { role: 'assistant', content: '{"date":' }]);
+    await compileAt(cleared, turn1);
+
+    expect(breaks).toEqual([[], []]);
+  });
 });
 
 describe('appendOnly on, the ledger across sessions', () => {

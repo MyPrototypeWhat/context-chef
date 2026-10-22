@@ -345,6 +345,11 @@ export class PrefixLedger {
     return this._head?.cut ?? 0;
   }
 
+  /** Nothing in the window was ever sent through this ledger: no head, no entry, nothing seen. */
+  private get blank(): boolean {
+    return !this._head && this.entries.length === 0 && this.seen.length === 0;
+  }
+
   /**
    * Rebuilds the window over `history`. When the ledger no longer matches —
    * history shorter than `head.cut`, a host message that is not the one seen,
@@ -596,17 +601,17 @@ export class PrefixLedger {
   /**
    * Starts over, as `clearHistory()` does: the entries, head, stripped ranges
    * and what was seen are dropped, and the next `reconcile()` applies a
-   * `ledger` checkpoint at 0, since the window sent before is not repeated.
-   * What was last sent ahead of the window stays: it is not part of the
-   * conversation.
+   * `ledger` checkpoint at 0, since the window sent before is not repeated —
+   * unless nothing was ever sent in it. What was last sent ahead of the window
+   * stays: it is not part of the conversation.
    */
   reset(): void {
+    this.restarted ||= !this.blank;
     this._head = undefined;
     this.entries = [];
     this._stripped = [];
     this.seen = [];
     this.history = [];
-    this.restarted = true;
     this._reported = undefined;
   }
 
@@ -630,9 +635,9 @@ export class PrefixLedger {
     const cut = this.cut;
     if (history.length < cut) return { reason: 'ledger', hostIndex: 0 };
     // A reply answered a request this ledger never saw, sent with whatever was
-    // appended to it then: nothing it was signed over can be vouched for.
-    const blank = !this._head && this.entries.length === 0 && this.seen.length === 0;
-    if (blank && history.some((m) => m.role === 'assistant')) {
+    // appended to it then: nothing it was signed over can be vouched for. An
+    // assistant message nothing follows yet — a prefill — answered nothing.
+    if (this.blank && history.some((m, i) => m.role === 'assistant' && i < history.length - 1)) {
       return { reason: 'ledger', hostIndex: 0 };
     }
     // A history break drops any entry anchored past the end along with the rest.
