@@ -149,9 +149,12 @@ async function handleRequest(conversationId: string, history: Message[]) {
     memory: {},
     janitor: { contextWindow: 200_000, compressionModel },
   });
+  chef.registerSkills(skills); // before restore(), so a saved active skill re-resolves by name
   const saved = await db.load(conversationId); // a ChefSnapshot, stored as JSON
   if (saved) chef.restore({ ...saved, modules: { ...saved.modules, memory: null } });
-  // Set this request's state (setDynamicState, announce, …) after restore().
+  // After restore(), which replaces them with the saved ones: the system prompt, tools,
+  // guardrails, dynamic state, announcements and skill activation.
+  chef.setSystemPrompt(systemPrompt).registerTools(tools);
 
   const payload = await chef.setHistory(history).compile({ target: "anthropic" });
   await db.save(conversationId, chef.snapshot()); // 1. before the request goes out
@@ -164,10 +167,11 @@ async function handleRequest(conversationId: string, history: Message[]) {
 }
 ```
 
+- **Restore first, then configure.** `restore()` replaces the system prompt, tools, guardrails, dynamic state, announcements and active skill with the saved ones. Set any of them before it and the saved values win, are saved again, and a new prompt or tool list never takes effect. Register skills before it, so a saved active skill is found by name.
 - **Memory is left out of the restore** (`memory: null`) because it lives in the shared store. Restoring the snapshot's copy would roll the store back to the moment of the save, and a memory write made since, by this conversation or any other, would be lost. Everything else is restored, the overflow runner's state (window, circuit breaker, reported usage) and the handoff notice flag included. When the chef's state lives only in the snapshot, restore the whole snapshot.
 - **The first save** means a request that went out always has its record, even if something throws after its reply is stored. Without it the next request restores an older ledger and replays thinking over a prefix it wasn't signed over, with nothing reported. If one request compiles more than once, save after each compile.
 - **The second save** records the memory writes the model made through `handleTool`, so they aren't pushed back to it on the next request. If the process dies between the two saves, the cost is one memory note stated again, never a broken conversation.
-- Memory's turn counter is part of the memory you leave out, so a per-request chef counts turn-based TTLs from zero on every request. With a shared store, use `{ ms }` TTLs.
+- Memory's turn counter is part of the memory you leave out, so it starts over on every request, and on a per-request chef a turn-based TTL (a number, or `{ turns }`) effectively never expires. With a shared store, use `{ ms }` TTLs.
 
 **Persisting a compaction** is optional: the head lives in the ledger, and your history can keep every message. Write it into your store when you want the store itself to shrink. Then write back `details.replacement` exactly and in order, in place of the messages it replaced, which are the first `count` messages of your history:
 
@@ -195,7 +199,7 @@ With `onDemandCompaction` the replacement is the block alone. Writing it back ta
 With `pipelineChecks: true`, every payload is compared with the one the chef sent before it. Unless the compile reported a checkpoint, it must repeat that payload (up to its last reply while that request is unanswered, everything but a trailing prefill once a reply followed) and send every thinking signature it sent. A payload that doesn't is reported through `pipeline:invariant` and the logger, never thrown. A slot handler that rewrites earlier messages, for instance, is reported there but not prevented.
 
 - A compile that reports a checkpoint isn't compared.
-- The comparison needs the previous payload from the same chef, so the first compile after `restore()` isn't checked, and a chef created per request never is.
+- The comparison needs the previous payload from the same chef, so the first compile after `restore()` isn't checked: a chef created per request is checked from its second compile within a request.
 - It costs a JSON copy of each payload and up to two adapter renders of part of it, on top of the other checks. Keep it for development and tests.
 
 ## OpenAI and Gemini

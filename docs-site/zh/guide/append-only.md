@@ -149,9 +149,12 @@ async function handleRequest(conversationId: string, history: Message[]) {
     memory: {},
     janitor: { contextWindow: 200_000, compressionModel },
   });
+  chef.registerSkills(skills); // 放在 restore() 之前，这样保存下来的激活 skill 能按名字找回
   const saved = await db.load(conversationId); // 一个 ChefSnapshot，以 JSON 存储
   if (saved) chef.restore({ ...saved, modules: { ...saved.modules, memory: null } });
-  // 这个请求的状态（setDynamicState、announce 等）在 restore() 之后再设置。
+  // 以下都放在 restore() 之后，因为 restore() 会用保存的值替换它们：
+  // system prompt、tools、guardrail、dynamic state、announcement 和 skill 激活。
+  chef.setSystemPrompt(systemPrompt).registerTools(tools);
 
   const payload = await chef.setHistory(history).compile({ target: "anthropic" });
   await db.save(conversationId, chef.snapshot()); // 1. 请求发出之前
@@ -163,10 +166,11 @@ async function handleRequest(conversationId: string, history: Message[]) {
 }
 ```
 
+- **先恢复，再配置。** `restore()` 会用保存的值替换 system prompt、tools、guardrail、dynamic state、announcement 和当前激活的 skill。如果在它之前设置这些，保存的值会胜出并再次被保存，新的 prompt 或工具列表永远不会生效。skill 要在它之前注册，这样保存下来的激活 skill 才能按名字找回。
 - **恢复时跳过 memory**（`memory: null`），因为它存在共享存储里。恢复快照里的那份副本，会把存储回滚到保存时的样子，之后不管是这个对话还是其他对话写入的 memory 都会丢失。其余状态都会恢复，包括 overflow runner 的状态（窗口、熔断器、上报的用量）和 handoff 提醒的标记。如果 chef 的状态只存在于快照里，就恢复整份快照。
 - **第一次保存**保证已经发出的请求一定有记录，即使在回复存好之后有地方抛错。没有它，下一个请求会恢复更早的 ledger，在一个 thinking 签名时并不存在的前缀上回放 thinking，而且什么都不报告。如果一个请求里 compile 了不止一次，每次 compile 之后都要保存。
 - **第二次保存**记录模型通过 `handleTool` 写入的 memory，这样下一个请求就不会把它们再推送给模型。如果进程在两次保存之间崩溃，代价只是某条 memory 再声明一次，对话不会坏。
-- memory 的轮次计数属于被跳过的那部分，所以每个请求新建的 chef 每次都从零开始计算按轮次的 TTL。使用共享存储时，请用 `{ ms }` 形式的 TTL。
+- memory 的轮次计数属于被跳过的那部分，所以它每个请求都从头开始；在每个请求新建的 chef 上，按轮次的 TTL（一个数字，或 `{ turns }`）实际上永远不会过期。使用共享存储时，请用 `{ ms }` 形式的 TTL。
 
 **持久化压缩结果**是可选的：head 存在 ledger 里，你的 history 可以保留每一条消息。只有想让存储本身变小时才需要写回。写回时，把 `details.replacement` 原样、按顺序写到它替换掉的那些消息的位置，也就是你 history 里的前 `count` 条：
 
@@ -194,7 +198,7 @@ janitor: {
 打开 `pipelineChecks: true` 后，每个 payload 都会和 chef 上一次发出的 payload 比较。除非这次 compile 报告了检查点，否则它必须重复上一次的 payload（上一次的请求还没被回答时，比到它的最后一条回复为止；已经有回复之后，除了末尾的 prefill 全部都要比），并且把上一次发过的每个 thinking 签名都发出去。不符合的会通过 `pipeline:invariant` 和 logger 报告，不会抛错。比如改写之前消息的 slot handler，会在这里被报告，但不会被阻止。
 
 - 报告了检查点的 compile 不做比较。
-- 比较需要同一个 chef 的上一次 payload，所以 `restore()` 之后的第一次 compile 不检查，每个请求新建的 chef 则从不检查。
+- 比较需要同一个 chef 的上一次 payload，所以 `restore()` 之后的第一次 compile 不检查：每个请求新建的 chef，从它在一个请求里的第二次 compile 开始才会被检查。
 - 它的开销是每个 payload 一份 JSON 拷贝，外加对其中一部分最多两次 adapter 渲染，这还不算其他检查。只在开发和测试时打开。
 
 ## OpenAI 和 Gemini

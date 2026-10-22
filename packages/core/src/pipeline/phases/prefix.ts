@@ -114,8 +114,10 @@ export const prefixPhase: Phase = {
           `[context-chef] appendOnly: the prefix ledger is empty, but the history already ` +
             `holds ${replies} replies, compiled by a chef whose ledger was not kept — the ` +
             'thinking in them was invalidated (a `ledger` checkpoint). A chef created per ' +
-            'request must persist `snapshot().prefixLedger` and restore it with the history ' +
-            '(warned once).',
+            'request must save its whole snapshot (it carries `prefixLedger`) after each ' +
+            'compile and restore it on the next request — with memory in a shared store, ' +
+            'with `modules.memory` set to null — before setting the system prompt, tools and ' +
+            'state (warned once).',
         );
       }
     }

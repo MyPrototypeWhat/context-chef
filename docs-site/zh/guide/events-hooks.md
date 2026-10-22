@@ -173,6 +173,6 @@ app.post('/agent', async (req, res) => {
 
 如果记忆需要跨请求存活，把 store 提出去（一个共享的 `FileSystemBackend`、或你自己基于 Redis 的 `StorageBackend`），再传给按请求创建的 chef —— store 层面的并发是 store 的责任，不是 chef 的。见[上下文存储](/zh/guide/context-store)。
 
-打开 [`appendOnly`](/zh/guide/append-only#持久化对话) 时，按请求创建的 chef 还需要它所在对话的 ledger：每次 compile 之后保存 `chef.snapshot()`，请求的 tool call 执行完后再保存一次；下一个请求恢复它时跳过 memory 部分（`{ ...saved, modules: { ...saved.modules, memory: null } }`），否则会把共享存储回滚。
+打开 [`appendOnly`](/zh/guide/append-only#持久化对话) 时，按请求创建的 chef 还需要它所在对话的 ledger：每次 compile 之后保存 `chef.snapshot()`，请求的 tool call 执行完后再保存一次；下一个请求恢复它时跳过 memory 部分（恢复 memory 会把共享存储回滚）：`{ ...saved, modules: { ...saved.modules, memory: null } }`。之后再设置 system prompt、tools 和状态，因为 `restore()` 会用保存的值替换它们。
 
 **同一实例上的并发 `compile()` 会排队（v4）。** 它们被串行化（快照 + 串行执行），而不是交错执行并破坏共享状态（轮次计数、熔断器、signal 暂存）。输入在调用时被快照 —— 两次排队调用之间的 `setHistory()` 意味着第一次编译看到旧历史、第二次看到新历史。被 reject 的编译不会毒化队列。标准做法仍然是每个并发调用方一个 chef；队列的存在是为了让意外共享变得安全，而不是为了让它变快。

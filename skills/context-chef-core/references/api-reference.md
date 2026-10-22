@@ -203,7 +203,8 @@ interface ChefConfig {
    * 'prefix:break' and CompileMeta.prefix. Off by default, and off it changes
    * nothing. A chef created per request saves snapshot() after each compile and
    * after the request's tool calls, and restores it on the next request — with
-   * memory in a shared store, as { ...saved, modules: { ...saved.modules, memory: null } }.
+   * memory in a shared store, as { ...saved, modules: { ...saved.modules, memory: null } },
+   * then sets the system prompt, tools and state (restore() replaces them).
    * Guide: https://myprototypewhat.github.io/context-chef/guide/append-only
    */
   appendOnly?: boolean | { clearAt?: boolean };
