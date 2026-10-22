@@ -102,8 +102,9 @@ export interface OverflowInput {
    * The runner called only so a result computed earlier can land
    * ({@link OverflowStrategy.pending}): the window is within budget and
    * nothing — `forced`, `pastLimit`, `collapse` — asks for a compaction, or
-   * the circuit breaker is open. Only the parts that have a result waiting
-   * act on it; nothing new is computed.
+   * the circuit breaker is open and the request is not past the raw context
+   * window (`pastLimit`). Only the parts that have a result waiting act on
+   * it; nothing new is computed.
    */
   pendingOnly?: true;
   /**
@@ -116,11 +117,13 @@ export interface OverflowInput {
    */
   appendOnly?: true;
   /**
-   * `appendOnly`, between turns: the request about to be sent is past the
-   * raw context window (`budget.limit`), by the pipeline's reading of it —
-   * the last usage report plus what that report does not cover. Nothing may
-   * wait for a later compile: a strategy that would (`background()`) acts on
-   * this one. The runner skips its own budget verdict.
+   * `appendOnly`: the request about to be sent is past the raw context
+   * window (`budget.limit`), by the pipeline's reading of it — the last usage
+   * report plus what that report does not cover. Nothing may wait for a later
+   * compile: a strategy that would (`background()`) acts on this one, and in
+   * a tool turn the window collapses (`collapse`) unless the strategy is
+   * signed and handed a `wire`. The runner skips its own budget verdict, and
+   * an open circuit breaker does not hold the call back.
    */
   pastLimit?: true;
   /**

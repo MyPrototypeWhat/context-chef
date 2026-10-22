@@ -853,8 +853,8 @@ describe('background()', () => {
 
     await strategy.apply(makeInput({ history: history(5) }));
     await settled(strategy);
-    // Past an open breaker: the landed window [BG, msg-5, …, msg-9] is past the raw window
-    // of 30, but nothing new may run — neither the collapse nor the refit.
+    // The landed window [BG, msg-5, …, msg-9] is past the raw window of 30, but on a call made
+    // only to land the job nothing new may run — neither the collapse nor the refit.
     const landed = await strategy.apply(
       makeInput({ history: history(9), pendingOnly: true, ...where }),
     );

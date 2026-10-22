@@ -155,7 +155,9 @@ function compactionBlock(content: readonly unknown[]): AnthropicCompactionBlock 
  *   an event at the end of the window.
  * - A response that is not a compaction counts toward the circuit breaker
  *   and leaves the window alone — past the raw context window, `fallback`
- *   still runs, since the request cannot go out as it is.
+ *   still runs, since the request cannot go out as it is. An open breaker
+ *   holds back only a window that fits: past it, the compaction is asked for
+ *   again, and the fallback runs when it fails.
  * - System messages, images and documents in the summarized span are gone
  *   from the window; the chef's own events among them are stated again.
  * - It does not combine with `server()`: a request with `context_management`

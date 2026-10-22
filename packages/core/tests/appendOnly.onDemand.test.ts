@@ -344,8 +344,10 @@ describe('appendOnly onDemandCompaction(): a signed checkpoint strips nothing', 
 describe('appendOnly onDemandCompaction(): a response that is no compaction', () => {
   it('leaves the window alone and counts toward the circuit breaker', async () => {
     const warn = vi.fn();
-    const { chef, compact, breaks } = chefWith({ logger: { warn } }, (compact) =>
-      onDemandCompaction({ compact }),
+    // A raw window of 200 nothing here reaches; the trigger is still 60.
+    const { chef, compact, breaks } = chefWith(
+      { logger: { warn }, janitor: { contextWindow: 200, triggerRatio: 0.3, tokenizer } },
+      (compact) => onDemandCompaction({ compact }),
     );
     compact.mockImplementation(async () => ({
       stop_reason: 'end_turn',
@@ -364,6 +366,29 @@ describe('appendOnly onDemandCompaction(): a response that is no compaction', ()
     expect(payloads[3].messages).toHaveLength(7);
     expect(breaks).toEqual([]);
     expectAppendOnly(payloads);
+  });
+
+  it('runs the fallback past the raw window, through the open breaker', async () => {
+    const { chef, compact, compressionModel } = chefWith({
+      janitor: { contextWindow: 200, triggerRatio: 0.3, tokenizer },
+    });
+    compact.mockImplementation(async () => ({ stop_reason: 'end_turn', content: [] }));
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(asked));
+
+    // asked(4) to asked(6) fail and open the breaker; asked(7) to asked(10) fit the raw window
+    // and ask for nothing. asked(11) can't go out as it is: the signed attempt fails again,
+    // and the fallback summarizes.
+    expect(compact).toHaveBeenCalledTimes(4);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[9].messages).toHaveLength(19);
+    expect(payloads[10].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q11')]);
+    expect(payloads[11].messages).toEqual([
+      ...payloads[10].messages,
+      answer(11),
+      text('user', 'q12'),
+    ]);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
   });
 });
 
@@ -735,6 +760,38 @@ describe('appendOnly onDemandCompaction({ fallback: background(...) }): a fallba
     expect(compact).toHaveBeenCalledTimes(3);
     expect(warn.mock.calls.filter(([m]) => String(m).includes('circuit breaker'))).toHaveLength(3);
     expect(landed.messages[0]).toEqual(text('user', SUMMARY(1)));
+  });
+
+  it('lands the waiting job past the raw window as any compaction there, and fits what it leaves', async () => {
+    // A trigger of 30 against a raw window of 100.
+    const { chef, compact, compressionModel } = chefWith(
+      { janitor: { contextWindow: 100, triggerRatio: 0.3, tokenizer } },
+      inBackground,
+    );
+    let release: () => void = () => {};
+    compressionModel.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve('<summary>JOB</summary>');
+        }),
+    );
+    compact.mockImplementation(async () => ({ stop_reason: 'end_turn', content: [] }));
+
+    // asked(3) is the first request: the fallback's job starts on it. Three failed compactions
+    // after it open the breaker, below the raw window.
+    await converse(chef, [3, 4, 5, 5].map(asked), { settle: true });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The host comes back at q9: 17 messages. The job leaves [JOB, q3 … q9], 14, still past the
+    // raw window, so the window it leaves is summarized in the same compile.
+    const [landed] = await converse(chef, [asked(9)]);
+
+    expect(compact).toHaveBeenCalledTimes(4);
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    // The second summary is of the window the job left, its summary first.
+    expect(JSON.stringify(compressionModel.mock.calls[1])).toContain('JOB');
+    expect(landed.messages).toEqual([text('user', SUMMARY(1)), text('user', 'q9')]);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
   });
 
   it('never asks again while the window fits, and leaves the breaker to stand', async () => {

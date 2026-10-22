@@ -1036,11 +1036,13 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
     };
 
     it.each([
-      ['within budget', 2, 0, true],
-      ['over budget', 5, 0, undefined],
-      ['over budget, past an open breaker', 5, 3, true],
-      ['forced, past an open breaker', 2, 3, true],
-    ])('%s', async (name, length, failures, pendingOnly) => {
+      ['within budget', 2, 0, {}, true],
+      ['over budget', 5, 0, {}, undefined],
+      ['over budget, past an open breaker', 5, 3, {}, true],
+      ['forced, past an open breaker', 2, 3, { force: true }, true],
+      // Past the raw window the call is a whole one, open breaker or not.
+      ['past the raw window, past an open breaker', 2, 3, { pastLimit: true }, undefined],
+    ])('%s', async (_, length, failures, options, pendingOnly) => {
       const { strategy, inputs } = waiting();
       const janitor = new Janitor({
         contextWindow: 30,
@@ -1050,10 +1052,47 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
       });
       seedFailures(janitor, failures);
 
-      await janitor.overflow(buildLongHistory(length), { force: name.startsWith('forced') });
+      await janitor.overflow(buildLongHistory(length), options);
 
       expect(inputs).toHaveLength(1);
       expect(inputs[0].pendingOnly).toBe(pendingOnly);
+    });
+  });
+
+  describe('an open breaker and the raw context window', () => {
+    it.each([
+      ['runs the strategy between turns past the raw window', { pastLimit: true }, true],
+      [
+        'runs the strategy collapsing a tool turn past the raw window',
+        { pastLimit: true, collapse: true, midToolTurn: true },
+        true,
+      ],
+      [
+        'idles collapsing a tool turn the model asked to end',
+        { force: true, collapse: true, midToolTurn: true },
+        false,
+      ],
+      ['idles on a forced call', { force: true }, false],
+      ['idles over budget', {}, false],
+    ])('%s', async (_, options, runs) => {
+      const apply = vi.fn(async (input: OverflowInput) => ({
+        history: input.history,
+        evicted: [],
+        span: [],
+        meta: { strategy: 'declines', windowId: input.window.current, changed: false },
+      }));
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        strategy: { name: 'declines', apply },
+      });
+      seedFailures(janitor, 3);
+
+      const result = await janitor.overflow(buildLongHistory(5), options);
+
+      expect(apply).toHaveBeenCalledTimes(runs ? 1 : 0);
+      if (!runs) expect(result.meta.reason).toContain('circuit breaker open');
     });
   });
 

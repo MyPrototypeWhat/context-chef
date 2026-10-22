@@ -124,7 +124,7 @@ One rule: a bad summary must never replace good history.
 - **Constraint pinning — `pinned: true`**: pinned messages survive every strategy verbatim (re-inserted after the summary, in order) and are never cleared by `compact()`. Pinning any message of an atomic turn protects the whole turn. Use it for policy and constraint text — compaction that drops policy text raises violation rates from 0% to 30%+ (arXiv:2606.22528).
 - **Shrink guard — `minShrinkRatio` (default `0.5`)**: a summary that doesn't shrink the compressed span by ≥ 50% (character length; spans ≥ 2000 chars only) is a failed overflow — history unchanged, circuit breaker incremented. Prevents compression death loops. `0` disables.
 - **`validateCompression`**: post-summarization gate `(summary, { compressed, kept }) => boolean | Promise<boolean>` — return `false` or throw to reject the result.
-- **Circuit breaker (runner-owned)**: three consecutive failures of *whatever strategy is installed* and overflow becomes a no-op until the next success or an explicit `janitor.reset()` / `chef.clearHistory()`. The counter survives `chef.snapshot()` / `chef.restore()`.
+- **Circuit breaker (runner-owned)**: three consecutive failures of *whatever strategy is installed* and overflow becomes a no-op until the next success or an explicit `janitor.reset()` / `chef.clearHistory()`. Under `appendOnly` it doesn't hold back a request past the raw context window, which can't go out as it is. The counter survives `chef.snapshot()` / `chef.restore()`.
 
 A failure — a model that threw, a summary that failed the shrink guard, a validator that said no — leaves history **unchanged** (pre-4.0 truncated it with a placeholder).
 
@@ -269,7 +269,7 @@ interface OverflowStrategy {
 
 `pending()` is optional and belongs to off-turn strategies. The runner asks before evaluating the budget: `background()` answers `true` while a finished job is waiting, so a summary that completed after the history dropped back under the trigger still lands on the next compile rather than waiting for the window to fill again. A call made only for that comes with `input.pendingOnly`: land what is waiting, compute nothing new. `discard()` drops a waiting result whose window is gone, without landing or counting it.
 
-Under [`appendOnly`](/guide/append-only#compaction) the input also says where the compile stands: `midToolTurn` (a tool turn is in progress), `collapse` (it can't wait: keep no turn), `pastLimit` (the request is past the raw context window at a turn boundary: act now) and, for a strategy the provider signs, `wire`. See the `OverflowInput` JSDoc.
+Under [`appendOnly`](/guide/append-only#compaction) the input also says where the compile stands: `midToolTurn` (a tool turn is in progress), `collapse` (it can't wait: keep no turn), `pastLimit` (the request is past the raw context window: act now, and in a tool turn collapse) and, for a strategy the provider signs, `wire`. See the `OverflowInput` JSDoc.
 
 ```typescript
 const dropToolResults: OverflowStrategy = {

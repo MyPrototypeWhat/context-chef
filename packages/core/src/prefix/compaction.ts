@@ -75,14 +75,15 @@ export async function compactWindow({
   const midTurn = inToolTurn(history, ledger.head);
   // A signed strategy handed a wire waits for no tool turn to end.
   const waits = midTurn && !(runner.signedOverflow && wire !== undefined);
-  const timing = compactionTiming(ledger, runner, window, forced, waits);
+  const past = pastLimit(ledger, runner, window);
+  const timing = compactionTiming(past, forced, waits);
   if (timing === 'wait') return { result: null };
   const result = await runner.overflow(window, {
     signal,
     force: forced,
     appendOnly: true,
     midToolTurn: midTurn,
-    pastLimit: timing === 'past-limit',
+    pastLimit: past,
     collapse: timing === 'collapse',
     wire,
     // What onCompress hands a host to write back: the head this result becomes.
@@ -94,14 +95,15 @@ export async function compactWindow({
 
 /**
  * When a compaction may land (D3). Between turns, as in 4.x. There, once the
- * request about to be sent is past the raw context window (`'past-limit'`),
- * nothing may wait for a later compile, a background job included, and the
- * runner's own verdict, which may read only an earlier report, does not
- * decide. While a tool turn is in progress (`midTurn`) it waits for the turn
- * to end: the turns it keeps lose their thinking, and the one in progress
- * still needs it. It cannot wait once the model asked for a new window or
- * the request is past the raw context window; then it collapses the whole
- * window.
+ * request about to be sent is past the raw context window (`past`), nothing
+ * may wait for a later compile, a background job included, and the runner's
+ * own verdict, which may read only an earlier report, does not decide. While
+ * a tool turn is in progress (`midTurn`) it waits for the turn to end: the
+ * turns it keeps lose their thinking, and the one in progress still needs it.
+ * It cannot wait once the model asked for a new window or the request is past
+ * the raw context window; then it collapses the whole window. The runner is
+ * told whenever the request is past it (`pastLimit`, with the collapse in a
+ * tool turn): an open circuit breaker holds nothing back there.
  *
  * A signed strategy, handed a wire, has nothing to wait for: the turns it
  * keeps keep their thinking, the one in progress included, so it lands in a
@@ -109,16 +111,12 @@ export async function compactWindow({
  * (`midToolTurn`) for a fallback it may run instead.
  */
 function compactionTiming(
-  ledger: PrefixLedger,
-  runner: WindowRunner,
-  window: Message[],
+  past: boolean,
   forced: boolean,
   midTurn: boolean,
-): 'now' | 'past-limit' | 'wait' | 'collapse' {
-  if (midTurn && forced) return 'collapse';
-  const past = pastLimit(ledger, runner, window);
-  if (!midTurn) return past ? 'past-limit' : 'now';
-  return past ? 'collapse' : 'wait';
+): 'now' | 'wait' | 'collapse' {
+  if (!midTurn) return 'now';
+  return past || forced ? 'collapse' : 'wait';
 }
 
 /**

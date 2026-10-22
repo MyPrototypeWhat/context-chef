@@ -124,7 +124,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 - **约束固定 —— `pinned: true`**：固定消息原文穿过每一种策略（按序重新插入到摘要之后），且永不被 `compact()` 清除。固定原子轮次中的任一消息即可保护整个轮次。用于策略与约束文本 —— 压缩丢掉策略文本会把违规率从 0% 拉到 30% 以上（arXiv:2606.22528）。
 - **缩减闸门 —— `minShrinkRatio`（默认 `0.5`）**：摘要若未能让被压缩片段缩小 ≥ 50%（按字符长度；仅对 ≥ 2000 字符的片段生效）即视为一次失败的溢出 —— 历史不变，熔断计数 +1。防止压缩死循环。`0` 关闭。
 - **`validateCompression`**：摘要后闸门 `(summary, { compressed, kept }) => boolean | Promise<boolean>` —— 返回 `false` 或抛出即拒绝该结果。
-- **熔断器（归 runner 所有）**：**当前装配的任何策略**连续失败三次，溢出就变成 no-op，直到下一次成功或显式调用 `janitor.reset()` / `chef.clearHistory()`。计数由 `chef.snapshot()` / `chef.restore()` 保存。
+- **熔断器（归 runner 所有）**：**当前装配的任何策略**连续失败三次，溢出就变成 no-op，直到下一次成功或显式调用 `janitor.reset()` / `chef.clearHistory()`。打开 `appendOnly` 时，它不拦超过原始上下文窗口的请求，因为那个请求原样发不出去。计数由 `chef.snapshot()` / `chef.restore()` 保存。
 
 一次失败 —— 模型抛异常、摘要没过缩减闸门、校验器说不 —— 会让历史**保持不变**（4.0 之前会截断并留占位符）。
 
@@ -269,7 +269,7 @@ interface OverflowStrategy {
 
 `pending()` 是可选的，属于离线执行的策略。runner 在评估预算之前会问一次：`background()` 在有已完成的任务等着落地时返回 `true`，所以一份在历史已经回落到触发线以下之后才算完的摘要，仍然会在下一次编译落地，而不用等窗口重新填满。只为这件事发起的调用会带上 `input.pendingOnly`：把等着的结果落地，不要计算任何新东西。`discard()` 丢弃一个窗口已经不存在的待落地结果，既不落地也不计数。
 
-在 [`appendOnly`](/zh/guide/append-only#压缩) 下，input 还会说明这次编译处在什么位置：`midToolTurn`（工具轮正在进行）、`collapse`（等不了：一轮都不保留）、`pastLimit`（在轮次边界上请求已经超过原始上下文窗口：现在就处理），以及给 provider 签名策略用的 `wire`。详见 `OverflowInput` 的 JSDoc。
+在 [`appendOnly`](/zh/guide/append-only#压缩) 下，input 还会说明这次编译处在什么位置：`midToolTurn`（工具轮正在进行）、`collapse`（等不了：一轮都不保留）、`pastLimit`（请求已经超过原始上下文窗口：现在就处理，在工具轮里就塌缩），以及给 provider 签名策略用的 `wire`。详见 `OverflowInput` 的 JSDoc。
 
 ```typescript
 const dropToolResults: OverflowStrategy = {

@@ -273,7 +273,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 ## 局限
 
 - **还没在真实 API 上跑过。** 上面的行为都在本地按文档规则测试过。有些问题必须发真实请求才能回答，比如 Anthropic 是否接受最后一轮丢了 thinking 的工具循环，或者各个 AI SDK provider 怎样发送紧跟在工具结果后面的 user 事件。它们列在 [TODO.md](https://github.com/MyPrototypeWhat/context-chef/blob/main/TODO.md) 的 "Needs an API key" 下。
-- **请求仍可能超过原始上下文窗口**：摘要模型放弃时（没什么可压缩的，或单独一轮就比窗口还大）；`onDemandCompaction` 没有 fallback、签名尝试又失败时；压缩持续失败直到熔断器打开时。熔断器打开后，只有已经完成的后台任务会落地，这次 compile 不会再进一步压缩窗口。
+- **请求仍可能超过原始上下文窗口**：摘要模型放弃时（没什么可压缩的，或单独一轮就比窗口还大）；`onDemandCompaction` 没有 fallback、签名尝试又失败时；压缩本身失败时。熔断器打开后只拦下放得下的请求：超过原始窗口的请求每次 compile 都会再试一次，所以一直失败的摘要模型每次都会被调用。
 - **旧修订占 token。** 不打开 `clearAt` 时，频繁变化的状态会把每个修订都留在窗口里，直到被压缩吸收，所以压缩会来得更早。让状态保持粗粒度，或者让模型通过工具自己拉取。预算也仍然会计入已经被 `clear_at` 清除的提醒。
 - **新建的 chef 遇到 few-shot 示例**（问题之前就有的 assistant 回复）时，第一次 compile 会报告一次 `ledger` 检查点。它不会 warn：这些示例没有可丢的 thinking。末尾的 prefill 不算回复。
 - **slot handler 可以改写窗口。** `after-assemble` handler（已废弃的 `transformContext` 选项也是其中之一）和 `after-adapt` handler 在 ledger 之后运行：`pipelineChecks` 会报告它们的改写，但无法阻止。`onBeforeCompile` 或 `before-assemble` handler 注入的内容是 implicit context 事件，变化时才追加。

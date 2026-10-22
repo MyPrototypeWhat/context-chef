@@ -857,12 +857,14 @@ export class Janitor {
    * - A rejected compression leaves history UNCHANGED and counts toward the
    *   circuit breaker; after MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive
    *   failures this becomes a no-op until an explicit reset()/restoreState(),
-   *   or a finished background job landing — the one path that bypasses an
+   *   or a finished background job landing — the one result that gets past an
    *   open breaker, since a blocking strategy is never applied while it is
-   *   open and so can never earn its way out. The breaker counts the overflow,
-   *   not the step: a chain whose fallback rescues the window has succeeded,
-   *   however loudly its first strategy failed — unless a step landed
-   *   `partial`, whose own failure stays counted.
+   *   open and so can never earn its way out. A request past the raw context
+   *   window (`pastLimit`) is the one call it never holds back: that request
+   *   can't go out as it is, so another attempt beats a certain rejection.
+   *   The breaker counts the overflow, not the step: a chain whose fallback
+   *   rescues the window has succeeded, however loudly its first strategy
+   *   failed — unless a step landed `partial`, whose own failure stays counted.
    * - The window lineage moves forward exactly when a result lands, so
    *   `windowId` identifies a window that really existed.
    *
@@ -874,10 +876,12 @@ export class Janitor {
    *   the strategy as they are ({@link OverflowInput}); the compile pipeline
    *   sets them under `appendOnly`. `pastLimit` and `collapse` skip the budget
    *   test too: the caller read the request about to be sent and found that
-   *   it cannot wait. `replacementOf` maps a landed result to what the window
-   *   now opens with in place of the compressed messages, for `onCompress`
-   *   (`CompressionDetails.replacement`); under `appendOnly` the events are
-   *   left out of what `onCompress` is told was compressed.
+   *   it cannot wait. `pastLimit` also goes through an open circuit breaker; a
+   *   `collapse` the model asked for (`force`) does not. `replacementOf` maps
+   *   a landed result to what the window now opens with in place of the
+   *   compressed messages, for `onCompress` (`CompressionDetails.replacement`);
+   *   under `appendOnly` the events are left out of what `onCompress` is told
+   *   was compressed.
    */
   public async overflow(
     history: Message[],
@@ -920,9 +924,12 @@ export class Janitor {
     // replaces. Asked before the circuit breaker, as it was before 4.2 — the
     // breaker is there to stop a broken model being hammered, not to hold back
     // a result that already succeeded — so past an open breaker, nothing but
-    // that result may act (`pendingOnly`).
+    // that result may act (`pendingOnly`). Nor does it hold back a request past
+    // the raw context window (`pastLimit`): that one can't go out as it is, and
+    // another attempt beats a certain rejection.
     const pendingSwap = history.length > 0 && this._strategy.pending?.() === true;
-    const breakerOpen = this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES;
+    const breakerOpen =
+      !pastLimit && this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES;
 
     // Circuit breaker: bail out if compression is consistently failing.
     if (!pendingSwap && breakerOpen) {

@@ -1663,6 +1663,63 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
   });
 });
 
+describe('appendOnly overflow: past the raw window an open circuit breaker holds nothing back', () => {
+  /** A chef whose breaker is open, as after three compressions that failed in a row. */
+  const opened = () => {
+    const made = chefWith();
+    const fresh = made.chef.snapshot();
+    made.chef.restore({
+      ...fresh,
+      modules: {
+        ...fresh.modules,
+        janitor: { ...fresh.modules.janitor, consecutiveFailures: 3 },
+      },
+    });
+    return made;
+  };
+  const steps: Message[][] = [[user('q1')]];
+  for (let i = 1; i <= 5; i++) {
+    steps.push([...steps[i - 1], call(`t${i}`, `SIG_C${i}`), result(`t${i}`, `r${i}`)]);
+  }
+
+  it('compacts a request past it at a turn boundary', async () => {
+    const { chef, compressionModel } = opened();
+
+    // asked(4) is over the trigger only: the breaker holds. asked(6) is past the raw window.
+    const payloads = await converse(chef, [asked(1), asked(4), asked(6)]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[1].messages).toHaveLength(7);
+    expect(payloads[2].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q6')]);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+  });
+
+  it('collapses a tool turn past it', async () => {
+    const { chef, compressionModel } = opened();
+
+    const payloads = await converse(chef, steps);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[5].messages).toEqual([text('user', SUMMARY(1))]);
+  });
+
+  it('still drops a new window the model asks for in a tool turn that fits', async () => {
+    const asking = [
+      ...asked(2),
+      call('n1', 'SIG_N', 'new_context'),
+      result('n1', 'Starting a new context window.'),
+    ];
+    const { chef, compressionModel } = opened();
+    await converse(chef, [asked(1), asked(2)]);
+
+    chef.requestNewContext();
+    const [kept] = await converse(chef, [asking]);
+
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(kept.messages).toHaveLength(5);
+  });
+});
+
 describe('appendOnly overflow: a history resumed from a compaction block', () => {
   it.each([
     'openai',
