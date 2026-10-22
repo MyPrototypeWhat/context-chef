@@ -2,370 +2,66 @@
   {
     "payload": {
       "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
+        { "content": "You are a careful agent.", "role": "system" },
+        { "content": "question 1", "role": "user" },
         {
           "content": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
           "role": "system"
         }
       ]
     },
-    "prefix": {
-      "stable": 0
-    }
+    "prefix": { "stable": 0 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 2
-    }
+    "from": 3,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 1\"}", "name": "search" },
+            "id": "call_1",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 1", "role": "tool", "tool_call_id": "call_1" },
+      {
+        "content": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
+        "role": "system"
+      }
+    ],
+    "prefix": { "stable": 2 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
-          "role": "system"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 4
-    }
+    "from": 6,
+    "messages": [
+      { "content": "answer 1", "role": "assistant" },
+      { "content": "question 2", "role": "user" },
+      {
+        "content": "<skill_instructions rev=\"3\" withdrawn=\"true\">No skill is active any more: the skill instructions given earlier no longer apply.</skill_instructions>",
+        "role": "system"
+      }
+    ],
+    "prefix": { "stable": 5 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 2\"}",
-                "name": "search"
-              },
-              "id": "call_2",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 2",
-          "role": "tool",
-          "tool_call_id": "call_2"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 7
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 2\"}",
-                "name": "search"
-              },
-              "id": "call_2",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 2",
-          "role": "tool",
-          "tool_call_id": "call_2"
-        },
-        {
-          "content": "answer 2",
-          "role": "assistant"
-        },
-        {
-          "content": "question 3",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"3\" withdrawn=\"true\">No skill is active any more: the skill instructions given earlier no longer apply.</skill_instructions>",
-          "role": "system"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 9
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 2\"}",
-                "name": "search"
-              },
-              "id": "call_2",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 2",
-          "role": "tool",
-          "tool_call_id": "call_2"
-        },
-        {
-          "content": "answer 2",
-          "role": "assistant"
-        },
-        {
-          "content": "question 3",
-          "role": "user"
-        },
-        {
-          "content": "<skill_instructions rev=\"3\" withdrawn=\"true\">No skill is active any more: the skill instructions given earlier no longer apply.</skill_instructions>",
-          "role": "system"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 3\"}",
-                "name": "search"
-              },
-              "id": "call_3",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 3",
-          "role": "tool",
-          "tool_call_id": "call_3"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 12
-    }
+    "from": 9,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 2\"}", "name": "search" },
+            "id": "call_2",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 2", "role": "tool", "tool_call_id": "call_2" }
+    ],
+    "prefix": { "stable": 8 }
   }
 ]

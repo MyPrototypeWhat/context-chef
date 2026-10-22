@@ -1,570 +1,91 @@
 [
   {
     "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "question 1"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
+      "messages": [{ "parts": [{ "text": "question 1" }], "role": "user" }],
+      "systemInstruction": { "parts": [{ "text": "You are a careful agent." }] }
     },
-    "prefix": {
-      "stable": 0
-    }
+    "prefix": { "stable": 0 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "question 1"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 1"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_1",
-                "response": {
-                  "result": "found 1"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "stable": 1
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "question 1"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 1"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_1",
-                "response": {
-                  "result": "found 1"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "text": "answer 1"
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "text": "question 2"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "stable": 3
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "question 1"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 1"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_1",
-                "response": {
-                  "result": "found 1"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "text": "answer 1"
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "text": "question 2"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 2"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_2",
-                "response": {
-                  "result": "found 2"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "stable": 5
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
-            },
-            {
-              "text": "question 3"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "break": {
-        "at": 0,
-        "reason": "compaction",
-        "signed": false,
-        "strippedThinking": 0
+    "from": 1,
+    "messages": [
+      {
+        "parts": [{ "functionCall": { "args": { "q": "topic 1" }, "name": "search" } }],
+        "role": "model"
       },
-      "stable": 0
-    }
+      {
+        "parts": [
+          { "functionResponse": { "name": "call_1", "response": { "result": "found 1" } } }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 1 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
-            },
-            {
-              "text": "question 3"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 3"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_3",
-                "response": {
-                  "result": "found 3"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "stable": 2
-    }
+    "from": 3,
+    "messages": [
+      { "parts": [{ "text": "answer 1" }], "role": "model" },
+      { "parts": [{ "text": "question 2" }], "role": "user" }
+    ],
+    "prefix": { "stable": 3 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
-            },
-            {
-              "text": "question 3"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 3"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_3",
-                "response": {
-                  "result": "found 3"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "text": "answer 3"
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "text": "question 4"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "stable": 4
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
-            },
-            {
-              "text": "question 3"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 3"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_3",
-                "response": {
-                  "result": "found 3"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "text": "answer 3"
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "text": "question 4"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 4"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_4",
-                "response": {
-                  "result": "found 4"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "stable": 6
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 2\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
-            },
-            {
-              "text": "question 5"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
-        "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
-      }
-    },
-    "prefix": {
-      "break": {
-        "at": 0,
-        "reason": "compaction",
-        "signed": false,
-        "strippedThinking": 0
+    "from": 5,
+    "messages": [
+      {
+        "parts": [{ "functionCall": { "args": { "q": "topic 2" }, "name": "search" } }],
+        "role": "model"
       },
+      {
+        "parts": [
+          { "functionResponse": { "name": "call_2", "response": { "result": "found 2" } } }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 5 }
+  },
+  {
+    "from": 0,
+    "messages": [
+      {
+        "parts": [
+          {
+            "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
+          },
+          { "text": "question 3" }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "compaction", "signed": false, "strippedThinking": 0 },
       "stable": 0
     }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "parts": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 2\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
-            },
-            {
-              "text": "question 5"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "parts": [
-            {
-              "functionCall": {
-                "args": {
-                  "q": "topic 5"
-                },
-                "name": "search"
-              }
-            }
-          ],
-          "role": "model"
-        },
-        {
-          "parts": [
-            {
-              "functionResponse": {
-                "name": "call_5",
-                "response": {
-                  "result": "found 5"
-                }
-              }
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "systemInstruction": {
+    "from": 1,
+    "messages": [
+      {
+        "parts": [{ "functionCall": { "args": { "q": "topic 3" }, "name": "search" } }],
+        "role": "model"
+      },
+      {
         "parts": [
-          {
-            "text": "You are a careful agent."
-          }
-        ]
+          { "functionResponse": { "name": "call_3", "response": { "result": "found 3" } } }
+        ],
+        "role": "user"
       }
-    },
-    "prefix": {
-      "stable": 2
-    }
+    ],
+    "prefix": { "stable": 2 }
+  },
+  {
+    "from": 3,
+    "messages": [
+      { "parts": [{ "text": "answer 3" }], "role": "model" },
+      { "parts": [{ "text": "question 4" }], "role": "user" }
+    ],
+    "prefix": { "stable": 4 }
   }
 ]

@@ -2,15 +2,7 @@
   {
     "payload": {
       "messages": [
-        {
-          "content": [
-            {
-              "text": "question 1",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
+        { "content": [{ "text": "question 1", "type": "text" }], "role": "user" },
         {
           "content": [
             {
@@ -21,410 +13,104 @@
           "role": "user"
         }
       ],
-      "system": [
-        {
-          "text": "You are a careful agent.",
-          "type": "text"
-        }
-      ]
+      "system": [{ "text": "You are a careful agent.", "type": "text" }]
     },
-    "prefix": {
-      "stable": 0
-    }
+    "prefix": { "stable": 0 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": [
-            {
-              "text": "question 1",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_CALL_1",
-              "thinking": "Look up 1.",
-              "type": "thinking"
-            },
-            {
-              "text": "",
-              "type": "text"
-            },
-            {
-              "id": "call_1",
-              "input": {
-                "q": "topic 1"
-              },
-              "name": "search",
-              "type": "tool_use"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "content": "found 1",
-              "tool_use_id": "call_1",
-              "type": "tool_result"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "system": [
-        {
-          "text": "You are a careful agent.",
-          "type": "text"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 2
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": [
-            {
-              "text": "question 1",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_CALL_1",
-              "thinking": "Look up 1.",
-              "type": "thinking"
-            },
-            {
-              "text": "",
-              "type": "text"
-            },
-            {
-              "id": "call_1",
-              "input": {
-                "q": "topic 1"
-              },
-              "name": "search",
-              "type": "tool_use"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "content": "found 1",
-              "tool_use_id": "call_1",
-              "type": "tool_result"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_1",
-              "thinking": "Answer 1 from what was found.",
-              "type": "thinking"
-            },
-            {
-              "text": "answer 1",
-              "type": "text"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "text": "question 2",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "system": [
-        {
-          "text": "You are a careful agent.",
-          "type": "text"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 4
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": [
-            {
-              "text": "question 1",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_CALL_1",
-              "thinking": "Look up 1.",
-              "type": "thinking"
-            },
-            {
-              "text": "",
-              "type": "text"
-            },
-            {
-              "id": "call_1",
-              "input": {
-                "q": "topic 1"
-              },
-              "name": "search",
-              "type": "tool_use"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "content": "found 1",
-              "tool_use_id": "call_1",
-              "type": "tool_result"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_1",
-              "thinking": "Answer 1 from what was found.",
-              "type": "thinking"
-            },
-            {
-              "text": "answer 1",
-              "type": "text"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "text": "question 2",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_CALL_2",
-              "thinking": "Look up 2.",
-              "type": "thinking"
-            },
-            {
-              "text": "",
-              "type": "text"
-            },
-            {
-              "id": "call_2",
-              "input": {
-                "q": "topic 2"
-              },
-              "name": "search",
-              "type": "tool_use"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "content": "found 2",
-              "tool_use_id": "call_2",
-              "type": "tool_result"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "system": [
-        {
-          "text": "You are a careful agent.",
-          "type": "text"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 6
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "question 3",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "system": [
-        {
-          "text": "You are a careful agent.",
-          "type": "text"
-        }
-      ]
-    },
-    "prefix": {
-      "break": {
-        "at": 0,
-        "reason": "compaction",
-        "signed": false,
-        "strippedThinking": 0
+    "from": 2,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_1", "thinking": "Look up 1.", "type": "thinking" },
+          { "text": "", "type": "text" },
+          { "id": "call_1", "input": { "q": "topic 1" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
       },
+      {
+        "content": [{ "content": "found 1", "tool_use_id": "call_1", "type": "tool_result" }],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 2 }
+  },
+  {
+    "from": 4,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_1", "thinking": "Answer 1 from what was found.", "type": "thinking" },
+          { "text": "answer 1", "type": "text" }
+        ],
+        "role": "assistant"
+      },
+      { "content": [{ "text": "question 2", "type": "text" }], "role": "user" }
+    ],
+    "prefix": { "stable": 4 }
+  },
+  {
+    "from": 6,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_2", "thinking": "Look up 2.", "type": "thinking" },
+          { "text": "", "type": "text" },
+          { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 2", "tool_use_id": "call_2", "type": "tool_result" }],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 6 }
+  },
+  {
+    "from": 0,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      { "content": [{ "text": "question 3", "type": "text" }], "role": "user" },
+      {
+        "content": [
+          {
+            "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "compaction", "signed": false, "strippedThinking": 0 },
       "stable": 0
     }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": [
-            {
-              "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "question 3",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
-              "type": "text"
-            }
-          ],
-          "role": "user"
-        },
-        {
-          "content": [
-            {
-              "signature": "SIG_CALL_3",
-              "thinking": "Look up 3.",
-              "type": "thinking"
-            },
-            {
-              "text": "",
-              "type": "text"
-            },
-            {
-              "id": "call_3",
-              "input": {
-                "q": "topic 3"
-              },
-              "name": "search",
-              "type": "tool_use"
-            }
-          ],
-          "role": "assistant"
-        },
-        {
-          "content": [
-            {
-              "content": "found 3",
-              "tool_use_id": "call_3",
-              "type": "tool_result"
-            }
-          ],
-          "role": "user"
-        }
-      ],
-      "system": [
-        {
-          "text": "You are a careful agent.",
-          "type": "text"
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 3
-    }
+    "from": 3,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_3", "thinking": "Look up 3.", "type": "thinking" },
+          { "text": "", "type": "text" },
+          { "id": "call_3", "input": { "q": "topic 3" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 3", "tool_use_id": "call_3", "type": "tool_result" }],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 3 }
   }
 ]

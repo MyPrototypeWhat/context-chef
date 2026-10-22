@@ -2,305 +2,54 @@
   {
     "payload": {
       "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        }
+        { "content": "You are a careful agent.", "role": "system" },
+        { "content": "question 1", "role": "user" }
       ],
       "tools": [
         {
           "description": "Search the knowledge base.",
           "name": "search",
           "parameters": {
-            "properties": {
-              "q": {
-                "type": "string"
-              }
-            },
+            "properties": { "q": { "type": "string" } },
             "required": ["q"],
             "type": "object"
           }
         }
       ]
     },
-    "prefix": {
-      "stable": 0
-    }
+    "prefix": { "stable": 0 }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        }
-      ],
-      "tools": [
-        {
-          "description": "Search the knowledge base.",
-          "name": "search",
-          "parameters": {
-            "properties": {
-              "q": {
-                "type": "string"
-              }
-            },
-            "required": ["q"],
-            "type": "object"
+    "from": 0,
+    "messages": [
+      { "content": "You are a careful agent. Be brief.", "role": "system" },
+      { "content": "question 1", "role": "user" },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 1\"}", "name": "search" },
+            "id": "call_1",
+            "type": "function"
           }
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 1
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent. Be brief.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        }
-      ],
-      "tools": [
-        {
-          "description": "Search the knowledge base.",
-          "name": "search",
-          "parameters": {
-            "properties": {
-              "q": {
-                "type": "string"
-              }
-            },
-            "required": ["q"],
-            "type": "object"
-          }
-        }
-      ]
-    },
-    "prefix": {
-      "break": {
-        "at": 0,
-        "reason": "system",
-        "signed": false,
-        "strippedThinking": 0
+        ]
       },
+      { "content": "found 1", "role": "tool", "tool_call_id": "call_1" }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "system", "signed": false, "strippedThinking": 0 },
       "stable": 0
     }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent. Be brief.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 2\"}",
-                "name": "search"
-              },
-              "id": "call_2",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 2",
-          "role": "tool",
-          "tool_call_id": "call_2"
-        }
-      ],
+    "changed": {
       "tools": [
         {
           "description": "Search the knowledge base.",
           "name": "search",
           "parameters": {
-            "properties": {
-              "q": {
-                "type": "string"
-              }
-            },
-            "required": ["q"],
-            "type": "object"
-          }
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 5
-    }
-  },
-  {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent. Be brief.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 2\"}",
-                "name": "search"
-              },
-              "id": "call_2",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 2",
-          "role": "tool",
-          "tool_call_id": "call_2"
-        },
-        {
-          "content": "answer 2",
-          "role": "assistant"
-        },
-        {
-          "content": "question 3",
-          "role": "user"
-        }
-      ],
-      "tools": [
-        {
-          "description": "Search the knowledge base.",
-          "name": "search",
-          "parameters": {
-            "properties": {
-              "q": {
-                "type": "string"
-              }
-            },
+            "properties": { "q": { "type": "string" } },
             "required": ["q"],
             "type": "object"
           }
@@ -309,143 +58,39 @@
           "description": "Fetch a document by id.",
           "name": "fetch",
           "parameters": {
-            "properties": {
-              "id": {
-                "type": "string"
-              }
-            },
+            "properties": { "id": { "type": "string" } },
             "required": ["id"],
             "type": "object"
           }
         }
       ]
     },
+    "from": 4,
+    "messages": [
+      { "content": "answer 1", "role": "assistant" },
+      { "content": "question 2", "role": "user" }
+    ],
     "prefix": {
-      "break": {
-        "at": 0,
-        "reason": "tools",
-        "signed": false,
-        "strippedThinking": 0
-      },
+      "break": { "at": 0, "reason": "tools", "signed": false, "strippedThinking": 0 },
       "stable": 0
     }
   },
   {
-    "payload": {
-      "messages": [
-        {
-          "content": "You are a careful agent. Be brief.",
-          "role": "system"
-        },
-        {
-          "content": "question 1",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 1\"}",
-                "name": "search"
-              },
-              "id": "call_1",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 1",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        },
-        {
-          "content": "answer 1",
-          "role": "assistant"
-        },
-        {
-          "content": "question 2",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 2\"}",
-                "name": "search"
-              },
-              "id": "call_2",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 2",
-          "role": "tool",
-          "tool_call_id": "call_2"
-        },
-        {
-          "content": "answer 2",
-          "role": "assistant"
-        },
-        {
-          "content": "question 3",
-          "role": "user"
-        },
-        {
-          "content": "",
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "function": {
-                "arguments": "{\"q\":\"topic 3\"}",
-                "name": "search"
-              },
-              "id": "call_3",
-              "type": "function"
-            }
-          ]
-        },
-        {
-          "content": "found 3",
-          "role": "tool",
-          "tool_call_id": "call_3"
-        }
-      ],
-      "tools": [
-        {
-          "description": "Search the knowledge base.",
-          "name": "search",
-          "parameters": {
-            "properties": {
-              "q": {
-                "type": "string"
-              }
-            },
-            "required": ["q"],
-            "type": "object"
+    "from": 6,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 2\"}", "name": "search" },
+            "id": "call_2",
+            "type": "function"
           }
-        },
-        {
-          "description": "Fetch a document by id.",
-          "name": "fetch",
-          "parameters": {
-            "properties": {
-              "id": {
-                "type": "string"
-              }
-            },
-            "required": ["id"],
-            "type": "object"
-          }
-        }
-      ]
-    },
-    "prefix": {
-      "stable": 9
-    }
+        ]
+      },
+      { "content": "found 2", "role": "tool", "tool_call_id": "call_2" }
+    ],
+    "prefix": { "stable": 5 }
   }
 ]

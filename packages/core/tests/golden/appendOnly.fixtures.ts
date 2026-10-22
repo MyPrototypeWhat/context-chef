@@ -97,17 +97,22 @@ const requests = (loop: Message[]): Message[][] =>
     loop.slice(0, 4 * Math.floor(i / 2) + (i % 2 === 0 ? 1 : 3)),
   );
 
-/** The steps of a loop's requests, `before` run ahead of the ones it names (0-based). */
+/**
+ * The steps of a loop's first `compiles` requests (all of them by default),
+ * `before` run ahead of the ones it names (0-based).
+ */
 function steps(
   loop: Message[],
   before: Record<number, (chef: ContextChef) => unknown> = {},
-  settle = false,
+  { settle = false, compiles }: { settle?: boolean; compiles?: number } = {},
 ): AppendOnlyStep[] {
-  return requests(loop).map((history, i) => ({
-    history,
-    ...(before[i] ? { before: before[i] } : {}),
-    ...(settle ? { settle: true as const } : {}),
-  }));
+  return requests(loop)
+    .slice(0, compiles)
+    .map((history, i) => ({
+      history,
+      ...(before[i] ? { before: before[i] } : {}),
+      ...(settle ? { settle: true as const } : {}),
+    }));
 }
 
 const search: ToolDefinition = {
@@ -189,28 +194,36 @@ export const appendOnlySequences: AppendOnlySequence[] = [
       });
       return built;
     },
-    steps: steps(agentLoop(3), {
-      2: (c) => c.setDynamicState(State, { step: 2, file: 'b.ts' }),
-      4: (c) => c.setDynamicState(z.null(), null),
-    }),
+    steps: steps(
+      agentLoop(3),
+      {
+        2: (c) => c.setDynamicState(State, { step: 2, file: 'b.ts' }),
+        3: (c) => c.setDynamicState(z.null(), null),
+      },
+      { compiles: 5 },
+    ),
   },
   {
     // State on the system channel: a positional system message, never the top-level prompt.
     name: 'dynamic-state-system',
     build: () => chef().setDynamicState(State, { step: 1, file: 'a.ts' }, { placement: 'system' }),
-    steps: steps(agentLoop(3), {
+    steps: steps(agentLoop(2), {
       1: (c) => c.setDynamicState(State, { step: 2, file: 'b.ts' }, { placement: 'system' }),
-      4: (c) => c.setDynamicState(z.null(), null, { placement: 'system' }),
+      2: (c) => c.setDynamicState(z.null(), null, { placement: 'system' }),
     }),
   },
   {
     name: 'announcements',
     build: () => chef().announce('tools', 'Tool fetch is available.', { channel: 'system' }),
-    steps: steps(agentLoop(3), {
-      2: (c) => c.announce('docs', 'The docs index was rebuilt.', { channel: 'user_tail' }),
-      3: (c) => c.retractAnnouncement('tools'),
-      5: (c) => c.retractAnnouncement('docs'),
-    }),
+    steps: steps(
+      agentLoop(3),
+      {
+        1: (c) => c.announce('docs', 'The docs index was rebuilt.', { channel: 'user_tail' }),
+        2: (c) => c.retractAnnouncement('tools'),
+        3: (c) => c.retractAnnouncement('docs'),
+      },
+      { compiles: 5 },
+    ),
   },
   {
     // Turn-scoped reminders on Anthropic; the other targets ignore clearAt.
@@ -219,11 +232,15 @@ export const appendOnlySequences: AppendOnlySequence[] = [
       chef({ appendOnly: { clearAt: true } }).announce('tools', 'Tool fetch is available.', {
         channel: 'system',
       }),
-    steps: steps(agentLoop(3), {
-      2: (c) => c.announce('docs', 'The docs index was rebuilt.', { channel: 'user_tail' }),
-      3: (c) => c.retractAnnouncement('tools'),
-      5: (c) => c.retractAnnouncement('docs'),
-    }),
+    steps: steps(
+      agentLoop(3),
+      {
+        1: (c) => c.announce('docs', 'The docs index was rebuilt.', { channel: 'user_tail' }),
+        2: (c) => c.retractAnnouncement('tools'),
+        3: (c) => c.retractAnnouncement('docs'),
+      },
+      { compiles: 5 },
+    ),
   },
   {
     // A snapshot first, then a delta for the host's write and the expiry, never the model's write.
@@ -231,15 +248,15 @@ export const appendOnlySequences: AppendOnlySequence[] = [
     build: async () => {
       const built = chef({ memory: { store: new InMemoryStore() } });
       await built.getMemory().set('language', 'TypeScript');
-      // Swept by the fifth compile: each compile counts one turn.
-      await built.getMemory().set('session', 'abc123', { ttl: 4 });
+      // Swept by the fourth compile: each compile counts one turn.
+      await built.getMemory().set('session', 'abc123', { ttl: 3 });
       return built;
     },
-    steps: steps(agentLoop(3), {
-      2: async (c) => {
+    steps: steps(agentLoop(2), {
+      1: async (c) => {
         await c.getMemory().set('editor', 'Neovim');
       },
-      3: async (c) => {
+      2: async (c) => {
         await c.handleTool({
           name: 'create_memory',
           arguments: JSON.stringify({ key: 'style', value: 'terse' }),
@@ -255,14 +272,14 @@ export const appendOnlySequences: AppendOnlySequence[] = [
         description: 'Research mode',
         instructions: 'Cite every source you use.',
       }),
-    steps: steps(agentLoop(3), {
-      2: (c) =>
+    steps: steps(agentLoop(2), {
+      1: (c) =>
         c.activateSkill({
           name: 'writing',
           description: 'Writing mode',
           instructions: 'Write short paragraphs.',
         }),
-      4: (c) => c.activateSkill(null),
+      2: (c) => c.activateSkill(null),
     }),
   },
   {
@@ -270,18 +287,18 @@ export const appendOnlySequences: AppendOnlySequence[] = [
     name: 'guardrail',
     build: () =>
       chef().withGuardrails({ enforceXML: { outputTag: 'answer' }, placement: 'last_user' }),
-    steps: steps(agentLoop(3), {
-      2: (c) => c.withGuardrails({ enforceXML: { outputTag: 'report' }, placement: 'last_user' }),
-      4: (c) => c.withGuardrails({ enforceXML: { outputTag: 'report' }, placement: 'system' }),
+    steps: steps(agentLoop(2), {
+      1: (c) => c.withGuardrails({ enforceXML: { outputTag: 'report' }, placement: 'last_user' }),
+      2: (c) => c.withGuardrails({ enforceXML: { outputTag: 'report' }, placement: 'system' }),
     }),
   },
   {
     name: 'system-and-tools-checkpoints',
     build: () => chef().registerTools([search]),
-    steps: steps(agentLoop(3), {
-      2: (c) =>
+    steps: steps(agentLoop(2), {
+      1: (c) =>
         c.setSystemPrompt([{ role: 'system', content: 'You are a careful agent. Be brief.' }]),
-      4: (c) => c.registerTools([search, fetchTool]),
+      2: (c) => c.registerTools([search, fetchTool]),
     }),
   },
   {
@@ -308,49 +325,41 @@ export const appendOnlySequences: AppendOnlySequence[] = [
     // question, with the turn that arrived meanwhile.
     name: 'background-landing',
     build: () => overflowing(background(keepLastTurn(summaries())), ROOMY),
-    steps: steps(agentLoop(4), {}, true),
+    steps: steps(agentLoop(4), {}, { settle: true, compiles: 7 }),
   },
   {
     // The model asks for a new window at a question, then again in a tool turn.
     name: 'new-context',
     build: () => overflowing(keepLastTurn(summaries())),
-    steps: steps(agentLoop(3), {
+    steps: steps(agentLoop(2), {
       2: (c) => c.handleTool({ name: 'new_context', arguments: '{}' }),
-      5: (c) => c.handleTool({ name: 'new_context', arguments: '{}' }),
+      3: (c) => c.handleTool({ name: 'new_context', arguments: '{}' }),
     }),
   },
   {
-    // Signed on Anthropic; on OpenAI and Gemini the fallback summarizes. Both at the question.
-    name: 'signed-at-boundary',
-    build: () =>
-      overflowing(
-        onDemandCompaction({ compact: compactor(), fallback: keepLastTurn(summaries()) }),
-        TRIGGER_AT_QUESTION_3,
-      ),
-    steps: steps(agentLoop(3)),
-  },
-  {
-    // Over the trigger at a tool result: signed, it lands there, and the turn keeps its thinking;
-    // and again over the block. The fallback waits for the question.
+    // Over the trigger at a tool result: signed, it lands there, and the turn keeps its thinking.
+    // The fallback waits for the question.
     name: 'signed-mid-tool-turn',
     build: () =>
       overflowing(
         onDemandCompaction({ compact: compactor(), fallback: keepLastTurn(summaries()) }),
       ),
-    steps: steps(agentLoop(3)),
+    steps: steps(agentLoop(3), {}, { compiles: 5 }),
   },
   {
-    // Question 2 is pinned: said again after a signed landing, and again after the next one.
+    // Signed at the third question, where on OpenAI and Gemini the fallback summarizes, and
+    // signed again over the block. Question 2 is pinned: said again after each landing.
     name: 'signed-recompaction-pinned',
     build: () =>
       overflowing(
         onDemandCompaction({ compact: compactor(), fallback: keepLastTurn(summaries()) }),
         TRIGGER_AT_QUESTION_3,
       ),
-    steps: steps(agentLoop(4, [2])),
+    steps: steps(agentLoop(4, [2]), {}, { compiles: 7 }),
   },
   {
     // The job asks for the request its window answered; the turns after it arrive meanwhile.
+    // On OpenAI and Gemini the fallback's job starts at a question and lands at the next.
     name: 'background-signed',
     build: () =>
       overflowing(
@@ -359,7 +368,7 @@ export const appendOnlySequences: AppendOnlySequence[] = [
         ),
         ROOMY,
       ),
-    steps: steps(agentLoop(4), {}, true),
+    steps: steps(agentLoop(4), {}, { settle: true, compiles: 7 }),
   },
   {
     // The second on-demand attempt is no compaction: the summary goes after the block.
@@ -368,7 +377,7 @@ export const appendOnlySequences: AppendOnlySequence[] = [
       overflowing(
         chain(onDemandCompaction({ compact: compactor([2]) }), keepLastTurn(summaries())),
       ),
-    steps: steps(agentLoop(5)),
+    steps: steps(agentLoop(4), {}, { compiles: 7 }),
   },
   {
     // A history resumed from Anthropic opens with the block that session got back.
@@ -381,7 +390,7 @@ export const appendOnlySequences: AppendOnlySequence[] = [
           content: [{ type: 'compaction', content: 'SUMMARY 0', signature: 'SIG_BLOCK_0' }],
         },
       ] as unknown as MessageParam[]);
-      return requests(agentLoop(3)).map((history) => ({ history: [...resumed, ...history] }));
+      return requests(agentLoop(2)).map((history) => ({ history: [...resumed, ...history] }));
     })(),
   },
 ];
