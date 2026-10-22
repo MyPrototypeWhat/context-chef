@@ -94,7 +94,8 @@ export type PrefixBreakReason = 'compaction' | 'history' | 'system' | 'tools' | 
 
 /**
  * The top-level system prompt and tools of a sent payload. Plain data, as on
- * the wire: the ledger keeps a JSON copy, so functions and `undefined` drop out.
+ * the wire: the ledger keeps the JSON copy `plainSent()` takes, so functions
+ * and `undefined` drop out.
  */
 export interface PrefixSent {
   readonly system?: unknown;

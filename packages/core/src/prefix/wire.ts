@@ -31,11 +31,6 @@ export function plainSent(sent: PrefixSent): PrefixSent {
   return { system: jsonCopy(sent.system), tools: jsonCopy(sent.tools) };
 }
 
-/** Whether `value` is what `commit()` kept as `kept`, compared as the JSON it keeps. */
-export function sameAsKept(value: unknown, kept: unknown): boolean {
-  return sameOnWire(jsonCopy(value), kept);
-}
-
 /**
  * Digest of the fields of a message that reach some provider's wire: two
  * messages with the same digest are the same message to the model. Anything

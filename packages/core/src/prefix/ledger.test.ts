@@ -11,6 +11,7 @@ import { Assembler } from '../modules/assembler';
 import type { Message } from '../types';
 import { PrefixLedger } from './ledger';
 import type { PrefixCandidate, PrefixLedgerSnapshot, PrefixSent } from './types';
+import { plainSent } from './wire';
 
 const user = (content: string): Message => ({ role: 'user', content });
 const assistant = (content: string): Message => ({ role: 'assistant', content });
@@ -1426,13 +1427,13 @@ describe('PrefixLedger — snapshot', () => {
     expect(restored.reconcile(edited).break).toMatchObject({ reason: 'history' });
   });
 
-  it('keeps what was sent as plain JSON', () => {
+  it('keeps what was sent as the plain JSON plainSent() copied', () => {
     const ledger = new PrefixLedger();
     const history = [user('q1')];
     ledger.reconcile(history);
     const tools = [{ name: 'search', execute: () => 'result' }];
 
-    expect(() => ledger.commit(history, { system: 'S', tools })).not.toThrow();
+    ledger.commit(history, plainSent({ system: 'S', tools }));
     expect(ledger.lastSent).toEqual({ system: 'S', tools: [{ name: 'search' }] });
     expect(JSON.parse(JSON.stringify(ledger.snapshot())).lastSent).toEqual(ledger.lastSent);
   });

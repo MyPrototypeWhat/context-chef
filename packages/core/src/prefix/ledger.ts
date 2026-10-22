@@ -11,7 +11,7 @@ import type {
   PrefixReconcile,
   PrefixSent,
 } from './types';
-import { plainSent, sameAsKept, wireDigest } from './wire';
+import { sameOnWire, wireDigest } from './wire';
 
 type Range = [from: number, until: number];
 
@@ -372,13 +372,14 @@ export class PrefixLedger {
    * checked first — is a `system` or `tools` checkpoint: every thinking block
    * after the head was signed over the old ones, so all of them are stripped,
    * while the entries stay, since what they say still holds. Before the first
-   * commit there is nothing to compare with.
+   * commit there is nothing to compare with. `sent` is the compile's
+   * `plainSent()` copy, the one it then commits.
    */
   reconcileSent(sent: PrefixSent): PrefixBreak | undefined {
     const last = this._lastSent;
     if (!last) return undefined;
-    if (!sameAsKept(sent.system, last.system)) return this.checkpoint('system', this.cut);
-    if (!sameAsKept(sent.tools, last.tools)) return this.checkpoint('tools', this.cut);
+    if (!sameOnWire(sent.system, last.system)) return this.checkpoint('system', this.cut);
+    if (!sameOnWire(sent.tools, last.tools)) return this.checkpoint('tools', this.cut);
     return undefined;
   }
 
@@ -577,14 +578,14 @@ export class PrefixLedger {
 
   /**
    * Records what a compile used: digests of `history` from `head.cut` on, and
-   * `sent`. The last usage report describes no window once this one changed
-   * a message it covered.
+   * `sent`, its `plainSent()` copy, kept as it is. The last usage report
+   * describes no window once this one changed a message it covered.
    */
   commit(history: readonly Message[], sent?: PrefixSent): void {
     this._reported = this.reportCovers();
     this.history = [...history];
     this.seen = history.slice(this.cut).map((message) => this.digestOf(message));
-    if (sent) this._lastSent = plainSent(sent);
+    if (sent) this._lastSent = sent;
     this.pending = undefined;
     this.digests.clear();
   }
