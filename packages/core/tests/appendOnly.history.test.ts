@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  anthropicCompactionMessage,
   type ChefConfig,
   type ChefEvents,
   type ChefSnapshot,
@@ -427,6 +428,19 @@ describe('appendOnly on, a ledger that never saw the conversation', () => {
     await compileAt(cleared, turn1);
 
     expect(breaks).toEqual([[], []]);
+  });
+
+  // Exposed by the appendOnly golden (resumed-from-anthropic), not fixed in P9: Ruling I reads
+  // the compaction block a resumed history opens with as a reply this ledger never saw, and
+  // reports a `ledger` checkpoint that strips nothing. A reply after the block still would.
+  it.skip('starts one resumed from a compaction block with nothing to report', async () => {
+    const chef = chefWith();
+    const breaks = breaksOf(chef);
+    const block = { type: 'compaction' as const, content: 'SUMMARY 0', signature: 'SIG_BLOCK_0' };
+
+    await compileAt(chef, [anthropicCompactionMessage(block), ...turn1]);
+
+    expect(breaks).toEqual([]);
   });
 });
 
