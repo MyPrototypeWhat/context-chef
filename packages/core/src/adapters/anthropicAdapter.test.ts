@@ -1066,8 +1066,8 @@ describe('fromAnthropic → AnthropicAdapter verbatim replay', () => {
   it('does not let a nested payload edit leak back either', () => {
     const { history } = fromAnthropic(toolTurn);
     const first = new AnthropicAdapter().compile(history);
-    const [, call] = first.messages[1].content as Array<{ input?: { city: string } }>;
-    call.input!.city = 'REDACTED';
+    const [, call] = first.messages[1].content as Array<{ input: { city: string } }>;
+    call.input.city = 'REDACTED';
     (getFirstBlock(first, 2) as { content: string }).content = 'edited';
 
     const second = new AnthropicAdapter().compile(history);
