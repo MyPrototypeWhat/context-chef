@@ -1418,7 +1418,7 @@ chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
 - dynamic state、announcement、skill 指令、memory、guardrail 和 handoff 提醒都变成事件：在它们变化的那一轮之后追加一次，之后原样留在那里。chef 从不改写你的 history。
 - 压缩只落地一次，没签名的压缩会等到 user 轮边界。`onDemandCompaction({ compact, fallback })` 请 Anthropic 做一次由它签名的压缩，后面轮次的 thinking 得以保留。
 - 任何改写已发送内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，通过 `prefix:break` 和 `meta.prefix` 报告。在 Anthropic 上，失效的 thinking 不会再放进请求。
-- 每个请求新建一个 chef 时，必须在每次 compile 之后保存 `snapshot()`，在请求的 tool call 执行完后再保存一次，并在下一个请求里恢复，否则每个请求一开始都是一次 `ledger` 检查点。memory 放在共享存储里时，恢复时跳过 memory 部分（恢复 memory 会把存储回滚）：`chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })`，然后再设置 system prompt、tools 和状态，因为 `restore()` 会用保存的值替换它们。
+- 每个请求新建一个 chef 时，必须在每次 compile 之后保存 `snapshot()`，在请求的 tool call 执行完后再保存一次，并在下一个请求里恢复，否则每个请求一开始都是一次 `ledger` 检查点。memory 放在共享存储里时，恢复时跳过 memory 部分（恢复 memory 会把存储回滚）：`chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })`。无论哪种情况，都要在 `restore()` 之后再设置 system prompt、tools 和状态，因为它会用保存的值替换它们。
 
 默认关闭，关闭时 `appendOnly` 不改变任何行为。AI SDK 和 TanStack AI 的 middleware 同样支持 `appendOnly`。完整指南：[Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only)。
 

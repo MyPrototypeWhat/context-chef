@@ -187,9 +187,9 @@ export interface ChefSnapshot {
    * after each compile and again after the request's tool calls, and restores
    * it on the next request, or every request starts a new ledger. With memory
    * in a shared store, restore it with `modules.memory` set to `null`, so the
-   * store is not rolled back, then set the system prompt, tools and state,
-   * which `restore()` replaces with the saved ones. A snapshot without it
-   * restores as an empty ledger.
+   * store is not rolled back. Either way, set the system prompt, tools and
+   * state after `restore()`, which replaces them with the saved ones. A
+   * snapshot without it restores as an empty ledger.
    */
   readonly prefixLedger?: PrefixLedgerSnapshot;
   /**
@@ -439,10 +439,10 @@ export interface ChefConfig {
    *
    * `true` is `{}`. Off by default, and off it changes nothing. A chef that
    * does not outlive a request saves its snapshot after each compile and again
-   * after the request's tool calls, and restores it on the next request —
-   * with memory in a shared store, with `modules.memory` set to `null`, so the
-   * store is not rolled back — and only then sets the system prompt, tools and
-   * state, which `restore()` replaces with the saved ones.
+   * after the request's tool calls, and restores it on the next request, with
+   * `modules.memory` set to `null` when memory lives in a shared store, so the
+   * store is not rolled back. Either way, it sets the system prompt, tools and
+   * state after `restore()`, which replaces them with the saved ones.
    */
   appendOnly?: boolean | AppendOnlyConfig;
   /**

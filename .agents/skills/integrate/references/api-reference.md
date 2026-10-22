@@ -110,8 +110,9 @@ interface ChefConfig {
    *  'instruction' on targets without native prefill. A chef created per request must
    *  save snapshot() after each compile and after the request's tool calls, and restore
    *  it on the next request, or every request is a `ledger` checkpoint. With memory in a
-   *  shared store, restore { ...saved, modules: { ...saved.modules, memory: null } }, then
-   *  set the system prompt, tools and state (restore() replaces them with the saved ones). */
+   *  shared store, restore { ...saved, modules: { ...saved.modules, memory: null } }.
+   *  Either way, set the system prompt, tools and state after restore(), which replaces
+   *  them with the saved ones. */
   appendOnly?: boolean | { clearAt?: boolean };   // AppendOnlyConfig; clearAt: Anthropic turn-scoped reminders
 
   defaultTarget?: TargetProvider | ITargetAdapter;   // options.target → this → 'openai'
