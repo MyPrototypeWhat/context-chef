@@ -105,13 +105,16 @@ async function overflowWindow(
   forced: boolean,
 ): Promise<OverflowResult | null> {
   const wire = wireOf(ctx, prefix);
-  const signed = host.signedOverflow && wire !== undefined;
-  const timing = compactionTiming(prefix, host, ctx.history, forced, signed);
+  const midTurn = inToolTurn(prefix);
+  // A signed strategy handed a wire waits for no tool turn to end.
+  const waits = midTurn && !(host.signedOverflow && wire !== undefined);
+  const timing = compactionTiming(prefix, host, ctx.history, forced, waits);
   if (timing === 'wait') return null;
   const result = await host.overflow(ctx.history, {
     signal: ctx.signal,
     force: forced,
     appendOnly: true,
+    midToolTurn: midTurn,
     pastLimit: timing === 'past-limit',
     collapse: timing === 'collapse',
     wire,
@@ -131,24 +134,24 @@ async function overflowWindow(
  * There, once the request about to be sent is past the raw context window
  * (`'past-limit'`), nothing may wait for a later compile, a background job
  * included, and the runner's own verdict, which may read only an earlier
- * report, does not decide. While a tool turn is in progress
+ * report, does not decide. While a tool turn is in progress (`midTurn`)
  * it waits for the turn to end: the turns it keeps lose their thinking, and
  * the one in progress still needs it. It cannot wait once the model asked
  * for a new window or the request is past the raw context window; then it
  * collapses the whole window.
  *
- * A `signed` strategy, handed a wire, has nothing to wait for: the turns it
+ * A signed strategy, handed a wire, has nothing to wait for: the turns it
  * keeps keep their thinking, the one in progress included, so it lands in a
- * tool turn as it does between turns.
+ * tool turn as it does between turns, and is told it is in one
+ * (`midToolTurn`) for a fallback it may run instead.
  */
 function compactionTiming(
   prefix: PrefixCompile,
   host: PipelineHost,
   window: Message[],
   forced: boolean,
-  signed: boolean,
+  midTurn: boolean,
 ): 'now' | 'past-limit' | 'wait' | 'collapse' {
-  const midTurn = !signed && inToolTurn(prefix);
   if (midTurn && forced) return 'collapse';
   const past = pastLimit(prefix, host, window);
   if (!midTurn) return past ? 'past-limit' : 'now';

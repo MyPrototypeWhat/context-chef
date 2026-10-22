@@ -857,10 +857,11 @@ export class Janitor {
    *   post-compression suppression) and applies the strategy regardless — the
    *   `new_context` path. The circuit breaker still applies: a strategy that
    *   just failed three times in a row does not get hammered on request.
-   *   `appendOnly`, `pastLimit`, `collapse` and `wire` go to the strategy as
-   *   they are ({@link OverflowInput}); the compile pipeline sets them under
-   *   `appendOnly`. `pastLimit` and `collapse` skip the budget test too: the
-   *   caller read the request about to be sent and found that it cannot wait.
+   *   `appendOnly`, `midToolTurn`, `pastLimit`, `collapse` and `wire` go to
+   *   the strategy as they are ({@link OverflowInput}); the compile pipeline
+   *   sets them under `appendOnly`. `pastLimit` and `collapse` skip the budget
+   *   test too: the caller read the request about to be sent and found that
+   *   it cannot wait.
    */
   public async overflow(
     history: Message[],
@@ -868,6 +869,7 @@ export class Janitor {
       signal?: AbortSignal;
       force?: boolean;
       appendOnly?: boolean;
+      midToolTurn?: boolean;
       pastLimit?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;
@@ -877,6 +879,7 @@ export class Janitor {
       signal,
       force = false,
       appendOnly = false,
+      midToolTurn = false,
       pastLimit = false,
       collapse = false,
       wire,
@@ -929,6 +932,7 @@ export class Janitor {
       window: this._window,
       forced: force,
       ...(appendOnly ? { appendOnly: true as const } : {}),
+      ...(midToolTurn ? { midToolTurn: true as const } : {}),
       ...(pastLimit ? { pastLimit: true as const } : {}),
       ...(collapse ? { collapse: true as const } : {}),
       ...(wire ? { wire } : {}),

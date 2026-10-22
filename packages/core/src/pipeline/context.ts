@@ -262,7 +262,8 @@ export interface PipelineHost {
   /**
    * One overflow pass through the Janitor runner (client-side overflow).
    * `force` applies the strategy whatever the budget says; `appendOnly`,
-   * `pastLimit`, `collapse` and `wire` are handed to it (`OverflowInput`).
+   * `midToolTurn`, `pastLimit`, `collapse` and `wire` are handed to it
+   * (`OverflowInput`).
    */
   overflow(
     history: Message[],
@@ -270,6 +271,7 @@ export interface PipelineHost {
       signal?: AbortSignal;
       force?: boolean;
       appendOnly?: boolean;
+      midToolTurn?: boolean;
       pastLimit?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;

@@ -116,6 +116,15 @@ export interface OverflowInput {
    */
   pastLimit?: true;
   /**
+   * `appendOnly`: a tool turn is in progress — the history ends in tool
+   * results or tool calls still waiting for theirs — so this compile is not
+   * at a user-turn boundary. An unsigned result would strip the thinking the
+   * turn still needs: a strategy is applied here only to collapse the window
+   * (`collapse`), or when it is signed and handed a `wire`, and then a
+   * fallback it runs instead must respect the same rule.
+   */
+  midToolTurn?: true;
+  /**
    * `appendOnly`: the window cannot wait for the turn in progress to end — a
    * tool turn is still going, and the model asked for a new window or the
    * window outgrew the raw context window. Keep no turn: summarize every one,

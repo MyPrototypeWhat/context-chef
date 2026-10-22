@@ -61,9 +61,13 @@ export interface OnDemandCompactionOptions {
   /** Replace the provider's default summarization prompt; at most 16,384 characters. */
   instructions?: string;
   /**
-   * What runs where nothing was sent that a compaction could be signed over:
-   * another target, or a chef without `appendOnly` or before its first
-   * request. Without one the window is left alone there.
+   * The unsigned strategy that runs where no compaction can be signed —
+   * another target, a chef without `appendOnly` or before its first request,
+   * a window rewritten after it was sent, too few turns to keep — and, past
+   * the raw context window, where a signed one failed. It runs only where an
+   * unsigned compaction may: between turns, or collapsing a tool turn that
+   * cannot wait. Without one the window is left alone, and past the raw
+   * context window that counts as a failed compression. Give one.
    */
   fallback?: OverflowStrategy;
 }
@@ -95,6 +99,20 @@ function cutPoints(history: readonly Message[]): number[] {
   return points;
 }
 
+/**
+ * `input` for an unsigned strategy, where one may land on this compile:
+ * between turns, or collapsing a tool turn — past the raw window, or when the
+ * model asked for a new window — as the overflow phase hands an unsigned
+ * strategy that turn. `null` in a tool turn otherwise: it waits for the turn
+ * to end.
+ */
+function unsignedInput(input: OverflowInput): OverflowInput | null {
+  if (!input.midToolTurn || input.collapse) return input;
+  if (!input.pastLimit && !input.forced) return null;
+  const { pastLimit: _pastLimit, ...rest } = input;
+  return { ...rest, collapse: true };
+}
+
 /** The one signed compaction block of a response that stopped for it. */
 function compactionBlock(content: readonly unknown[]): AnthropicCompactionBlock | undefined {
   const blocks = content.filter((block): block is AnthropicCompactionBlock => {
@@ -119,7 +137,9 @@ function compactionBlock(content: readonly unknown[]): AnthropicCompactionBlock 
  *
  * It needs `appendOnly` on the Anthropic target, from the second request on:
  * the overflow phase then hands it the window as it was sent (`wire`).
- * Anywhere else `fallback` runs.
+ * Where it cannot sign, `fallback` runs instead, but only where an unsigned
+ * compaction may: between turns, or collapsing a tool turn past the raw
+ * context window. In a tool turn below it, it waits for the next compile.
  *
  * - The block goes first in every later request, as is; the next compaction
  *   summarizes it along with the turns after it.
@@ -127,7 +147,8 @@ function compactionBlock(content: readonly unknown[]): AnthropicCompactionBlock 
  *   between the block and the turns it keeps. The chef says them again as
  *   an event at the end of the window.
  * - A response that is not a compaction counts toward the circuit breaker
- *   and leaves the window alone.
+ *   and leaves the window alone — past the raw context window, `fallback`
+ *   still runs, since the request cannot go out as it is.
  * - System messages, images and documents in the summarized span are gone
  *   from the window; the chef's own events among them are stated again.
  * - It does not combine with `server()`: a request with `context_management`
@@ -171,21 +192,41 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
 
     async apply(input: OverflowInput): Promise<OverflowResult> {
       const { history, wire } = input;
+      // Past the raw window the request cannot go out as it is.
+      const past = input.pastLimit === true || input.collapse === true;
+
+      // No request can be signed: the fallback runs where an unsigned compaction
+      // may. Without one, a window past the raw window is a failed compression.
+      const unsignable = (reason: string): Promise<OverflowResult> | OverflowResult => {
+        const where = unsignedInput(input);
+        if (fallback && where) return fallback.apply(where);
+        if (fallback) {
+          return unchanged(input, name, `${reason}; the fallback waits for the tool turn to end`);
+        }
+        if (past) {
+          runner.fail(`on-demand compaction: ${reason}, and no fallback strategy is configured`);
+        }
+        return unchanged(input, name, `${reason}, and no fallback strategy is configured`);
+      };
+      // The provider returned no block: a failed compression, which past the raw
+      // window still leaves the fallback its turn.
+      const failed = (reason: string, ...details: unknown[]) => {
+        runner.fail(reason, ...details);
+        const where = past ? unsignedInput(input) : null;
+        if (fallback && where) return fallback.apply(where);
+        return unchanged(input, name, reason);
+      };
+
       if (wire?.target !== 'anthropic') {
-        if (fallback) return fallback.apply(input);
-        return unchanged(
-          input,
-          name,
+        return unsignable(
           'nothing was sent that a compaction could be signed over (it needs appendOnly on the ' +
-            'Anthropic target, from the second request on), and no fallback strategy is configured',
+            'Anthropic target, from the second request on)',
         );
       }
       if (wire.history !== history) {
-        return unchanged(
-          input,
-          name,
+        return unsignable(
           'the window was rewritten after it was sent (an onBeforeCompress hook, an earlier ' +
-            'chain() step): only what was sent can be compacted',
+            'chain() step), so no request can be signed over it',
         );
       }
 
@@ -195,9 +236,7 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
       const replies = points.filter((point) => point < history.length);
       const cut = keep === 0 ? points[points.length - 1] : replies[replies.length - keep];
       if (cut === undefined) {
-        return unchanged(
-          input,
-          name,
+        return unsignable(
           `the window holds no turn to compact ahead of the ${keep} kept turn${keep === 1 ? '' : 's'}`,
         );
       }
@@ -216,20 +255,15 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
       try {
         response = await compact(request, input.signal);
       } catch (error) {
-        runner.fail('on-demand compaction request failed', error);
-        return unchanged(input, name, 'compaction request failed — history left unchanged');
+        return failed('on-demand compaction request failed', error);
       }
       if (response.stop_reason !== 'compaction') {
-        runner.fail(
+        return failed(
           `on-demand compaction stopped with '${response.stop_reason}', not 'compaction'`,
         );
-        return unchanged(input, name, 'no compaction returned — history left unchanged');
       }
       const block = compactionBlock(response.content);
-      if (!block) {
-        runner.fail('on-demand compaction returned no signed compaction block');
-        return unchanged(input, name, 'no compaction returned — history left unchanged');
-      }
+      if (!block) return failed('on-demand compaction returned no signed compaction block');
 
       const span = history.slice(0, cut);
       return {

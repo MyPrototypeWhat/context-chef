@@ -495,6 +495,108 @@ describe('appendOnly onDemandCompaction(): where nothing can be signed', () => {
   });
 });
 
+describe('appendOnly onDemandCompaction(): where it cannot sign, the fallback runs where it may', () => {
+  /** An onBeforeCompress hook that hands the runner a copy: nothing in it was sent as such. */
+  const rewriting = { janitor: { ...JANITOR, onBeforeCompress: async (h: Message[]) => [...h] } };
+  // asked(3) fits; a tool step after it is over the trigger, below the raw window.
+  const loop = [...asked(3), call('t1', 'SIG_C1'), result('t1', 'r1')];
+  // Four tool messages after asked(4): 11 messages, past the raw window in a tool turn.
+  const pastInLoop = [
+    ...asked(4),
+    call('t1', 'SIG_C1'),
+    result('t1', 'r1'),
+    call('t2', 'SIG_C2'),
+    result('t2', 'r2'),
+  ];
+
+  it('runs it at a turn boundary once a hook rewrote the window', async () => {
+    const { chef, compact, compressionModel, breaks } = chefWith(rewriting);
+
+    const payloads = await converse(chef, [1, 2, 3, 4].map(asked));
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[3].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q4')]);
+    expect(breaks.map((b) => [b.reason, b.signed])).toEqual([['compaction', false]]);
+  });
+
+  it('waits in a tool turn below the raw window, counting nothing, and runs it at the boundary', async () => {
+    const warn = vi.fn();
+    const { chef, compact, compressionModel } = chefWith({ ...rewriting, logger: { warn } });
+    const done = [...loop, reply('a3', 'SIG_3'), user('q4')];
+
+    const payloads = await converse(chef, [asked(1), asked(2), asked(3), loop, done]);
+
+    expect(payloads[3].messages).toHaveLength(7);
+    expect(signatures(payloads[3])).toEqual(['SIG_1', 'SIG_2', 'SIG_C1']);
+    expect(warn).not.toHaveBeenCalled();
+    expect(compact).not.toHaveBeenCalled();
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[4].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q4')]);
+  });
+
+  it.each([
+    ['at a turn boundary', asked(6), [text('user', SUMMARY(1)), text('user', 'q6')]],
+    ['in a tool turn, collapsing it', pastInLoop, [text('user', SUMMARY(1))]],
+  ])('runs it past the raw window %s once a hook rewrote the window', async (_, past, expected) => {
+    const { chef, compact } = chefWith(rewriting);
+
+    const payloads = await converse(chef, [asked(1), asked(2), past]);
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(payloads[2].messages).toEqual(expected);
+  });
+
+  describe('past the raw window in a tool turn', () => {
+    const failing = async () => ({ stop_reason: 'end_turn', content: [] });
+    const failed =
+      "[context-chef] on-demand compaction stopped with 'end_turn', not 'compaction' — history left unchanged (failure 1/3 toward circuit breaker)";
+    const tooFew =
+      '[context-chef] on-demand compaction: the window holds no turn to compact ahead of the 9 kept turns, ' +
+      'and no fallback strategy is configured — history left unchanged (failure 1/3 toward circuit breaker)';
+
+    it.each([
+      ['fails', {}, failing, failed],
+      ['has too few turns to keep', { keepRecentTurns: 9 }, undefined, undefined],
+    ] as const)('collapses through the fallback once the compaction %s', async (_, options, answer, warned) => {
+      const warn = vi.fn();
+      const { chef, compact } = chefWith({ logger: { warn } }, (compact, compressionModel) =>
+        onDemandCompaction({
+          compact,
+          ...options,
+          fallback: summarize({
+            compressionModel,
+            split: 'recent-turns',
+            preserveRecentMessages: 1,
+          }),
+        }),
+      );
+      if (answer) compact.mockImplementation(answer);
+
+      const payloads = await converse(chef, [asked(1), asked(2), pastInLoop]);
+
+      expect(payloads[2].messages).toEqual([text('user', SUMMARY(1))]);
+      expect(warn.mock.calls.map(([message]) => message)).toEqual(warned ? [warned] : []);
+    });
+
+    it.each([
+      ['fails', {}, failing, failed],
+      ['has too few turns to keep', { keepRecentTurns: 9 }, undefined, tooFew],
+    ] as const)('sends the window as it is without a fallback, counting it, once the compaction %s', async (_, options, answer, warned) => {
+      const warn = vi.fn();
+      const { chef, compact } = chefWith({ logger: { warn } }, (compact) =>
+        onDemandCompaction({ compact, ...options }),
+      );
+      if (answer) compact.mockImplementation(answer);
+
+      const payloads = await converse(chef, [asked(1), asked(2), pastInLoop]);
+
+      expect(payloads[2].messages).toHaveLength(11);
+      expect(warn.mock.calls.map(([message]) => message)).toEqual([warned]);
+    });
+  });
+});
+
 describe('appendOnly onDemandCompaction() with server()', () => {
   const compact: OnDemandCompactor = async () => ({ stop_reason: null, content: [] });
   const od = (fallback?: OverflowStrategy) => onDemandCompaction({ compact, fallback });

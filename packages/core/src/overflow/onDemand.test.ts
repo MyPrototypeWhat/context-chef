@@ -8,6 +8,7 @@ import { background } from './background';
 import { chain } from './chain';
 import {
   combinesServerAndOnDemand,
+  type OnDemandCompactionOptions,
   type OnDemandCompactionRequest,
   type OnDemandCompactor,
   onDemandCompaction,
@@ -435,21 +436,150 @@ describe('onDemandCompaction()', () => {
       expect(landed.meta.changed).toBe(false);
       expect(landed.meta.reason).toMatch(/no fallback strategy/);
     });
+  });
 
-    it('compacts nothing of a window rewritten after the wire rendered it', async () => {
-      const compact = compactor();
-      const fallback: OverflowStrategy = { name: 'fallback', apply: vi.fn(declined) };
-      const [strategy, runner] = attached(onDemandCompaction({ compact, fallback }));
-      const history = conversation();
-      const input = inputOver([...history], { wire: wireOver(history) });
+  describe('when it cannot sign, the fallback runs wherever an unsigned compaction may', () => {
+    /** A fallback that keeps the last message, recording what it was handed. */
+    const recorded = () => {
+      const handed: OverflowInput[] = [];
+      const fallback: OverflowStrategy = {
+        name: 'fallback',
+        async apply(input) {
+          handed.push(input);
+          const span = input.history.slice(0, -1);
+          return {
+            history: input.history.slice(-1),
+            evicted: span,
+            span,
+            meta: { strategy: 'fallback', windowId: input.window.current, changed: true },
+          };
+        },
+      };
+      return { fallback, handed };
+    };
+    const failing: OnDemandCompactor = async () => ({ stop_reason: 'end_turn', content: [] });
+
+    /**
+     * Why the signed path is out of reach: the options and the input that make
+     * it so. Too few turns is no obstacle to a collapse, which keeps none.
+     */
+    const unavailable: Array<
+      [
+        string,
+        Partial<OnDemandCompactionOptions>,
+        (history: Message[]) => Partial<OverflowInput>,
+        { collapses: boolean },
+      ]
+    > = [
+      ['no wire', {}, () => ({ wire: undefined }), { collapses: true }],
+      [
+        'a wire over another window',
+        {},
+        (history) => ({ wire: wireOver([...history]) }),
+        { collapses: true },
+      ],
+      ['too few turns to cut', { keepRecentTurns: 3 }, () => ({}), { collapses: false }],
+    ];
+    /** Where the compile stands, and what the fallback gets: the same input, or a collapse. */
+    const unsignedMayRun: Array<[string, Partial<OverflowInput>, 'same' | 'collapse']> = [
+      ['between turns', {}, 'same'],
+      ['between turns, past the raw window', { pastLimit: true }, 'same'],
+      ['collapsing a tool turn', { midToolTurn: true, collapse: true }, 'same'],
+      ['in a tool turn past the raw window', { midToolTurn: true, pastLimit: true }, 'collapse'],
+      ['in a tool turn the model asked to close', { midToolTurn: true, forced: true }, 'collapse'],
+    ];
+
+    /** What the fallback should have been handed for `input`. */
+    const expected = (input: OverflowInput, as: 'same' | 'collapse'): OverflowInput => {
+      if (as === 'same') return input;
+      const { pastLimit: _pastLimit, ...rest } = input;
+      return { ...rest, collapse: true };
+    };
+
+    describe.each(unavailable)('with %s', (_, options, unsignable, { collapses }) => {
+      it.each(
+        unsignedMayRun.filter(([, where]) => collapses || !where.collapse),
+      )('runs the fallback %s', async (_, where, as) => {
+        const { fallback, handed } = recorded();
+        const [strategy, runner] = attached(
+          onDemandCompaction({ compact: compactor(), fallback, ...options }),
+        );
+        const history = conversation();
+        const input = inputOver(history, { ...unsignable(history), ...where });
+
+        const landed = await strategy.apply(input);
+
+        expect(handed).toEqual([expected(input, as)]);
+        expect(landed.meta.strategy).toBe('fallback');
+        expect(runner.failures).toEqual([]);
+      });
+
+      it('waits in a tool turn below the raw window: no fallback, nothing counted', async () => {
+        const { fallback, handed } = recorded();
+        const [strategy, runner] = attached(
+          onDemandCompaction({ compact: compactor(), fallback, ...options }),
+        );
+        const history = conversation();
+        const input = inputOver(history, { ...unsignable(history), midToolTurn: true });
+
+        const landed = await strategy.apply(input);
+
+        expect(handed).toEqual([]);
+        expect(landed.history).toBe(input.history);
+        expect(landed.meta.changed).toBe(false);
+        expect(runner.failures).toEqual([]);
+      });
+
+      it('counts it without a fallback past the raw window, and only there', async () => {
+        const [strategy, runner] = attached(
+          onDemandCompaction({ compact: compactor(), ...options }),
+        );
+        const history = conversation();
+
+        const below = await strategy.apply(inputOver(history, unsignable(history)));
+        const past = await strategy.apply(
+          inputOver(history, { ...unsignable(history), pastLimit: true }),
+        );
+
+        expect(below.meta.changed).toBe(false);
+        expect(past.meta.changed).toBe(false);
+        expect(runner.failures).toHaveLength(1);
+      });
+    });
+
+    it.each(
+      unsignedMayRun.filter(([, where]) => where.pastLimit || where.collapse),
+    )('runs the fallback once a compaction fails %s, the failure counted', async (_, where, as) => {
+      const { fallback, handed } = recorded();
+      const [strategy, runner] = attached(onDemandCompaction({ compact: failing, fallback }));
+      const input = inputOver(conversation(), where);
 
       const landed = await strategy.apply(input);
 
-      expect(compact).not.toHaveBeenCalled();
-      expect(fallback.apply).not.toHaveBeenCalled();
-      expect(landed.meta.changed).toBe(false);
-      expect(landed.meta.reason).toMatch(/rewritten/);
-      expect(runner.failures).toEqual([]);
+      expect(handed).toEqual([expected(input, as)]);
+      expect(landed.meta.strategy).toBe('fallback');
+      expect(runner.failures).toHaveLength(1);
+    });
+
+    it.each([
+      ['between turns', {}],
+      ['in a tool turn', { midToolTurn: true as const }],
+      ['past the raw window without a fallback', { pastLimit: true as const }],
+    ])('leaves the window alone once a compaction fails %s, the failure counted', async (name, where) => {
+      const { fallback, handed } = recorded();
+      const [strategy, runner] = attached(
+        onDemandCompaction({
+          compact: failing,
+          ...(name.includes('without') ? {} : { fallback }),
+        }),
+      );
+      const input = inputOver(conversation(), where);
+
+      const landed = await strategy.apply(input);
+
+      expect(handed).toEqual([]);
+      expect(landed.history).toBe(input.history);
+      expect(runner.failures).toHaveLength(1);
     });
   });
 
@@ -557,6 +687,40 @@ describe('background(onDemandCompaction())', () => {
     expect(compact).toHaveBeenCalledTimes(2);
     // The job did its work, it just has nothing left to land on.
     expect(runner.successes).toBe(1);
+  });
+
+  it('holds an unsigned job its fallback ran through a tool turn, and lands it after', async () => {
+    // A fallback that keeps the last message, as summarize() keeps the turn it preserves.
+    const fallback: OverflowStrategy = {
+      name: 'fallback',
+      async apply(input) {
+        const span = input.history.slice(0, -1);
+        return {
+          history: input.history.slice(-1),
+          evicted: span,
+          span,
+          meta: { strategy: 'fallback', windowId: input.window.current, changed: true },
+        };
+      },
+    };
+    const [strategy] = attached(background(onDemandCompaction({ compact: compactor(), fallback })));
+    const started = conversation();
+    const loop = [...started, call('SIG_C3', 't3'), result('t3')];
+    const done = [...loop, reply('a3', 'SIG_3'), user('q4')];
+    // An onBeforeCompress hook hands the runner copies: nothing can be signed, and the fallback runs.
+    const rewritten = (history: Message[], where: Partial<OverflowInput> = {}) =>
+      inputOver(history, { wire: wireOver([...history]), ...where });
+
+    await strategy.apply(rewritten(started));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const during = await strategy.apply(rewritten(loop, { midToolTurn: true }));
+    const after = await strategy.apply(rewritten(done));
+
+    expect(during.meta.changed).toBe(false);
+    expect(during.meta.reason).toMatch(/tool turn/);
+    expect(after.meta.changed).toBe(true);
+    expect(after.history).toEqual(done.slice(4));
+    expect(after.meta.signed).toBeUndefined();
   });
 
   it('drops a finished job offered a window the wire does not render', async () => {

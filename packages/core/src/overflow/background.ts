@@ -134,7 +134,8 @@ export interface BackgroundOverflowStrategy extends OverflowStrategy {
  *
  * Under `appendOnly` the compile pipeline calls in only between turns, so a
  * job starts and lands only there, never while a tool turn is in progress —
- * unless `inner` is signed, whose results need not wait for a turn to end.
+ * unless `inner` is signed, whose results need not wait for a turn to end;
+ * an unsigned one it returned all the same (its fallback ran) still waits.
  * It still applies while the window it ran on is the start of the current
  * one — the window only grew; a checkpoint that rewrote anything in it, the
  * turns the job kept included, makes it stale. A signed job also needs the
@@ -282,8 +283,23 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
       if (input.collapse) return now(input);
       if (job?.settled) {
         const finished = job;
+        // A signed inner's fallback may have run in the job. Its result strips the
+        // thinking of the turns it keeps, so in a tool turn it waits for the turn
+        // to end, as any unsigned compaction does — unless the window is past the
+        // raw context window, which gets `inner` now instead.
+        const unsignedInToolTurn =
+          input.midToolTurn === true &&
+          finished.result?.meta.changed === true &&
+          !finished.result.meta.signed;
+        if (unsignedInToolTurn && !input.pastLimit) {
+          return unchanged(
+            input,
+            name,
+            'the finished job is unsigned: it waits for the tool turn to end',
+          );
+        }
         job = undefined;
-        const swapped = swapIn(finished, input);
+        const swapped = unsignedInToolTurn ? null : swapIn(finished, input);
         if (swapped) return input.pastLimit ? fitLanded(swapped, input) : swapped;
         // The model did its work off-turn; the history simply moved under it.
         // The runner credits a result that lands, and this one never will, so
