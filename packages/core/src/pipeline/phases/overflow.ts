@@ -104,7 +104,11 @@ async function overflowWindow(
   prefix: PrefixCompile,
   forced: boolean,
 ): Promise<OverflowResult | null> {
-  const { result, head } = await compactWindow(prefix.ledger, prefix.history, ctx.history, host, {
+  const { result, head } = await compactWindow({
+    ledger: prefix.ledger,
+    history: prefix.history,
+    window: ctx.history,
+    runner: host,
     signal: ctx.signal,
     forced,
     wire: wireOf(ctx, prefix),

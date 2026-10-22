@@ -106,6 +106,7 @@ export interface PrefixSessionPoolConfig<THostMessages>
  */
 export class PrefixSession {
   readonly ledger = new PrefixLedger();
+  // Built by createPrefixSessionPool(); the package exports the type alone.
   private last: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -159,7 +160,8 @@ export class PrefixSession {
       if (fresh && breaks[0]?.reason === 'ledger') this.warnLostLedger(history);
 
       if (overflow && janitor) {
-        const { head } = await compactWindow(ledger, history, ledger.window(), janitor, { signal });
+        const window = ledger.window();
+        const { head } = await compactWindow({ ledger, history, window, runner: janitor, signal });
         if (head) report(() => ledger.checkpoint('compaction', head.cut, head));
       }
 

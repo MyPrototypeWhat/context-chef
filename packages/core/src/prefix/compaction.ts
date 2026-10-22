@@ -50,14 +50,27 @@ export interface WindowCompaction {
  * collapses into the summary. One the provider signs (`onDemandCompaction`,
  * handed a `wire`) waits for nothing and strips nothing.
  */
-export async function compactWindow(
-  ledger: PrefixLedger,
-  history: readonly Message[],
-  window: Message[],
-  runner: WindowRunner,
-  options: { signal?: AbortSignal; forced?: boolean; wire?: OverflowWire } = {},
-): Promise<WindowCompaction> {
-  const { signal, forced = false, wire } = options;
+export async function compactWindow({
+  ledger,
+  history,
+  window,
+  runner,
+  signal,
+  forced = false,
+  wire,
+}: {
+  ledger: PrefixLedger;
+  /** The host history the ledger reconciled. */
+  history: readonly Message[];
+  /** The window the ledger renders over it: what the runner is handed. */
+  window: Message[];
+  runner: WindowRunner;
+  signal?: AbortSignal;
+  /** The model asked for a new window (`new_context`). */
+  forced?: boolean;
+  /** Renders the window as it was sent, for a signed strategy. */
+  wire?: OverflowWire;
+}): Promise<WindowCompaction> {
   const midTurn = inToolTurn(history, ledger.head);
   // A signed strategy handed a wire waits for no tool turn to end.
   const waits = midTurn && !(runner.signedOverflow && wire !== undefined);

@@ -52,7 +52,7 @@ export {
 } from './integrations/janitorPool';
 export {
   createPrefixSessionPool,
-  PrefixSession,
+  type PrefixSession,
   type PrefixSessionBreak,
   type PrefixSessionCall,
   type PrefixSessionPoolConfig,
