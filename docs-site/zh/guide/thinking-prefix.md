@@ -27,17 +27,17 @@ checkPrefixContinuity(first, second);
 
 ## 目前仍会改动之前轮次的功能
 
-ContextChef 每次 compile 都把注入渲染在末尾，而且从不写进你的 history。所以下一次 compile 会把它们放到新的末尾，上一轮它们所在的位置就变了：
+默认情况下，ContextChef 每次 compile 都把注入渲染在末尾，而且从不写进你的 history。所以下一次 compile 会把它们放到新的末尾，上一轮它们所在的位置就变了：
 
 - dynamic state（`'last_user'`）、两种通道的 announcement、guardrail `placement: 'last_user'`、`'before_history_tail'` 下的 memory（以及 `'after_system'` 下任何 memory 变化，因为它会改动 system prompt）、handoff 提醒、`skillPlacement: 'tail'`；
 - 客户端的 overflow（`summarize()`、`anchored()`）：它们的摘要替换掉之前的轮次，而且没有 Anthropic 能验证的签名；
 - `compact()` 清理工具结果，以及 offload 一个模型已经完整看过的工具结果。
 
-一个把已发送内容保留在原处的 append-only 模式正在开发中。
+[`appendOnly`](/zh/guide/append-only) 解决的就是这个问题：chef 添加的内容只追加一次，留在发送时的位置；压缩只落地一次，不再每轮重算；仍然会改写之前轮次的操作都成为被报告的检查点，失效的 thinking 不会再放进请求。[`onDemandCompaction`](/zh/guide/append-only#签名压缩-ondemandcompaction) 是唯一能让后面轮次保留 thinking 的压缩方式。
 
 ## 安全网：`drop_block`
 
-在那之前，可以在请求里让 API 丢掉对不上的 thinking 块，而不是拒绝整个请求。这些是你自己请求里的字段，不在 chef 的 payload 里：
+如果某个请求带着对不上的 thinking 仍然必须发出去（没打开 `appendOnly`，或者有一处改写你还没找到），可以在请求里让 API 丢掉这些块，而不是拒绝整个请求。这些是你自己请求里的字段，不在 chef 的 payload 里：
 
 ```ts
 const payload = await chef.compile({ target: "anthropic" });
@@ -53,5 +53,5 @@ await client.beta.messages.create({
 ```
 
 - **适用模型**：Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5。在 Sonnet 5.5 和 Haiku 5.5 上，这个字段只能和 `thinking: { type: "adaptive" }` 一起用；有开源项目报告，和 `between_tools` 或 `disabled` 一起用会返回 400。
-- **代价**：被丢掉的推理就没了，模型要重新推一遍。Anthropic 的实测是：低 effort 下只丢一次，输出 token 多 2.5%；max effort 下每轮都丢，最多多 67.1%。在上面那些尾部注入下，之前每一轮的 thinking 每轮都会被丢掉，正好是这个最坏情况。
-- **定位**：Anthropic 自己称它为临时方案。真正的解决办法是让 history 只在末尾增长。
+- **代价**：被丢掉的推理就没了，模型要重新推一遍。Anthropic 的实测是：低 effort 下只丢一次，输出 token 多 2.5%；max effort 下每轮都丢，最多多 67.1%。不打开 `appendOnly` 时，上面那些尾部注入会让之前每一轮的 thinking 每轮都被丢掉，正好是这个最坏情况。
+- **定位**：Anthropic 自己称它为临时方案。真正的解决办法是让 history 只在末尾增长，这正是 `appendOnly` 做的事。

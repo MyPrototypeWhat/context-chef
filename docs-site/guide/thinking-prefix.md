@@ -27,17 +27,17 @@ checkPrefixContinuity(first, second);
 
 ## What still changes earlier turns
 
-ContextChef renders its injections at the tail of every compile and never writes them into your history. The next compile therefore puts them at the new tail, and the turn they sat in last time changes:
+By default ContextChef renders its injections at the tail of every compile and never writes them into your history. The next compile therefore puts them at the new tail, and the turn they sat in last time changes:
 
 - dynamic state (`'last_user'`), announcements on either channel, guardrail `placement: 'last_user'`, memory under `'before_history_tail'` (and any memory change under `'after_system'`, which changes the system prompt), the handoff notice, `skillPlacement: 'tail'`;
 - client-side overflow (`summarize()`, `anchored()`), whose summary replaces earlier turns without a signature Anthropic can verify;
 - `compact()` tool-result clearing, and offloading a tool result the model has already seen in full.
 
-An append-only mode that keeps what was sent where it was sent is in progress.
+[`appendOnly`](/guide/append-only) changes that. What the chef adds is appended once and stays where it was sent, a compaction lands once instead of being recomputed, and anything that still rewrites an earlier turn is a reported checkpoint whose invalidated thinking is left out of the request. [`onDemandCompaction`](/guide/append-only#signed-compaction-ondemandcompaction) is the one compaction that keeps the thinking of the turns after it.
 
 ## Safety net: `drop_block`
 
-Until then, the request itself can tell the API to drop thinking blocks that no longer match instead of rejecting the call. These are fields of your request, not of the chef's payload:
+For a request that still has to go out with thinking that no longer matches (`appendOnly` off, or a rewrite you haven't tracked down yet), the request itself can tell the API to drop those blocks instead of rejecting the call. These are fields of your request, not of the chef's payload:
 
 ```ts
 const payload = await chef.compile({ target: "anthropic" });
@@ -53,5 +53,5 @@ await client.beta.messages.create({
 ```
 
 - **Which models**: Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5. On Sonnet 5.5 and Haiku 5.5 the field only goes with `thinking: { type: "adaptive" }`; open-source projects report a 400 when it accompanies `between_tools` or `disabled`.
-- **What it costs**: the dropped reasoning is gone, and the model works it out again. Anthropic measured 2.5% more output tokens for a single drop at low effort, up to 67.1% when blocks are dropped on every turn at max effort. With the tail injections above, every earlier turn's thinking is dropped on every turn, which is that worst case.
-- **What it is**: Anthropic calls it a stopgap. The fix is a history that only grows at the end.
+- **What it costs**: the dropped reasoning is gone, and the model works it out again. Anthropic measured 2.5% more output tokens for a single drop at low effort, up to 67.1% when blocks are dropped on every turn at max effort. Without `appendOnly`, the tail injections above drop every earlier turn's thinking on every turn, which is that worst case.
+- **What it is**: Anthropic calls it a stopgap. The fix is a history that only grows at the end, which is what `appendOnly` keeps.

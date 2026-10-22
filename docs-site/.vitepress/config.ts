@@ -13,6 +13,7 @@ function guideSidebar(
     durableCompaction: string;
     serverSide: string;
     thinkingPrefix: string;
+    appendOnly: string;
     contextStore: string;
     memory: string;
     offloading: string;
@@ -37,6 +38,7 @@ function guideSidebar(
         { text: labels.durableCompaction, link: `${prefix}/guide/durable-compaction` },
         { text: labels.serverSide, link: `${prefix}/guide/server-side-context-management` },
         { text: labels.thinkingPrefix, link: `${prefix}/guide/thinking-prefix` },
+        { text: labels.appendOnly, link: `${prefix}/guide/append-only` },
         { text: labels.contextStore, link: `${prefix}/guide/context-store` },
         { text: labels.memory, link: `${prefix}/guide/memory` },
         { text: labels.offloading, link: `${prefix}/guide/offloading-vfs` },
@@ -92,6 +94,7 @@ export default defineConfig({
             durableCompaction: 'Durable Compaction',
             serverSide: 'Server-Side Context Management',
             thinkingPrefix: 'Claude Thinking Prefix Check',
+            appendOnly: 'Append-Only Prefix',
             contextStore: 'Context Store',
             memory: 'Memory',
             offloading: 'Offloading & VFS',
@@ -136,6 +139,7 @@ export default defineConfig({
             durableCompaction: '持久化压缩',
             serverSide: '服务端上下文管理',
             thinkingPrefix: 'Claude thinking 前缀校验',
+            appendOnly: 'Append-only 前缀',
             contextStore: '上下文存储',
             memory: '记忆（Memory）',
             offloading: '卸载与 VFS',
