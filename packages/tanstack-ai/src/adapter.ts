@@ -3,8 +3,9 @@ import {
   type ToolCall as CoreToolCall,
   ensureValidHistory,
   type Message,
+  type SignedThinking,
 } from '@context-chef/core';
-import type { ContentPart, ModelMessage, ToolCall } from '@tanstack/ai';
+import type { ContentPart, ModelMessage, SystemPrompt, ToolCall } from '@tanstack/ai';
 
 /**
  * Extended IR message with pass-through fields for lossless TanStack AI round-trip.
@@ -171,18 +172,8 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
               }),
             );
       }
-      if (msg.thinking?.thinking) {
-        const originalThinking = original?.thinking?.length ? original.thinking : undefined;
-        m.thinking =
-          originalThinking && joinThinking(originalThinking) === msg.thinking.thinking
-            ? originalThinking
-            : [
-                {
-                  content: msg.thinking.thinking,
-                  ...(msg.thinking.signature ? { signature: msg.thinking.signature } : {}),
-                },
-              ];
-      }
+      const thinking = sentThinking(msg);
+      if (thinking) m.thinking = thinking;
       result.push(m);
       continue;
     }
@@ -199,6 +190,67 @@ export function toTanStackAI(messages: Message[]): ModelMessage[] {
   }
 
   return result;
+}
+
+/**
+ * The thinking {@link toTanStackAI} sends with an assistant message: the
+ * original array while the IR projection still matches it, one element
+ * rebuilt from the IR once the pipeline rewrote it, none once it was cleared.
+ */
+function sentThinking(msg: Message): ModelMessage['thinking'] {
+  if (!msg.thinking?.thinking) return undefined;
+  const original = (msg as TanStackAIMessage)._original?.thinking;
+  return original?.length && joinThinking(original) === msg.thinking.thinking
+    ? original
+    : [
+        {
+          content: msg.thinking.thinking,
+          ...(msg.thinking.signature ? { signature: msg.thinking.signature } : {}),
+        },
+      ];
+}
+
+type ThinkingBlock = NonNullable<ModelMessage['thinking']>[number];
+
+/**
+ * Whether a thinking block carries a provider signature, which a changed
+ * prefix invalidates. In TanStack AI only the Anthropic adapter writes one
+ * (`@tanstack/ai-anthropic`, from the block's `signature_delta`), and it
+ * sends back only signed blocks; the OpenAI, Gemini, OpenRouter and Bedrock
+ * adapters hand thinking back unsigned (Gemini's thought signatures ride on
+ * tool calls).
+ */
+const isSigned = (block: ThinkingBlock): boolean =>
+  typeof block.signature === 'string' && block.signature !== '';
+
+/**
+ * `appendOnly`: the signed thinking a checkpoint invalidates, in the thinking
+ * array a message round-trips through. A reply stripped of it keeps
+ * everything else, unsigned thinking included; one that held nothing else is
+ * left out.
+ */
+export const signedThinking: SignedThinking = {
+  count: (message) => sentThinking(message)?.filter(isSigned).length ?? 0,
+  strip(message) {
+    const thinking = sentThinking(message);
+    if (!thinking?.some(isSigned)) return message;
+    const { thinking: _thinking, ...rest } = message as TanStackAIMessage;
+    const kept = thinking.filter((block) => !isSigned(block));
+    // Only an original array holds more than one block.
+    if (kept.length > 0 && rest._original) {
+      return {
+        ...rest,
+        thinking: { thinking: joinThinking(kept) },
+        _original: { ...rest._original, thinking: kept },
+      };
+    }
+    return rest.content || rest.tool_calls?.length || rest.attachments?.length ? rest : undefined;
+  },
+};
+
+/** The text of a `systemPrompts` entry, without its provider metadata. */
+export function systemPromptText(prompt: SystemPrompt): string {
+  return typeof prompt === 'string' ? prompt : prompt.content;
 }
 
 /** Message-level fields carried over verbatim from the original ModelMessage. */

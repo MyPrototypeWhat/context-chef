@@ -3,6 +3,7 @@ import type {
   ClearTarget,
   IntegrationOverflowOptions,
   Message,
+  PrefixSessionBreak,
   Skill,
   StorageBackend,
   Store,
@@ -202,8 +203,17 @@ export interface DynamicStateConfig {
    * Where to inject the state.
    * - `'last_user'` (default): Appends to the last user message. Leverages Recency Bias.
    * - `'system'`: Adds as a standalone system prompt at the end.
+   *
+   * With {@link ContextChefOptions.appendOnly}, both append the state as its
+   * own user message, once, after the turn it changed in.
    */
   placement?: 'system' | 'last_user';
+}
+
+/** A checkpoint one call applied under {@link ContextChefOptions.appendOnly}. */
+export interface PrefixBreakEvent extends PrefixSessionBreak {
+  /** The conversation the call belongs to (`ctx.threadId`, or the default one). */
+  readonly sessionId: string;
 }
 
 export interface ContextChefOptions {
@@ -219,6 +229,62 @@ export interface ContextChefOptions {
   contextWindow?: number;
   /** Enable history compression. Omit for no compression. */
   compress?: CompressOptions;
+  /**
+   * Keep what was sent: each model call's request repeats the one the
+   * conversation sent before and only appends to it, so the provider's prefix
+   * cache keeps hitting and a model that signs its thinking over everything
+   * before it (Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5) can
+   * replay it.
+   *
+   * Each conversation (`ctx.threadId`) keeps a ledger of what its calls sent:
+   * - `dynamicState` is appended as its own user message after the turn it
+   *   changed in, once, and stays there; a change is a new message
+   *   (`<dynamic_state rev="2">`), never an edit of an earlier one. Both
+   *   placements append it this way, and `systemPrompts` is left alone: the
+   *   provider is unknown, and one may move a mid-conversation system message
+   *   into the system prompt.
+   * - A compression lands once: on every later call its summary stands in
+   *   for the messages it covers, instead of the history being summarized
+   *   again. It waits for a user-turn boundary, unless a tool loop would send
+   *   a request past `contextWindow`; then the whole loop collapses into the
+   *   summary. `onCompress` is only needed to outlive the process.
+   * - Anything that rewrites what was sent — an edited history, a changed
+   *   system prompt, skill or tool list, a compression, a conversation the
+   *   process lost — is a checkpoint, reported to {@link onPrefixBreak}.
+   *   Thinking a provider signed (`@tanstack/ai-anthropic` keeps the
+   *   signature on the thinking block) is removed from what changed on, for
+   *   good, and a reply that held nothing else is left out; unsigned thinking
+   *   stays.
+   *
+   * The work happens in each model call's `onConfig` firing (`beforeModel`,
+   * `structuredOutput`); the `init` firing passes the config through. The
+   * engine carries what `onConfig` returned into the next iteration, and the
+   * middleware reads it back as the host's conversation plus what came
+   * since — so no other middleware may rewrite the messages it returned.
+   *
+   * Give each conversation its own `threadId` (TanStack AI generates one per
+   * run otherwise): conversations sharing one rewrite each other's history on
+   * every call. Conversations live in the middleware instance: create it
+   * once and reuse it — one created per request starts every conversation
+   * empty, and every call is then a `ledger` checkpoint. A restart, or an
+   * eviction past `maxSessions`, costs one. `compact` and `clear` settings
+   * that move with the conversation (`'before-last-…'`, `keepRecent`) make
+   * nearly every call a checkpoint, and are warned when the middleware is
+   * created; `'all'` does not. `clearAt` is accepted for `ContextChef` config
+   * compatibility and ignored (warned likewise): every event here is a user
+   * message. Default: off.
+   */
+  appendOnly?: boolean | { clearAt?: boolean };
+  /**
+   * `appendOnly`: called for each checkpoint a call applies — something
+   * rewrote what an earlier call sent, so the provider's prefix cache misses
+   * from `at` on (an index into the call's messages; 0 for a compression or a
+   * new system prompt or tool list), and `strippedThinking` signed thinking
+   * blocks were removed. `reason` is `'compaction'`, `'history'`,
+   * `'system'`, `'tools'` or `'ledger'` (the conversation had no record of
+   * the history: a restart, an eviction).
+   */
+  onPrefixBreak?: (event: PrefixBreakEvent) => void;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
@@ -234,7 +300,10 @@ export interface ContextChefOptions {
    *   messages. Equivalent to `compact: { reasoning: 'all' }` except it
    *   runs AFTER compression instead of before.
    *
-   * Runs AFTER compression, so the summarizer still sees full content.
+   * Runs AFTER compression, so the summarizer still sees full content —
+   * except with {@link appendOnly}, where it runs before: a cleared result
+   * must be one before it is first sent, so the summarizer sees the
+   * placeholders.
    *
    * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing
    * boundary advances each turn, which invalidates the provider prefix
@@ -315,11 +384,21 @@ export interface ContextChefOptions {
    * as a marker in your own store. These are the post-transform messages
    * (after truncate/compact): match tool messages back to your records by
    * `toolCallId`; user/assistant text is not modified by those steps.
+   *
+   * With {@link appendOnly}, `details.replacement` is what to write back,
+   * exactly and in order, where `compressedMessages` were, to persist the
+   * compaction (the summary, as a user message): the next call reads your
+   * history as one that took it in, with nothing to report. From then on it
+   * is your message, sent with any signed thinking in it stripped.
+   * `compressedMessages` and the count hold only your messages, never the
+   * events the conversation appended among them — with one exception: a
+   * summary you did not write back is summarized again by a later
+   * compression, and shows up in that one's `compressedMessages`.
    */
   onCompress?: (
     summary: string,
     truncatedCount: number,
-    details: { compressedMessages: ModelMessage[] },
+    details: { compressedMessages: ModelMessage[]; replacement?: ModelMessage[] },
   ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.
@@ -339,6 +418,11 @@ export interface ContextChefOptions {
    * agent iteration — and the transformed config carries over to the next
    * iteration, so the hook MUST be idempotent (check before appending, or
    * gate on `ctx.phase === 'init'`).
+   *
+   * With {@link appendOnly} it runs on each model call's firing only, over
+   * the conversation's window, and what it added is not carried: the next
+   * call starts from the host's conversation again. It must only append —
+   * the ledger cannot see what it rewrites.
    */
   transformContext?: (
     messages: ModelMessage[],

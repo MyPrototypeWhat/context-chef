@@ -19,6 +19,20 @@ export type { PlanCompactionOptions } from '@context-chef/core';
  */
 export type SummarizeMessagesOptions = SummarizeHistoryOptions;
 
+/** What the durable helpers do with the thinking of the messages they keep. */
+export interface KeptReasoningOptions {
+  /**
+   * The `thinking` of the messages kept after the summary:
+   * - `'keep'` (default): kept as it is.
+   * - `'strip'`: removed, and with it a reply that held nothing else. A
+   *   summary you write yourself is a checkpoint nobody signed: on a model
+   *   that signs its thinking over everything before it (Claude Fable 5.1 /
+   *   Opus 5.5 / Sonnet 5.5 / Haiku 5.5), thinking kept behind a new summary
+   *   no longer verifies. `'strip'` returns a history you can send as it is.
+   */
+  keptReasoning?: 'keep' | 'strip';
+}
+
 export interface CompactionPlanTanStackMessages {
   /** The old conversation slice to summarize. Empty when nothing is old enough. */
   toSummarize: ModelMessage[];
@@ -32,6 +46,8 @@ export interface CompactionPlanTanStackMessages {
  * {@link fromTanStackAI}, splits on turn boundaries via core's
  * `planCompaction`, and converts each slice back via {@link toTanStackAI}.
  * Summarize `toSummarize`, then persist `[<summary>, ...toKeep]`.
+ * With `keptReasoning: 'strip'`, `toKeep` comes without thinking
+ * ({@link KeptReasoningOptions}).
  *
  * Unlike the AI SDK sibling (`planCompactionModelMessages`), the plan has no
  * `system` slice: TanStack AI's `ModelMessage` has no system role — standing
@@ -46,12 +62,13 @@ export interface CompactionPlanTanStackMessages {
  */
 export function planCompactionTanStackMessages(
   messages: ModelMessage[],
-  options: PlanCompactionOptions,
+  options: PlanCompactionOptions & KeptReasoningOptions,
 ): CompactionPlanTanStackMessages {
   const plan = corePlanCompaction(fromTanStackAI(messages), options);
+  const toKeep = toTanStackAI(plan.toKeep);
   return {
     toSummarize: toTanStackAI(plan.toSummarize),
-    toKeep: toTanStackAI(plan.toKeep),
+    toKeep: options.keptReasoning === 'strip' ? withoutThinking(toKeep) : toKeep,
   };
 }
 
@@ -69,7 +86,9 @@ export function planCompactionTanStackMessages(
  * Returns the **input `messages` reference unchanged** when there is nothing
  * old enough to compact or the summarizer yields no text, so callers can skip
  * persistence on a no-op via `result === messages`. Throws only if the model
- * call throws.
+ * call throws. With `keptReasoning: 'strip'` the kept messages come without
+ * thinking ({@link KeptReasoningOptions}); a no-op keeps it, since nothing was
+ * summarized.
  *
  * The summary is inserted as a `user` message (Claude Code style) wrapped
  * with the "continued conversation" framing, so when the kept tail also
@@ -84,13 +103,25 @@ export function planCompactionTanStackMessages(
 export async function compactTanStackMessages(
   messages: ModelMessage[],
   adapter: AnyTextAdapter,
-  options: PlanCompactionOptions & SummarizeMessagesOptions,
+  options: PlanCompactionOptions & SummarizeMessagesOptions & KeptReasoningOptions,
 ): Promise<ModelMessage[]> {
   const ir = fromTanStackAI(messages);
   const result = await coreCompactHistory(ir, createCompressionAdapter(adapter), options);
   // core returns the input IR reference on a no-op — preserve the original
   // `messages` reference so callers can skip persistence via `result === messages`.
-  return result === ir ? messages : toTanStackAI(result);
+  if (result === ir) return messages;
+  const compacted = toTanStackAI(result);
+  // Only the kept turns hold thinking: the summary has none.
+  return options.keptReasoning === 'strip' ? withoutThinking(compacted) : compacted;
+}
+
+/** `messages` without thinking, and without a reply that held nothing else. */
+function withoutThinking(messages: ModelMessage[]): ModelMessage[] {
+  return messages.flatMap((message): ModelMessage[] => {
+    if (!message.thinking?.length) return [message];
+    const { thinking: _thinking, ...rest } = message;
+    return rest.content?.length || rest.toolCalls?.length ? [rest] : [];
+  });
 }
 
 /**
