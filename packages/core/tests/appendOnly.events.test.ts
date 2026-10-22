@@ -830,6 +830,26 @@ describe('appendOnly: where events go', () => {
     ]);
   });
 
+  it('adds its events after the last user turn, with a warning, when an after-assemble handler changed what follows them', async () => {
+    const warn = vi.fn();
+    const { chef } = chefWith({ logger: { warn } });
+    // Anthropic continues the guardrail's prefill, the last message; the handler drops it.
+    chef.withGuardrails({ prefill: '<out>' });
+    chef.use('after-assemble', (messages) => messages.filter((m) => m.content !== '<out>'));
+    chef.setDynamicState(State, { step: 1 });
+
+    const [payload] = (await converse(chef, [turn1], 'anthropic')) as AnthropicPayload[];
+
+    const moved = warn.mock.calls.filter(([message]) =>
+      String(message).includes('the events at the end of the window were moved or rewritten'),
+    );
+    expect(moved).toHaveLength(1);
+    expect(payload.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Find the release date.' }] },
+      { role: 'user', content: [{ type: 'text', text: `${state(1, 1)}\n\n${ANCHOR}` }] },
+    ]);
+  });
+
   it.each(
     THREE,
   )('appends the handoff notice once in its window, and keeps it in place (%s)', async (target) => {

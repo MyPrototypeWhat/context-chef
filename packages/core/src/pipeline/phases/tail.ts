@@ -290,41 +290,51 @@ function pinnedSource({ ledger, history }: PrefixCompile): PushSource {
   };
 }
 
+/** Whether `messages` from `at` on are `expected`, as the wire sees them. */
+const sameAt = (messages: Message[], at: number, expected: readonly Message[]): boolean =>
+  at >= 0 &&
+  expected.every(
+    (message, i) =>
+      Assembler.stringifyPayload(messages[at + i]) === Assembler.stringifyPayload(message),
+  );
+
 /**
  * `messages` with the event group at the end of the window — `before`, as
  * the `prefix` phase rendered it — replaced by `after`, the same group with
- * this compile's `events` in it. Only `trailing` messages follow that group:
- * the prefill the history ends with, if any, then the guardrail's. If a slot
- * handler moved or rewrote the group — an `after-assemble` one, or one that
- * edited the history in place (overflow itself only ever hands on the
- * ledger's window) — only `events` go in front of those, so nothing it left
- * is sent twice.
+ * this compile's `events` in it. Only `trailing` follows that group: the
+ * host messages after the anchor (a prefill the history ends with), then the
+ * guardrail's. If a slot handler moved or rewrote the group or what follows
+ * it — an `after-assemble` one, or one that edited the history in place
+ * (overflow itself only ever hands on the ledger's window) — only `events`
+ * go in, so nothing it left is sent twice: in front of `trailing` if that is
+ * still there, else after the last user turn.
  */
 function replaceEventGroup(
   messages: Message[],
-  trailing: number,
+  trailing: readonly Message[],
   before: Message[],
   after: Message[],
   events: readonly PrefixCandidate[],
   host: PipelineHost,
 ): Message[] {
-  const end = Math.max(0, messages.length - trailing);
+  const trailed = sameAt(messages, messages.length - trailing.length, trailing);
+  let end = messages.length - trailing.length;
+  if (!trailed) {
+    end = tailInsertionIndex(messages);
+    if (messages[end]?.role === 'user' || messages[end]?.role === 'tool') end++;
+  }
   const start = end - before.length;
-  const found =
-    start >= 0 &&
-    before.every(
-      (message, i) =>
-        Assembler.stringifyPayload(messages[start + i]) === Assembler.stringifyPayload(message),
-    );
-  if (found) return [...messages.slice(0, start), ...after, ...messages.slice(end)];
+  if (trailed && sameAt(messages, start, before)) {
+    return [...messages.slice(0, start), ...after, ...messages.slice(end)];
+  }
 
   host.warnOnce(
     'append-only-events-moved',
-    '[context-chef] appendOnly: the events at the end of the window were moved or rewritten ' +
-      'after the ledger rendered them — by an after-assemble handler, or a slot handler that ' +
-      "edited the history in place — so this compile's new events were added there on their " +
-      'own. The payload no longer matches the window the ledger records, so the next compile ' +
-      'may not start with it (warned once).',
+    '[context-chef] appendOnly: the events at the end of the window were moved or rewritten, ' +
+      'or the messages after them changed, after the ledger rendered them — by an ' +
+      'after-assemble handler, or a slot handler that edited the history in place — so this ' +
+      "compile's new events were added there on their own. The payload no longer matches the " +
+      'window the ledger records, so the next compile may not start with it (warned once).',
   );
   const added = renderGroup(
     events,
@@ -443,7 +453,7 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
   if (events.length > 0) {
     const before = ledger.renderedAt(anchor);
     ledger.append(events, anchor);
-    const trailing = prefix.history.length - anchor + ctx.guardrailMessages.length;
+    const trailing = [...prefix.history.slice(anchor), ...ctx.guardrailMessages];
     const after = ledger.renderedAt(anchor);
     messages = replaceEventGroup(messages, trailing, before, after, events, host);
   }
