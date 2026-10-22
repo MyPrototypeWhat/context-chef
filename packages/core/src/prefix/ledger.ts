@@ -702,17 +702,23 @@ export class PrefixLedger {
     this._reported = undefined;
   }
 
-  /** Plain data, safe for `structuredClone` and JSON. */
+  /**
+   * Plain data, safe for `structuredClone` and JSON: the state the last commit
+   * left. A snapshot taken during a compile — from a `prefix:break` handler,
+   * say — leaves out what that compile did so far, since none of it was sent.
+   */
   snapshot(): PrefixLedgerSnapshot {
+    const { head, summarized, entries, stripped, seen, lastSent, restarted } =
+      this.pending?.committed ?? this.capture();
     return structuredClone({
       version: 1 as const,
-      entries: this.entries,
-      ...(this._head ? { head: this._head } : {}),
-      ...(this.summarized ? { summarized: this.summarized } : {}),
-      stripped: this._stripped,
-      seen: this.seen,
-      ...(this._lastSent ? { lastSent: this._lastSent } : {}),
-      ...(this.restarted ? { restarted: true as const } : {}),
+      entries,
+      ...(head ? { head } : {}),
+      ...(summarized ? { summarized } : {}),
+      stripped,
+      seen,
+      ...(lastSent ? { lastSent } : {}),
+      ...(restarted ? { restarted: true as const } : {}),
       ...(this._reported !== undefined ? { reported: this._reported } : {}),
     });
   }

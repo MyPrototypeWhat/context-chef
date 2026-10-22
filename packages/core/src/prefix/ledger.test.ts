@@ -1426,6 +1426,28 @@ describe('PrefixLedger — snapshot', () => {
     expect(JSON.parse(JSON.stringify(ledger.snapshot())).lastSent).toEqual(ledger.lastSent);
   });
 
+  it('is the state last committed while a compile is in progress', () => {
+    const sent: PrefixSent = { system: 'S1' };
+    const ledger = new PrefixLedger();
+    compile(ledger, turns.slice(0, 1), [state('<state>A</state>')], sent);
+    compile(ledger, turns.slice(0, 3), [], sent);
+    const committed = ledger.snapshot();
+
+    const edited = turns.slice(0, 3);
+    edited[0] = user('q1 (edited)');
+    ledger.reconcile(edited);
+    ledger.append([state('<state>B</state>')]);
+    ledger.reconcileSent({ system: 'S2' });
+
+    expect(ledger.snapshot()).toEqual(committed);
+    ledger.commit(edited, { system: 'S2' });
+    expect(ledger.snapshot()).toMatchObject({
+      stripped: [[0, 3]],
+      lastSent: { system: 'S2' },
+      entries: [{ anchor: 3, content: '<state>B</state>' }],
+    });
+  });
+
   it('refuses a snapshot version it does not know', () => {
     const future = { version: 2, entries: [], stripped: [], seen: [] } as unknown;
     expect(() => PrefixLedger.fromSnapshot(future as PrefixLedgerSnapshot)).toThrow(/version/);

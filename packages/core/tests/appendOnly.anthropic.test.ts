@@ -21,6 +21,7 @@ import {
   anthropicCompactionMessage,
   type ChefConfig,
   type ChefEvents,
+  type ChefSnapshot,
   ContextChef,
   checkPrefixContinuity,
   compactMessages,
@@ -433,6 +434,27 @@ describe('appendOnly on Anthropic: an unsigned checkpoint strips the thinking it
     expect(signatures(changed)).toEqual([]);
     expect(signatures(next)).toEqual(['SIG_3']);
     expectAppendOnly([changed, next]);
+  });
+
+  it('snapshots what was last sent from inside a compile, so a restore still sees the next change', async () => {
+    const { chef } = chefWith();
+    await converse(chef, [turn1, turn2, turn3]);
+    let saved: ChefSnapshot | undefined;
+    chef.on('prefix:break', () => {
+      saved = chef.snapshot();
+    });
+    chef.setSystemPrompt([{ role: 'system', content: 'You are thorough.' }]);
+    await converse(chef, [turn3]);
+    if (!saved) throw new Error('the system checkpoint was reported');
+
+    // SIG_3 is signed over "You are thorough.", which the next request changes again.
+    const { chef: next, breaks } = chefWith();
+    next.restore(saved);
+    next.setSystemPrompt([{ role: 'system', content: 'You are brief.' }]);
+    const [payload] = await converse(next, [turn4]);
+
+    expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([['system', 3]]);
+    expect(signatures(payload)).toEqual([]);
   });
 
   it('strips nothing on other targets, which have no signature check', async () => {
