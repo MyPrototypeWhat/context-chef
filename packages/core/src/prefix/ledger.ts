@@ -434,9 +434,7 @@ export class PrefixLedger {
       : this.findBreak();
     this.restarted = false;
     if (!found) return { window: this.window() };
-    const invalidBefore = found.headLost
-      ? this.invalidLeft()
-      : invalidatedMessages(this.history, this);
+    const invalidBefore = this.invalidLeft();
     const applied = this.checkpoint(found.reason, found.hostIndex);
     return { window: this.window(), break: applied, invalidBefore };
   }
@@ -758,22 +756,24 @@ export class PrefixLedger {
   }
 
   /**
-   * The messages of the history being compiled whose thinking was invalid in
-   * the window built until now, known by digest: a head that no longer
-   * applies leaves no host index to read the old ranges by. The host history
-   * that window was built over is read off what the ledger kept of it — what
-   * the head summarized, then what was seen after the cut — which a ledger
-   * restored from a snapshot holds too.
+   * The messages whose thinking was invalid in the window built until now:
+   * the head's, and those of the history being compiled, known by digest. The
+   * history need not hold them at the indices they were stripped at — the
+   * host dropped a message ahead of them, or the head no longer applies — so
+   * the old ranges are read off what the ledger kept of the history that
+   * window was built over: what the head summarized, then what was seen after
+   * the cut, which a ledger restored from a snapshot holds too.
    */
   private invalidLeft(): Message[] {
     const summarized = this.summarized?.digests ?? new Array<string>(this.cut).fill('');
     const host = [...summarized, ...this.seen];
+    const head = invalidatedMessages([], this);
     const invalid = new Set([
       ...this._stripped.flatMap(([from, until]) => host.slice(from, until)),
-      // What the head itself held that was invalid: it is no message of the history.
-      ...invalidatedMessages([], this).map((message) => this.digestOf(message)),
+      // A host message the head carried a copy of, which a lost head leaves in the window.
+      ...head.map((message) => this.digestOf(message)),
     ]);
-    return this.history.filter((message) => invalid.has(this.digestOf(message)));
+    return [...head, ...this.history.filter((message) => invalid.has(this.digestOf(message)))];
   }
 
   /**

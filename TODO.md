@@ -766,7 +766,7 @@ Everything below is unverified because no key was available. Each line is one ex
 - **Fresh ledger**: few-shot example replies ahead of the question are reported as a `ledger` checkpoint on a fresh chef's first compile.
 - **Compaction block not at the opening** (`[u0, block, …]`, kept by a host before a server-side block) can still get `[summary, block, …]`.
 - **`pipelineChecks`** can't detect a host message dropped from the window; consider checking that every host message from `head.cut` on is in it.
-- **Integrations**: session ledgers are in-process only; consider `exportSession` / `importSession` for serverless hosts. `strippedThinking` is under-reported for a checkpoint with no head when the host dropped a message ahead of an old stripped range (what is stripped is right).
+- **Integrations**: session ledgers are in-process only; consider `exportSession` / `importSession` for serverless hosts.
 - **TanStack**: a reply dropped from the host's conversation and re-added past its end is replayed (the strip lives in the integration, not the ledger; making it sticky needs a ledger range API).
 - **TanStack 1.x bump**: re-check the thinking representation (redacted data in `signature`), signature capture (`REASONING_ENCRYPTED_VALUE` instead of 0.44's `STEP_FINISHED.signature`), `applyMiddlewareConfig` carry semantics and the `onConfig` phases; a structured-output stream with thinking hasn't been exercised end to end.
 - **Token accumulation**: without `clearAt`, every revision of a frequently changing state stays in the window until a compaction absorbs it; consider delta encoding once there is real usage data.

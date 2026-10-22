@@ -398,6 +398,32 @@ describe('appendOnly on Anthropic: an unsigned checkpoint strips the thinking it
     });
   });
 
+  it('counts only what a checkpoint newly strips when the host dropped a message ahead of an older one', async () => {
+    const { chef, breaks } = chefWith();
+    const history = [
+      user('q1'),
+      reply('a1', 'SIG_1'),
+      user('q2'),
+      reply('a2', 'SIG_2'),
+      user('q3'),
+    ];
+    await converse(chef, [history.slice(0, 1), history]);
+    // An edit of q2 strips [2, 5): SIG_2.
+    history[2] = user('q2 (edited)');
+    await converse(chef, [history]);
+    history.push(reply('a3', 'SIG_3'), user('q4'));
+    await converse(chef, [history]);
+
+    // Dropping q1 moves SIG_2 off the old range: SIG_1 and SIG_3 are what is newly stripped.
+    const [payload] = await converse(chef, [history.slice(1)]);
+
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([
+      ['history', 2, 1],
+      ['history', 0, 2],
+    ]);
+    expect(signatures(payload)).toEqual([]);
+  });
+
   it('strips a redacted thinking block, known by its data', async () => {
     const { chef } = chefWith();
     const answered: Message = {

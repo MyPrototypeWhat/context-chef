@@ -349,6 +349,27 @@ describe('PrefixSession: checkpoints', () => {
     expect(same.breaks).toEqual([]);
   });
 
+  it('counts only what a later checkpoint newly strips while a head carrying thinking stands', async () => {
+    const { session } = poolWith();
+    // Every call converts the host's messages afresh, as the integrations do.
+    const pinned = qa.map((message, i) => (i === 1 ? { ...message, pinned: true } : message));
+    const host = (n: number) => structuredClone(pinned.slice(0, 2 * n - 1));
+    const calls = [];
+    for (const n of [1, 2, 3, 4, 5]) calls.push(await session.compile(callWith(host(n))));
+    // q5 edited: a5, signed over the old q5, is all the checkpoint newly strips.
+    const history = host(6);
+    history[8] = user('q5, edited');
+    const edited = await session.compile(callWith(history, { overflow: false }));
+
+    expect(calls[3].messages.map((m) => m.content)).toEqual([SUMMARY(1), 'a1', 'q4']);
+    expect(calls[3].breaks).toEqual([
+      { reason: 'compaction', at: 0, signed: false, strippedThinking: 1 },
+    ]);
+    expect(edited.breaks).toEqual([
+      { reason: 'history', at: 4, signed: false, strippedThinking: 1 },
+    ]);
+  });
+
   it('warns once when a fresh session meets a long history', async () => {
     const { pool, session, logger } = poolWith(NO_COMPRESSION);
     const first = await session.compile(callWith(asked(4)));
