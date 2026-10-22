@@ -23,6 +23,7 @@ import {
   background,
   type ChefConfig,
   type ChefEvents,
+  type CompressionDetails,
   ContextChef,
   chain,
   checkPrefixContinuity,
@@ -269,6 +270,62 @@ describe('appendOnly overflow: a compaction is a checkpoint whose head stays', (
     expect(first.messages).toEqual([text('user', SUMMARY(1)), text('user', 'q4')]);
     expect(again.messages).toEqual([text('user', SUMMARY(2)), text('user', 'q4')]);
     expect(first.meta).not.toHaveProperty('prefix');
+  });
+});
+
+describe('appendOnly overflow: a host that persists the summary through onCompress', () => {
+  /**
+   * A host that keeps its own store and, as `onCompress` asks, replaces what
+   * was compressed with the summary it is handed (`write` turns that into
+   * what it stores). Each compile sends the store; the model's reply and the
+   * next question are appended after it.
+   */
+  async function persisting(write: (summary: Message) => Message) {
+    let store: Message[] = [qa[0]];
+    const onCompress = (summary: Message, _count: number, details: CompressionDetails) => {
+      store = [write(summary), ...store.filter((m) => !details.compressedMessages.includes(m))];
+    };
+    const recorded = chefWith({ janitor: { ...JANITOR, onCompress } });
+    const payloads: AnthropicPayload[] = [];
+    for (let n = 1; n <= 6; n++) {
+      payloads.push(
+        (await recorded.chef
+          .setHistory(store)
+          .compile({ target: 'anthropic' })) as AnthropicPayload,
+      );
+      store = [...store, qa[2 * n - 1], qa[2 * n]];
+    }
+    return { ...recorded, payloads };
+  }
+
+  it('sends the same window from the store that took the summary in, and keeps the thinking', async () => {
+    const { payloads, breaks, invariants, compressionModel } = await persisting((s) => s);
+    const [, , , compacted, next, last] = payloads;
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+    expect(next.messages).toEqual([...compacted.messages, answer(4), text('user', 'q5')]);
+    expect(last.messages).toEqual([...next.messages, answer(5), text('user', 'q6')]);
+    expect(signatures(last)).toEqual(['SIG_4', 'SIG_5']);
+    expectAppendOnly(payloads.slice(3));
+    expect(invariants).toEqual([]);
+  });
+
+  it('reports a `history` checkpoint at a summary the host wrote itself', async () => {
+    const { payloads, breaks, invariants } = await persisting(() => user('My own summary.'));
+    const [, , , , next] = payloads;
+
+    expect(breaks.map(({ windowId: _id, ...b }) => b)).toEqual([
+      { ...COMPACTED, strippedThinking: 0 },
+      { reason: 'history', at: 0, signed: false, strippedThinking: 1 },
+    ]);
+    expect(next.messages).toEqual([
+      text('user', 'My own summary.'),
+      text('user', 'q4'),
+      text('assistant', 'a4'),
+      text('user', 'q5'),
+    ]);
+    expect(invariants).toEqual([]);
   });
 });
 

@@ -274,6 +274,51 @@ describe('appendOnly: a compression lands once as the head', () => {
     ]);
   });
 
+  /**
+   * A host that keeps its own store and, as `onCompress` asks, replaces the
+   * compressed slice with the summary it is handed (`write` turns that into
+   * what it stores). Each call sends the store; reply n and question n + 1
+   * are appended after it.
+   */
+  async function persisting(write: (summary: string) => LanguageModelV4Message) {
+    const { strategy } = keepLastTurn();
+    let store: LanguageModelV4Message[] = [user('q1')];
+    const recorded = middlewareWith({
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy },
+      onCompress: (summaryText, count) => {
+        store = [write(summaryText), ...store.slice(count)];
+      },
+    });
+    const prompts: LanguageModelV4Prompt[] = [];
+    for (let n = 1; n <= 7; n++) {
+      prompts.push(await recorded.send([sys, ...store]));
+      store = [...store, reply(`a${n}`, `S_${n}`), user(`q${n + 1}`)];
+    }
+    return { ...recorded, prompts };
+  }
+
+  it('sends the same prompt from a store that took the summary in, reasoning and all', async () => {
+    const { prompts, breaks } = await persisting(user);
+
+    expect(prompts[4]).toEqual([sys, summary(1), user('q5')]);
+    expect(prompts[5]).toEqual([...prompts[4], reply('a5', 'S_5'), user('q6')]);
+    expect(prompts[6]).toEqual([...prompts[5], reply('a6', 'S_6'), user('q7')]);
+    expectAppendOnly(prompts.slice(4));
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('reports a history checkpoint at a summary the host wrote itself', async () => {
+    const { prompts, breaks } = await persisting(() => user('My own summary.'));
+
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([
+      ['compaction', 0, 0],
+      ['history', 0, 1],
+    ]);
+    expect(prompts[5]).toEqual([sys, user('My own summary.'), user('q5'), reply('a5'), user('q6')]);
+  });
+
   it('waits in a tool loop below the raw window, and collapses it past the window', async () => {
     const { compressionModel, strategy } = keepLastTurn();
     const { send } = middlewareWith({ contextWindow: 100, tokenizer, overflow: { strategy } });

@@ -555,7 +555,7 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     expect(tools.break).toEqual({ reason: 'tools', at: 0, signed: false, stripped: [3, 7] });
   });
 
-  it('reports a `ledger` break when the history is shorter than head.cut', () => {
+  it('reports a `history` break where a history shorter than head.cut stops matching the window', () => {
     const ledger = new PrefixLedger();
     const history = turns.slice(0, 6);
     ledger.reconcile(history);
@@ -566,9 +566,10 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     });
     ledger.commit(history);
 
+    // Too short for the cut: read as a history that took the head in, it differs at once.
     const next = compile(ledger, [user('fresh')]);
 
-    expect(next.break).toEqual({ reason: 'ledger', at: 0, signed: false, stripped: [0, 1] });
+    expect(next.break).toEqual({ reason: 'history', at: 0, signed: false, stripped: [0, 1] });
     expect(shape(next.window)).toEqual(['user:fresh']);
     expect(ledger.head).toBeUndefined();
   });
@@ -844,6 +845,86 @@ describe('PrefixLedger — checkpoints', () => {
       at: 2,
       signed: false,
       stripped: [4, 7],
+    });
+  });
+
+  describe('a host that wrote the head back into its history', () => {
+    const summary = user('<summary/>');
+    /** q1 r1 q2 r2 q3 compacted at host[4], with a provisional event after q3. */
+    function compacted(): PrefixLedger {
+      const ledger = new PrefixLedger();
+      compile(ledger, turns.slice(0, 1), [state('E1')]); // @1
+      compile(ledger, turns.slice(0, 3));
+      const history = turns.slice(0, 5);
+      ledger.reconcile(history);
+      ledger.checkpoint('compaction', 4, { cut: 4, replacement: [summary], signed: false });
+      ledger.append([state('E2')]); // @5
+      expect(shape(ledger.window())).toEqual(['user:<summary/>', 'user:q3', 'user:E2']);
+      ledger.commit(history);
+      return ledger;
+    }
+
+    it('takes the head in: the same window, no checkpoint, nothing more stripped', () => {
+      const ledger = compacted();
+      // An onCompress sink replaced q1 r1 q2 r2 with the summary it was handed; r3 answered.
+      const next = compile(ledger, [{ ...summary }, turns[4], turns[5], turns[6]]);
+
+      expect(next.break).toBeUndefined();
+      expect(shape(next.window)).toEqual([
+        'user:<summary/>',
+        'user:q3',
+        'user:E2',
+        'assistant:r3',
+        'user:q4',
+      ]);
+      expect(next.stable).toBe(3);
+      expect(ledger.head).toBeUndefined();
+      // The head's message, and q3 as the compaction stripped it, moved to the front.
+      expect(ledger.stripped).toEqual([[0, 2]]);
+      expect(compile(ledger, [{ ...summary }, ...turns.slice(4)]).break).toBeUndefined();
+    });
+
+    it('takes the head in from a history long enough to hold the cut', () => {
+      const ledger = new PrefixLedger();
+      compile(ledger, turns.slice(0, 1));
+      const history = turns.slice(0, 3);
+      ledger.reconcile(history);
+      ledger.checkpoint('compaction', 2, { cut: 2, replacement: [summary], signed: false });
+      ledger.commit(history);
+      compile(ledger, turns.slice(0, 7));
+
+      // [summary, q2 … q4]: as long as the history it replaced, but q2 follows the summary.
+      const next = compile(ledger, [{ ...summary }, ...turns.slice(2)]);
+
+      expect(next.break).toBeUndefined();
+      expect(shape(next.window)).toEqual(['user:<summary/>', ...shape(turns.slice(2))]);
+    });
+
+    it('reads a history too short for a head as long as its cut the same way', () => {
+      const ledger = new PrefixLedger();
+      compile(ledger, turns.slice(0, 1));
+      const history = turns.slice(0, 5);
+      ledger.reconcile(history);
+      const head = { cut: 2, replacement: [summary, user('<pinned/>')], signed: false };
+      ledger.checkpoint('compaction', 2, head);
+      ledger.commit(history);
+
+      const next = compile(ledger, [user('fresh')]);
+
+      expect(next.break).toEqual({ reason: 'history', at: 0, signed: false, stripped: [0, 1] });
+    });
+
+    it('reports a `history` break at a summary it wrote itself, stripping from there', () => {
+      const ledger = compacted();
+      const next = compile(ledger, [user('<my summary/>'), turns[4], turns[5], turns[6]]);
+
+      expect(next.break).toEqual({ reason: 'history', at: 0, signed: false, stripped: [0, 4] });
+      expect(shape(next.window)).toEqual([
+        'user:<my summary/>',
+        'user:q3',
+        'assistant:r3',
+        'user:q4',
+      ]);
     });
   });
 

@@ -373,16 +373,22 @@ export class PrefixLedger {
 
   /**
    * Rebuilds the window over `history`. When the ledger no longer matches —
-   * history shorter than `head.cut`, a host message that is not the one seen,
-   * an entry anchored past the end, a `reset()` since the last compile, a
-   * ledger that has seen nothing meeting a history with a reply in it — the
-   * first mismatch is applied as a checkpoint and reported in `break`; the
-   * window is the one after it.
+   * a host message that is not the one seen, an entry anchored past the end,
+   * a `reset()` since the last compile, a ledger that has seen nothing
+   * meeting a history with a reply in it — the first mismatch is applied as a
+   * checkpoint and reported in `break`; the window is the one after it.
+   *
+   * A history that took the head in — a host that persisted the compaction
+   * (an `onCompress` sink writing the summary back) sends the window's head
+   * as its own first messages, then what followed the cut — is read that way:
+   * as far as it matches the window, it is the same conversation, and the
+   * first message that does not is a `history` checkpoint.
    */
   reconcile(history: readonly Message[]): PrefixReconcile {
     this.pending ??= { committed: this.capture(), at: Number.POSITIVE_INFINITY };
     this.digests.clear();
     this.history = [...history];
+    if (!this.restarted && this.tookHeadIn()) this.takeHeadIn();
     const found = this.restarted ? { reason: 'ledger' as const, hostIndex: 0 } : this.findBreak();
     this.restarted = false;
     if (!found) return { window: this.window() };
@@ -650,11 +656,67 @@ export class PrefixLedger {
     });
   }
 
+  /**
+   * Whether the history being compiled took the head in rather than keeping
+   * what it replaced: it is too short to hold the cut, or more of what was
+   * seen after the cut follows where the head's messages would end than
+   * follows the cut. When the head is as long as what it replaced, the two
+   * read the same, and the host's messages before the cut are not the
+   * window's.
+   */
+  private tookHeadIn(): boolean {
+    const head = this._head;
+    if (!head) return false;
+    if (this.history.length < head.cut) return true;
+    if (head.replacement.length === head.cut) return false;
+    return this.seenFrom(head.replacement.length) > this.seenFrom(head.cut);
+  }
+
+  /** How many of the messages seen after the cut, in order, the history holds from `start` on. */
+  private seenFrom(start: number): number {
+    const history = this.history;
+    let k = 0;
+    while (
+      k < this.seen.length &&
+      start + k < history.length &&
+      this.digestOf(history[start + k]) === this.seen[k]
+    ) {
+      k++;
+    }
+    return k;
+  }
+
+  /**
+   * The head becomes the host's: its messages are `host[0, replacement.length)`
+   * from now on, with their thinking as invalid as it was in the head, and
+   * every host index from the cut on moves with them. The window renders the
+   * same; whatever of the history differs from it is found next.
+   */
+  private takeHeadIn(): void {
+    const head = this._head;
+    if (!head) return;
+    const taken = head.replacement.length;
+    const shift = taken - head.cut;
+    // An entry kept past the compaction renders after the cut, wherever it was anchored.
+    this.entries = this.entries.map((entry) => ({
+      ...entry,
+      anchor: Math.max(taken, entry.anchor + shift),
+    }));
+    const invalid = head.replacement.flatMap((message, i): Range[] =>
+      head.signed && message._anthropic_compaction !== undefined ? [] : [[i, i + 1]],
+    );
+    const kept = this._stripped.flatMap(([from, until]): Range[] =>
+      until > head.cut ? [[Math.max(from, head.cut) + shift, until + shift]] : [],
+    );
+    this._stripped = mergeRanges([...invalid, ...kept]);
+    this.seen = [...head.replacement.map((message) => this.digestOf(message)), ...this.seen];
+    this._head = undefined;
+  }
+
   /** The first place the ledger stops matching the history being compiled. */
   private findBreak(): { reason: PrefixBreakReason; hostIndex: number } | undefined {
     const history = this.history;
     const cut = this.cut;
-    if (history.length < cut) return { reason: 'ledger', hostIndex: 0 };
     // A reply answered a request this ledger never saw, sent with whatever was
     // appended to it then: nothing it was signed over can be vouched for. An
     // assistant message nothing follows yet — a prefill — answered nothing, and
