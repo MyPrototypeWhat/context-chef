@@ -583,6 +583,68 @@ describe('onDemandCompaction()', () => {
     });
   });
 
+  describe("a call made only so the fallback's result can land", () => {
+    /** A fallback with a result waiting, and the calls it gets. */
+    const waitingFallback = () => {
+      const fallback = {
+        name: 'fallback',
+        pending: () => true,
+        apply: vi.fn(async (input: OverflowInput) => ({
+          history: input.history.slice(-1),
+          evicted: input.history.slice(0, -1),
+          span: input.history.slice(0, -1),
+          meta: { strategy: 'fallback', windowId: input.window.current, changed: true },
+        })),
+        commit: vi.fn(),
+        discard: vi.fn(),
+      } satisfies OverflowStrategy;
+      return fallback;
+    };
+
+    it('goes to the fallback, never to the provider', async () => {
+      const compact = compactor();
+      const fallback = waitingFallback();
+      const [strategy] = attached(onDemandCompaction({ compact, fallback }));
+      const input = inputOver(conversation(), { pendingOnly: true });
+
+      const landed = await strategy.apply(input);
+
+      expect(strategy.pending?.()).toBe(true);
+      expect(compact).not.toHaveBeenCalled();
+      expect(fallback.apply).toHaveBeenCalledWith(input);
+      expect(landed.meta.strategy).toBe('fallback');
+    });
+
+    it('leaves the result waiting in a tool turn below the raw window', async () => {
+      const compact = compactor();
+      const fallback = waitingFallback();
+      const [strategy, runner] = attached(onDemandCompaction({ compact, fallback }));
+      const input = inputOver(conversation(), { pendingOnly: true, midToolTurn: true });
+
+      const landed = await strategy.apply(input);
+
+      expect(compact).not.toHaveBeenCalled();
+      expect(fallback.apply).not.toHaveBeenCalled();
+      expect(landed.history).toBe(input.history);
+      expect(runner.failures).toEqual([]);
+    });
+
+    it('drops what the fallback has waiting once a signed result lands, and only then', async () => {
+      const fallback = waitingFallback();
+      const [strategy] = attached(onDemandCompaction({ compact: compactor(), fallback }));
+      const signed = await strategy.apply(inputOver(conversation()));
+      const unsigned = await strategy.apply(inputOver(conversation(), { wire: undefined }));
+
+      strategy.commit?.(unsigned);
+      expect(fallback.commit).toHaveBeenCalledWith(unsigned);
+      expect(fallback.discard).not.toHaveBeenCalled();
+
+      strategy.commit?.(signed);
+      expect(fallback.commit).toHaveBeenCalledTimes(1);
+      expect(fallback.discard).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('is named after its fallback, as server() is', () => {
     const compact = compactor();
     expect(onDemandCompaction({ compact }).name).toBe('onDemandCompaction');

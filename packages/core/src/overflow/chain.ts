@@ -12,6 +12,9 @@ import { type OverflowInput, type OverflowResult, type OverflowStrategy, unchang
  * OR left the history still above the trigger. Stops at the first strategy
  * that brings the window back under budget.
  *
+ * A call made only so a finished result can land (`pendingOnly`) runs only
+ * the steps holding one: nothing new is summarized for it.
+ *
  * The classic use is escalation: summarize normally, and when summarization
  * declines — a model outage, a summary that failed the shrink guard — fall
  * back to something that always works.
@@ -40,8 +43,12 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
       let summary: string | undefined;
       let reason: string | undefined;
       const contributions: Array<[OverflowStrategy, OverflowResult]> = [];
+      // A call made only to land a finished result goes to the steps holding one.
+      const runnable = input.pendingOnly
+        ? strategies.filter((strategy) => strategy.pending?.() === true)
+        : strategies;
 
-      for (const strategy of strategies) {
+      for (const strategy of runnable) {
         const result = await strategy.apply({ ...input, history, pinned });
         if (!result.meta.changed) {
           reason = result.meta.reason;
@@ -101,6 +108,10 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
     // A wrapped `background()` anywhere in the chain still has to be able to
     // land its finished job.
     pending: () => strategies.some((s) => s.pending?.() === true),
+
+    discard() {
+      for (const s of strategies) s.discard?.();
+    },
 
     snapshot: () => strategies.map((s) => s.snapshot?.()),
 

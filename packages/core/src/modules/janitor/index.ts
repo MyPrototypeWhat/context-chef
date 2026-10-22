@@ -901,11 +901,13 @@ export class Janitor {
     // paid for, and holding it means the model keeps paying for the span it
     // replaces. Asked before the circuit breaker, as it was before 4.2 — the
     // breaker is there to stop a broken model being hammered, not to hold back
-    // a result that already succeeded.
+    // a result that already succeeded — so past an open breaker, nothing but
+    // that result may act (`pendingOnly`).
     const pendingSwap = history.length > 0 && this._strategy.pending?.() === true;
+    const breakerOpen = this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES;
 
     // Circuit breaker: bail out if compression is consistently failing.
-    if (!pendingSwap && this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
+    if (!pendingSwap && breakerOpen) {
       return idle(
         `circuit breaker open after ${MAX_CONSECUTIVE_COMPRESSION_FAILURES} consecutive compression failures`,
       );
@@ -923,6 +925,9 @@ export class Janitor {
         prepared.history,
       );
     }
+    // Called only so the finished result can land: within budget, or past an
+    // open breaker, which nothing new may get through.
+    const pendingOnly = pendingSwap && (breakerOpen || prepared.budget === null);
 
     const result = await this._strategy.apply({
       history: prepared.history,
@@ -931,6 +936,7 @@ export class Janitor {
       pinned: extractPinnedMessages(prepared.history),
       window: this._window,
       forced: force,
+      ...(pendingOnly ? { pendingOnly: true as const } : {}),
       ...(appendOnly ? { appendOnly: true as const } : {}),
       ...(midToolTurn ? { midToolTurn: true as const } : {}),
       ...(pastLimit ? { pastLimit: true as const } : {}),

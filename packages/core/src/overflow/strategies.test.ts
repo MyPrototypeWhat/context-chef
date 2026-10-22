@@ -488,6 +488,32 @@ describe('server()', () => {
 });
 
 describe('chain()', () => {
+  it('runs only the steps with a result waiting on a call made just to land it', async () => {
+    const model = vi.fn(async () => '<summary>NEW</summary>');
+    const landing: OverflowStrategy = {
+      name: 'landing',
+      pending: () => true,
+      apply: vi.fn(async (input: OverflowInput) => {
+        const span = input.history.slice(0, -1);
+        return {
+          history: input.history.slice(-1),
+          evicted: span,
+          span,
+          meta: { strategy: 'landing', windowId: input.window.current, changed: true },
+        };
+      }),
+    };
+    const [strategy] = attached(
+      chain(summarize({ compressionModel: model, split: 'recent-turns' }), landing),
+    );
+
+    const landed = await strategy.apply(makeInput({ pendingOnly: true }));
+
+    expect(model).not.toHaveBeenCalled();
+    expect(landing.apply).toHaveBeenCalledTimes(1);
+    expect(landed.history.map((m) => m.content)).toEqual(['msg-5']);
+  });
+
   it('escalates to the next strategy when the first one declines', async () => {
     const long = [
       { role: 'user' as const, content: 'x'.repeat(3000) },
@@ -688,6 +714,67 @@ describe('background()', () => {
     expect(second.meta.changed).toBe(true);
     expect(second.history[0].content).toContain('BG');
     expect(second.history.at(-1)?.content).toBe('msg-5');
+  });
+
+  it('discard() drops a finished job unlanded, crediting nothing', async () => {
+    const [strategy, runner] = attached(background(inner()));
+    const messages = history(5);
+
+    await strategy.apply(makeInput({ history: messages }));
+    await settled(strategy);
+    strategy.discard?.();
+
+    expect(strategy.pending?.()).toBe(false);
+    expect(strategy.pendingJob).toBeUndefined();
+    expect(runner.successes).toBe(0);
+  });
+
+  it.each([
+    ['collapse', { collapse: true as const }],
+    ['pastLimit', { pastLimit: true as const }],
+  ])('lands the job as it is on a call made only to land it, %s or not', async (_, where) => {
+    const model = vi.fn(async () => '<summary>BG</summary>');
+    const [strategy] = attached(
+      background(
+        summarize({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: 1 }),
+      ),
+    );
+
+    await strategy.apply(makeInput({ history: history(5) }));
+    await settled(strategy);
+    // Past an open breaker: the landed window [BG, msg-5, …, msg-9] is past the raw window
+    // of 30, but nothing new may run — neither the collapse nor the refit.
+    const landed = await strategy.apply(
+      makeInput({ history: history(9), pendingOnly: true, ...where }),
+    );
+
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(landed.history.map((m) => m.content).slice(1)).toEqual([
+      'msg-5',
+      'msg-6',
+      'msg-7',
+      'msg-8',
+      'msg-9',
+    ]);
+  });
+
+  it('starts nothing on a call made only to land a job that no longer applies', async () => {
+    const model = vi.fn(async () => '<summary>BG</summary>');
+    const [strategy, runner] = attached(
+      background(summarize({ compressionModel: model, split: 'recent-turns' })),
+    );
+
+    await strategy.apply(makeInput({ history: history(5) }));
+    await settled(strategy);
+    // Over the trigger, but the runner called past an open breaker only to land the job.
+    const after = await strategy.apply(
+      makeInput({ history: history(6).reverse(), pendingOnly: true }),
+    );
+
+    expect(after.meta.changed).toBe(false);
+    expect(strategy.pendingJob).toBeUndefined();
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(runner.successes).toBe(1);
   });
 
   it('rebases the swap onto turns that arrived while the job ran', async () => {

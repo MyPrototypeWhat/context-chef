@@ -632,6 +632,109 @@ describe('appendOnly onDemandCompaction() with server()', () => {
   });
 });
 
+describe('appendOnly onDemandCompaction({ fallback: background(...) }): a fallback job waiting to land', () => {
+  const inBackground: Build = (compact, compressionModel) =>
+    onDemandCompaction({
+      compact,
+      fallback: background(
+        summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+      ),
+    });
+
+  it('drops the job once a signed compaction lands, and compacts only over budget after that', async () => {
+    const { chef, compact, compressionModel } = chefWith({}, inBackground);
+
+    const sizes: number[] = [];
+    const calls: number[] = [];
+    for (const n of [4, 5, 6, 7, 8]) {
+      const [payload] = await converse(chef, [asked(n)], { settle: true });
+      sizes.push(payload.messages.length);
+      calls.push(compact.mock.calls.length);
+    }
+
+    // asked(4) is the first request: nothing to sign over, so the fallback starts a job.
+    // asked(5) is over the trigger: block 1 lands, and the finished job is dropped unlanded.
+    // asked(6) fits, so nothing is asked for; asked(7) is over the trigger again.
+    expect(calls).toEqual([0, 1, 1, 2, 2]);
+    expect(sizes).toEqual([7, 3, 5, 3, 5]);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets nothing but the waiting job past an open breaker', async () => {
+    const warn = vi.fn();
+    // A raw window of 200 nothing here reaches; the trigger is still 60.
+    const { chef, compact, compressionModel } = chefWith(
+      { logger: { warn }, janitor: { contextWindow: 200, triggerRatio: 0.3, tokenizer } },
+      inBackground,
+    );
+    let release: () => void = () => {};
+    compressionModel.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve('<summary>SUMMARY 1</summary>');
+        }),
+    );
+    compact.mockImplementation(async () => ({ stop_reason: 'end_turn', content: [] }));
+
+    // asked(4) is the first request: the fallback's job starts, and its model takes its time.
+    // The next three are over the trigger, and every compaction fails: the breaker opens.
+    await converse(chef, [4, 5, 6, 7].map(asked), { settle: true });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const [landed] = await converse(chef, [asked(8)]);
+
+    expect(compact).toHaveBeenCalledTimes(3);
+    expect(warn.mock.calls.filter(([m]) => String(m).includes('circuit breaker'))).toHaveLength(3);
+    expect(landed.messages[0]).toEqual(text('user', SUMMARY(1)));
+  });
+
+  it('never asks again while the window fits, and leaves the breaker to stand', async () => {
+    // Tokens are characters here: q1 alone is over the trigger.
+    const qa: Message[] = [user('x'.repeat(80))];
+    for (let i = 1; i < 12; i++) qa.push(reply(`a${i}`, `SIG_${i}`), user(`q${i + 1}`));
+    const long = (n: number) => qa.slice(0, 2 * n - 1);
+    const characters = (messages: Message[]) =>
+      messages.reduce((n, message) => n + message.content.length, 0);
+    const warn = vi.fn();
+    const { chef, compact, compressionModel } = chefWith(
+      {
+        logger: { warn },
+        janitor: { contextWindow: 100, triggerRatio: 0.6, tokenizer: characters },
+      },
+      (compact, compressionModel) =>
+        onDemandCompaction({
+          compact,
+          keepRecentTurns: 2,
+          fallback: background(
+            summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+          ),
+        }),
+    );
+    let release: () => void = () => {};
+    compressionModel.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve('<summary>FALLBACK</summary>');
+        }),
+    );
+
+    const calls: number[] = [];
+    for (let n = 1; n <= 11; n++) {
+      if (n === 3) release();
+      // From the seventh request on, every compaction would fail.
+      if (n === 7)
+        compact.mockImplementation(async () => ({ stop_reason: 'end_turn', content: [] }));
+      await converse(chef, [long(n)], { settle: true });
+      calls.push(compact.mock.calls.length);
+    }
+
+    // long(2) has too few turns to keep two: the fallback starts a job. long(3) is still over
+    // the trigger, so block 1 lands over it; the window fits from then on.
+    expect(calls).toEqual([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
 describe('appendOnly background(onDemandCompaction())', () => {
   it('lands the job with the turns that arrived while it ran', async () => {
     const { chef, compact, breaks } = chefWith({}, (compact) =>

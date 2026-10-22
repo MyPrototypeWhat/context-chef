@@ -99,6 +99,14 @@ export interface OverflowInput {
    */
   forced?: boolean;
   /**
+   * The runner called only so a result computed earlier can land
+   * ({@link OverflowStrategy.pending}): the window is within budget and
+   * nothing — `forced`, `pastLimit`, `collapse` — asks for a compaction, or
+   * the circuit breaker is open. Only the parts that have a result waiting
+   * act on it; nothing new is computed.
+   */
+  pendingOnly?: true;
+  /**
    * `appendOnly`: `history` is the chef's window — the head of the last
    * compaction, the host's messages after it, and the chef's events among
    * them (`_chef_event`). Between compactions it only grows at its end;
@@ -298,9 +306,16 @@ export interface OverflowStrategy {
    * off-turn strategies (`background()`) only. The runner asks before it
    * evaluates the budget: a summary that is already paid for lands on the next
    * compile whatever the window currently costs, because holding it means the
-   * model keeps paying for the span it replaces.
+   * model keeps paying for the span it replaces. A call made for that alone
+   * comes with `pendingOnly`.
    */
   pending?(): boolean;
+  /**
+   * Drops a result computed earlier that is waiting to land, or the work
+   * still computing it: the window it was meant for is gone. Nothing lands
+   * and nothing is counted. Combinators pass it on.
+   */
+  discard?(): void;
   /** Serializable state, for `Janitor.snapshotState()`. Stateless strategies omit it. */
   snapshot?(): unknown;
   /** Restores {@link snapshot} output. `restore(undefined)` resets to the initial state. */

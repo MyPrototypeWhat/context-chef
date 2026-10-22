@@ -156,6 +156,9 @@ function compactionBlock(content: readonly unknown[]): AnthropicCompactionBlock 
  *   the server.
  * - Under `background()` the request is rendered when the job starts, and
  *   the job lands only while the window still renders it the same.
+ * - A result its fallback has waiting (a `background()` job) lands on a call
+ *   made just for it (`pendingOnly`), never in its place a new request; a
+ *   signed compaction that lands first drops it.
  *
  * @example
  * overflow: {
@@ -184,6 +187,8 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
 
   const name = fallback ? `onDemandCompaction(fallback: ${fallback.name})` : 'onDemandCompaction';
   let runner: OverflowRunner = detachedRunner;
+  /** The results the provider signed, as opposed to the fallback's. */
+  const signedResults = new WeakSet<OverflowResult>();
 
   return {
     name,
@@ -192,6 +197,17 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
 
     async apply(input: OverflowInput): Promise<OverflowResult> {
       const { history, wire } = input;
+      // Called only so the fallback's finished result can land: it goes there,
+      // where an unsigned compaction may land, and nothing is asked for.
+      if (input.pendingOnly) {
+        const where = unsignedInput(input);
+        if (fallback && where) return fallback.apply(where);
+        return unchanged(
+          input,
+          name,
+          "the fallback's finished result waits for the tool turn to end",
+        );
+      }
       // Past the raw window the request cannot go out as it is.
       const past = input.pastLimit === true || input.collapse === true;
 
@@ -266,7 +282,7 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
       if (!block) return failed('on-demand compaction returned no signed compaction block');
 
       const span = history.slice(0, cut);
-      return {
+      const result: OverflowResult = {
         history: [anthropicCompactionMessage(block), ...history.slice(cut)],
         evicted: span,
         span,
@@ -277,10 +293,18 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
           signed: { request: signedOver },
         },
       };
+      signedResults.add(result);
+      return result;
     },
 
-    commit: (result) => fallback?.commit?.(result),
+    commit(result) {
+      // A signed landing leaves nothing for what the fallback had waiting to
+      // land on: it is dropped, neither landed nor counted.
+      if (signedResults.has(result)) fallback?.discard?.();
+      else fallback?.commit?.(result);
+    },
     pending: () => fallback?.pending?.() === true,
+    discard: () => fallback?.discard?.(),
     snapshot: () => fallback?.snapshot?.(),
     restore: (state) => fallback?.restore?.(state),
     attach(installed) {

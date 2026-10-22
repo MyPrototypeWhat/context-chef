@@ -13,6 +13,7 @@ import {
   background,
   type ChefConfig,
   ContextChef,
+  chain,
   fromAnthropic,
   type JanitorConfig,
   type OverflowResult,
@@ -611,6 +612,49 @@ describe('overflow — v5 review fixes', () => {
 
     expect(payload.messages).toHaveLength(1);
     expect(compressed).toEqual([false]);
+  });
+});
+
+describe('overflow — a call made only to land a finished job', () => {
+  it('runs only the chain steps that have one: nothing new is summarized below the trigger', async () => {
+    const first = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('API down'))
+      .mockResolvedValue('<summary>FIRST</summary>');
+    const second = vi.fn(async () => '<summary>SECOND</summary>');
+    const keepOne = { split: 'recent-turns', preserveRecentMessages: 1 } as const;
+    const chef = new ContextChef({
+      logger: silent,
+      // No tokenizer: the reported usage, else the built-in estimate of a few short messages.
+      janitor: { contextWindow: 10_000 },
+      overflow: {
+        strategy: chain(
+          summarize({ compressionModel: first, ...keepOne }),
+          background(summarize({ compressionModel: second, ...keepOne })),
+        ),
+      },
+    });
+    const history: Message[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' },
+      { role: 'user', content: 'q3' },
+    ];
+
+    // Over the trigger: the first step fails, and the background step starts its job.
+    chef.reportTokenUsage(20_000);
+    await chef.setHistory(history).compile({ target: 'openai' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Within budget: the runner calls only so the finished job can land.
+    const payload = await chef.setHistory(history).compile({ target: 'openai' });
+
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(payload.messages.map((m) => String(m.content))).toEqual([
+      expect.stringContaining('SECOND'),
+      'q3',
+    ]);
   });
 });
 

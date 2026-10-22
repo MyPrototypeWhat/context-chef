@@ -3,6 +3,7 @@ import {
   background,
   ContextChef,
   chain,
+  type OverflowInput,
   type OverflowStrategy,
   reset,
   summarize,
@@ -1012,6 +1013,48 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
 
     expect(result.meta.changed).toBe(true);
     expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  describe('a call made only so a waiting result can land', () => {
+    /** Always has a result waiting, and records what it is handed. */
+    const waiting = () => {
+      const inputs: OverflowInput[] = [];
+      const strategy: OverflowStrategy = {
+        name: 'waiting',
+        pending: () => true,
+        async apply(input) {
+          inputs.push(input);
+          return {
+            history: input.history,
+            evicted: [],
+            span: [],
+            meta: { strategy: 'waiting', windowId: input.window.current, changed: false },
+          };
+        },
+      };
+      return { strategy, inputs };
+    };
+
+    it.each([
+      ['within budget', 2, 0, true],
+      ['over budget', 5, 0, undefined],
+      ['over budget, past an open breaker', 5, 3, true],
+      ['forced, past an open breaker', 2, 3, true],
+    ])('%s', async (name, length, failures, pendingOnly) => {
+      const { strategy, inputs } = waiting();
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        strategy,
+      });
+      seedFailures(janitor, failures);
+
+      await janitor.overflow(buildLongHistory(length), { force: name.startsWith('forced') });
+
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0].pendingOnly).toBe(pendingOnly);
+    });
   });
 
   describe('background()', () => {

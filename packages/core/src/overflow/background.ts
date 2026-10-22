@@ -280,7 +280,8 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
     parts: [inner],
 
     async apply(input: OverflowInput): Promise<OverflowResult> {
-      if (input.collapse) return now(input);
+      // A call made only to land the finished job computes nothing new.
+      if (input.collapse && !input.pendingOnly) return now(input);
       if (job?.settled) {
         const finished = job;
         // A signed inner's fallback may have run in the job. Its result strips the
@@ -300,18 +301,22 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
         }
         job = undefined;
         const swapped = unsignedInToolTurn ? null : swapIn(finished, input);
-        if (swapped) return input.pastLimit ? fitLanded(swapped, input) : swapped;
+        if (swapped)
+          return input.pastLimit && !input.pendingOnly ? fitLanded(swapped, input) : swapped;
         // The model did its work off-turn; the history simply moved under it.
         // The runner credits a result that lands, and this one never will, so
         // without this a flaky model interleaved with fast-moving history
         // would walk the breaker open on jobs that all succeeded.
         if (finished.result?.meta.changed) runner.succeed();
-        // Failed or stale — discard it and evaluate fresh, unless the window
-        // is not over the trigger: the runner then called in only to give the
-        // finished job its chance, and starting another one would buy a
-        // summary nobody asked for.
-        if (!input.forced && !input.pastLimit && input.budget.remaining >= 0) {
-          return unchanged(input, name, 'within budget — the finished job no longer applies');
+        // Failed or stale — discard it and evaluate fresh, unless the runner
+        // called in only to give the finished job its chance (within budget,
+        // or past an open breaker): starting another one would buy a summary
+        // nobody asked for.
+        if (
+          input.pendingOnly ||
+          (!input.forced && !input.pastLimit && input.budget.remaining >= 0)
+        ) {
+          return unchanged(input, name, 'the finished job no longer applies');
         }
       } else if (job && !input.pastLimit) {
         // Job still running — don't stack a second evaluation on top of it.
@@ -324,6 +329,11 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
 
     commit(result) {
       for (const step of built.get(result) ?? [result]) inner.commit?.(step);
+    },
+
+    discard() {
+      // Its promise keeps running and settles into an orphaned job nothing reads.
+      job = undefined;
     },
 
     snapshot: () => inner.snapshot?.(),
