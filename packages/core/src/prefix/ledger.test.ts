@@ -832,10 +832,18 @@ describe('PrefixLedger — checkpoints', () => {
     expect(ledger.lastAppended('dynamic-state')?.content).toBe('E4');
     ledger.commit(history);
 
-    // A summarized message is no longer in the window: editing it is no break.
+    // A summarized message changed: the head no longer stands for the history. r1 on was
+    // signed over E1, which the window no longer holds, so the strip starts there.
     const summarizedEdit = [...history];
     summarizedEdit[2] = user('q2 (edited)');
-    expect(ledger.reconcile(summarizedEdit).break).toBeUndefined();
+    expect(ledger.reconcile(summarizedEdit).break).toEqual({
+      reason: 'history',
+      at: 1,
+      signed: false,
+      stripped: [1, 7],
+    });
+    expect(ledger.head).toBeUndefined();
+    ledger.rollback();
 
     // A kept one still is: host[4] now sits at window index 2.
     const keptEdit = [...history];
@@ -845,6 +853,96 @@ describe('PrefixLedger — checkpoints', () => {
       at: 2,
       signed: false,
       stripped: [4, 7],
+    });
+  });
+
+  describe('the head stands in only for the history it summarized', () => {
+    // q1 r1 q2 r2 … q8
+    const long: Message[] = [user('q1')];
+    for (let i = 1; i < 8; i++) long.push(assistant(`r${i}`), user(`q${i + 1}`));
+    const S = user('<summary/>');
+
+    /** Followed from the first request to `history`, then compacted at `cut` into `replacement`. */
+    function landed(history: Message[], cut: number, replacement: Message[]): PrefixLedger {
+      const ledger = new PrefixLedger();
+      for (let n = 1; n < history.length; n += 2) compile(ledger, history.slice(0, n));
+      ledger.reconcile(history);
+      ledger.checkpoint('compaction', cut, { cut, replacement, signed: false });
+      ledger.commit(history);
+      return ledger;
+    }
+
+    it('stands in while the history holds what it summarized as it was', () => {
+      const ledger = landed(long.slice(0, 9), 4, [S]);
+      const next = compile(ledger, long.slice(0, 11));
+
+      expect(next.break).toBeUndefined();
+      expect(shape(next.window)).toEqual(['user:<summary/>', ...shape(long.slice(4, 11))]);
+    });
+
+    it('is taken in by a history that opens with it, however long, and an edit after it is a break', () => {
+      const ledger = landed(long.slice(0, 9), 4, [S]);
+      const history = [{ ...S }, user('q3 (edited)'), ...long.slice(5, 11)];
+      const next = compile(ledger, history);
+
+      expect(next.break).toEqual({ reason: 'history', at: 1, signed: false, stripped: [1, 8] });
+      expect(shape(next.window)).toEqual(shape(history));
+    });
+
+    it('is taken in when it kept no host message (a collapse)', () => {
+      const ledger = landed(long.slice(0, 5), 5, [S]);
+      const history = [{ ...S }, ...long.slice(5, 10)];
+      const next = compile(ledger, history);
+
+      expect(next.break).toBeUndefined();
+      expect(shape(next.window)).toEqual(shape(history));
+    });
+
+    it.each([
+      [
+        'wrote back the summary without the pinned message',
+        [S, { ...long[0], pinned: true }],
+        [{ ...S }, ...long.slice(4, 11)],
+      ],
+      // A summary kept as a system message leaves the conversation an integration compares.
+      ['keeps no summary in the conversation', [S], long.slice(4, 11)],
+      [
+        'wrote its own summary and edited a kept message',
+        [S],
+        [user('<mine/>'), user('q3 (edited)'), ...long.slice(5, 11)],
+      ],
+    ])('no longer applies to a host that %s: a break at 0, and nothing dropped', (_case, replacement, history) => {
+      const ledger = landed(long.slice(0, 9), 4, replacement);
+      const next = compile(ledger, history);
+
+      expect(next.break).toEqual({
+        reason: 'history',
+        at: 0,
+        signed: false,
+        stripped: [0, history.length],
+      });
+      expect(shape(next.window)).toEqual(shape(history));
+      expect(ledger.head).toBeUndefined();
+    });
+
+    it('no longer applies when it is as long as its cut and the host wrote another summary', () => {
+      const ledger = landed(long.slice(0, 5), 1, [S]);
+      const history = [user('<mine/>'), ...long.slice(1, 7)];
+      const next = compile(ledger, history);
+
+      expect(next.break).toEqual({ reason: 'history', at: 0, signed: false, stripped: [0, 7] });
+      expect(shape(next.window)).toEqual(shape(history));
+    });
+
+    it('keeps what it summarized across a snapshot', () => {
+      const ledger = landed(long.slice(0, 9), 4, [S]);
+      const restored = PrefixLedger.fromSnapshot(JSON.parse(JSON.stringify(ledger.snapshot())));
+      const history = [...long.slice(0, 9)];
+      history[2] = user('q2 (edited)');
+      const next = compile(restored, history);
+
+      expect(next.break).toEqual({ reason: 'history', at: 2, signed: false, stripped: [2, 9] });
+      expect(shape(next.window)).toEqual(shape(history));
     });
   });
 

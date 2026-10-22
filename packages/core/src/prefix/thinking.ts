@@ -34,7 +34,10 @@ export function thinkingKeys(message: Message): string[] {
  * head vouches for its compaction block alone: anything else in it is what
  * it kept of an unsigned head before it, sent without its thinking since.
  */
-export function invalidatedMessages(history: readonly Message[], ledger: PrefixLedger): Message[] {
+export function invalidatedMessages(
+  history: readonly Message[],
+  ledger: Pick<PrefixLedger, 'stripped' | 'head'>,
+): Message[] {
   const stripped = ledger.stripped.flatMap(([from, until]) => history.slice(from, until));
   const head = ledger.head;
   if (!head) return stripped;

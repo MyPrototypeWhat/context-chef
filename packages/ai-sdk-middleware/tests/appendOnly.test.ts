@@ -81,8 +81,8 @@ const summary = (n: number) => user(Prompts.getCompactSummaryWrapper(`SUMMARY ${
 
 const tokenizer = (messages: Message[]): number => messages.length * 10;
 
-/** A compression model answering `SUMMARY 1`, `SUMMARY 2`, … in turn, keeping the last turn. */
-function keepLastTurn() {
+/** A compression model answering `SUMMARY 1`, `SUMMARY 2`, … in turn, keeping the last `turns`. */
+function keepLastTurn(turns = 1) {
   let summaries = 0;
   const compressionModel = vi.fn(
     async (_messages: Message[]) => `<summary>SUMMARY ${++summaries}</summary>`,
@@ -90,7 +90,7 @@ function keepLastTurn() {
   const strategy = summarize({
     compressionModel,
     split: 'recent-turns',
-    preserveRecentMessages: 1,
+    preserveRecentMessages: turns,
   });
   return { compressionModel, strategy };
 }
@@ -278,23 +278,35 @@ describe('appendOnly: a compression lands once as the head', () => {
 
   /**
    * A host that keeps its own store and, as `onCompress` asks, replaces the
-   * compressed slice with the summary it is handed (`write` turns that into
-   * what it stores). Each call sends the store; reply n and question n + 1
-   * are appended after it.
+   * compressed slice with what `write` makes of the summary and the details
+   * it is handed. Each call sends the store, `before` it may edit it; reply n
+   * and question n + 1 are appended after it.
    */
-  async function persisting(write: (summary: string) => LanguageModelV4Message) {
-    const { strategy } = keepLastTurn();
+  async function persisting(
+    write: (
+      summary: string,
+      details: { compressedMessages: LanguageModelV4Prompt; replacement?: LanguageModelV4Prompt },
+    ) => LanguageModelV4Message[],
+    options: {
+      keep?: number;
+      turns?: number;
+      before?: (store: LanguageModelV4Message[], n: number) => void;
+    } = {},
+  ) {
+    const { keep = 1, turns = 7, before } = options;
+    const { strategy } = keepLastTurn(keep);
     let store: LanguageModelV4Message[] = [user('q1')];
     const recorded = middlewareWith({
       contextWindow: 100,
       tokenizer,
       overflow: { strategy },
-      onCompress: (summaryText, count) => {
-        store = [write(summaryText), ...store.slice(count)];
+      onCompress: (summaryText, count, details) => {
+        store = [...write(summaryText, details), ...store.slice(count)];
       },
     });
     const prompts: LanguageModelV4Prompt[] = [];
-    for (let n = 1; n <= 7; n++) {
+    for (let n = 1; n <= turns; n++) {
+      before?.(store, n);
       prompts.push(await recorded.send([sys, ...store]));
       store = [...store, reply(`a${n}`, `S_${n}`), user(`q${n + 1}`)];
     }
@@ -302,7 +314,7 @@ describe('appendOnly: a compression lands once as the head', () => {
   }
 
   it('sends the same prompt from a store that took the summary in, reasoning and all', async () => {
-    const { prompts, breaks } = await persisting(user);
+    const { prompts, breaks } = await persisting((s) => [user(s)]);
 
     expect(prompts[4]).toEqual([sys, summary(1), user('q5')]);
     expect(prompts[5]).toEqual([...prompts[4], reply('a5', 'S_5'), user('q6')]);
@@ -312,13 +324,48 @@ describe('appendOnly: a compression lands once as the head', () => {
   });
 
   it('reports a history checkpoint at a summary the host wrote itself', async () => {
-    const { prompts, breaks } = await persisting(() => user('My own summary.'));
+    const { prompts, breaks } = await persisting(() => [user('My own summary.')]);
 
     expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([
       ['compaction', 0, 0],
       ['history', 0, 1],
     ]);
     expect(prompts[5]).toEqual([sys, user('My own summary.'), user('q5'), reply('a5'), user('q6')]);
+  });
+
+  it('sends every message once the host edits one it kept behind the summary it wrote back', async () => {
+    const { prompts, breaks } = await persisting((s) => [user(s)], {
+      keep: 3,
+      turns: 6,
+      before: (store, n) => {
+        if (n === 6) store[1] = user('q4 (edited)');
+      },
+    });
+
+    // The edit is a checkpoint at the message after the summary; nothing is left out.
+    expect(prompts[5]).toEqual([
+      sys,
+      summary(1),
+      user('q4 (edited)'),
+      reply('a4'),
+      user('q5'),
+      reply('a5'),
+      user('q6'),
+    ]);
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([
+      ['compaction', 0, 1],
+      ['history', 1, 1],
+    ]);
+  });
+
+  it('counts only the reasoning a summary the host wrote itself newly strips', async () => {
+    const { breaks } = await persisting(() => [user('My own summary.')], { keep: 3, turns: 6 });
+
+    // a4 went without its reasoning when the head landed; a5 is the one this break strips.
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([
+      ['compaction', 0, 1],
+      ['history', 0, 1],
+    ]);
   });
 
   it('waits in a tool loop below the raw window, and collapses it past the window', async () => {

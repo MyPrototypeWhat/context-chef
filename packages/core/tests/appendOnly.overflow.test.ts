@@ -276,18 +276,31 @@ describe('appendOnly overflow: a compaction is a checkpoint whose head stays', (
 describe('appendOnly overflow: a host that persists the summary through onCompress', () => {
   /**
    * A host that keeps its own store and, as `onCompress` asks, replaces what
-   * was compressed with the summary it is handed (`write` turns that into
-   * what it stores). Each compile sends the store; the model's reply and the
-   * next question are appended after it.
+   * was compressed with what `write` makes of the summary and the details it
+   * is handed. Each compile sends the store; the model's reply and the next
+   * question are appended after it. `onCompress` counts are recorded.
    */
-  async function persisting(write: (summary: Message) => Message) {
-    let store: Message[] = [qa[0]];
-    const onCompress = (summary: Message, _count: number, details: CompressionDetails) => {
-      store = [write(summary), ...store.filter((m) => !details.compressedMessages.includes(m))];
+  async function persisting(
+    write: (summary: Message, details: CompressionDetails) => Message[],
+    options: {
+      keep?: number;
+      first?: Message;
+      turns?: number;
+      setup?: (chef: ContextChef) => void;
+    } = {},
+  ) {
+    const { keep = 1, first = qa[0], turns = 6, setup } = options;
+    let store: Message[] = [first];
+    const counts: number[] = [];
+    const onCompress = (summary: Message, count: number, details: CompressionDetails) => {
+      counts.push(count);
+      const kept = store.filter((m) => !details.compressedMessages.includes(m));
+      store = [...write(summary, details), ...kept];
     };
-    const recorded = chefWith({ janitor: { ...JANITOR, onCompress } });
+    const recorded = chefWith({ janitor: { ...JANITOR, onCompress } }, keepLast(keep));
+    setup?.(recorded.chef);
     const payloads: AnthropicPayload[] = [];
-    for (let n = 1; n <= 6; n++) {
+    for (let n = 1; n <= turns; n++) {
       payloads.push(
         (await recorded.chef
           .setHistory(store)
@@ -295,11 +308,11 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
       );
       store = [...store, qa[2 * n - 1], qa[2 * n]];
     }
-    return { ...recorded, payloads };
+    return { ...recorded, payloads, counts, store: () => store };
   }
 
   it('sends the same window from the store that took the summary in, and keeps the thinking', async () => {
-    const { payloads, breaks, invariants, compressionModel } = await persisting((s) => s);
+    const { payloads, breaks, invariants, compressionModel } = await persisting((s) => [s]);
     const [, , , compacted, next, last] = payloads;
 
     expect(compressionModel).toHaveBeenCalledTimes(1);
@@ -312,7 +325,7 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
   });
 
   it('reports a `history` checkpoint at a summary the host wrote itself', async () => {
-    const { payloads, breaks, invariants } = await persisting(() => user('My own summary.'));
+    const { payloads, breaks, invariants } = await persisting(() => [user('My own summary.')]);
     const [, , , , next] = payloads;
 
     expect(breaks.map(({ windowId: _id, ...b }) => b)).toEqual([
@@ -325,6 +338,42 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
       text('assistant', 'a4'),
       text('user', 'q5'),
     ]);
+    expect(invariants).toEqual([]);
+  });
+
+  it('counts only the thinking a summary the host wrote itself newly strips', async () => {
+    const { breaks } = await persisting(() => [user('My own summary.')], { keep: 3, turns: 5 });
+
+    // a3 went without its thinking when the head landed; a4 is the one this break strips.
+    expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([
+      ['compaction', 1],
+      ['history', 1],
+    ]);
+  });
+
+  it('sends every message of a store that left out the pinned message the head put back', async () => {
+    const pinned: Message = { ...qa[0], pinned: true };
+    const { payloads, breaks, invariants, store } = await persisting((s) => [s], {
+      keep: 3,
+      first: pinned,
+    });
+
+    // The head no longer applies: the window is the store again, nothing of it dropped.
+    expect(payloads[4].messages).toEqual([
+      text('user', SUMMARY(1)),
+      text('user', 'q3'),
+      text('assistant', 'a3'),
+      text('user', 'q4'),
+      text('assistant', 'a4'),
+      text('user', 'q5'),
+    ]);
+    expect(breaks.map(({ windowId: _id, ...b }) => b)).toEqual([
+      { ...COMPACTED, strippedThinking: 1 },
+      { reason: 'history', at: 0, signed: false, strippedThinking: 1 },
+      { ...COMPACTED, strippedThinking: 1 },
+    ]);
+    // The second landing left the store whole.
+    expect(store().map((m) => m.content)).toEqual([SUMMARY(2), 'q5', 'a5', 'q6', 'a6', 'q7']);
     expect(invariants).toEqual([]);
   });
 });

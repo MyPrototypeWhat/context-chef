@@ -100,8 +100,7 @@ export const prefixPhase: Phase = {
     // Every committed compile records what it sent, so a ledger without it has
     // never seen one.
     const fresh = ledger.lastSent === undefined;
-    const before = invalidatedThinking(history, ledger);
-    const { window, break: brk } = ledger.reconcile(history);
+    const { window, break: brk, invalidBefore = [] } = ledger.reconcile(history);
     const clearAt = host.clearAt && ctx.target.isAnthropicTarget;
     ctx.prefix = { ledger, history, breaks: [], clearAt };
     ctx.history = window;
@@ -120,7 +119,8 @@ export const prefixPhase: Phase = {
         );
       }
     }
-    await reportPrefixBreak(ctx, host, brk, before);
+    // Read after the ledger placed its head: a head taken in moves the ranges it strips.
+    await reportPrefixBreak(ctx, host, brk, new Set(invalidBefore.flatMap(thinkingKeys)));
   },
 };
 

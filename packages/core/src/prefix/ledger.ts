@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Assembler } from '../modules/assembler';
 import type { Message } from '../types';
+import { invalidatedMessages } from './thinking';
 import type {
   InjectionSource,
   PrefixBreak,
@@ -15,9 +16,21 @@ import type {
 
 type Range = [from: number, until: number];
 
+/**
+ * What a head stands for: digests of the host messages it summarized,
+ * `host[0, cut)` when it landed, and how many of them lead with thinking
+ * signed over the host messages before them alone (`intact`) — up to the
+ * first event the compaction absorbed, or an older head's cut.
+ */
+interface Summarized {
+  readonly digests: readonly string[];
+  readonly intact: number;
+}
+
 /** What a compile can change, as the last commit left it: what `rollback()` puts back. */
 interface Committed {
   readonly head?: PrefixHead;
+  readonly summarized?: Summarized;
   readonly entries: PrefixEntry[];
   readonly stripped: Range[];
   readonly seen: string[];
@@ -271,6 +284,8 @@ function groupEntries(
  */
 export class PrefixLedger {
   private _head?: PrefixHead;
+  /** What the head stands for, while there is one. */
+  private summarized?: Summarized;
   private entries: PrefixEntry[] = [];
   private _stripped: Range[] = [];
   /** Digests of `host[cut, cut + seen.length)` as last committed. */
@@ -304,6 +319,7 @@ export class PrefixLedger {
     const copy = structuredClone(snapshot);
     const ledger = new PrefixLedger();
     ledger._head = copy.head;
+    ledger.summarized = copy.summarized;
     ledger.entries = [...copy.entries];
     ledger._stripped = copy.stripped.map(([from, until]) => [from, until]);
     ledger.seen = [...copy.seen];
@@ -378,22 +394,29 @@ export class PrefixLedger {
    * meeting a history with a reply in it — the first mismatch is applied as a
    * checkpoint and reported in `break`; the window is the one after it.
    *
-   * A history that took the head in — a host that persisted the compaction
-   * (an `onCompress` sink writing the summary back) sends the window's head
-   * as its own first messages, then what followed the cut — is read that way:
-   * as far as it matches the window, it is the same conversation, and the
-   * first message that does not is a `history` checkpoint.
+   * A head stands in only for the host messages it summarized, while the
+   * history holds them as they were. A history that opens with the head's
+   * messages instead took it in — a host that persisted the compaction, an
+   * `onCompress` sink writing them back — and the head becomes the host's:
+   * the same conversation, as far as it matches the window. Any other
+   * history is one the head no longer applies to: a `history` checkpoint,
+   * and the window is the host's history again.
    */
   reconcile(history: readonly Message[]): PrefixReconcile {
     this.pending ??= { committed: this.capture(), at: Number.POSITIVE_INFINITY };
     this.digests.clear();
+    const leaving = this.history;
     this.history = [...history];
-    if (!this.restarted && this.tookHeadIn()) this.takeHeadIn();
-    const found = this.restarted ? { reason: 'ledger' as const, hostIndex: 0 } : this.findBreak();
+    const found = this.restarted
+      ? { reason: 'ledger' as const, hostIndex: 0, headLost: false }
+      : this.findBreak();
     this.restarted = false;
     if (!found) return { window: this.window() };
+    const invalidBefore = found.headLost
+      ? this.invalidIn(leaving)
+      : invalidatedMessages(this.history, this);
     const applied = this.checkpoint(found.reason, found.hostIndex);
-    return { window: this.window(), break: applied };
+    return { window: this.window(), break: applied, invalidBefore };
   }
 
   /**
@@ -543,6 +566,14 @@ export class PrefixLedger {
     const place = this.places();
     const previousCut = this.cut;
     if (head) {
+      const absorbed = this.entries
+        .map((e) => place[e.anchor])
+        .filter((at): at is number => at !== undefined && at <= head.cut);
+      this.summarized = {
+        digests: this.history.slice(0, head.cut).map((message) => this.digestOf(message)),
+        // Past an older head's cut, thinking was signed over that head.
+        intact: this._head ? (this.summarized?.intact ?? 0) : Math.min(head.cut, ...absorbed),
+      };
       this._head = head;
       this.entries = this.entries.filter((e) => (place[e.anchor] ?? -1) > head.cut);
       this.seen = head.cut >= previousCut ? this.seen.slice(head.cut - previousCut) : [];
@@ -550,7 +581,10 @@ export class PrefixLedger {
       // Re-based by the next commit.
       this._lastSent = undefined;
     } else {
-      if (hostIndex < previousCut) this._head = undefined;
+      if (hostIndex < previousCut) {
+        this._head = undefined;
+        this.summarized = undefined;
+      }
       this.entries = this.entries.filter((e) => (place[e.anchor] ?? Infinity) <= hostIndex);
       this.seen = this.seen.slice(0, Math.max(0, hostIndex - previousCut));
     }
@@ -617,6 +651,7 @@ export class PrefixLedger {
     this.digests.clear();
     if (!committed) return;
     this._head = committed.head;
+    this.summarized = committed.summarized;
     this.entries = committed.entries;
     this._stripped = committed.stripped;
     this.seen = committed.seen;
@@ -635,6 +670,7 @@ export class PrefixLedger {
   reset(): void {
     this.restarted ||= !this.blank;
     this._head = undefined;
+    this.summarized = undefined;
     this.entries = [];
     this._stripped = [];
     this.seen = [];
@@ -648,6 +684,7 @@ export class PrefixLedger {
       version: 1 as const,
       entries: this.entries,
       ...(this._head ? { head: this._head } : {}),
+      ...(this.summarized ? { summarized: this.summarized } : {}),
       stripped: this._stripped,
       seen: this.seen,
       ...(this._lastSent ? { lastSent: this._lastSent } : {}),
@@ -657,33 +694,46 @@ export class PrefixLedger {
   }
 
   /**
-   * Whether the history being compiled took the head in rather than keeping
-   * what it replaced: it is too short to hold the cut, or more of what was
-   * seen after the cut follows where the head's messages would end than
-   * follows the cut. When the head is as long as what it replaced, the two
-   * read the same, and the host's messages before the cut are not the
-   * window's.
+   * Where the head stands with the history being compiled. It stands in for
+   * the host messages it summarized while the history holds them as they
+   * were. A history that opens with all of the head's messages took it in,
+   * and the head becomes the host's. Otherwise it no longer applies: the host
+   * index to drop it at — where the history first differs from what was
+   * summarized, or earlier, where thinking was signed over events or an older
+   * head the window no longer holds.
    */
-  private tookHeadIn(): boolean {
-    const head = this._head;
-    if (!head) return false;
-    if (this.history.length < head.cut) return true;
-    if (head.replacement.length === head.cut) return false;
-    return this.seenFrom(head.replacement.length) > this.seenFrom(head.cut);
+  private placeHead(head: PrefixHead): number | undefined {
+    const summarized = this.summarized;
+    if (summarized && this.leading(summarized.digests) === head.cut) return undefined;
+    const replacement = head.replacement.map((message) => this.digestOf(message));
+    if (this.leading(replacement) === replacement.length) {
+      this.takeHeadIn();
+      return undefined;
+    }
+    return Math.min(this.leading(summarized?.digests ?? []), summarized?.intact ?? 0);
   }
 
-  /** How many of the messages seen after the cut, in order, the history holds from `start` on. */
-  private seenFrom(start: number): number {
+  /** How many leading messages of the history being compiled have `digests`, in order. */
+  private leading(digests: readonly string[]): number {
     const history = this.history;
     let k = 0;
-    while (
-      k < this.seen.length &&
-      start + k < history.length &&
-      this.digestOf(history[start + k]) === this.seen[k]
-    ) {
+    while (k < digests.length && k < history.length && this.digestOf(history[k]) === digests[k]) {
       k++;
     }
     return k;
+  }
+
+  /**
+   * The messages of the history being compiled whose thinking was invalid
+   * over `leaving`, the history the window was built over until now, known by
+   * digest: a head that no longer applies leaves no host index to read the
+   * old ranges by.
+   */
+  private invalidIn(leaving: readonly Message[]): Message[] {
+    const invalid = new Set(
+      invalidatedMessages(leaving, this).map((message) => this.digestOf(message)),
+    );
+    return this.history.filter((message) => invalid.has(this.digestOf(message)));
   }
 
   /**
@@ -711,10 +761,20 @@ export class PrefixLedger {
     this._stripped = mergeRanges([...invalid, ...kept]);
     this.seen = [...head.replacement.map((message) => this.digestOf(message)), ...this.seen];
     this._head = undefined;
+    this.summarized = undefined;
   }
 
-  /** The first place the ledger stops matching the history being compiled. */
-  private findBreak(): { reason: PrefixBreakReason; hostIndex: number } | undefined {
+  /**
+   * The first place the ledger stops matching the history being compiled;
+   * `headLost` when the head no longer applies to it.
+   */
+  private findBreak():
+    | { reason: PrefixBreakReason; hostIndex: number; headLost: boolean }
+    | undefined {
+    if (this._head) {
+      const lost = this.placeHead(this._head);
+      if (lost !== undefined) return { reason: 'history', hostIndex: lost, headLost: true };
+    }
     const history = this.history;
     const cut = this.cut;
     // A reply answered a request this ledger never saw, sent with whatever was
@@ -723,17 +783,17 @@ export class PrefixLedger {
     // nor does the compaction block a resumed history opens with: it stands
     // for what came before it, and a reply after it is still one.
     if (this.blank && answeredReplies(history) > 0) {
-      return { reason: 'ledger', hostIndex: 0 };
+      return { reason: 'ledger', hostIndex: 0, headLost: false };
     }
     // A history break drops any entry anchored past the end along with the rest.
     for (let k = 0; k < this.seen.length; k++) {
       const i = cut + k;
       if (i >= history.length || this.digestOf(history[i]) !== this.seen[k]) {
-        return { reason: 'history', hostIndex: i };
+        return { reason: 'history', hostIndex: i, headLost: false };
       }
     }
     if (this.entries.some((e) => e.anchor > history.length)) {
-      return { reason: 'ledger', hostIndex: history.length };
+      return { reason: 'ledger', hostIndex: history.length, headLost: false };
     }
     return undefined;
   }
@@ -790,6 +850,7 @@ export class PrefixLedger {
   private capture(): Committed {
     return {
       head: this._head,
+      summarized: this.summarized,
       // `append()` pushes onto the live array.
       entries: [...this.entries],
       stripped: this._stripped,

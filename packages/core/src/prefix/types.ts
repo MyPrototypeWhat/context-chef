@@ -107,6 +107,12 @@ export interface PrefixLedgerSnapshot {
   readonly seen: readonly string[];
   /** What was last sent: compared to detect a change, and reused by an on-demand compaction request. */
   readonly lastSent?: PrefixSent;
+  /**
+   * What `head` stands for: digests of the host messages it summarized
+   * (`host[0, cut)` when it landed), and how many of them lead with thinking
+   * signed over the host messages before them alone.
+   */
+  readonly summarized?: { readonly digests: readonly string[]; readonly intact: number };
   /** `reset()` since the last compile: the next one reports a `ledger` checkpoint at 0. */
   readonly restarted?: true;
   /**
@@ -139,6 +145,11 @@ export interface PrefixReconcile {
   readonly window: Message[];
   /** Present when the ledger no longer matched what it is replayed over; already applied. */
   readonly break?: PrefixBreak;
+  /**
+   * With `break`: the messages of the history (and head) whose thinking was
+   * invalid already before it — what it did not newly strip.
+   */
+  readonly invalidBefore?: readonly Message[];
 }
 
 /** `CompileMeta.prefix`: present only when `appendOnly` is on. */

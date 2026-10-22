@@ -146,24 +146,29 @@ export class PrefixSession {
     const fresh = ledger.lastSent === undefined;
     const breaks: PrefixSessionBreak[] = [];
     // Messages are this call's own objects, and the head's: they are known by identity.
-    const report = (checkpoint: () => PrefixBreak | undefined) => {
-      const before = new Set(invalidatedMessages(history, ledger));
-      const brk = checkpoint();
+    // `invalidBefore` is what was invalid already when the checkpoint was applied.
+    const report = (brk: PrefixBreak | undefined, invalidBefore: readonly Message[]) => {
       if (!brk) return;
+      const before = new Set(invalidBefore);
       const strippedThinking = invalidatedMessages(history, ledger)
         .filter((message) => !before.has(message))
         .reduce((n, message) => n + signedThinking.count(message), 0);
       breaks.push({ reason: brk.reason, at: brk.at, signed: brk.signed, strippedThinking });
     };
+    const checkpointed = (checkpoint: () => PrefixBreak | undefined) => {
+      const before = invalidatedMessages(history, ledger);
+      report(checkpoint(), before);
+    };
 
     try {
-      report(() => ledger.reconcile(history).break);
+      const reconciled = ledger.reconcile(history);
+      report(reconciled.break, reconciled.invalidBefore ?? []);
       if (fresh && breaks[0]?.reason === 'ledger') this.warnLostLedger(history);
 
       if (overflow && janitor) {
         const window = ledger.window();
         const { head } = await compactWindow({ ledger, history, window, runner: janitor, signal });
-        if (head) report(() => ledger.checkpoint('compaction', head.cut, head));
+        if (head) checkpointed(() => ledger.checkpoint('compaction', head.cut, head));
       }
 
       if (!awaitsToolResults(history, ledger.head)) {
@@ -172,7 +177,7 @@ export class PrefixSession {
         if (events.length > 0) ledger.append(events, eventAnchor(history, ledger.head));
       }
 
-      report(() => ledger.reconcileSent(sent));
+      checkpointed(() => ledger.reconcileSent(sent));
 
       // Asked of every message whose thinking is invalid, whatever its IR says:
       // only the integration knows what its own format carries.
