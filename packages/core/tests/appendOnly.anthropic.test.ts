@@ -29,9 +29,9 @@ import {
   InMemoryBackend,
   type ITargetAdapter,
   OpenAIAdapter,
-  PrefixLedger,
   Prompts,
 } from '../src/index';
+import { PrefixLedger } from '../src/prefix';
 import type {
   AnthropicPayload,
   ChefLogger,

@@ -15,10 +15,10 @@ import {
   ContextChef,
   checkPrefixContinuity,
   fromAnthropic,
-  PrefixLedger,
   type PrefixLedgerSnapshot,
 } from '../src/index';
 import { Assembler } from '../src/modules/assembler';
+import { PrefixLedger } from '../src/prefix';
 import type { ChefLogger, Message, TargetPayload, ToolDefinition } from '../src/types';
 
 const silent: ChefLogger = { warn: () => {} };

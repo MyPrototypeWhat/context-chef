@@ -34,7 +34,6 @@ import {
 
   // Append-only prefix (4.3)
   checkPrefixContinuity,      // first place a payload stops repeating the previous one
-  PrefixLedger,               // the pure ledger class behind appendOnly
   anthropicCompactionMessage, // the history message that replays a signed compaction block
   createPrefixSessionPool,    // appendOnly sessions for framework integrations
 
@@ -427,7 +426,6 @@ chef.on('prefix:break', ({ reason, at, strippedThinking }) => { /* a checkpoint 
 | `PrefixMeta` / `PrefixBreakReason` | `CompileMeta.prefix` and its `break.reason` |
 | `ChefEvents['prefix:break']` | a checkpoint this compile applied |
 | `ChefSnapshot.prefixLedger` (`PrefixLedgerSnapshot`) / `modelMemoryWrites` | a chef created per request saves its snapshot after each compile and after the request's tool calls, and restores it on the next request; with memory in a shared store, without its memory part: `chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })`. Register skills before `restore()`; set the system prompt, tools and state after it |
-| `PrefixLedger` | the pure ledger class: reconcile a history, append events, apply checkpoints, snapshot |
 | `onDemandCompaction` + `OnDemandCompactionOptions` / `OnDemandCompactionRequest` / `OnDemandCompactor` | signed compaction (table above) |
 | `anthropicCompactionMessage(block)` / `AnthropicCompactionBlock` | the history message that replays a signed compaction block |
 | `OverflowWire`, `OverflowStrategy.discard?()`, `OverflowInput.{pendingOnly, appendOnly, midToolTurn, collapse, pastLimit, wire}` | for custom strategies (see above) |
