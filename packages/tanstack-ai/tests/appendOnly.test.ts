@@ -123,6 +123,8 @@ interface Call {
   threadId?: string;
   signal?: AbortSignal;
   phase?: ChatMiddlewareContext['phase'];
+  /** The chat() run the firing belongs to (`ctx.requestId`): a run of its own unless given. */
+  requestId?: string;
 }
 
 function middlewareWith(options: Partial<ContextChefOptions> = {}) {
@@ -137,6 +139,7 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
     ...options,
   });
 
+  let runs = 0;
   /** One model call's `onConfig` firing, as the engine makes it before the call. */
   const send = async (
     messages: ModelMessage[],
@@ -150,6 +153,7 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
       tools: call.tools ?? [],
     };
     const ctx = ctxOf({
+      requestId: call.requestId ?? `run_${++runs}`,
       ...(call.threadId ? { threadId: call.threadId } : {}),
       ...(call.signal ? { signal: call.signal } : {}),
       ...(call.phase ? { phase: call.phase } : {}),
@@ -258,11 +262,18 @@ describe('appendOnly: the engine carries each config into the next iteration', (
       skill: () => ({ name: 's', description: '', instructions }),
       dynamicState: { getState: () => ({ step: ++step }) },
     });
-    // As the engine iterates: the last config, then the assistant turn and its results.
-    const first = await send([user('q1')]);
-    const second = await send([...first.messages, toolCall('t1'), toolResult('t1')], first);
+    // As the engine iterates in one run: the last config, then the assistant turn and its results.
+    const run = { requestId: 'run' };
+    const first = await send([user('q1')], run);
+    const second = await send([...first.messages, toolCall('t1'), toolResult('t1')], {
+      ...first,
+      ...run,
+    });
     instructions = 'Answer briefly.';
-    const third = await send([...second.messages, toolCall('t2'), toolResult('t2')], second);
+    const third = await send([...second.messages, toolCall('t2'), toolResult('t2')], {
+      ...second,
+      ...run,
+    });
 
     expect(third.messages).toEqual([
       user('q1'),
@@ -284,19 +295,39 @@ describe('appendOnly: the engine carries each config into the next iteration', (
     const { send, breaks } = middlewareWith({
       dynamicState: { getState: () => ({ step: ++step }) },
     });
-    const first = await send([user('q1')]);
-    // Another middleware copied the messages, or the host persisted the engine's.
-    const second = await send([
-      ...structuredClone(first.messages),
-      toolCall('t1'),
-      toolResult('t1'),
-    ]);
+    const run = { requestId: 'run' };
+    const first = await send([user('q1')], run);
+    // Another middleware copied the messages.
+    const second = await send(
+      [...structuredClone(first.messages), toolCall('t1'), toolResult('t1')],
+      run,
+    );
 
     expect(second.messages).toEqual([
       user('q1'),
       stateEvent(1, 1),
       toolCall('t1'),
       toolResult('t1'),
+      stateEvent(2, 2),
+    ]);
+    expect(breaks).toEqual([]);
+  });
+
+  it('reads a config from another run as the host sent it, even one that opens with the last request', async () => {
+    let step = 0;
+    const { send, breaks } = middlewareWith({
+      dynamicState: { getState: () => ({ step: ++step }) },
+    });
+    const first = await send([user('q1')]);
+    // A host that stored what the engine sent, events and all, and sends it back next run.
+    const next = await send([...first.messages, reply('a1'), user('q2')]);
+
+    expect(next.messages).toEqual([
+      user('q1'),
+      stateEvent(1, 1),
+      stateEvent(1, 1),
+      reply('a1'),
+      user('q2'),
       stateEvent(2, 2),
     ]);
     expect(breaks).toEqual([]);
@@ -309,10 +340,14 @@ describe('appendOnly: the engine carries each config into the next iteration', (
       tokenizer,
       overflow: { strategy },
     });
-    let last = await send(asked(1));
+    const run = { requestId: 'run' };
+    let last = await send(asked(1), run);
     const requests = [last.messages];
     for (const n of [1, 2, 3, 4, 5, 6]) {
-      last = await send([...last.messages, reply(`a${n}`), user(`q${n + 1}`)], last);
+      last = await send([...last.messages, reply(`a${n}`), user(`q${n + 1}`)], {
+        ...last,
+        ...run,
+      });
       requests.push(last.messages);
     }
 
@@ -338,10 +373,11 @@ describe('appendOnly: the engine carries each config into the next iteration', (
     };
     const { send, breaks } = middlewareWith({ dynamicState: { getState: () => ({ step: 1 }) } });
     await send([user('q1')]);
-    const first = await send([user('q1'), toolCall('t1'), pending]);
+    const run = { requestId: 'run' };
+    const first = await send([user('q1'), toolCall('t1'), pending], run);
     // The engine runs the approved call and replaces the placeholder where it stands.
     const answered = first.messages.map((m) => (m.role === 'tool' ? toolResult('t1') : m));
-    const second = await send(answered, first);
+    const second = await send(answered, { ...first, ...run });
 
     expect(first.messages).toEqual([user('q1'), stateEvent(1, 1), toolCall('t1'), pending]);
     // `at` indexes the request: the placeholder went out fourth, after the event.
@@ -596,6 +632,54 @@ describe('appendOnly: a compression lands once as the head', () => {
     expect(requests[4]).toEqual([summary(1), user('q5')]);
     expect(requests[5]).toEqual([...requests[4], reply('a5', 'S_5'), user('q6')]);
     expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('reads a store that took each summary in as it is, run after run, not the history it summarized', async () => {
+    const { strategy } = keepLastTurn();
+    let store: ModelMessage[] = [user('q1')];
+    let written: string[] = [];
+    const { send, breaks } = middlewareWith({
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy },
+      truncate: {
+        threshold: 40,
+        tailChars: 10,
+        storage: {
+          write: (_name, content) => {
+            written.push(content.split(' ')[2]);
+          },
+          read: () => null,
+        },
+      },
+      onCompress: (_summary, count, details) => {
+        store = [...(details.replacement ?? []), ...store.slice(count)];
+      },
+    });
+    const big = (id: string): ModelMessage => ({
+      role: 'tool',
+      content: `BIG RESULT ${id} `.repeat(10),
+      toolCallId: id,
+    });
+    const truncated: string[][] = [];
+    for (let n = 1; n <= 7; n++) {
+      written = [];
+      await send([...store]);
+      truncated.push(written);
+      store = [...store, toolCall(`t${n}`), big(`t${n}`), reply(`a${n}`), user(`q${n + 1}`)];
+    }
+
+    // Each call truncates the results its store holds; a summarized one is gone for good.
+    expect(truncated).toEqual([
+      [],
+      ['t1'],
+      ['t1', 't2'],
+      ['t3'],
+      ['t3', 't4'],
+      ['t5'],
+      ['t5', 't6'],
+    ]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction', 'compaction', 'compaction']);
   });
 
   it('sends every message once the host edits one it kept behind the summary it wrote back', async () => {

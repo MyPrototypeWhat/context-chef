@@ -30,8 +30,10 @@ export interface SharedSteps {
 
 type Sent = Pick<ChatMiddlewareConfig, 'messages' | 'systemPrompts'>;
 
-/** What a conversation's last call was compiled from, and what it returned. */
+/** What a conversation's last call in a chat() run was compiled from, and what it returned. */
 interface Carried extends Sent {
+  /** The run (`ctx.requestId`): the engine carries a config within one chat() call only. */
+  readonly run: string;
   readonly sent: Sent;
 }
 
@@ -55,7 +57,7 @@ export function appendOnlyTransform(
       logger.warn('[context-chef] onPrefixBreak threw — the call goes ahead', error);
     }
   };
-  // Per conversation, so a config the engine carried can be read back.
+  // Per conversation, so a config the engine carried within a run can be read back.
   const carried = new WeakMap<PrefixSession, Carried>();
 
   return async (ctx, config) => {
@@ -66,7 +68,9 @@ export function appendOnlyTransform(
 
     const sessionId = steps.sessionKey(ctx);
     const session = sessions.get(sessionId);
-    const last = carried.get(session);
+    const record = carried.get(session);
+    // A config from another run is the host's own, whatever it opens with.
+    const last = record && ctx.requestId && record.run === ctx.requestId ? record : undefined;
     const messages = hostMessages(config.messages, last);
     const systemPrompts =
       last && sameItems(config.systemPrompts, last.sent.systemPrompts)
@@ -102,16 +106,16 @@ export function appendOnlyTransform(
     if (options.transformContext) {
       sent = await options.transformContext(sent.messages, sent.systemPrompts, ctx);
     }
-    carried.set(session, { messages, systemPrompts, sent });
+    carried.set(session, { run: ctx.requestId, messages, systemPrompts, sent });
     return sent;
   };
 }
 
 /**
- * The host's conversation behind a call's messages. The engine carries what
- * `onConfig` returned into the next iteration and appends to it — the
- * assistant turn, its tool results — so messages that open with the last
- * call's are that call's host conversation plus what came since; a result
+ * The host's conversation behind a call's messages. Within a run the engine
+ * carries what `onConfig` returned into the next iteration and appends to it
+ * — the assistant turn, its tool results — so messages that open with the
+ * last call's are that call's host conversation plus what came since; a result
  * the engine put where a pending call's placeholder stood takes the
  * placeholder's place there too. Any other messages are the host's own.
  */
