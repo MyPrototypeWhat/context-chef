@@ -543,6 +543,30 @@ describe('appendOnly: a compression lands once as the head', () => {
     ]);
   });
 
+  it("hands onCompress only the host's messages: the events it summarized are none of them", async () => {
+    let step = 0;
+    const { strategy } = keepLastTurn();
+    const onCompress = vi.fn();
+    const { send } = middlewareWith({
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy },
+      onCompress,
+      dynamicState: { getState: () => ({ step: ++step }) },
+    });
+    for (const n of [1, 2, 3]) await send(asked(n));
+    // q1 E1 a1 q2 E2 a2 q3 E3 a3 q4: 10 messages, over the trigger at a boundary.
+    const landed = await send(asked(4));
+
+    // The summary absorbed the earlier revisions: the state is stated afresh after it.
+    expect(landed.messages).toEqual([summary(1), user('q4'), stateEvent(4, 1)]);
+    expect(onCompress).toHaveBeenCalledTimes(1);
+    expect(onCompress.mock.calls[0].slice(1)).toEqual([
+      6,
+      { compressedMessages: asked(4).slice(0, 6), replacement: [summary(1)] },
+    ]);
+  });
+
   /**
    * A host that keeps its own store and, as `onCompress` asks, replaces the
    * compressed slice with what `write` makes of the summary and the details
@@ -902,6 +926,22 @@ describe('appendOnly: checkpoints', () => {
       { reason: 'system', at: 0, signed: false, strippedThinking: 2, sessionId: 'thread_1' },
     ]);
     expect(switched.systemPrompts).toEqual([sys, 'Act as second.']);
+  });
+
+  it('goes ahead when onPrefixBreak throws, and says so', async () => {
+    const { send, warn } = middlewareWith({
+      onPrefixBreak: () => {
+        throw new Error('handler down');
+      },
+    });
+    await send(asked(1, true));
+    await send(asked(2, true));
+    const edited = asked(2, true);
+    edited[1] = reply('a1, edited', 'S_1x');
+    const changed = await send(edited);
+
+    expect(changed.messages).toEqual([user('q1'), reply('a1, edited'), user('q2')]);
+    expect(warnings(warn, 'onPrefixBreak threw')).toHaveLength(1);
   });
 
   it('keeps each thread to its own ledger', async () => {
