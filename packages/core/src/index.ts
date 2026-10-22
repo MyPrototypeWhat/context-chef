@@ -44,12 +44,7 @@ export {
   type ToolCallCheckResult,
   type ToolsMode,
 } from './chef';
-export {
-  type AppendOnlyOptions,
-  type AppendOnlyWording,
-  prefixBreakReporter,
-  warnAppendOnlyConfig,
-} from './integrations/appendOnly';
+export { prefixBreakReporter, warnAppendOnlyConfig } from './integrations/appendOnly';
 export {
   createJanitorPool,
   type IntegrationCompressOptions,

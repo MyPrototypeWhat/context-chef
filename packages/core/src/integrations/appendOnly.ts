@@ -1,6 +1,10 @@
 import type { ChefLogger, ClearTarget } from '../types';
 
-/** How an integration names things in its `appendOnly` warnings. */
+/**
+ * How an integration names things in its `appendOnly` warnings.
+ *
+ * @internal
+ */
 export interface AppendOnlyWording {
   /** What the provider is reached through: `'model'`, `'adapter'`. */
   readonly provider: string;
@@ -10,7 +14,11 @@ export interface AppendOnlyWording {
   readonly contextEditing?: string;
 }
 
-/** The integration options the `appendOnly` warnings read. */
+/**
+ * The integration options the `appendOnly` warnings read.
+ *
+ * @internal
+ */
 export interface AppendOnlyOptions {
   readonly appendOnly?: boolean | { readonly clearAt?: boolean };
   readonly compact?: {
