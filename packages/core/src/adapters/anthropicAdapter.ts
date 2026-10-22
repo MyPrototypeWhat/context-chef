@@ -363,6 +363,21 @@ export function withoutThinking(message: Message): Message {
   };
 }
 
+/**
+ * Whether this target has nothing to send for `message` but a text block with
+ * no text, which the API rejects: an assistant turn with no thinking, text,
+ * tool call, attachment or compaction, and no original it still replays.
+ * What {@link withoutThinking} leaves of a reply that held only thinking.
+ */
+export function sendsNothing(message: Message): boolean {
+  if (message.role !== 'assistant' || message.content.trim() !== '') return false;
+  if (message.thinking || message.redacted_thinking) return false;
+  if (message.tool_calls?.length || message.attachments?.length) return false;
+  if (message._anthropic_compaction !== undefined) return false;
+  const origin = message._anthropic_origin;
+  return origin === undefined || origin.hash !== irHash(message);
+}
+
 // ─── Output: IR → Anthropic ───
 
 /**

@@ -1,4 +1,4 @@
-import { withoutThinking } from '../../adapters/anthropicAdapter';
+import { sendsNothing, withoutThinking } from '../../adapters/anthropicAdapter';
 import {
   answeredReplies,
   FRESH_LEDGER_REPLIES,
@@ -150,6 +150,11 @@ export async function reconcilePrefixSent(ctx: CompileContext, host: PipelineHos
  * phases since `prefix` work on copies of the host's messages. The host's
  * own objects are never touched; one `fromAnthropic` parsed is still
  * replayed from its original, minus the thinking blocks (`withoutThinking`).
+ *
+ * A reply that held only thinking is left out: what remains would be a text
+ * block with no text, which the API rejects. The strip is for good, so it is
+ * left out of every payload since, and of every part of one rendered for
+ * comparison.
  */
 export function withoutStrippedThinking(ctx: CompileContext, messages: Message[]): Message[] {
   const prefix = ctx.prefix;
@@ -157,9 +162,11 @@ export function withoutStrippedThinking(ctx: CompileContext, messages: Message[]
 
   const invalid = invalidatedThinking(prefix.history, prefix.ledger);
   if (invalid.size === 0) return messages;
-  return messages.map((message) =>
-    thinkingKeys(message).some((key) => invalid.has(key)) ? withoutThinking(message) : message,
-  );
+  return messages.flatMap((message) => {
+    if (!thinkingKeys(message).some((key) => invalid.has(key))) return [message];
+    const stripped = withoutThinking(message);
+    return sendsNothing(stripped) ? [] : [stripped];
+  });
 }
 
 /**

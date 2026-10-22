@@ -22,6 +22,7 @@ import {
   type ChefEvents,
   ContextChef,
   checkPrefixContinuity,
+  compactMessages,
   fromAnthropic,
   InMemoryBackend,
   type ITargetAdapter,
@@ -301,6 +302,80 @@ describe('appendOnly on Anthropic: an unsigned checkpoint strips the thinking it
       const [payload] = await converse(chef, [edited]);
 
       expect(payload.messages[5]).toEqual(text('assistant', 'About $45.'));
+    });
+  });
+
+  describe('a reply that held only thinking', () => {
+    const conversation = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }] },
+      { role: 'user', content: 'q2' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_B' },
+          { type: 'text', text: 'a2' },
+        ],
+      },
+      { role: 'user', content: 'q3' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_C' },
+          { type: 'text', text: 'a3' },
+        ],
+      },
+      { role: 'user', content: 'q4' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_D' },
+          { type: 'text', text: 'a4' },
+        ],
+      },
+      { role: 'user', content: 'q5' },
+    ] as MessageParam[];
+    const { history } = fromAnthropic(conversation);
+    const asked = (n: number) => history.slice(0, 2 * n - 1);
+
+    it('is left out once a checkpoint stripped it, on every compile since, unflagged', async () => {
+      const { chef, breaks, invariants } = chefWith();
+      const [, sent, atBreak, next, last] = await converse(
+        chef,
+        [1, 2, 3, 4, 5].map(asked),
+        'anthropic',
+        (chef, turn) => {
+          if (turn === 3) chef.setSystemPrompt([{ role: 'system', content: 'You are brief.' }]);
+        },
+      );
+
+      expect(sent.messages[1]).toEqual({
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }],
+      });
+      expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([['system', 2]]);
+      // q1 and q2 are now adjacent user turns; a2 goes without its thinking.
+      expect(atBreak.messages.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'user']);
+      expect(atBreak.messages[2]).toEqual(text('assistant', 'a2'));
+      for (const payload of [atBreak, next, last]) {
+        expect(payload.messages.filter((m) => m.role === 'assistant')).not.toContainEqual(
+          text('assistant', ''),
+        );
+        expect(occurrences(payload, 'SIG_A')).toBe(0);
+      }
+      expect(signatures(last)).toEqual(['SIG_C', 'SIG_D']);
+      expectAppendOnly([atBreak, next, last]);
+      expect(invariants).toEqual([]);
+    });
+
+    it('is sent as 4.x sent it with appendOnly off', async () => {
+      // A host that cleared the thinking itself: the reply is left with nothing.
+      const cleared = compactMessages(asked(2), { clear: ['thinking'] });
+      const payload = (await new ContextChef({ logger: silent }).setHistory(cleared).compile({
+        target: 'anthropic',
+      })) as AnthropicPayload;
+
+      expect(payload.messages[1]).toEqual(text('assistant', ''));
     });
   });
 

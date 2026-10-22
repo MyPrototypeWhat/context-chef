@@ -10,6 +10,7 @@ import {
   fromAnthropic,
   ON_DEMAND_COMPACTION_BETA,
   replayedCompactionBetas,
+  sendsNothing,
   withoutThinking,
 } from './anthropicAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
@@ -928,6 +929,65 @@ describe('fromAnthropic → AnthropicAdapter verbatim replay', () => {
 
     expect(getContentBlocks(result, 1)).not.toEqual([]);
     expect(JSON.stringify(result)).not.toContain('SIG_A');
+  });
+
+  it('has nothing to send of a reply that held only thinking, once withoutThinking took it out', () => {
+    const { history } = fromAnthropic([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }] },
+    ]);
+    const parsed = history[1];
+    const built: Message = {
+      role: 'assistant',
+      content: '',
+      thinking: { thinking: 'Hm.', signature: 'SIG_B' },
+    };
+
+    expect(sendsNothing(withoutThinking(parsed))).toBe(true);
+    expect(sendsNothing(withoutThinking(built))).toBe(true);
+    // Rendered, it would be a lone empty text block, which the API rejects.
+    expect(getContentBlocks(new AnthropicAdapter().compile([withoutThinking(built)]))).toEqual([
+      { type: 'text', text: '' },
+    ]);
+    // Before the strip there is the thinking to send.
+    expect(sendsNothing(parsed)).toBe(false);
+    expect(sendsNothing(built)).toBe(false);
+  });
+
+  it('has something to send of a stripped reply with anything besides its thinking', () => {
+    const signed = { thinking: { thinking: 'Hm.', signature: 'SIG_B' } };
+    const { history } = fromAnthropic([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_A' },
+          { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'x' } },
+          { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [] },
+        ],
+      } as unknown as MessageParam,
+    ]);
+    const others: Message[] = [
+      { role: 'assistant', content: 'Answer.', ...signed },
+      {
+        role: 'assistant',
+        content: '',
+        ...signed,
+        tool_calls: [{ id: 't1', type: 'function', function: { name: 'f', arguments: '{}' } }],
+      },
+      {
+        role: 'assistant',
+        content: '',
+        ...signed,
+        attachments: [{ mediaType: 'image/png', data: 'AAAA' }],
+      },
+      { role: 'assistant', content: '', _anthropic_compaction: 'Summary.' },
+      { role: 'user', content: '' },
+    ];
+
+    // The server tool blocks still replay from the original.
+    expect(sendsNothing(withoutThinking(history[1]))).toBe(false);
+    for (const message of others) expect(sendsNothing(withoutThinking(message))).toBe(false);
   });
 
   it('leaves a message its original no longer matches to the IR rebuild, without its thinking', () => {
