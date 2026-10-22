@@ -1,4 +1,5 @@
 import { Assembler } from '../modules/assembler';
+import { sameOnWire } from '../prefix';
 import type { Message } from '../types';
 
 /**
@@ -129,15 +130,6 @@ export interface PrefixContinuity {
 
 const PREFIX_HEAD_FIELDS = ['system', 'systemInstruction', 'instructions', 'tools'] as const;
 
-/** Key order and cache breakpoints don't change what the model saw. */
-function sameContent(a: unknown, b: unknown): boolean {
-  const canonical = (value: unknown) =>
-    JSON.stringify(Assembler.orderKeysDeterministically(value), (key, v) =>
-      key === 'cache_control' ? undefined : v,
-    );
-  return canonical(a) === canonical(b);
-}
-
 /**
  * Whether the payload sent on one turn is still the prefix of the payload for
  * the next: the system prompt and tools unchanged, and every earlier message
@@ -151,7 +143,7 @@ export function checkPrefixContinuity(
   next: PrefixComparable,
 ): PrefixContinuity {
   for (const field of PREFIX_HEAD_FIELDS) {
-    if (!sameContent(prev[field], next[field])) {
+    if (!sameOnWire(prev[field], next[field])) {
       return {
         ok: false,
         firstDivergence: { path: field, before: prev[field], after: next[field] },
@@ -163,7 +155,7 @@ export function checkPrefixContinuity(
   const before = prev[field] ?? [];
   const after = next[field] ?? [];
   for (let i = 0; i < before.length; i++) {
-    if (!sameContent(before[i], after[i])) {
+    if (!sameOnWire(before[i], after[i])) {
       return {
         ok: false,
         firstDivergence: { path: `${field}[${i}]`, before: before[i], after: after[i] },

@@ -13,10 +13,8 @@ export {
   followsUserTurn,
   isReply,
   PrefixLedger,
-  plainSent,
   reasonedReplies,
   renderGroup,
-  wireDigest,
 } from './ledger';
 export { type MemoryEntryXml, type MemoryNow, type MemoryWords, memoryEvents } from './memory';
 export {
@@ -40,3 +38,4 @@ export type {
   PrefixReconcile,
   PrefixSent,
 } from './types';
+export { plainSent, sameOnWire, wireDigest } from './wire';
