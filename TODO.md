@@ -720,14 +720,55 @@ The two deferred behavioral items — skill-activation tail delivery and positio
 
 # Thinking Prefix-Check Follow-ups (2026-10)
 
-Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign every thinking block over the `system`, `tools` and every message before it. On accounts created on or after 2026-08-31 the API rejects (400) a request that replays such a block after any edit to earlier history, unless `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` is set. Already landed: `fromAnthropic` history replays byte-for-byte while unmodified, and `withGuardrails({ prefillMode: 'instruction' })` for the models that reject a native prefill (Sonnet 4.6 / 5 / 5.5, Haiku 5.5). Still open:
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign every thinking block over the `system`, `tools` and every message before it. On accounts created on or after 2026-08-31 the API rejects (400) a request that replays such a block after any edit to earlier history, unless `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` is set. Already landed: `fromAnthropic` history replays byte-for-byte while unmodified, and `withGuardrails({ prefillMode: 'instruction' })` for the models that reject a native prefill (Sonnet 4.6 / 5 / 5.5, Haiku 5.5).
 
-- **Append-only mode**: every tail injection is re-rendered at the new tail on each compile, so the previous turn changes — dynamic state (`'last_user'`), announcements (both channels), guardrail `placement: 'last_user'`, memory (`'before_history_tail'`, and any memory change under `'after_system'`), the handoff notice, `skillPlacement: 'tail'`. Client-side `summarize` / `anchored` and `compact()` tool-result clearing edit earlier turns by design. A local probe confirmed the tail cases. This conflicts with "injections never persist into the caller's history" and needs a design decision; draft spec in `docs/superpowers/specs/2026-10-11-append-only-prefix-design.md` (local working doc).
-- **On-demand compaction** (`compact-2026-09-04`): the signed block replacing the messages it summarizes is exempt from the check, which makes it the natural overflow strategy for these models. The block must come first in `messages` (the Anthropic target already drops `ensureValidHistory`'s opening placeholder in front of a leading compaction block).
+- ✅ **Append-only mode (layer 2, 4.3)**: opt-in `ChefConfig.appendOnly` — injections are events appended once, memory is pulled, every rewrite is a reported checkpoint (`prefix:break`, `meta.prefix`) — plus `onDemandCompaction()` for compaction Anthropic signs, the cross-turn check under `pipelineChecks`, and `appendOnly` in ai-sdk-middleware and tanstack-ai. Guide: `docs-site/guide/append-only.md`.
 - **ai-sdk-middleware replay check**: `toAISDK` / `toModelMessages` decide "unmodified" by comparing text only, so `clear: ['thinking']` likely still re-sends the original reasoning parts.
-- **Empty text block**: IR built directly emits `{ type: 'text', text: '' }` for a tool-only assistant turn on the Anthropic target. Kept for golden byte-identity; whether the API accepts it is unverified.
-- **Unverified on the API** (no key available): Sonnet 5.5 / Haiku 5.5 ignoring a system message placed right after a tool result, which is where the `'system'` announcement channel lands mid-agent-loop.
-- **5.0 candidate**: flip the `prefillMode` default to `'instruction'` once most Claude models in use reject native prefill.
+- **5.0 candidates**: flip the `prefillMode` default to `'instruction'` once most Claude models in use reject native prefill; turn `appendOnly` on by default after one release of opt-in use and the diagnostic-mode check below; make `_anthropic_compaction` `{ content; signature?; toolChanges? }`; have `fromAnthropic` keep the host's mid-conversation system messages by default; reword the unified memory instruction, which says memory is "shown to you automatically below" even under a selector that picks nothing (prompt text, so a byte change).
+
+## Needs an API key
+
+Everything below is unverified because no key was available. Each line is one experiment.
+
+- [ ] Diagnostic mode: on an account created before 2026-08-31, send the `thinking-binding-controls-2026-08-01` beta without setting `block_binding`, run an `appendOnly` agent loop (dynamic state, announcements, memory changes, one compaction) and confirm `input_transformations` stays empty; the same loop with `appendOnly` off should list `thinking_mismatch_allowed` entries.
+- [ ] Thinking stripped mid tool loop: an unsigned checkpoint while tool results are pending strips the last assistant turn's thinking; is that request rejected (400) or accepted? Decides whether waiting for a user-turn boundary is a hard requirement or a quality choice.
+- [ ] A user event sent as its own message right after a tool_result user message (and tool results split across two consecutive user messages): the API merges them, and replaying them unchanged keeps later thinking valid, also next to `fromAnthropic` verbatim replay.
+- [ ] `clearAt`: a reminder cleared by a tool_result-only user message — check the clearing and the token counts.
+- [ ] Sonnet 5.5 / Haiku 5.5: do they ignore a system message placed right after a tool result (where a `'system'` announcement or event lands mid-loop)?
+- [ ] `onDemandCompaction` over a chef-rendered prefix: the kept turns' thinking verifies (the four checks on the compaction-thinking-blocks page).
+- [ ] `onDemandCompaction` with `keepRecentTurns: 0`, or a collapse: the request then ends on the block (an assistant message) with thinking on — does the API continue from it? And a block followed directly by a kept reply (two assistant messages in a row).
+- [ ] A compaction request whose prefix ends in a `clear_at` reminder; and a signed block landing in the same compile as a system-prompt change (the request uses the last sent system prompt, the next request reports a `system` checkpoint).
+- [ ] `cache_control` on the last block of an on-demand compaction request: does it hit the cache entry the previous request wrote?
+- [ ] A server-side (`context_management`) compaction block resumed under `appendOnly` also gets `compact-2026-09-04`: confirm the extra beta is harmless.
+- [ ] Empty text blocks (4.x too): an IR-built tool-call turn with empty content sends `{ type: 'text', text: '' }` before its `tool_use`, and an IR-built thinking reply with empty text sends `[thinking, { type: 'text', text: '' }]`. Accepted or rejected?
+- [ ] OpenAI / Gemini: `cached_tokens` over a long loop with `appendOnly` on vs off.
+- [ ] AI SDK: how `@ai-sdk/anthropic`, `@ai-sdk/google` and `@ai-sdk/openai` send a user event that follows tool results or a user turn (`[…, tool, user]`, `[…, user, user]`), and that it is byte-stable across calls.
+- [ ] AI SDK: Anthropic accepts a history whose earlier replies lost their reasoning parts while a later signed reply keeps its own, and one where a reasoning-only reply was dropped.
+- [ ] AI SDK: how `@ai-sdk/anthropic` would carry a compaction block. Until then signed compaction is unreachable in the integrations (`onDemandCompaction` always runs its fallback).
+- [ ] AI SDK: `@ai-sdk/amazon-bedrock` on provider spec 4 still uses `providerOptions.bedrock.signature` / `.redactedData` (read from the spec-3 build); if not, signed Bedrock reasoning is kept after a checkpoint and the request fails.
+- [ ] TanStack: Anthropic through `@tanstack/ai-anthropic` accepts a history whose earlier turns lost their thinking while a later signed turn keeps its own.
+- [ ] TanStack: replaying a reply whose `redacted_thinking` the 0.16.5 adapter dropped is accepted (pre-existing, `appendOnly` off as well).
+- [ ] TanStack: do tools enter the thinking signature? Decides whether the structured-output one-off (sent without tools) needs to strip the conversation's signed thinking.
+- [ ] TanStack: how `@tanstack/ai-anthropic` sends a user event that follows tool results.
+- [ ] TanStack: interrupt resume (`resumeToolState`, pending calls, empty messages) under `appendOnly`.
+
+## Deferred (append-only)
+
+- **Ledger cost**: each compile digests the full history twice, and while a compaction head stands, every summarized message once more; add a per-message digest cache if profiling shows it matters.
+- **Ledger anchors**: `PrefixLedger.append` accepts an anchor whose group a reply already answered; consider rejecting anchors before the last assistant message except the prefill slot.
+- **Memory**: a memory hook or `memory:changed` listener that rewrites the key the model just wrote is recorded as the model's write, so that change isn't pushed; close it by having `Memory.set` return the entry it wrote.
+- **Failed compile after a landing**: the Janitor's state (lineage, strategy state, archive, `onCompress`) isn't rolled back with the ledger.
+- **Budget readings**: `clear_at` reminders already cleared are still counted; attachments cost a flat 1,600 tokens (multi-page PDFs undercounted); system-prompt and tool growth since the last usage report isn't added; after an edit or checkpoint only messages are counted until the next report.
+- **Trigger reading**: the runner's trigger still reads a usage report the raw-window check already voided, so a compaction can trigger early or one compile late (the raw-window check itself holds).
+- **`background()` refit past the raw window**: a throw or abort inside it loses the finished job, and a custom inner strategy that throws leaves the breaker at 0; a second `anchored()` summarization in the same compile reads the previous anchor.
+- **`onDemandCompaction`**: with too few turns past the raw window it goes straight to the fallback instead of retrying with fewer kept turns; a discarded in-flight fallback job still counts a failure when its model later rejects; `background().discard()` doesn't pass on to the inner strategy.
+- **Fresh ledger**: few-shot example replies ahead of the question are reported as a `ledger` checkpoint on a fresh chef's first compile.
+- **Compaction block not at the opening** (`[u0, block, …]`, kept by a host before a server-side block) can still get `[summary, block, …]`.
+- **`pipelineChecks`** can't detect a host message dropped from the window; consider checking that every host message from `head.cut` on is in it.
+- **Integrations**: session ledgers are in-process only; consider `exportSession` / `importSession` for serverless hosts. `strippedThinking` is under-reported for a checkpoint with no head when the host dropped a message ahead of an old stripped range (what is stripped is right).
+- **TanStack**: a reply dropped from the host's conversation and re-added past its end is replayed (the strip lives in the integration, not the ledger; making it sticky needs a ledger range API).
+- **TanStack 1.x bump**: re-check the thinking representation (redacted data in `signature`), signature capture (`REASONING_ENCRYPTED_VALUE` instead of 0.44's `STEP_FINISHED.signature`), `applyMiddlewareConfig` carry semantics and the `onConfig` phases; a structured-output stream with thinking hasn't been exercised end to end.
+- **Token accumulation**: without `clearAt`, every revision of a frequently changing state stays in the window until a compaction absorbs it; consider delta encoding once there is real usage data.
 
 ---
 
