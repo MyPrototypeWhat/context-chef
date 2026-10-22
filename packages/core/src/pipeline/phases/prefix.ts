@@ -115,9 +115,11 @@ export const prefixPhase: Phase = {
             `holds ${replies} replies with reasoning, compiled by a chef whose ledger was not ` +
             'kept — the thinking in them was invalidated (a `ledger` checkpoint). A chef ' +
             'created per request must save its whole snapshot (it carries `prefixLedger`) ' +
-            'after each compile and restore it on the next request — with memory in a shared ' +
-            'store, with `modules.memory` set to null — before setting the system prompt, ' +
-            'tools and state (warned once).',
+            "after each compile and again after the request's tool calls. On the next " +
+            'request, restore it first, with `modules.memory` set to null when memory lives ' +
+            'in a shared store, then set the system prompt, tools and state, which restore() ' +
+            'replaces. See https://myprototypewhat.github.io/context-chef/guide/append-only' +
+            '#persisting-a-conversation (warned once).',
         );
       }
     }

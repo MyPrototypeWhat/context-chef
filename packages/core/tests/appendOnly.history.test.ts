@@ -557,7 +557,14 @@ describe('appendOnly on, the ledger across sessions', () => {
     await compileAt(perRequest, turn4);
     await compileAt(perRequest, turn4);
     expect(ledgerWarnings()).toHaveLength(1);
-    expect(ledgerWarnings()[0][0]).toMatch(/thinking/);
+    const [recipe] = ledgerWarnings()[0];
+    expect(recipe).toMatch(/thinking/);
+    // The recipe the guide gives: both saves, a restore without memory first, then the setup.
+    expect(recipe).toMatch(/after each compile and again after the request's tool calls/);
+    expect(recipe).toMatch(/restore it first, with `modules\.memory` set to null .*, then set/);
+    expect(recipe).toContain(
+      'https://myprototypewhat.github.io/context-chef/guide/append-only#persisting-a-conversation',
+    );
 
     warn.mockClear();
     await compileAt(chefWith({ logger: { warn } }), turn3);
