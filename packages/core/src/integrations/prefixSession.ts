@@ -1,0 +1,224 @@
+import type { Janitor } from '../modules/janitor';
+import {
+  anchorLines,
+  answeredReplies,
+  awaitsToolResults,
+  compactWindow,
+  dynamicStateSource,
+  eventAnchor,
+  FRESH_LEDGER_REPLIES,
+  invalidatedMessages,
+  type PrefixBreak,
+  PrefixLedger,
+  type PrefixMeta,
+  type PrefixSent,
+  plainSent,
+  sourceEvents,
+  thinkingBlocks,
+} from '../prefix';
+import type { ChefLogger, Message } from '../types';
+import { SessionPool } from '../utils/sessionPool';
+import { type JanitorPoolConfig, janitorFactory } from './janitorPool';
+
+/** A checkpoint one call applied, as `ContextChef` reports it in `prefix:break`. */
+export type PrefixSessionBreak = NonNullable<PrefixMeta['break']>;
+
+/** One call of a framework integration, in IR. */
+export interface PrefixSessionCall {
+  /**
+   * The conversation the host sent with this call, without its system
+   * messages: the host's whole history, every call, as the integrations
+   * receive it.
+   */
+  readonly history: Message[];
+  /** What the call sends ahead of the conversation — its system prompt and tools — as plain data. */
+  readonly sent: PrefixSent;
+  /** The `<dynamic_state>` block as it stands now, when the integration has dynamic state. */
+  readonly dynamicState?: string;
+  /** `false` leaves the window uncompressed this call: the provider manages the context. Default `true`. */
+  readonly overflow?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+/** What one call sends, and the checkpoints it took to get there. */
+export interface PrefixSessionWindow {
+  /**
+   * The conversation to send: the head of the last compaction, then the
+   * host's messages with the events appended among them, each message whose
+   * thinking a checkpoint invalidated without it.
+   */
+  readonly messages: Message[];
+  /** The checkpoints this call applied, in order. */
+  readonly breaks: readonly PrefixSessionBreak[];
+}
+
+/** Configuration for {@link createPrefixSessionPool}. */
+export interface PrefixSessionPoolConfig<THostMessages>
+  extends Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'> {
+  /**
+   * A message without its thinking, in the integration's own format as well
+   * as in IR: what a checkpoint leaves of a message whose thinking was signed
+   * over a prefix that is gone.
+   */
+  withoutThinking: (message: Message) => Message;
+}
+
+/**
+ * `appendOnly` for one conversation of a framework integration. The host
+ * sends its whole history with every call and never takes anything back, so
+ * the session keeps what `ContextChef` keeps between compiles — a prefix
+ * ledger — and rebuilds each call's window from (history, ledger): what was
+ * sent before is sent again as it was, and only appended to.
+ *
+ * - Dynamic state is an event, appended once after the turn it changed in
+ *   and replayed there from then on, never merged into a host message. The
+ *   provider behind an integration is unknown, and a provider SDK may hoist a
+ *   mid-conversation system message into the system prompt, so every event
+ *   is a user message. Nothing is appended while tool calls wait for their
+ *   results.
+ * - A compression that lands is the ledger's head: later calls send it in
+ *   place of the host messages it summarized instead of summarizing again,
+ *   until the window is over budget once more. It lands with the chef's
+ *   timing: at a user-turn boundary, or collapsing a tool turn that cannot
+ *   wait because the request would be past the raw context window.
+ * - Anything that rewrote what was sent — an edited history, a new system
+ *   prompt or tool list, a compaction, a session that lost its ledger — is a
+ *   checkpoint: reported, and the thinking it invalidated is never sent
+ *   again. The provider is unknown, so thinking is removed whatever it is.
+ *
+ * One call at a time: a call that arrives while another is in progress waits
+ * for it, since each one reconciles, appends and commits the same ledger.
+ * The session lives in the process: a restart or an eviction from the pool
+ * loses the ledger, and the next call is a `ledger` checkpoint.
+ */
+export class PrefixSession {
+  readonly ledger = new PrefixLedger();
+  private last: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    /** The session's overflow runner; `null` when the integration compresses nothing. */
+    readonly janitor: Janitor | null,
+    private readonly options: {
+      readonly withoutThinking: (message: Message) => Message;
+      /** Logs `message` once per pool, by `key`. */
+      readonly warnOnce: (key: string, message: string) => void;
+    },
+  ) {}
+
+  /** The window this call sends. A call that fails keeps nothing: the next one starts where the last success left. */
+  compile(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
+    const turn = this.last.then(() => this.run(call));
+    this.last = turn.catch(() => undefined);
+    return turn;
+  }
+
+  /**
+   * The provider's input token count for the call last compiled: the
+   * runner's reading, and from now until the next report, what the window
+   * gains is counted on top of it.
+   */
+  reportTokenUsage(tokens: number): void {
+    this.janitor?.feedTokenUsage(tokens);
+    this.ledger.markReported();
+  }
+
+  private async run(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
+    const { history, dynamicState, overflow = true, signal } = call;
+    const { ledger, janitor } = this;
+    // One copy, compared and committed alike.
+    const sent = plainSent(call.sent);
+    const fresh = ledger.lastSent === undefined;
+    const breaks: PrefixSessionBreak[] = [];
+    // Messages are this call's own objects, and the head's: they are known by identity.
+    const report = (checkpoint: () => PrefixBreak | undefined) => {
+      const before = new Set(invalidatedMessages(history, ledger));
+      const brk = checkpoint();
+      if (!brk) return;
+      const strippedThinking = invalidatedMessages(history, ledger)
+        .filter((message) => !before.has(message))
+        .reduce((n, message) => n + thinkingBlocks(message), 0);
+      breaks.push({ reason: brk.reason, at: brk.at, signed: brk.signed, strippedThinking });
+    };
+
+    try {
+      report(() => ledger.reconcile(history).break);
+      if (fresh && breaks[0]?.reason === 'ledger') this.warnLostLedger(history);
+
+      if (overflow && janitor) {
+        const { head } = await compactWindow(ledger, history, ledger.window(), janitor, { signal });
+        if (head) report(() => ledger.checkpoint('compaction', head.cut, head));
+      }
+
+      if (!awaitsToolResults(history, ledger.head)) {
+        const stated = sourceEvents(ledger, [dynamicStateSource(dynamicState, 'user')]);
+        const events = [...stated, ...anchorLines(stated)];
+        if (events.length > 0) ledger.append(events, eventAnchor(history, ledger.head));
+      }
+
+      report(() => ledger.reconcileSent(sent));
+
+      const invalid = new Set(invalidatedMessages(history, ledger));
+      const messages = ledger
+        .window()
+        .map((message) =>
+          invalid.has(message) && thinkingBlocks(message) > 0
+            ? this.options.withoutThinking(message)
+            : message,
+        );
+      ledger.commit(history, sent);
+      return { messages, breaks };
+    } catch (error) {
+      ledger.rollback();
+      throw error;
+    }
+  }
+
+  private warnLostLedger(history: readonly Message[]): void {
+    const replies = answeredReplies(history);
+    if (replies <= FRESH_LEDGER_REPLIES) return;
+    this.options.warnOnce(
+      'lost-ledger',
+      `[context-chef] appendOnly: a session's prefix ledger is empty, but its history already ` +
+        `holds ${replies} replies — sent by a process that is gone (a restart, a serverless ` +
+        'instance) or by a session the pool evicted (`maxSessions`). The thinking in them was ' +
+        'invalidated (a `ledger` checkpoint). Sessions live in the process; give each ' +
+        'conversation its own session id and keep the process running (warned once).',
+    );
+  }
+}
+
+/**
+ * Builds the per-session pool of an integration with `appendOnly` on: one
+ * {@link PrefixSession} per conversation, holding the session's Janitor when
+ * compression is configured, built as {@link createJanitorPool} builds it.
+ *
+ * The pool exists whatever is configured — dynamic state alone needs a
+ * ledger. `contextWindow` is required once a compression option is set.
+ * Nothing warns that a summary goes unpersisted: the session sends its head
+ * on every later call, so the payload does not grow back; `onCompress` is for
+ * surviving the process.
+ */
+export function createPrefixSessionPool<THostMessages>(
+  config: PrefixSessionPoolConfig<THostMessages>,
+): SessionPool<PrefixSession> {
+  const janitor = janitorFactory(config, () => {}, true);
+  const warnOnce = onceEach(config.logger);
+  return new SessionPool(
+    () =>
+      new PrefixSession(janitor?.() ?? null, {
+        withoutThinking: config.withoutThinking,
+        warnOnce,
+      }),
+    { maxSize: config.maxSessions },
+  );
+}
+
+/** Logs each key's message once, for the whole pool. */
+function onceEach(logger: ChefLogger): (key: string, message: string) => void {
+  const warned = new Set<string>();
+  return (key, message) => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    logger.warn(message);
+  };
+}

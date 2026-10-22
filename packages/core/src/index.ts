@@ -50,6 +50,14 @@ export {
   type IntegrationOverflowOptions,
   type JanitorPoolConfig,
 } from './integrations/janitorPool';
+export {
+  createPrefixSessionPool,
+  PrefixSession,
+  type PrefixSessionBreak,
+  type PrefixSessionCall,
+  type PrefixSessionPoolConfig,
+  type PrefixSessionWindow,
+} from './integrations/prefixSession';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {

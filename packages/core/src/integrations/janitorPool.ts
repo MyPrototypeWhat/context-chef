@@ -5,9 +5,11 @@ import {
   type UsagePreferenceWithoutTokenizer,
   type UsagePreferenceWithTokenizer,
 } from '../modules/janitor';
+import { combinesServerAndOnDemand } from '../overflow/onDemand';
 import type { CompressionArchiveConfig, OverflowStrategy } from '../overflow/types';
 import type { ChefLogger, Message } from '../types';
 import { dedupeConstructionWarnings, SessionPool } from '../utils/sessionPool';
+import { estimateMessages } from '../utils/tokenUtils';
 
 /**
  * After this many compressions fire without a persistence hook, warn once.
@@ -107,6 +109,29 @@ export interface IntegrationOverflowOptions {
 export function createJanitorPool<THostMessages>(
   config: JanitorPoolConfig<THostMessages>,
 ): SessionPool<Janitor> | null {
+  const build = janitorFactory(config, createPersistenceWarner(config));
+  return build && new SessionPool(build, { maxSize: config.maxSessions });
+}
+
+/**
+ * What builds one session's Janitor from an integration's config: the
+ * Janitor half of {@link createJanitorPool}, which the `appendOnly` session
+ * pool shares. `null` when no option signals compression intent; throws when
+ * one does without a `contextWindow`.
+ *
+ * `onCompressionFired` is told of every compression that lands. With
+ * `appendOnly` the session's ledger owns the window: each Janitor counts
+ * attachments at a flat cost in every reading, as the session's own check
+ * does, and `onCompress` hears only of the host's messages, never the events
+ * the session appended among them.
+ *
+ * @internal
+ */
+export function janitorFactory<THostMessages>(
+  config: Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'>,
+  onCompressionFired: () => void,
+  appendOnly = false,
+): (() => Janitor) | null {
   const budgeting = Boolean(
     config.compress || config.onCompress || config.onBeforeCompress || config.overflow?.strategy,
   );
@@ -121,13 +146,18 @@ export function createJanitorPool<THostMessages>(
     );
   }
 
-  const onCompressionFired = createPersistenceWarner(config);
+  const strategy = config.overflow?.strategy;
+  if (strategy && combinesServerAndOnDemand(strategy)) {
+    config.logger.warn(
+      '[context-chef] server() and onDemandCompaction() are configured together, and neither ' +
+        'reaches the provider here: an integration sends no server-side context_management and ' +
+        'has no compiled request for an on-demand compaction, so each one only runs its ' +
+        'fallback. Keep one of the two.',
+    );
+  }
 
-  return new SessionPool(
-    dedupeConstructionWarnings(config.logger, (constructionLogger) =>
-      buildJanitor(config, contextWindow, constructionLogger, onCompressionFired),
-    ),
-    { maxSize: config.maxSessions },
+  return dedupeConstructionWarnings(config.logger, (constructionLogger) =>
+    buildJanitor(config, contextWindow, constructionLogger, onCompressionFired, appendOnly),
   );
 }
 
@@ -167,10 +197,11 @@ function createPersistenceWarner<THostMessages>(
  * narrow to either branch.
  */
 function buildJanitor<THostMessages>(
-  config: JanitorPoolConfig<THostMessages>,
+  config: Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'>,
   contextWindow: number,
   logger: ChefLogger,
   onCompressionFired: () => void,
+  appendOnly: boolean,
 ): Janitor {
   const { onCompress, toHostMessages } = config;
   const sharedJanitorConfig = {
@@ -185,12 +216,16 @@ function buildJanitor<THostMessages>(
     // warning; the host's hook is forwarded when configured.
     onCompress: (summary: Message, count: number, details: CompressionDetails) => {
       onCompressionFired();
-      onCompress?.(summary.content, count, {
-        compressedMessages: toHostMessages(details.compressedMessages),
+      const compressed = appendOnly
+        ? details.compressedMessages.filter((message) => !message._chef_event)
+        : details.compressedMessages;
+      onCompress?.(summary.content, appendOnly ? compressed.length : count, {
+        compressedMessages: toHostMessages(compressed),
       });
     },
     onBeforeCompress: config.onBeforeCompress,
     logger,
+    ...(appendOnly ? { estimate: estimateMessages } : {}),
   };
 
   let usagePreference = config.compress?.usagePreference;
