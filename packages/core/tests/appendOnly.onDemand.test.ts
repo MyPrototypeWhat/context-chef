@@ -335,6 +335,8 @@ describe('appendOnly onDemandCompaction(): a signed checkpoint strips nothing', 
     expect(onCompress).toHaveBeenCalledTimes(1);
     expect(onCompress).toHaveBeenCalledWith(anthropicCompactionMessage(block(1)), 5, {
       compressedMessages: asked(4).slice(0, 5),
+      // What to write back to persist it: the block the window now opens with.
+      replacement: [anthropicCompactionMessage(block(1))],
     });
   });
 });

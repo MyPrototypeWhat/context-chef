@@ -149,6 +149,17 @@ export interface CompressionDetails {
    * persistence layers should still record the boundary.
    */
   compressedMessages: Message[];
+  /**
+   * `appendOnly` only: the messages the window now opens with in place of
+   * `compressedMessages` — the summary (or the signed compaction block), the
+   * pinned messages put back after it, and whatever it kept of an earlier
+   * head. To persist the compaction, write these back in that order where the
+   * compressed messages were: the next compile then reads the history as one
+   * that took the compaction in, with nothing to report. Under `appendOnly`,
+   * `compressedMessages` and the count leave out the chef's own events, which
+   * the host never had.
+   */
+  replacement?: Message[];
 }
 
 /**
@@ -861,7 +872,10 @@ export class Janitor {
    *   the strategy as they are ({@link OverflowInput}); the compile pipeline
    *   sets them under `appendOnly`. `pastLimit` and `collapse` skip the budget
    *   test too: the caller read the request about to be sent and found that
-   *   it cannot wait.
+   *   it cannot wait. `replacementOf` maps a landed result to what the window
+   *   now opens with in place of the compressed messages, for `onCompress`
+   *   (`CompressionDetails.replacement`); under `appendOnly` the events are
+   *   left out of what `onCompress` is told was compressed.
    */
   public async overflow(
     history: Message[],
@@ -873,6 +887,7 @@ export class Janitor {
       pastLimit?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;
+      replacementOf?: (result: OverflowResult) => Message[];
     } = {},
   ): Promise<OverflowResult> {
     const {
@@ -883,6 +898,7 @@ export class Janitor {
       pastLimit = false,
       collapse = false,
       wire,
+      replacementOf,
     } = options;
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
@@ -973,7 +989,10 @@ export class Janitor {
     // window, but they are part of what the summary now stands for, and a sink
     // persisting `compressedMessages` must not lose them. A signed result has
     // no summary text, but its first message is the block that stands for it.
-    const span = archived.span;
+    // Under `appendOnly` the span also holds the chef's own events, which the
+    // host's store never had: a host slicing it by the count must not lose more.
+    const span = appendOnly ? archived.span.filter((m) => !m._chef_event) : archived.span;
+    const replacement = replacementOf?.(archived);
     await this._fireOnCompress(
       archived.summary !== undefined
         ? archived.history[summaryIndex(archived.history)]
@@ -981,7 +1000,7 @@ export class Janitor {
           ? archived.history[0]
           : { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) },
       span.length,
-      { compressedMessages: span },
+      { compressedMessages: span, ...(replacement ? { replacement } : {}) },
     );
     this._reportedUsageStale = true;
     return archived;

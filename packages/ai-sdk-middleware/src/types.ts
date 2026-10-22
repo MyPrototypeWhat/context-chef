@@ -344,11 +344,19 @@ export interface ContextChefOptions {
    * messages (after truncate/compact): match tool messages back to your
    * records by `toolCallId`; user/assistant text is not modified by those
    * steps.
+   *
+   * With {@link appendOnly}, `details.replacement` holds the messages the
+   * session now sends in place of `compressedMessages` (the summary, as a
+   * user message). To persist the compaction, write exactly these back where
+   * the compressed messages were: the next call reads your history as one
+   * that took it in, and sends the same prompt with nothing to report.
+   * `compressedMessages` and the count hold only your messages, never the
+   * events the session appended among them.
    */
   onCompress?: (
     summary: string,
     truncatedCount: number,
-    details: { compressedMessages: LanguageModelV4Prompt },
+    details: { compressedMessages: LanguageModelV4Prompt; replacement?: LanguageModelV4Prompt },
   ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.

@@ -281,6 +281,7 @@ export interface PipelineHost {
       pastLimit?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;
+      replacementOf?: (result: OverflowResult) => Message[];
     },
   ): Promise<OverflowResult>;
   /**

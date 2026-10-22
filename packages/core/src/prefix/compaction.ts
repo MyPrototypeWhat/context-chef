@@ -19,6 +19,7 @@ export interface WindowRunner {
       pastLimit?: boolean;
       collapse?: boolean;
       wire?: OverflowWire;
+      replacementOf?: (result: OverflowResult) => Message[];
     },
   ): Promise<OverflowResult>;
   /** The installed strategy is signed: handed a wire, it never waits for a tool turn to end. */
@@ -84,6 +85,8 @@ export async function compactWindow({
     pastLimit: timing === 'past-limit',
     collapse: timing === 'collapse',
     wire,
+    // What onCompress hands a host to write back: the head this result becomes.
+    replacementOf: (landed) => [...compactionHead(window, landed, history, ledger).replacement],
   });
   if (!result.meta.changed) return { result };
   return { result, head: compactionHead(window, result, history, ledger) };

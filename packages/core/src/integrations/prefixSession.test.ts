@@ -240,7 +240,7 @@ describe('PrefixSession: a compression lands once as the head', () => {
     expect(strip).toHaveBeenCalledWith(a3);
   });
 
-  it("reports only the host's messages to onCompress, never the events", async () => {
+  it("reports only the host's messages to onCompress, never the events, and what to write back", async () => {
     const onCompress = vi.fn();
     const { session } = poolWith({ onCompress });
     for (const n of [1, 2, 3, 4]) {
@@ -250,7 +250,7 @@ describe('PrefixSession: a compression lands once as the head', () => {
     expect(onCompress).toHaveBeenCalledTimes(1);
     expect(onCompress.mock.calls[0].slice(1)).toEqual([
       6,
-      { compressedMessages: ['q1', 'a1', 'q2', 'a2', 'q3', 'a3'] },
+      { compressedMessages: ['q1', 'a1', 'q2', 'a2', 'q3', 'a3'], replacement: [SUMMARY(1)] },
     ]);
   });
 

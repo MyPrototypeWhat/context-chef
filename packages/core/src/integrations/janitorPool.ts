@@ -48,11 +48,15 @@ export interface JanitorPoolConfig<THostMessages> {
   /** Resolved summarizer callback, built from the integration's model type. */
   compressionModel?: (messages: Message[]) => Promise<string>;
   tokenizer?: (messages: Message[]) => number;
-  /** The host's post-compression hook, reported in host message shape. */
+  /**
+   * The host's post-compression hook, reported in host message shape. With
+   * `appendOnly`, `details.replacement` is what to write back in place of the
+   * compressed messages to persist the compaction (`CompressionDetails`).
+   */
   onCompress?: (
     summary: string,
     truncatedCount: number,
-    details: { compressedMessages: THostMessages },
+    details: { compressedMessages: THostMessages; replacement?: THostMessages },
   ) => void;
   onBeforeCompress?: JanitorConfig['onBeforeCompress'];
   /** Converts the compressed IR slice into the host's message format. */
@@ -122,8 +126,7 @@ export function createJanitorPool<THostMessages>(
  * `onCompressionFired` is told of every compression that lands. With
  * `appendOnly` the session's ledger owns the window: each Janitor counts
  * attachments at a flat cost in every reading, as the session's own check
- * does, and `onCompress` hears only of the host's messages, never the events
- * the session appended among them.
+ * does.
  *
  * @internal
  */
@@ -216,11 +219,9 @@ function buildJanitor<THostMessages>(
     // warning; the host's hook is forwarded when configured.
     onCompress: (summary: Message, count: number, details: CompressionDetails) => {
       onCompressionFired();
-      const compressed = appendOnly
-        ? details.compressedMessages.filter((message) => !message._chef_event)
-        : details.compressedMessages;
-      onCompress?.(summary.content, appendOnly ? compressed.length : count, {
-        compressedMessages: toHostMessages(compressed),
+      onCompress?.(summary.content, count, {
+        compressedMessages: toHostMessages(details.compressedMessages),
+        ...(details.replacement ? { replacement: toHostMessages(details.replacement) } : {}),
       });
     },
     onBeforeCompress: config.onBeforeCompress,

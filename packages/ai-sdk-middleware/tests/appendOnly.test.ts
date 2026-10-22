@@ -272,7 +272,7 @@ describe('appendOnly: a compression lands once as the head', () => {
     expect(onCompress).toHaveBeenCalledTimes(1);
     expect(onCompress.mock.calls[0].slice(1)).toEqual([
       8,
-      { compressedMessages: asked(5).slice(1, 9) },
+      { compressedMessages: asked(5).slice(1, 9), replacement: [summary(1)] },
     ]);
   });
 
@@ -331,6 +331,14 @@ describe('appendOnly: a compression lands once as the head', () => {
       ['history', 0, 1],
     ]);
     expect(prompts[5]).toEqual([sys, user('My own summary.'), user('q5'), reply('a5'), user('q6')]);
+  });
+
+  it("is taken in when the host writes back the details' replacement", async () => {
+    const { prompts, breaks } = await persisting((_s, details) => [...(details.replacement ?? [])]);
+
+    expect(prompts[4]).toEqual([sys, summary(1), user('q5')]);
+    expect(prompts[5]).toEqual([...prompts[4], reply('a5', 'S_5'), user('q6')]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
   });
 
   it('sends every message once the host edits one it kept behind the summary it wrote back', async () => {

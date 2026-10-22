@@ -376,6 +376,33 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
     expect(store().map((m) => m.content)).toEqual([SUMMARY(2), 'q5', 'a5', 'q6', 'a6', 'q7']);
     expect(invariants).toEqual([]);
   });
+
+  it("is taken in when the host writes back the details' replacement, pinned message and all", async () => {
+    const pinned: Message = { ...qa[0], pinned: true };
+    const { payloads, breaks, invariants } = await persisting(
+      (_summary, details) => [...(details.replacement ?? [])],
+      { first: pinned, turns: 5 },
+    );
+
+    expect(payloads[3].messages).toEqual([
+      text('user', SUMMARY(1)),
+      text('user', 'q1'),
+      text('user', 'q4'),
+    ]);
+    expect(payloads[4].messages).toEqual([...payloads[3].messages, answer(4), text('user', 'q5')]);
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+    expect(invariants).toEqual([]);
+  });
+
+  it('counts only the host messages it compressed, never the events among them', async () => {
+    const { counts } = await persisting((s) => [s], {
+      turns: 5,
+      setup: (chef) => chef.setDynamicState(State, { step: 1 }),
+    });
+
+    // asked(4) is 8 messages with the state event after q1; keeping q4, 6 host messages go.
+    expect(counts).toEqual([6]);
+  });
 });
 
 describe('appendOnly overflow: an unsigned compaction strips the thinking it invalidated', () => {
