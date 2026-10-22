@@ -168,6 +168,29 @@ export function isPrefill(message: Message): boolean {
 }
 
 /**
+ * Whether the host history after `head` ends, past any system messages, in
+ * tool calls not all answered yet. An event appended now would go between
+ * the calls and their results, and move behind the results once they
+ * arrive; it waits for them instead, and so does whatever it would have
+ * said.
+ */
+export function awaitsToolResults(history: readonly Message[], head?: PrefixHead): boolean {
+  const answered = new Set<string>();
+  for (let i = history.length - 1; i >= (head?.cut ?? 0); i--) {
+    const message = history[i];
+    if (message.role === 'tool') {
+      if (message.tool_call_id) answered.add(message.tool_call_id);
+    } else if (message.role !== 'system') {
+      return (
+        message.role === 'assistant' &&
+        (message.tool_calls ?? []).some((call) => !answered.has(call.id))
+      );
+    }
+  }
+  return false;
+}
+
+/**
  * Where a compile's events anchor: the end of the host history, or the slot
  * before the one prefill it ends with — never inside the head. Never before
  * a reply: an entry anchored there would join the group that reply answered,

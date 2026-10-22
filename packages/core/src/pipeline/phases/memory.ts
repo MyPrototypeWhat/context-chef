@@ -1,5 +1,5 @@
 import { type MemoryEntry, renderMemoryEntry } from '../../modules/memory';
-import { memoryEvents } from '../../prefix';
+import { awaitsToolResults, memoryEvents } from '../../prefix';
 import type { Phase, PipelineHost, PrefixCompile } from '../context';
 
 /**
@@ -61,6 +61,8 @@ function memoryEventsFor(
   read: { live: MemoryEntry[]; selected: MemoryEntry[]; snapshot: string },
 ) {
   if (prefix.breaks.length > 0) host.forgetModelMemoryWrites();
+  // Nothing goes between tool calls and their results: the next compile says it.
+  if (awaitsToolResults(prefix.history, prefix.ledger.head)) return { events: [], keys: [] };
   const written = new Map<string, string | null>();
   for (const [key, entry] of host.modelMemoryWrites) {
     written.set(key, entry && renderMemoryEntry(entry));

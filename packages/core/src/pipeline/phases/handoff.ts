@@ -1,4 +1,5 @@
 import { renderHandoffNotice } from '../../overflow/handoff';
+import { awaitsToolResults } from '../../prefix';
 import type { Phase } from '../context';
 
 /**
@@ -32,6 +33,9 @@ export const handoffPhase: Phase = {
 
     const windowId = ctx.window.current;
     if (host.handoffNoticedWindow() === windowId) return;
+    // appendOnly: no event goes between tool calls and their results, the notice included.
+    const prefix = ctx.prefix;
+    if (prefix && awaitsToolResults(prefix.history, prefix.ledger.head)) return;
 
     const budget = host.readBudget(ctx.history);
     if (budget.remaining > handoff.budgetTokens) return;

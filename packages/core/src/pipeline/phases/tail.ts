@@ -2,6 +2,7 @@ import type { AnnouncementChannel } from '../../chef';
 import { Assembler } from '../../modules/assembler';
 import { extractPinnedMessages } from '../../overflow/turns';
 import {
+  awaitsToolResults,
   eventAnchor,
   followsUserTurn,
   type PrefixCandidate,
@@ -349,9 +350,15 @@ function replaceEventGroup(
  * reminders in every request instead, rendered as one more system message.
  * A reminder needs a user turn right before it; a request without one (an
  * empty window, a compile right after a reply) goes without.
+ *
+ * Nothing is appended while the history ends in tool calls still waiting for
+ * results: the events would sit between the calls and their results.
  */
 function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCompile): Message[] {
   const { ledger } = prefix;
+  if (awaitsToolResults(prefix.history, ledger.head)) {
+    return host.assembler.compile(ctx.messages).messages;
+  }
   const { isAnthropicTarget } = ctx.target;
   const channelOf = (channel: AnnouncementChannel): PrefixEntry['channel'] =>
     announcementChannel(channel, isAnthropicTarget) === 'system' ? 'system' : 'user';

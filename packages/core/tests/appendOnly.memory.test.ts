@@ -333,6 +333,27 @@ describe('appendOnly memory: a delta for what the host changed', () => {
     expect(injected(payloads)).toEqual([['lang'], ['lang', 'style'], []]);
   });
 
+  it('holds a write made while a tool call waits for its result until the result is in', async () => {
+    const { chef } = chefWith();
+    await chef.getMemory().set('lang', 'TypeScript');
+    const calling = [...turn1, call('t1', 'SIG_1')];
+
+    const payloads = await converse(chef, [turn1, calling, turn2], 'openai', async (c, turn) => {
+      if (turn === 2) await c.getMemory().set('style', 'terse');
+    });
+
+    expectAppendOnly(payloads);
+    expect(contents(payloads[1])).toEqual([
+      'You are terse.',
+      Prompts.MEMORY_INSTRUCTION,
+      ...TURN1,
+      SNAPSHOT,
+      '',
+    ]);
+    expect(contents(payloads[2])).toEqual([...contents(payloads[1]), '2026-09-28', delta([STYLE])]);
+    expect(injected(payloads)).toEqual([['lang'], [], ['style']]);
+  });
+
   it.each(THREE)('says an entry the host deleted is gone (%s)', async (target) => {
     const { chef } = chefWith();
     await chef.getMemory().set('lang', 'TypeScript');

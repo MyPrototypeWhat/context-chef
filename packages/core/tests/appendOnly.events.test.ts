@@ -863,6 +863,66 @@ describe('appendOnly: where events go', () => {
   });
 });
 
+describe('appendOnly: an event waits for the results of the tool calls before it', () => {
+  // The model called two tools; their results come in one by one.
+  const twoCalls: Message = {
+    ...call('t1', 'SIG_1'),
+    tool_calls: [
+      { id: 't1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } },
+      { id: 't2', type: 'function', function: { name: 'search', arguments: '{"q":"y"}' } },
+    ],
+  };
+  const calling = [...turn1, twoCalls];
+  const oneResult = [...calling, result('t1', 'r1')];
+  const bothResults = [...oneResult, result('t2', 'r2')];
+
+  it.each(
+    THREE,
+  )('says nothing between a tool call and its results, then what changed after them (%s)', async (target) => {
+    const { chef, breaks, invariants } = chefWith();
+
+    const payloads = await converse(
+      chef,
+      [turn1, calling, oneResult, bothResults],
+      target,
+      (c, turn) => {
+        if (turn === 2) c.setDynamicState(State, { step: 1 });
+        if (turn === 3) c.announce('tools', SEARCH_V2, { channel: 'system' });
+      },
+    );
+
+    // Gemini merges the results into one turn, which the second one changes, events or not.
+    expectAppendOnly([payloads[0], payloads[1], payloads[3]]);
+    expectAppendOnly([payloads[1], payloads[2]]);
+    expect(breaks).toEqual([]);
+    expect(invariants).toEqual([]);
+    expect(occurrences(payloads[1], '<step>')).toBe(0);
+    expect(occurrences(payloads[2], '<step>')).toBe(0);
+    expectSentInOrder(payloads[3], [
+      'r2',
+      `${state(1, 1)}\n\n${ANCHOR}`,
+      `${announcement('tools', SEARCH_V2, 1)}\n\n${ANCHOR}`,
+    ]);
+  });
+
+  it('holds the handoff notice for the results too, rather than lose it for the window', async () => {
+    const { chef } = chefWith({
+      // 10 tokens per message; the notice is due with 50 or fewer left before 100.
+      janitor: { contextWindow: 100, triggerRatio: 1, tokenizer: (m) => m.length * 10 },
+      overflow: { handoff: { budgetTokens: 50, prompt: 'HANDOFF, {n_remaining} tokens left' } },
+    });
+    const asked = [...turn3, reply('About $40.', 'SIG_3'), user('Thanks.')];
+
+    const [waiting, answered] = await converse(chef, [
+      [...asked, call('t2', 'SIG_4')],
+      [...asked, call('t2', 'SIG_4'), result('t2', 'r2')],
+    ]);
+
+    expect(occurrences(waiting, 'HANDOFF')).toBe(0);
+    expectSentInOrder(answered, ['r2', 'HANDOFF, 10 tokens left']);
+  });
+});
+
 describe('appendOnly: after a checkpoint, the current state is stated again', () => {
   it.each(
     THREE,
