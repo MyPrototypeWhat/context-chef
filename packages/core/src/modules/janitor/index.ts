@@ -876,8 +876,9 @@ export class Janitor {
    *   `windowId` identifies a window that really existed.
    *
    * @param options `force: true` skips the budget test and applies the
-   *   strategy regardless — the `new_context` path. The circuit breaker still applies: a strategy that
-   *   just failed three times in a row does not get hammered on request.
+   *   strategy regardless — the `new_context` path. The circuit breaker still
+   *   applies: a strategy that just failed three times in a row does not get
+   *   hammered on request.
    *   `appendOnly`, `midToolTurn`, `pastLimit`, `collapse` and `wire` go to
    *   the strategy as they are ({@link OverflowInput}); the compile pipeline
    *   sets them under `appendOnly`. `pastLimit` and `collapse` skip the budget
