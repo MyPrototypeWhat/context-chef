@@ -5,15 +5,16 @@
  * no rewrite the window is the host history and the wire is the 4.x wire.
  */
 
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
-  anthropicCompactionMessage,
   type ChefConfig,
   type ChefEvents,
   type ChefSnapshot,
   ContextChef,
   checkPrefixContinuity,
+  fromAnthropic,
   PrefixLedger,
   type PrefixLedgerSnapshot,
 } from '../src/index';
@@ -430,17 +431,27 @@ describe('appendOnly on, a ledger that never saw the conversation', () => {
     expect(breaks).toEqual([[], []]);
   });
 
-  // Exposed by the appendOnly golden (resumed-from-anthropic), not fixed in P9: Ruling I reads
-  // the compaction block a resumed history opens with as a reply this ledger never saw, and
-  // reports a `ledger` checkpoint that strips nothing. A reply after the block still would.
-  it.skip('starts one resumed from a compaction block with nothing to report', async () => {
-    const chef = chefWith();
-    const breaks = breaksOf(chef);
-    const block = { type: 'compaction' as const, content: 'SUMMARY 0', signature: 'SIG_BLOCK_0' };
+  it.each([
+    'anthropic',
+    'openai',
+  ] as const)('starts one resumed from a compaction block with nothing to report, until a reply follows it (%s)', async (target) => {
+    // fromAnthropic puts its placeholder user in front of the block the session got back.
+    const { history: resumed } = fromAnthropic([
+      {
+        role: 'assistant',
+        content: [{ type: 'compaction', content: 'SUMMARY 0', signature: 'SIG_BLOCK_0' }],
+      },
+    ] as unknown as MessageParam[]);
+    const fresh = chefWith();
+    const kept = chefWith();
+    const breaks = [breaksOf(fresh), breaksOf(kept)];
 
-    await compileAt(chef, [anthropicCompactionMessage(block), ...turn1]);
+    await compileAt(fresh, [...resumed, ...turn1], target);
+    await compileAt(kept, [...resumed, ...turn3], target);
 
-    expect(breaks).toEqual([]);
+    // The block answered nothing this ledger never saw; a reply after it did.
+    expect(breaks[0]).toEqual([]);
+    expect(breaks[1].map(({ reason, at }) => [reason, at])).toEqual([['ledger', 0]]);
   });
 });
 

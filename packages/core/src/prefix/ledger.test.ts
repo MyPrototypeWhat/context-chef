@@ -594,6 +594,19 @@ describe('PrefixLedger — reconcile reports a break and checkpoints it', () => 
     });
   });
 
+  it('reports nothing for the compaction block a resumed history opens with, but a reply after it', () => {
+    const block: Message = {
+      role: 'assistant',
+      content: '',
+      _anthropic_compaction: 'SUMMARY 0',
+      pinned: true,
+    };
+    expect(compile(new PrefixLedger(), [user('opening'), block, user('q1')]).break).toBeUndefined();
+    expect(
+      compile(new PrefixLedger(), [user('opening'), block, ...turns.slice(0, 3)]).break,
+    ).toMatchObject({ reason: 'ledger', at: 0 });
+  });
+
   it('reports a `ledger` break for an entry anchored past the end of the history', () => {
     const ledger = new PrefixLedger();
     ledger.reconcile(turns.slice(0, 3));

@@ -1,5 +1,6 @@
 import { withoutThinking } from '../../adapters/anthropicAdapter';
 import {
+  isReply,
   type PrefixBreak,
   type PrefixLedger,
   type PrefixMeta,
@@ -177,7 +178,7 @@ export const prefixPhase: Phase = {
     if (!brk) return;
 
     if (fresh && brk.reason === 'ledger') {
-      const replies = history.filter((m) => m.role === 'assistant').length;
+      const replies = history.filter(isReply).length;
       if (replies > FRESH_LEDGER_REPLIES) {
         host.warnOnce(
           'append-only-fresh-ledger',

@@ -98,6 +98,10 @@ export function wireDigest(message: Message): string {
   return `${message.role.charAt(0)}:${hash}`;
 }
 
+/** An assistant message that answered a request: not a compaction block, which stands for earlier ones. */
+export const isReply = (message: Message): boolean =>
+  message.role === 'assistant' && message._anthropic_compaction === undefined;
+
 /**
  * Whether a message placed at `end` follows a user turn: the last message
  * before it that is not a system message is a user message or tool results.
@@ -636,8 +640,10 @@ export class PrefixLedger {
     if (history.length < cut) return { reason: 'ledger', hostIndex: 0 };
     // A reply answered a request this ledger never saw, sent with whatever was
     // appended to it then: nothing it was signed over can be vouched for. An
-    // assistant message nothing follows yet — a prefill — answered nothing.
-    if (this.blank && history.some((m, i) => m.role === 'assistant' && i < history.length - 1)) {
+    // assistant message nothing follows yet — a prefill — answered nothing, and
+    // nor does the compaction block a resumed history opens with: it stands
+    // for what came before it, and a reply after it is still one.
+    if (this.blank && history.some((m, i) => isReply(m) && i < history.length - 1)) {
       return { reason: 'ledger', hostIndex: 0 };
     }
     // A history break drops any entry anchored past the end along with the rest.
