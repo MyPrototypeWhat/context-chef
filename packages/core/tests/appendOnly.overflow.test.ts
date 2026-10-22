@@ -23,6 +23,7 @@ import {
   background,
   type ChefConfig,
   type ChefEvents,
+  type ChefSnapshot,
   type CompressionDetails,
   ContextChef,
   chain,
@@ -346,6 +347,32 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
 
     // a3 went without its thinking when the head landed; a4 is the one this break strips.
     expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([
+      ['compaction', 1],
+      ['history', 1],
+    ]);
+  });
+
+  it('counts the same for a chef restored from its snapshot for every request', async () => {
+    let store: Message[] = [qa[0]];
+    const onCompress = (_summary: Message, _count: number, details: CompressionDetails) => {
+      const kept = store.filter((m) => !details.compressedMessages.includes(m));
+      store = [user('My own summary.'), ...kept];
+    };
+    const breaks: [string, number][] = [];
+    let snapshot: ChefSnapshot | undefined;
+    for (let n = 1; n <= 5; n++) {
+      const { chef } = chefWith({ janitor: { ...JANITOR, onCompress } }, keepLast(3));
+      if (snapshot) chef.restore(JSON.parse(JSON.stringify(snapshot)));
+      chef.on('prefix:break', ({ reason, strippedThinking }) => {
+        breaks.push([reason, strippedThinking]);
+      });
+      await chef.setHistory(store).compile({ target: 'anthropic' });
+      snapshot = chef.snapshot();
+      store = [...store, qa[2 * n - 1], qa[2 * n]];
+    }
+
+    // As for one chef: a3 went with the landing, a4 with the summary the host wrote.
+    expect(breaks).toEqual([
       ['compaction', 1],
       ['history', 1],
     ]);

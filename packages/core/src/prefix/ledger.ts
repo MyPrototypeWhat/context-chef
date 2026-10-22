@@ -406,7 +406,6 @@ export class PrefixLedger {
   reconcile(history: readonly Message[]): PrefixReconcile {
     this.pending ??= { committed: this.capture(), at: Number.POSITIVE_INFINITY };
     this.digests.clear();
-    const leaving = this.history;
     this.history = [...history];
     const found = this.restarted
       ? { reason: 'ledger' as const, hostIndex: 0, headLost: false }
@@ -414,7 +413,7 @@ export class PrefixLedger {
     this.restarted = false;
     if (!found) return { window: this.window() };
     const invalidBefore = found.headLost
-      ? this.invalidIn(leaving)
+      ? this.invalidLeft()
       : invalidatedMessages(this.history, this);
     const applied = this.checkpoint(found.reason, found.hostIndex);
     return { window: this.window(), break: applied, invalidBefore };
@@ -709,7 +708,11 @@ export class PrefixLedger {
     const summarized = this.summarized;
     if (summarized && this.leading(summarized.digests) === head.cut) return undefined;
     const replacement = head.replacement.map((message) => this.digestOf(message));
-    if (this.leading(replacement) === replacement.length) {
+    // A head with no message of its own is taken in only by a history that goes
+    // on with what followed the cut, or every history would open with it.
+    const continues =
+      replacement.length > 0 || (this.seen.length > 0 && this.leading(this.seen.slice(0, 1)) === 1);
+    if (continues && this.leading(replacement) === replacement.length) {
       this.takeHeadIn();
       return undefined;
     }
@@ -727,15 +730,21 @@ export class PrefixLedger {
   }
 
   /**
-   * The messages of the history being compiled whose thinking was invalid
-   * over `leaving`, the history the window was built over until now, known by
-   * digest: a head that no longer applies leaves no host index to read the
-   * old ranges by.
+   * The messages of the history being compiled whose thinking was invalid in
+   * the window built until now, known by digest: a head that no longer
+   * applies leaves no host index to read the old ranges by. The host history
+   * that window was built over is read off what the ledger kept of it — what
+   * the head summarized, then what was seen after the cut — which a ledger
+   * restored from a snapshot holds too.
    */
-  private invalidIn(leaving: readonly Message[]): Message[] {
-    const invalid = new Set(
-      invalidatedMessages(leaving, this).map((message) => this.digestOf(message)),
-    );
+  private invalidLeft(): Message[] {
+    const summarized = this.summarized?.digests ?? new Array<string>(this.cut).fill('');
+    const host = [...summarized, ...this.seen];
+    const invalid = new Set([
+      ...this._stripped.flatMap(([from, until]) => host.slice(from, until)),
+      // What the head itself held that was invalid: it is no message of the history.
+      ...invalidatedMessages([], this).map((message) => this.digestOf(message)),
+    ]);
     return this.history.filter((message) => invalid.has(this.digestOf(message)));
   }
 

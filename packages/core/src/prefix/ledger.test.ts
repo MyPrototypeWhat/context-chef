@@ -934,6 +934,26 @@ describe('PrefixLedger — checkpoints', () => {
       expect(shape(next.window)).toEqual(shape(history));
     });
 
+    describe('with no message of its own (a strategy that only drops)', () => {
+      it('breaks at the first edit of what it summarized', () => {
+        const ledger = landed(long.slice(0, 9), 6, []);
+        const history = long.slice(0, 11);
+        history[4] = user('q3 (edited)');
+        const next = compile(ledger, history);
+
+        expect(next.break).toEqual({ reason: 'history', at: 4, signed: false, stripped: [4, 11] });
+        expect(shape(next.window)).toEqual(shape(history));
+      });
+
+      it('is taken in by a host that dropped what it summarized', () => {
+        const ledger = landed(long.slice(0, 9), 6, []);
+        const next = compile(ledger, long.slice(6, 11));
+
+        expect(next.break).toBeUndefined();
+        expect(shape(next.window)).toEqual(shape(long.slice(6, 11)));
+      });
+    });
+
     describe('after the system prompt changed under it', () => {
       const signed = (content: string, signature: string): Message => ({
         role: 'assistant',
