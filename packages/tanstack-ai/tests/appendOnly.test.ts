@@ -124,7 +124,10 @@ interface Call {
   threadId?: string;
   signal?: AbortSignal;
   phase?: ChatMiddlewareContext['phase'];
-  /** The chat() run the firing belongs to (`ctx.requestId`): a run of its own unless given. */
+  /**
+   * The chat() run the firing belongs to (`ctx.requestId`): a run of its own
+   * unless given. The engine hands every hook of a run one context object.
+   */
   requestId?: string;
 }
 
@@ -140,7 +143,9 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
     ...options,
   });
 
-  let runs = 0;
+  // Each run's context, by requestId, as the engine keeps one for the run.
+  const runs = new Map<string, ChatMiddlewareContext>();
+  let last = ctxOf();
   /** One model call's `onConfig` firing, as the engine makes it before the call. */
   const send = async (
     messages: ModelMessage[],
@@ -153,12 +158,14 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
       systemPrompts: call.systemPrompts ?? [sys],
       tools: call.tools ?? [],
     };
-    const ctx = ctxOf({
-      requestId: call.requestId ?? `run_${++runs}`,
-      ...(call.threadId ? { threadId: call.threadId } : {}),
-      ...(call.signal ? { signal: call.signal } : {}),
-      ...(call.phase ? { phase: call.phase } : {}),
-    });
+    const requestId = call.requestId ?? `run_${runs.size + 1}`;
+    const ctx =
+      runs.get(requestId) ??
+      ctxOf({ requestId, ...(call.threadId ? { threadId: call.threadId } : {}) });
+    runs.set(requestId, ctx);
+    // The engine moves its context through the run's phases.
+    Object.assign(ctx, { phase: call.phase ?? 'beforeModel', signal: call.signal });
+    last = ctx;
     const result = await onConfig(ctx, config);
     return {
       messages: result?.messages ?? config.messages,
@@ -166,16 +173,22 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
     };
   };
 
-  /** The usage of the call last sent, reporting `promptTokens`. */
-  const respond = (promptTokens: number) => {
-    middleware.onUsage?.(ctxOf(), {
+  /** The usage of the call last sent (or of `run`'s), reporting `promptTokens`. */
+  const respond = (promptTokens: number, run?: string) => {
+    middleware.onUsage?.(run ? (runs.get(run) ?? ctxOf()) : last, {
       promptTokens,
       completionTokens: 10,
       totalTokens: promptTokens + 10,
     });
   };
 
-  return { middleware, send, respond, warn, breaks };
+  /** A thinking block streamed for the call last sent (or `run`'s), signed `signature`. */
+  const streamed = (signature: string, run?: string) => {
+    const chunk = { type: 'STEP_FINISHED', stepName: 'thinking', signature, timestamp: 0 };
+    middleware.onChunk?.(run ? (runs.get(run) ?? ctxOf()) : last, chunk as StreamChunk);
+  };
+
+  return { middleware, send, respond, streamed, warn, breaks };
 }
 
 /** A request sent, as the cross-turn check compares the next one with it. */
@@ -330,6 +343,30 @@ describe('appendOnly: the engine carries each config into the next iteration', (
       reply('a1'),
       user('q2'),
       stateEvent(2, 2),
+    ]);
+    expect(breaks).toEqual([]);
+  });
+
+  it('keeps each run its own carried record when two runs on one thread interleave', async () => {
+    let step = 0;
+    const { send, breaks } = middlewareWith({
+      dynamicState: { getState: () => ({ step: ++step }) },
+    });
+    const a1 = await send([user('q1')], { requestId: 'A' });
+    await send([user('q1')], { requestId: 'B' });
+    const a2 = await send([...a1.messages, toolCall('t1'), toolResult('t1')], {
+      ...a1,
+      requestId: 'A',
+    });
+
+    // Run B's firing appended its event where run A's stands, one message with it (the
+    // thread's one ledger); nothing of run A's request comes back as a host message.
+    expect(a2.messages).toEqual([
+      user('q1'),
+      user(`${stateEvent(1, 1).content}\n\n${stateEvent(2, 2).content}`),
+      toolCall('t1'),
+      toolResult('t1'),
+      stateEvent(3, 3),
     ]);
     expect(breaks).toEqual([]);
   });
@@ -1012,12 +1049,7 @@ describe('appendOnly: requests the conversation does not keep', () => {
         return sent;
       },
     };
-    /** A thinking block the model streamed for the request last sent, signed `signature`. */
-    const streamed = (signature: string) => {
-      const chunk = { type: 'STEP_FINISHED', stepName: 'thinking', signature, timestamp: 0 };
-      recorded.middleware.onChunk?.(ctxOf(), chunk as StreamChunk);
-    };
-    return { ...recorded, requests, streamed };
+    return { ...recorded, requests };
   }
 
   it.each([
@@ -1045,6 +1077,67 @@ describe('appendOnly: requests the conversation does not keep', () => {
       user('q3'),
     ]);
     expect(breaks).toEqual([]);
+  });
+
+  it("captures the reply to a run's one-off though another run on the thread kept a firing meanwhile", async () => {
+    const { send, streamed, breaks } = middlewareWith();
+    await send(asked(1, true));
+    await send(asked(2, true));
+    await send(asked(2, true), { requestId: 'A', phase: 'structuredOutput' });
+    await send(asked(2, true), { requestId: 'B' });
+    streamed('S_STRUCT', 'A');
+    const next = await send([...asked(2, true), reply('{"answer":2}', 'S_STRUCT'), user('q3')]);
+
+    expect(next.messages).toEqual([...asked(2, true), reply('{"answer":2}'), user('q3')]);
+    expect(breaks).toEqual([]);
+  });
+
+  it('takes a stream it configured no request for as one the ledger did not keep', async () => {
+    const { middleware, send } = middlewareWith();
+    await send(asked(1, true));
+    const chunk = { type: 'STEP_FINISHED', stepName: 'thinking', signature: 'S_U', timestamp: 0 };
+    middleware.onChunk?.(ctxOf({ requestId: 'elsewhere' }), chunk as StreamChunk);
+    const next = await send([user('q1'), reply('a1', 'S_U'), user('q2')]);
+
+    expect(next.messages).toEqual([user('q1'), reply('a1'), user('q2')]);
+  });
+
+  it('keeps stripping such a reply for as long as the host sends it', async () => {
+    const { send, streamed } = middlewareWith();
+    await send(asked(1, true));
+    await send(asked(1, true), { phase: 'structuredOutput' });
+    streamed('S_X');
+    const answered = [user('q1'), reply('{"answer":1}', 'S_X'), user('q2')];
+    const first = await send(answered);
+    const later = await send([...answered, reply('a2', 'S_2'), user('q3')]);
+
+    expect(first.messages).toEqual([user('q1'), reply('{"answer":1}'), user('q2')]);
+    expect(later.messages).toEqual([...first.messages, reply('a2', 'S_2'), user('q3')]);
+  });
+
+  it('holds at most 16 signatures whose reply never came, and forgets one whose reply left', async () => {
+    const { send, streamed } = middlewareWith();
+    await send(asked(1, true));
+    // Seventeen structured calls whose replies the host never stored.
+    for (let i = 1; i <= 17; i++) {
+      await send(asked(1, true), { phase: 'structuredOutput' });
+      streamed(`O_${i}`);
+    }
+    const held = await send([user('q1'), reply('r1', 'O_1'), reply('r17', 'O_17'), user('q2')]);
+    // The host drops r17 (a history checkpoint at it), then puts it back past the end.
+    await send([user('q1'), reply('r1', 'O_1'), user('q2')]);
+    const back = await send([
+      user('q1'),
+      reply('r1', 'O_1'),
+      user('q2'),
+      reply('r17', 'O_17'),
+      user('q3'),
+    ]);
+
+    // O_1 went out first when the 17th came in; O_17 is stripped while its reply is held.
+    expect(held.messages).toEqual([user('q1'), reply('r1', 'O_1'), reply('r17'), user('q2')]);
+    // Gone from the host's conversation, it was forgotten: back, the reply is a new message.
+    expect(back.messages[3]).toEqual(reply('r17', 'O_17'));
   });
 
   it.each([

@@ -36,9 +36,9 @@ export interface AppendOnlyHooks {
   /** `onConfig`: the request one firing sends. */
   config(ctx: ChatMiddlewareContext, config: ChatMiddlewareConfig): Promise<Sent | undefined>;
   /**
-   * Where the usage of the request a conversation last sent goes: its
-   * session, when that request was the window the ledger kept and something
-   * budgets; otherwise null.
+   * Where the usage of the request a run last sent goes: its session, when
+   * that request was the window the ledger kept and something budgets;
+   * otherwise null.
    */
   usage(ctx: ChatMiddlewareContext): ((tokens: number) => void) | null;
   /** `onChunk`: the signatures of thinking that answers a request the ledger did not keep. */
@@ -47,28 +47,47 @@ export interface AppendOnlyHooks {
 
 type Sent = Pick<ChatMiddlewareConfig, 'messages' | 'systemPrompts'>;
 
-/** What a conversation's last call in a chat() run was compiled from, and what it returned. */
+/** What a run's last firing was compiled from, and what it returned. */
 interface Carried extends Sent {
-  /** The run (`ctx.requestId`): the engine carries a config within one chat() call only. */
-  readonly run: string;
   readonly sent: Sent;
 }
 
-/** What the middleware keeps of a conversation next to its session. */
-interface Conversation {
-  /** Its last call, so a config the engine carried within the run can be read back. */
+/**
+ * What the middleware keeps of one chat() run, by the context object the
+ * engine hands every hook of the run: runs on one thread may interleave.
+ */
+interface Run {
+  /** Its last firing, so a config the engine carried can be read back. */
   carried?: Carried;
   /**
-   * Whether the request it last sent is the window its ledger kept — not
+   * Whether the request it last sent is the window the ledger kept — not
    * while a firing runs, nor after one failed and went out as the engine had
    * it, nor after a one-off.
    */
   kept: boolean;
-  /**
-   * Signatures of thinking that answered a request the ledger did not keep:
-   * signed over a prefix the conversation never had, so never replayed in it.
-   */
-  readonly foreign: Set<string>;
+}
+
+/**
+ * How many signatures of an unkept request's reply a conversation holds
+ * before its reply shows up. A reply comes back with the next firing (a
+ * failed one's) or the next run (a structured one's), if the host stores it
+ * at all; 16 covers several such requests, a few blocks each, at a few
+ * kilobytes a conversation. The oldest goes first.
+ */
+const UNSEEN_SIGNATURES = 16;
+
+/**
+ * Signatures of thinking that answered a request the ledger did not keep,
+ * per conversation: signed over a prefix it never had, so never replayed in
+ * it. The host sends such a reply again on every call, so its signature is
+ * kept while the host's conversation holds the reply, and dropped once it
+ * no longer does.
+ */
+interface Foreign {
+  /** Their reply has not shown up yet: capped, oldest first. */
+  readonly unseen: Set<string>;
+  /** Their reply is in the host's conversation, its thinking left out of every window. */
+  readonly seen: Set<string>;
 }
 
 /**
@@ -85,15 +104,16 @@ export function appendOnlyHooks(
   steps: SharedSteps,
 ): AppendOnlyHooks {
   const reportBreak = prefixBreakReporter(options.onPrefixBreak, logger);
+  const runs = new WeakMap<ChatMiddlewareContext, Run>();
   // Next to each session, and gone with it.
-  const conversations = new WeakMap<PrefixSession, Conversation>();
-  const conversationOf = (session: PrefixSession): Conversation => {
-    let conversation = conversations.get(session);
-    if (!conversation) {
-      conversation = { kept: false, foreign: new Set() };
-      conversations.set(session, conversation);
+  const foreigners = new WeakMap<PrefixSession, Foreign>();
+  const foreignOf = (session: PrefixSession): Foreign => {
+    let foreign = foreigners.get(session);
+    if (!foreign) {
+      foreign = { unseen: new Set(), seen: new Set() };
+      foreigners.set(session, foreign);
     }
-    return conversation;
+    return foreign;
   };
 
   return {
@@ -105,13 +125,15 @@ export function appendOnlyHooks(
 
       const sessionId = steps.sessionKey(ctx);
       const session = sessions.get(sessionId);
-      const conversation = conversationOf(session);
+      const run = runs.get(ctx) ?? { kept: false };
+      runs.set(ctx, run);
       // Until this firing's window is kept, what goes out is not the ledger's.
-      conversation.kept = false;
-      const record = conversation.carried;
-      // A config from another run is the host's own, whatever it opens with.
-      const last = record && ctx.requestId && record.run === ctx.requestId ? record : undefined;
+      run.kept = false;
+      // Only this run's own config is carried: one from another run is the host's.
+      const last = run.carried;
       const messages = hostMessages(config.messages, last);
+      const foreign = foreignOf(session);
+      if (foreign.unseen.size + foreign.seen.size > 0) heldBy(messages, foreign);
       const systemPrompts =
         last && sameItems(config.systemPrompts, last.sent.systemPrompts)
           ? last.systemPrompts
@@ -145,13 +167,13 @@ export function appendOnlyHooks(
       });
       if (!oneOff) for (const brk of breaks) reportBreak({ ...brk, sessionId });
 
-      const { foreign } = conversation;
+      const { seen } = foreign;
       const replayable =
-        foreign.size === 0
+        seen.size === 0
           ? window
           : window.flatMap((message) => {
               const kept = withoutThinkingBlocks(message, (block) =>
-                foreign.has(block.signature ?? ''),
+                seen.has(block.signature ?? ''),
               );
               return kept ? [kept] : [];
             });
@@ -159,22 +181,25 @@ export function appendOnlyHooks(
       if (options.transformContext) {
         sent = await options.transformContext(sent.messages, sent.systemPrompts, ctx);
       }
-      conversation.carried = { run: ctx.requestId, messages, systemPrompts, sent };
-      conversation.kept = !oneOff;
+      run.carried = { messages, systemPrompts, sent };
+      run.kept = !oneOff;
       return sent;
     },
 
     usage(ctx) {
       const session = sessions.get(steps.sessionKey(ctx));
-      return session.janitor && conversations.get(session)?.kept
+      return session.janitor && runs.get(ctx)?.kept
         ? (tokens) => session.reportTokenUsage(tokens)
         : null;
     },
 
     chunk(ctx, chunk) {
       if (chunk.type !== EventType.STEP_FINISHED || !chunk.signature) return;
-      const conversation = conversations.get(sessions.get(steps.sessionKey(ctx)));
-      if (conversation && !conversation.kept) conversation.foreign.add(chunk.signature);
+      // A stream with no firing of ours before it is no request the ledger kept either.
+      if (runs.get(ctx)?.kept) return;
+      const { unseen } = foreignOf(sessions.get(steps.sessionKey(ctx)));
+      unseen.add(chunk.signature);
+      if (unseen.size > UNSEEN_SIGNATURES) unseen.delete(unseen.values().next().value as string);
     },
   };
 }
@@ -192,6 +217,24 @@ function hostMessages(messages: ModelMessage[], last: Carried | undefined): Mode
     return messages;
   }
   return [...last.messages, ...messages.slice(sent.length)];
+}
+
+/**
+ * Moves each signature whose reply the host's conversation now holds to
+ * `seen`, and forgets each `seen` one whose reply it no longer holds.
+ */
+function heldBy(messages: readonly ModelMessage[], foreign: Foreign): void {
+  const held = new Set(
+    messages.flatMap((message) => message.thinking?.map((block) => block.signature) ?? []),
+  );
+  for (const signature of foreign.seen) {
+    if (!held.has(signature)) foreign.seen.delete(signature);
+  }
+  for (const signature of foreign.unseen) {
+    if (!held.has(signature)) continue;
+    foreign.unseen.delete(signature);
+    foreign.seen.add(signature);
+  }
 }
 
 /** The same message or prompt: the same object, or a copy of it. */
