@@ -11,6 +11,7 @@ import type {
   ToolUseBlockParam as SDKToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import { Assembler } from '../modules/assembler';
+import { isThinkingBlock } from '../prefix/thinking';
 import type {
   AnthropicPayload,
   Attachment,
@@ -338,9 +339,6 @@ export function anthropicCompactionMessage(block: AnthropicCompactionBlock): His
   stampOrigin([message], [block as unknown as SDKContentBlockParam]);
   return message;
 }
-
-const isThinkingBlock = (block: { type: string }): boolean =>
-  block.type === 'thinking' || block.type === 'redacted_thinking';
 
 /**
  * A copy of `message` without its thinking. Removing thinking is the one

@@ -103,6 +103,13 @@ export const isReply = (message: Message): boolean =>
   message.role === 'assistant' && message._anthropic_compaction === undefined;
 
 /**
+ * More replies than this behind a fresh ledger's `ledger` checkpoint, and the
+ * ledger that sent them was not kept: a chef created per request that does
+ * not persist it, or an integration session that lost it with its process.
+ */
+export const FRESH_LEDGER_REPLIES = 2;
+
+/**
  * The replies `history` holds that something follows: a trailing assistant
  * message nothing follows yet — a prefill — answered nothing so far.
  */

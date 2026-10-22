@@ -1,3 +1,4 @@
+import { Prompts } from '../prompts';
 import type { Message } from '../types';
 import { opensAfterUserTurn, type PrefixLedger } from './ledger';
 import type { InjectionSource, PrefixCandidate, PrefixEntry, PrefixHead } from './types';
@@ -79,6 +80,39 @@ export function sourceEvents(
     }
   }
   return events;
+}
+
+/** Dynamic state as a push source: its `<dynamic_state>` block on `channel`, while it has one. */
+export function dynamicStateSource(
+  xml: string | undefined,
+  channel: PrefixEntry['channel'],
+): PushSource {
+  return {
+    source: 'dynamic-state',
+    current: xml ? { channel, render: (rev) => Prompts.getEventBlock(xml, rev) } : undefined,
+    tombstone: (rev) =>
+      Prompts.getWithdrawnBlock('dynamic_state', rev, Prompts.DYNAMIC_STATE_WITHDRAWN),
+  };
+}
+
+/**
+ * The line that follows the state one compile appends, once for each message
+ * that states something — user, system, turn-scoped system — so the model
+ * reads the latest block of each kind as the one that counts. It speaks for
+ * no source.
+ */
+export function anchorLines(stated: readonly PrefixCandidate[]): PrefixCandidate[] {
+  const anchors: PrefixCandidate[] = [];
+  for (const [channel, clearAt] of [
+    ['user', false],
+    ['system', false],
+    ['system', true],
+  ] as const) {
+    if (!stated.some((event) => event.channel === channel && !!event.clearAt === clearAt)) continue;
+    const line = { channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] };
+    anchors.push(clearAt ? { ...line, clearAt } : line);
+  }
+  return anchors;
 }
 
 /**

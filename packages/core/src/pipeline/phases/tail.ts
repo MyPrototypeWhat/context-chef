@@ -2,7 +2,9 @@ import type { AnnouncementChannel } from '../../chef';
 import { Assembler } from '../../modules/assembler';
 import { extractPinnedMessages } from '../../overflow/turns';
 import {
+  anchorLines,
   awaitsToolResults,
+  dynamicStateSource,
   eventAnchor,
   followsUserTurn,
   type PrefixCandidate,
@@ -382,21 +384,13 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
     .filter((source) => source.startsWith(ANNOUNCEMENT))
     .map((source) => source.slice(ANNOUNCEMENT.length))
     .filter((id) => !ids.has(id));
-  const dynamicStateXml = host.dynamicStateXml;
   const implicitContextXml = ctx.implicitContextXml;
 
   const sources: PushSource[] = [
-    {
-      source: 'dynamic-state',
-      current: dynamicStateXml
-        ? {
-            channel: host.dynamicStatePlacement === 'system' ? 'system' : 'user',
-            render: (rev) => Prompts.getEventBlock(dynamicStateXml, rev),
-          }
-        : undefined,
-      tombstone: (rev) =>
-        Prompts.getWithdrawnBlock('dynamic_state', rev, Prompts.DYNAMIC_STATE_WITHDRAWN),
-    },
+    dynamicStateSource(
+      host.dynamicStateXml,
+      host.dynamicStatePlacement === 'system' ? 'system' : 'user',
+    ),
     {
       source: 'implicit-context',
       current: implicitContextXml
@@ -423,24 +417,13 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
       sources: ['handoff'],
     });
   }
-  // Skill instructions and memory introduce themselves: no anchor line for them, as in 4.x.
-  // One for each message that states something: user, system, turn-scoped system.
-  const anchors: PrefixCandidate[] = [];
-  for (const [channel, clearAt] of [
-    ['user', false],
-    ['system', false],
-    ['system', true],
-  ] as const) {
-    if (!stated.some((event) => event.channel === channel && !!event.clearAt === clearAt)) continue;
-    const anchorLine = { channel, content: Prompts.EVENT_STATE_ANCHOR, sources: [] };
-    anchors.push(clearAt ? { ...anchorLine, clearAt } : anchorLine);
-  }
   let events = [
     ...sourceEvents(ledger, [pinnedSource(prefix)]),
     ...ctx.skillEvents,
     ...ctx.memoryEvents,
     ...stated,
-    ...anchors,
+    // Skill instructions and memory introduce themselves: no anchor line for them, as in 4.x.
+    ...anchorLines(stated),
     ...sourceEvents(ledger, [guardrailSource(ctx)], turnScoped),
   ];
   // With no user turn right before it, a reminder would be said as a user message, which

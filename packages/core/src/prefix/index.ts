@@ -1,5 +1,8 @@
+export { compactWindow, type WindowCompaction, type WindowRunner } from './compaction';
 export {
+  anchorLines,
   awaitsToolResults,
+  dynamicStateSource,
   eventAnchor,
   isPrefill,
   type PushSource,
@@ -8,6 +11,7 @@ export {
 } from './events';
 export {
   answeredReplies,
+  FRESH_LEDGER_REPLIES,
   followsUserTurn,
   isReply,
   PrefixLedger,
@@ -16,6 +20,14 @@ export {
   wireDigest,
 } from './ledger';
 export { type MemoryEntryXml, type MemoryNow, type MemoryWords, memoryEvents } from './memory';
+export {
+  invalidatedMessages,
+  invalidatedThinking,
+  isThinkingBlock,
+  newlyStrippedThinking,
+  thinkingBlocks,
+  thinkingKeys,
+} from './thinking';
 export type {
   AppendOnlyConfig,
   InjectionSource,

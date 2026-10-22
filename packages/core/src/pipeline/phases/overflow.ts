@@ -1,9 +1,9 @@
 import { Assembler } from '../../modules/assembler';
 import type { OverflowResult, OverflowWire } from '../../overflow/types';
-import type { PrefixHead } from '../../prefix';
-import type { Message, ToolDefinition } from '../../types';
+import { compactWindow, invalidatedThinking } from '../../prefix';
+import type { ToolDefinition } from '../../types';
 import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
-import { invalidatedThinking, reportPrefixBreak, withoutStrippedThinking } from './prefix';
+import { reportPrefixBreak, withoutStrippedThinking } from './prefix';
 
 /**
  * Budget check + the installed overflow strategy.
@@ -104,98 +104,18 @@ async function overflowWindow(
   prefix: PrefixCompile,
   forced: boolean,
 ): Promise<OverflowResult | null> {
-  const wire = wireOf(ctx, prefix);
-  const midTurn = inToolTurn(prefix);
-  // A signed strategy handed a wire waits for no tool turn to end.
-  const waits = midTurn && !(host.signedOverflow && wire !== undefined);
-  const timing = compactionTiming(prefix, host, ctx.history, forced, waits);
-  if (timing === 'wait') return null;
-  const result = await host.overflow(ctx.history, {
+  const { result, head } = await compactWindow(prefix.ledger, prefix.history, ctx.history, host, {
     signal: ctx.signal,
-    force: forced,
-    appendOnly: true,
-    midToolTurn: midTurn,
-    pastLimit: timing === 'past-limit',
-    collapse: timing === 'collapse',
-    wire,
+    forced,
+    wire: wireOf(ctx, prefix),
   });
-  if (!result.meta.changed) return result;
+  if (!head) return result;
 
-  const head = compactionHead(ctx.history, result, prefix);
   const before = invalidatedThinking(prefix.history, prefix.ledger);
   const brk = prefix.ledger.checkpoint('compaction', head.cut, head);
   ctx.history = prefix.ledger.window();
   await reportPrefixBreak(ctx, host, brk, before);
   return result;
-}
-
-/**
- * `appendOnly`: when a compaction may land (D3). Between turns, as in 4.x.
- * There, once the request about to be sent is past the raw context window
- * (`'past-limit'`), nothing may wait for a later compile, a background job
- * included, and the runner's own verdict, which may read only an earlier
- * report, does not decide. While a tool turn is in progress (`midTurn`)
- * it waits for the turn to end: the turns it keeps lose their thinking, and
- * the one in progress still needs it. It cannot wait once the model asked
- * for a new window or the request is past the raw context window; then it
- * collapses the whole window.
- *
- * A signed strategy, handed a wire, has nothing to wait for: the turns it
- * keeps keep their thinking, the one in progress included, so it lands in a
- * tool turn as it does between turns, and is told it is in one
- * (`midToolTurn`) for a fallback it may run instead.
- */
-function compactionTiming(
-  prefix: PrefixCompile,
-  host: PipelineHost,
-  window: Message[],
-  forced: boolean,
-  midTurn: boolean,
-): 'now' | 'past-limit' | 'wait' | 'collapse' {
-  if (midTurn && forced) return 'collapse';
-  const past = pastLimit(prefix, host, window);
-  if (!midTurn) return past ? 'past-limit' : 'now';
-  return past ? 'collapse' : 'wait';
-}
-
-/**
- * Whether the request about to be sent is past the raw context window. With
- * none configured (the default) nothing is read: nothing can be past it.
- *
- * Reading consumes no reported usage, so a compile that waits leaves it for
- * the one that ends the turn — except one that predates the last landing,
- * which the first reading after it drops (E10). A report describes the
- * request it came back for, possibly several compiles ago, so everything the
- * window gained since that request is counted on top of it. Once a message of
- * that request changed, the report counts a payload that no longer exists,
- * and the whole window is counted locally instead.
- */
-function pastLimit(prefix: PrefixCompile, host: PipelineHost, window: Message[]): boolean {
-  host.dropStaleUsage();
-  if (!Number.isFinite(host.contextWindow)) return false;
-  // A usage fed past `reportTokenUsage()` is taken to cover the window last
-  // committed; one that describes none of the window is no report at all.
-  const covered = prefix.ledger.reportCovers() ?? prefix.ledger.stable();
-  const { current, limit } = host.readRequestBudget(
-    window,
-    covered > 0 ? window.slice(covered) : null,
-  );
-  return current > limit;
-}
-
-/**
- * Whether a tool turn is in progress: the host history after the head ends,
- * past any system messages, in tool results or in tool calls not answered yet.
- */
-function inToolTurn({ history, ledger }: PrefixCompile): boolean {
-  for (let i = history.length - 1; i >= (ledger.head?.cut ?? 0); i--) {
-    const message = history[i];
-    if (message.role === 'system') continue;
-    return (
-      message.role === 'tool' || (message.role === 'assistant' && !!message.tool_calls?.length)
-    );
-  }
-  return false;
 }
 
 /**
@@ -224,50 +144,5 @@ function wireOf(ctx: CompileContext, prefix: PrefixCompile): OverflowWire | unde
         ...(sent.tools === undefined ? {} : { tools: sent.tools as ToolDefinition[] }),
       };
     },
-  };
-}
-
-/**
- * The head a landed result puts in front of the host history. A strategy
- * keeps the end of the window it was handed by reference, so the first host
- * message of that kept end is where the host history resumes (`cut`), and
- * everything the result puts before it is the replacement: the summary,
- * pinned messages put back, and whatever of the previous head it kept.
- * Events kept ahead of that message go with what was summarized — the ledger
- * drops entries that render before `host[cut]`, and the `tail` phase states
- * their sources again. A result that kept no host message replaces them all.
- * A result the provider signed is a signed head: nothing is stripped.
- */
-function compactionHead(
-  window: readonly Message[],
-  result: OverflowResult,
-  { history, ledger }: PrefixCompile,
-): PrefixHead {
-  const landed = result.history;
-  const previous = ledger.head?.replacement ?? [];
-  // The window is the head, then the host messages from its cut with the
-  // events among them: walk it to find which messages are host ones.
-  let next = ledger.head?.cut ?? 0;
-  const hostIndex = window.map((message) =>
-    next < history.length && message === history[next] ? next++ : -1,
-  );
-  let kept = 0;
-  while (
-    kept < window.length &&
-    kept < landed.length &&
-    window[window.length - 1 - kept] === landed[landed.length - 1 - kept]
-  ) {
-    kept++;
-  }
-  const start = window.length - kept;
-  let first = start;
-  while (first < window.length && hostIndex[first] === -1) first++;
-  return {
-    cut: first < window.length ? hostIndex[first] : history.length,
-    replacement: [
-      ...landed.slice(0, landed.length - kept),
-      ...window.slice(start, first).filter((message) => previous.includes(message)),
-    ],
-    signed: result.meta.signed !== undefined,
   };
 }
