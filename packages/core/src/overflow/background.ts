@@ -213,10 +213,15 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
       built.set(named, [again]);
       return named;
     }
+    // What the job wrote itself, its summary first, was never anyone's but the
+    // job's: the second step stands for the messages it was handed with the
+    // window, and for what the job stood for.
+    const handed = new Set([...input.history, ...landed.span]);
+    const theirs = (messages: Message[]) => messages.filter((m) => handed.has(m));
     const both: OverflowResult = {
       history: again.history,
-      evicted: [...landed.evicted, ...again.evicted],
-      span: [...new Set([...landed.span, ...again.span])],
+      evicted: [...landed.evicted, ...theirs(again.evicted)],
+      span: [...new Set([...landed.span, ...theirs(again.span)])],
       summary: again.summary,
       meta: landed.meta,
     };

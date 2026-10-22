@@ -31,6 +31,7 @@ import {
   fromAnthropic,
   InMemoryBackend,
   type ITargetAdapter,
+  type JanitorConfig,
   OpenAIAdapter,
   type OverflowInput,
   type OverflowStrategy,
@@ -1438,6 +1439,23 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
     expect(summarized(compressionModel, 2)[0].content).toBe(SUMMARY(1));
     expect(payloads[4].messages).toEqual([text('user', SUMMARY(2)), text('user', 'q12')]);
     expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('tells onCompress of host messages only, so writing back the replacement keeps q12', async () => {
+    const onCompress = vi.fn<NonNullable<JanitorConfig['onCompress']>>();
+    const { chef } = chefWith({ janitor: { ...JANITOR, onCompress } }, inBackground);
+    const store = asked(12);
+
+    await converseSettling(chef, [asked(1), asked(2), asked(3), asked(4), store]);
+
+    // SUMMARY 1 was the job's own, never the host's: the 22 host messages before q12 went.
+    expect(onCompress).toHaveBeenCalledTimes(1);
+    const [, count, details] = onCompress.mock.calls[0];
+    expect(count).toBe(22);
+    expect(details.compressedMessages).toEqual(store.slice(0, 22));
+    // The documented write-back.
+    const written = [...(details.replacement ?? []), ...store.slice(count)];
+    expect(written.map((m) => m.content)).toEqual([SUMMARY(2), 'q12']);
   });
 
   it('keeps a pinned message through the refit, though the host builds every message anew', async () => {
