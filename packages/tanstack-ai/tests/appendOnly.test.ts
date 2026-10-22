@@ -365,31 +365,6 @@ describe('appendOnly: the engine carries each config into the next iteration', (
     expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
   });
 
-  it("puts the result the engine answered a pending call with in place of the host's placeholder", async () => {
-    const pending: ModelMessage = {
-      role: 'tool',
-      content: JSON.stringify({ pendingExecution: true }),
-      toolCallId: 't1',
-    };
-    const { send, breaks } = middlewareWith({ dynamicState: { getState: () => ({ step: 1 }) } });
-    await send([user('q1')]);
-    const run = { requestId: 'run' };
-    const first = await send([user('q1'), toolCall('t1'), pending], run);
-    // The engine runs the approved call and replaces the placeholder where it stands.
-    const answered = first.messages.map((m) => (m.role === 'tool' ? toolResult('t1') : m));
-    const second = await send(answered, { ...first, ...run });
-
-    expect(first.messages).toEqual([user('q1'), stateEvent(1, 1), toolCall('t1'), pending]);
-    // `at` indexes the request: the placeholder went out fourth, after the event.
-    expect(breaks.map((b) => [b.reason, b.at])).toEqual([['history', 3]]);
-    expect(second.messages).toEqual([
-      user('q1'),
-      stateEvent(1, 1),
-      toolCall('t1'),
-      toolResult('t1'),
-    ]);
-  });
-
   it('sends the model an append-only conversation through a whole chat() run, and the next run', async () => {
     let step = 1;
     let instructions = 'Plan first.';

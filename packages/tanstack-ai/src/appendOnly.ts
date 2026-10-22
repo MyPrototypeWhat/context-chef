@@ -113,29 +113,17 @@ export function appendOnlyTransform(
 
 /**
  * The host's conversation behind a call's messages. Within a run the engine
- * carries what `onConfig` returned into the next iteration and appends to it
- * — the assistant turn, its tool results — so messages that open with the
- * last call's are that call's host conversation plus what came since; a result
- * the engine put where a pending call's placeholder stood takes the
- * placeholder's place there too. Any other messages are the host's own.
+ * carries what `onConfig` returned into the next iteration and only appends
+ * to it — the assistant turn, its tool results — so messages that open with
+ * the last call's are that call's host conversation plus what came since.
+ * Any other messages are the host's own.
  */
 function hostMessages(messages: ModelMessage[], last: Carried | undefined): ModelMessage[] {
   const sent = last?.sent.messages ?? [];
-  if (!last || sent.length === 0 || messages.length < sent.length) return messages;
-  let host = last.messages;
-  for (const [i, message] of sent.entries()) {
-    const carried = messages[i];
-    if (same(carried, message)) continue;
-    const answered =
-      carried.role === 'tool' &&
-      message.role === 'tool' &&
-      carried.toolCallId === message.toolCallId
-        ? host.findIndex((m) => m.role === 'tool' && m.toolCallId === carried.toolCallId)
-        : -1;
-    if (answered < 0) return messages;
-    host = [...host.slice(0, answered), carried, ...host.slice(answered + 1)];
+  if (!last || sent.length === 0 || !sameItems(messages.slice(0, sent.length), sent)) {
+    return messages;
   }
-  return [...host, ...messages.slice(sent.length)];
+  return [...last.messages, ...messages.slice(sent.length)];
 }
 
 /** The same message or prompt: the same object, or a copy of it. */
