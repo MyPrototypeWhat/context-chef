@@ -18,7 +18,7 @@ import type {
   LanguageModelV4Prompt,
   LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
-import { type Message, Prompts, summarize } from '@context-chef/core';
+import { type Message, type OverflowStrategy, Prompts, summarize } from '@context-chef/core';
 import type { ModelMessage } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 import { checkSentPrefix, type SentPayload } from '../../core/src/pipeline/checks';
@@ -139,12 +139,14 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
   const send = async (
     prompt: LanguageModelV4Prompt,
     providerOptions?: LanguageModelV4CallOptions['providerOptions'],
+    abortSignal?: AbortSignal,
   ): Promise<LanguageModelV4Prompt> => {
     const transform = middleware.transformParams;
     if (!transform) throw new Error('transformParams is undefined');
     const params: LanguageModelV4CallOptions = {
       prompt,
       ...(providerOptions ? { providerOptions } : {}),
+      ...(abortSignal ? { abortSignal } : {}),
     };
     return (await transform({ params, type: 'generate', model: mockModel() })).prompt;
   };
@@ -512,6 +514,41 @@ describe('appendOnly: checkpoints', () => {
 
     expect(breaks).toEqual([]);
     expect(prompt[0]).toEqual(cached);
+  });
+
+  it('keeps nothing of a call aborted while it compresses: the next one meets the same checkpoint', async () => {
+    let aborting = true;
+    // A strategy that takes until the call is aborted, and finds nothing to do once it is not.
+    const slow: OverflowStrategy = {
+      name: 'slow',
+      apply: (input) =>
+        new Promise((resolve, reject) => {
+          const unchanged = { history: input.history, evicted: [], span: [] };
+          const meta = { strategy: 'slow', windowId: input.window.current, changed: false };
+          if (!aborting) return resolve({ ...unchanged, meta });
+          if (input.signal?.aborted) return reject(new Error('aborted'));
+          input.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    };
+    const { send, breaks } = middlewareWith({
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy: slow },
+    });
+    for (const n of [1, 2, 3]) await send(asked(n, true));
+    // a1 edited, and 9 messages: over the trigger at a turn boundary, so the strategy runs.
+    const edited = asked(5, true);
+    edited[2] = reply('a1, edited', 'S_1x');
+
+    const controller = new AbortController();
+    const aborted = send(edited, undefined, controller.signal);
+    controller.abort();
+    await expect(aborted).rejects.toThrow('aborted');
+    expect(breaks).toEqual([]);
+
+    aborting = false;
+    await send(edited);
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([['history', 1, 4]]);
   });
 
   it('treats a skill switch as a system checkpoint', async () => {

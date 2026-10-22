@@ -259,13 +259,15 @@ export interface ContextChefOptions {
    *
    * Give each conversation its own `sessionId`: conversations sharing one
    * rewrite each other's history on every call. Sessions live in the
-   * process, so a restart (or an eviction past `maxSessions`) costs one
-   * checkpoint. `compact` and `clear` settings that move with the
-   * conversation (`'before-last-…'`, `keepRecent`) make nearly every call a
-   * checkpoint, and are warned once; `'all'` and the provider's own context
-   * editing do not. `clearAt` is accepted for `ContextChef` config
-   * compatibility and ignored (warned once): every event here is a user
-   * message. Default: off.
+   * middleware instance: create it once (`withContextChef(...)` at module
+   * scope) and reuse it — one created per request starts every session
+   * empty, and every call is then a `ledger` checkpoint. A restart, or an
+   * eviction past `maxSessions`, costs one. `compact` and `clear` settings
+   * that move with the conversation (`'before-last-…'`, `keepRecent`) make
+   * nearly every call a checkpoint, and are warned when the middleware is
+   * created; `'all'` and the provider's own context editing do not.
+   * `clearAt` is accepted for `ContextChef` config compatibility and ignored
+   * (warned likewise): every event here is a user message. Default: off.
    */
   appendOnly?: boolean | { clearAt?: boolean };
   /**
@@ -286,8 +288,10 @@ export interface ContextChefOptions {
    * deleted — message structure and tool-call pairing stay intact, unlike
    * `compact` (AI SDK pruneMessages), which removes content outright.
    *
-   * Runs AFTER compression, so the summarizer still sees full tool output.
-   * When tool results are targeted, a system message explaining the
+   * Runs AFTER compression, so the summarizer still sees full tool output —
+   * except with {@link appendOnly}, where it runs before: a cleared result
+   * must be one before it is first sent, so the summarizer sees the
+   * placeholders. When tool results are targeted, a system message explaining the
    * placeholder is auto-injected so the model doesn't read it as an error.
    *
    * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing

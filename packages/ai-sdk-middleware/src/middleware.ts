@@ -1,12 +1,10 @@
 import type {
   LanguageModelV4,
-  LanguageModelV4CallOptions,
   LanguageModelV4Message,
   LanguageModelV4Prompt,
   LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import {
-  type ChefLogger,
   compactMessages,
   createJanitorPool,
   createPrefixSessionPool,
@@ -16,9 +14,7 @@ import {
   type Message,
   normalizeSessionKey,
   objectToXml,
-  type PrefixSession,
   Prompts,
-  type SessionPool,
   type SummarizeHistoryOptions,
   summarizeHistory,
 } from '@context-chef/core';
@@ -31,9 +27,10 @@ import {
 } from 'ai';
 
 import { fromAISDK, signedReasoning, toAISDK } from './adapter';
+import { appendOnlyTransform, warnAppendOnlyConfig } from './appendOnly';
 import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
-import type { ContextChefOptions, DynamicStateConfig, PrefixBreakEvent } from './types';
+import type { ContextChefOptions, DynamicStateConfig } from './types';
 
 /**
  * Creates a LanguageModelMiddleware that transparently applies
@@ -205,72 +202,20 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
     : [];
 
-  const reportBreak = (event: PrefixBreakEvent) => {
-    try {
-      options.onPrefixBreak?.(event);
-    } catch (error) {
-      logger.warn('[context-chef] onPrefixBreak threw — the call goes ahead', error);
-    }
-  };
-
-  /**
-   * `appendOnly`: the session rebuilds the conversation from its ledger — the
-   * head of the last compression, the host's messages, the events appended
-   * among them — so what an earlier call sent is sent again as it was. The
-   * system messages, skill and clear explainer go ahead of it as in 4.x; a
-   * change there is a checkpoint.
-   */
-  const appendOnlyParams = async (
-    params: LanguageModelV4CallOptions,
-    pool: SessionPool<PrefixSession>,
-  ): Promise<LanguageModelV4CallOptions> => {
-    const sessionId = sessionKey(params);
-    const session = pool.get(sessionId);
-    const { systemMessages, conversation } = await prepare(params.prompt);
-    // Cleared before the session compares anything: a placeholder that moves
-    // rewrites a message already sent, a checkpoint it has to see.
-    const history = options.clear?.length
-      ? compactMessages(conversation, { clear: options.clear })
-      : conversation;
-    const ahead = [
-      ...systemMessages,
-      ...(await resolveSkillMessages(options.skill)),
-      ...clearNotice,
-    ];
-    const state = options.dynamicState
-      ? objectToXml(await options.dynamicState.getState(), 'dynamic_state')
-      : undefined;
-
-    const { messages, breaks } = await session.compile({
-      history,
-      // What the model reads ahead of the conversation; provider options
-      // (a cache breakpoint moving) are not part of it.
-      sent: {
-        system: ahead.map((m) => m.content),
-        tools: params.tools?.map((tool) => {
-          if (tool.type !== 'function') return tool;
-          const { providerOptions: _options, ...definition } = tool;
-          return definition;
-        }),
-      },
-      dynamicState: state,
-      overflow: session.janitor !== null && !yieldsToServer(params),
-      signal: params.abortSignal,
+  const appendOnlyParams =
+    sessions &&
+    appendOnlyTransform(options, logger, sessions, {
+      prepare,
+      standing: async () => [...(await resolveSkillMessages(options.skill)), ...clearNotice],
+      sessionKey,
+      yieldsToServer,
     });
-    for (const brk of breaks) reportBreak({ ...brk, sessionId });
-
-    let prompt = toAISDK([...ahead, ...messages]);
-    if (options.transformContext) {
-      prompt = await options.transformContext(prompt);
-    }
-    return { ...params, prompt };
-  };
 
   return {
     specificationVersion: 'v4',
 
     transformParams: async ({ params }) => {
-      if (sessions) return appendOnlyParams(params, sessions);
+      if (appendOnlyParams) return appendOnlyParams(params);
 
       const janitor = janitorFor(params);
       const { systemMessages, conversation: prepared } = await prepare(params.prompt);
@@ -361,54 +306,6 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       return { ...rest, stream: stream.pipeThrough(transform) };
     },
   };
-}
-
-/**
- * `appendOnly`: the settings that cost what it is for, warned once per
- * middleware instance. `clearAt` has nothing to act on here, and a `compact`
- * or `clear` cut that moves with the conversation rewrites a message an
- * earlier call sent on nearly every call.
- */
-function warnAppendOnlyConfig(options: ContextChefOptions, logger: ChefLogger): void {
-  if (typeof options.appendOnly === 'object' && options.appendOnly.clearAt) {
-    logger.warn(
-      '[context-chef] appendOnly: `clearAt` is ignored by the middleware. The provider behind ' +
-        'the model is unknown and may move a mid-conversation system message into the system ' +
-        'prompt, so every event is a user message here, and a user message cannot be ' +
-        'turn-scoped (warned once).',
-    );
-  }
-  const moving = movingRewrites(options);
-  if (moving.length > 0) {
-    logger.warn(
-      `[context-chef] appendOnly: ${moving.join(', ')} ${moving.length > 1 ? 'move' : 'moves'} ` +
-        'with the conversation, rewriting messages earlier calls sent, so nearly every call is a ' +
-        "checkpoint: the provider's prefix cache misses from the rewritten message, and reasoning " +
-        "is stripped from it on. Use 'all', which rewrites each message once before it is first " +
-        "sent, or the provider's own context editing (providerOptions.anthropic.contextManagement) " +
-        '(warned once).',
-    );
-  }
-}
-
-/** The `compact` / `clear` settings whose cut moves with the conversation, as written. */
-function movingRewrites({ compact, clear }: ContextChefOptions): string[] {
-  const moving: string[] = [];
-  if (compact?.reasoning === 'before-last-message') {
-    moving.push("compact.reasoning: 'before-last-message'");
-  }
-  const toolCalls = compact?.toolCalls;
-  const types =
-    typeof toolCalls === 'string' ? [toolCalls] : (toolCalls ?? []).map((entry) => entry.type);
-  for (const type of types) {
-    if (type.startsWith('before-last-')) moving.push(`compact.toolCalls: '${type}'`);
-  }
-  for (const target of clear ?? []) {
-    if (typeof target === 'object' && target.keepRecent !== undefined) {
-      moving.push(`clear: { target: '${target.target}', keepRecent: ${target.keepRecent} }`);
-    }
-  }
-  return moving;
 }
 
 /**

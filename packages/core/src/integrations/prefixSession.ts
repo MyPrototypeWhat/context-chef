@@ -101,7 +101,8 @@ export interface PrefixSessionPoolConfig<THostMessages>
  *
  * One call at a time: a call that arrives while another is in progress waits
  * for it, since each one reconciles, appends and commits the same ledger.
- * The session lives in the process: a restart or an eviction from the pool
+ * The session lives in its pool, which lives in the integration instance: a
+ * restart, an eviction from the pool, or an instance created per request
  * loses the ledger, and the next call is a `ledger` checkpoint.
  */
 export class PrefixSession {
@@ -195,10 +196,11 @@ export class PrefixSession {
     this.options.warnOnce(
       'lost-ledger',
       `[context-chef] appendOnly: a session's prefix ledger is empty, but its history already ` +
-        `holds ${replies} replies — sent by a process that is gone (a restart, a serverless ` +
-        'instance) or by a session the pool evicted (`maxSessions`). The thinking in them was ' +
-        'invalidated (a `ledger` checkpoint). Sessions live in the process; give each ' +
-        'conversation its own session id and keep the process running (warned once).',
+        `holds ${replies} replies, sent by a session that is gone — so their signed thinking was ` +
+        'invalidated (a `ledger` checkpoint). Sessions live in the integration instance (the ' +
+        'middleware): one created per request starts every session empty, and every call is ' +
+        'then a checkpoint, so create it once and reuse it. A restart, a serverless instance or ' +
+        'a session the pool evicted (`maxSessions`) costs one. Each instance logs this once.',
     );
   }
 }
