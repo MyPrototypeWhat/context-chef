@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { auditAnthropicCachePlacement } from '../src/adapters/anthropicCacheAudit';
 import {
+  AnthropicAdapter,
   anthropicCompactionMessage,
   type ChefConfig,
   type ChefEvents,
@@ -200,6 +201,23 @@ describe('appendOnly on Anthropic: an unsigned checkpoint strips the thinking it
     expectAppendOnly([atBreak, next, retried]);
     expect(breaks.map((b) => b.reason)).toEqual(['history']);
     expect(invariants).toEqual([]);
+  });
+
+  it('strips through an adapter that wraps the Anthropic one and passes on what it is', async () => {
+    const inner = new AnthropicAdapter();
+    const wrapper: ITargetAdapter = {
+      anthropicWire: inner.anthropicWire,
+      compile: (messages) => inner.compile(messages),
+    };
+    const { chef, breaks } = chefWith();
+    await converse(chef, [turn1, turn2, turn3], wrapper);
+
+    const edited = [...turn3];
+    edited[2] = result('t1', '2026-09-29');
+    const [payload] = await converse(chef, [edited], wrapper);
+
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([['history', 2, 1]]);
+    expect(signatures(payload)).toEqual(['SIG_1']);
   });
 
   it('strips every block of a turn fromAnthropic parsed, and leaves the host history alone', async () => {

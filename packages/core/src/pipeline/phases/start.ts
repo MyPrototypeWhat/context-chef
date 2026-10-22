@@ -1,5 +1,4 @@
 import { adapterRegistry } from '../../adapters/adapterRegistry';
-import { AnthropicAdapter } from '../../adapters/anthropicAdapter';
 import type { Phase } from '../context';
 
 /**
@@ -23,9 +22,10 @@ export const startPhase: Phase = {
     // management decision below is per-target.
     const target = ctx.options.target ?? host.defaultTarget ?? 'openai';
     const adapter = typeof target === 'string' ? adapterRegistry.get(target) : target;
-    // The adapter's own word: unset, the model continues a trailing assistant message.
+    // The adapter's own word, which a wrapper passes on: unset, the model
+    // continues a trailing assistant message, and the target is not Anthropic.
     const nativePrefill = adapter.nativePrefill !== false;
-    const isAnthropicTarget = target === 'anthropic' || adapter instanceof AnthropicAdapter;
+    const isAnthropicTarget = target === 'anthropic' || adapter.anthropicWire === true;
     const serverManaged = host.contextManagement?.strategy === 'server' && isAnthropicTarget;
     if (host.contextManagement?.strategy === 'server' && !isAnthropicTarget) {
       host.warnOnce(

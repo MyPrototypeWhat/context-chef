@@ -53,6 +53,8 @@ payload.meta?.prefix;
 
 `signed: true` 表示替换内容由 provider 签名（[`onDemandCompaction`](#签名压缩-ondemandcompaction)）：什么都不剥，后面的轮次保留自己的 thinking。
 
+本指南里的「在 Anthropic 上」，指 `'anthropic'` target，或者 `anthropicWire` 为 `true` 的 adapter。`AnthropicAdapter` 自带这个标记，包装它的 adapter 应该把它传下去（见[适配器](/zh/guide/adapters)）。没传下去的包装会被当成其他 provider：什么都不剥，检查点之后的请求会被拒绝。
+
 ## 各种注入的变化
 
 | 来源 | 打开 `appendOnly` 后 |

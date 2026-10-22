@@ -125,3 +125,5 @@ adapterRegistry.unregisterBySource("my-plugin");
 > **Replacing a built-in name** (e.g. `register('openai', myFork)`) keeps the strict overload's payload return type — `compile({ target: 'openai' })` is still typed `Promise<OpenAIPayload>`, so your replacement must honor that shape at runtime. TypeScript can't enforce this for you.
 
 An adapter that can't end a request on an assistant message and turns a prefill into an instruction should say so with `nativePrefill: false` (a wrapper passes on the value of the adapter it wraps). Under [`appendOnly`](/guide/append-only) the chef then sends a guardrail prefill as an instruction, once, instead of letting the adapter fold it into a different user message every turn.
+
+An adapter that wraps the Anthropic one (to log, or to add request fields) should pass on its `anthropicWire` too: `anthropicWire = inner.anthropicWire`. The chef treats a target as Anthropic only by the `'anthropic'` name or by that flag. Without it, server-side context management is skipped, and under [`appendOnly`](/guide/append-only) the thinking a checkpoint invalidated is sent anyway, which the API rejects.

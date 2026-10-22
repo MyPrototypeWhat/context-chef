@@ -567,6 +567,7 @@ export function anthropicServerContextManagement(
 }
 
 export class AnthropicAdapter implements ITargetAdapter {
+  readonly anthropicWire = true;
   private _positionalHoistWarned = false;
 
   constructor(private readonly options: AnthropicAdapterOptions = {}) {}

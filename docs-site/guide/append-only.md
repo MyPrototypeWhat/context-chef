@@ -53,6 +53,8 @@ payload.meta?.prefix;
 
 `signed: true` means the provider signed the replacement ([`onDemandCompaction`](#signed-compaction-ondemandcompaction)): nothing is stripped, and the turns after it keep their thinking.
 
+"On Anthropic" in this guide means the `'anthropic'` target, or an adapter whose `anthropicWire` is `true`. `AnthropicAdapter` sets it, and an adapter that wraps it should pass it on (see [Adapters](/guide/adapters)). A wrapper that doesn't is treated as another provider: nothing is stripped, and the request after a checkpoint is rejected.
+
 ## What changes for each injection
 
 | Source | With `appendOnly` |

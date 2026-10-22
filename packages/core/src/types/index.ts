@@ -331,6 +331,15 @@ export interface ITargetAdapter {
    * the adapter it wraps.
    */
   readonly nativePrefill?: boolean;
+  /**
+   * Whether `compile()` returns an Anthropic Messages request, as the built-in
+   * Anthropic adapter does. The chef then treats the target as Anthropic, as
+   * it does the `'anthropic'` name: server-side context management, the
+   * system channel for announcements, and under `ChefConfig.appendOnly` the
+   * thinking a checkpoint invalidated left out, `clearAt` and their betas. A
+   * wrapper should pass on the value of the adapter it wraps.
+   */
+  readonly anthropicWire?: boolean;
 }
 
 // ─── Input adapter types ───
