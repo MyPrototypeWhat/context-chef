@@ -26,6 +26,10 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
 
   return {
     name,
+    ...(strategies.length > 0 && strategies.every((s) => s.signed)
+      ? { signed: true as const }
+      : {}),
+    parts: strategies,
     async apply(input: OverflowInput): Promise<OverflowResult> {
       let history = input.history;
       let pinned = input.pinned;
@@ -70,6 +74,8 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
       // A step that landed without a step it needed stays partial whatever came
       // after it, so the runner keeps the failure it counted.
       const partial = contributions.some(([, step]) => step.meta.partial);
+      // A signed result is the window only while no other step changed it.
+      const signed = contributions.length === 1 ? contributions[0][1].meta.signed : undefined;
       const composed: OverflowResult = {
         history,
         evicted,
@@ -81,6 +87,7 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
           changed: true,
           reason,
           ...(partial ? { partial: true as const } : {}),
+          ...(signed ? { signed } : {}),
         },
       };
       steps.set(composed, contributions);

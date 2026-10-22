@@ -619,6 +619,11 @@ export class Janitor {
     return this.config.contextWindow;
   }
 
+  /** Whether the installed strategy is signed (`OverflowStrategy.signed`). */
+  public get signedOverflow(): boolean {
+    return this._strategy.signed === true;
+  }
+
   /** Resolved archive config — the 'vfs' shorthand is only usable via ContextChef wiring. */
   private get _archive(): CompressionArchiveConfig | undefined {
     return typeof this.config.archive === 'object' ? this.config.archive : undefined;
@@ -956,10 +961,11 @@ export class Janitor {
     // `span` over `evicted`: the boundary the hook is told about is the span
     // the summary replaced, pinned messages included. They stayed in the
     // window, but they are part of what the summary now stands for, and a sink
-    // persisting `compressedMessages` must not lose them.
+    // persisting `compressedMessages` must not lose them. A signed result has
+    // no summary text, but its first message is the block that stands for it.
     const span = archived.span;
     await this._fireOnCompress(
-      archived.summary === undefined
+      archived.summary === undefined && !archived.meta.signed
         ? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) }
         : archived.history[0],
       span.length,

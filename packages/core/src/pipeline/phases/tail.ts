@@ -1,5 +1,6 @@
 import type { AnnouncementChannel } from '../../chef';
 import { Assembler } from '../../modules/assembler';
+import { extractPinnedMessages } from '../../overflow/turns';
 import {
   eventAnchor,
   followsUserTurn,
@@ -8,6 +9,7 @@ import {
   type PushSource,
   renderGroup,
   sourceEvents,
+  wireDigest,
 } from '../../prefix';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
@@ -247,6 +249,46 @@ function guardrailSource(ctx: CompileContext): PushSource {
   };
 }
 
+/** A pinned message as its restatement lists it: who said it, and what, tool calls included. */
+function pinnedMessageXml(message: Message): string {
+  const answers = message.tool_call_id
+    ? ` tool_call_id="${escapeXmlAttribute(message.tool_call_id)}"`
+    : '';
+  const calls = (message.tool_calls ?? []).map(
+    (call) =>
+      `\n<tool_call id="${escapeXmlAttribute(call.id)}" name="${escapeXmlAttribute(call.function.name)}">` +
+      `${call.function.arguments}</tool_call>`,
+  );
+  return `<message role="${message.role}"${answers}>${message.content}${calls.join('')}</message>`;
+}
+
+/**
+ * Pinned host messages the head stands for without carrying them — an
+ * on-demand compaction's block, which only the turns it kept may follow —
+ * said again as one event at the end of the window, all of them each time.
+ * A compaction the host history holds is the head's to replace, pinned or
+ * not. Once the host unpins them, the restatement is withdrawn.
+ */
+function pinnedSource({ ledger, history }: PrefixCompile): PushSource {
+  const head = ledger.head;
+  const carried = new Set(head?.replacement.map(wireDigest));
+  const summarized = head
+    ? extractPinnedMessages(history.slice(0, head.cut)).filter(
+        (message) =>
+          message._anthropic_compaction === undefined && !carried.has(wireDigest(message)),
+      )
+    : [];
+  const messagesXml = summarized.map(pinnedMessageXml).join('\n');
+  return {
+    source: 'pinned',
+    current:
+      summarized.length > 0
+        ? { channel: 'user', render: (rev) => Prompts.getPinnedEvent(messagesXml, rev) }
+        : undefined,
+    tombstone: (rev) => Prompts.getWithdrawnBlock('pinned_messages', rev, Prompts.PINNED_WITHDRAWN),
+  };
+}
+
 /**
  * `messages` with the event group at the end of the window — `before`, as
  * the `prefix` phase rendered it — replaced by `after`, the same group with
@@ -294,12 +336,14 @@ function replaceEventGroup(
  * `appendOnly`: each push source is compared with the last thing the window
  * holds from it, and only what changed is appended — at the end of the host
  * history, or before the assistant prefill it ends with — in the stitch's
- * order: skill instructions, memory, dynamic state, implicit context,
- * announcements, the anchor line on each channel that carried state, the
- * guardrail. Events never merge into a host message: the ledger renders
- * everything appended at one place as one user message and one positional
- * system message, and that group replaces the one the `prefix` phase
- * rendered there.
+ * order, after the pinned messages a compaction summarized: skill
+ * instructions, memory, dynamic state, implicit context, announcements, the
+ * anchor line on each channel that carried state, the guardrail. Pinned
+ * messages are conversation, not state, and come first; like skill
+ * instructions and memory they need no anchor line. Events never merge into
+ * a host message: the ledger renders everything appended at one place as one
+ * user message and one positional system message, and that group replaces
+ * the one the `prefix` phase rendered there.
  *
  * With `clearAt` on Anthropic, the system-channel sources are turn-scoped
  * reminders in every request instead, rendered as one more system message.
@@ -375,6 +419,7 @@ function appendEvents(ctx: CompileContext, host: PipelineHost, prefix: PrefixCom
     anchors.push(clearAt ? { ...anchorLine, clearAt } : anchorLine);
   }
   let events = [
+    ...sourceEvents(ledger, [pinnedSource(prefix)]),
     ...ctx.skillEvents,
     ...ctx.memoryEvents,
     ...stated,

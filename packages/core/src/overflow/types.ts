@@ -103,7 +103,8 @@ export interface OverflowInput {
    * compaction, the host's messages after it, and the chef's events among
    * them (`_chef_event`). Between compactions it only grows at its end;
    * anything else is a checkpoint that rewrote it. A strategy is applied to
-   * it only between turns, or to collapse it (`collapse`).
+   * it only between turns, or to collapse it (`collapse`) — a signed one
+   * handed a `wire` in a tool turn as well.
    */
   appendOnly?: true;
   /**
@@ -140,12 +141,17 @@ export interface OverflowWire {
   /** The compile target the bytes are for (`'anthropic'`). */
   readonly target: string;
   /**
+   * The window it renders: the `history` the overflow phase handed the
+   * runner. A strategy handed another array — an `onBeforeCompress` hook
+   * rewrote the window, an earlier `chain()` step changed it — holds
+   * messages this wire cannot vouch for.
+   */
+  readonly history: readonly Message[];
+  /**
    * `history[0, end)` as the target payload sent it — same messages, the
    * thinking unsigned checkpoints stripped left out — with the system prompt
-   * and tools the last payload carried. `end` indexes the `history` the
-   * overflow phase handed the runner, before any `onBeforeCompress` hook.
-   * Request-level betas the strategy adds itself; the payload carries only
-   * the ones its messages need.
+   * and tools the last payload carried. Request-level betas the strategy
+   * adds itself; the payload carries only the ones its messages need.
    */
   renderPrefix(end: number): TargetPayload;
 }
@@ -203,6 +209,15 @@ export interface OverflowResult {
      * `chain()` passes it on from any step.
      */
     partial?: true;
+    /**
+     * The provider signed this result over `request` — the start of the
+     * window it replaces, as `wire.renderPrefix()` rendered it when the
+     * strategy ran (`onDemandCompaction`). It lands as a signed checkpoint:
+     * nothing is stripped, and the turns it keeps keep their thinking. A
+     * result computed earlier lands only while the window still renders
+     * `request` the same.
+     */
+    signed?: { readonly request: TargetPayload };
   };
 }
 
@@ -281,6 +296,18 @@ export interface OverflowStrategy {
   restore?(state: unknown): void;
   /** @internal The runner installs its circuit breaker and logger here. */
   attach?(runner: OverflowRunner): void;
+  /**
+   * Whenever it is handed a `wire`, the provider signs what it returns
+   * (`onDemandCompaction`): under `appendOnly` its result keeps the thinking
+   * of the turns it keeps, so it does not wait for a tool turn to end. A
+   * combinator is signed when every strategy it may run is.
+   */
+  readonly signed?: true;
+  /**
+   * @internal The strategies it may run in its place — a combinator's steps,
+   * a fallback — so a check of the configuration as a whole sees inside it.
+   */
+  readonly parts?: readonly OverflowStrategy[];
 }
 
 /**

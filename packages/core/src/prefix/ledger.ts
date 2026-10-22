@@ -33,6 +33,11 @@ function canonical(value: unknown): string {
   );
 }
 
+/** Whether two payloads, or parts of one, send the model the same thing. */
+export function sameOnWire(a: unknown, b: unknown): boolean {
+  return canonical(a) === canonical(b);
+}
+
 /** A JSON copy of plain data: functions and `undefined` drop out, as on the wire. */
 function jsonCopy(value: unknown): unknown {
   const text = JSON.stringify(value);
@@ -51,7 +56,7 @@ export function plainSent(sent: PrefixSent): PrefixSent {
 
 /** Whether `value` is what `commit()` kept as `kept`, compared as the JSON it keeps. */
 function sameAsKept(value: unknown, kept: unknown): boolean {
-  return canonical(jsonCopy(value)) === canonical(kept);
+  return sameOnWire(jsonCopy(value), kept);
 }
 
 /**

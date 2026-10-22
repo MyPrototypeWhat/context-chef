@@ -1,5 +1,5 @@
 export { eventAnchor, type PushSource, revisionOf, sourceEvents } from './events';
-export { followsUserTurn, PrefixLedger, plainSent, renderGroup } from './ledger';
+export { followsUserTurn, PrefixLedger, plainSent, renderGroup, wireDigest } from './ledger';
 export { type MemoryEntryXml, type MemoryNow, type MemoryWords, memoryEvents } from './memory';
 export type {
   AppendOnlyConfig,

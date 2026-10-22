@@ -580,6 +580,19 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
 
   SKILL_RESTATED: 'These skill instructions replace any given earlier in this conversation.',
 
+  /**
+   * `appendOnly`: pinned messages a compaction stands for without putting
+   * them back — nothing may come between an on-demand compaction's block and
+   * the turns it keeps — said again at the end of the window, all of them.
+   * `messagesXml` is one `<message>` per pinned message.
+   */
+  getPinnedEvent: (messagesXml: string, rev: number): string =>
+    `<pinned_messages rev="${rev}">\n${Prompts.PINNED_RESTATED}\n\n${messagesXml}\n</pinned_messages>`,
+
+  PINNED_RESTATED:
+    'These messages were pinned earlier in this conversation. The part of it that held them ' +
+    'was compacted, so they are restated here, and replace any pinned messages restated before.',
+
   /** `appendOnly`: what a tombstone says, per source. */
   DYNAMIC_STATE_WITHDRAWN: 'The task state was cleared.',
   IMPLICIT_CONTEXT_WITHDRAWN: 'No implicit context is attached any more.',
@@ -587,6 +600,7 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
   GUARDRAIL_WITHDRAWN: 'The output format instructions given earlier no longer apply.',
   SKILL_WITHDRAWN:
     'No skill is active any more: the skill instructions given earlier no longer apply.',
+  PINNED_WITHDRAWN: 'The messages restated earlier as pinned are no longer pinned.',
   /** The guardrail left the user channel for the end of the system prompt. */
   GUARDRAIL_MOVED:
     'The output format instructions given earlier are replaced by the ones in the system prompt.',

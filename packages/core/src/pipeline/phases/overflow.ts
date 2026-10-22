@@ -34,7 +34,8 @@ import { invalidatedThinking, reportPrefixBreak, withoutStrippedThinking } from 
  * result that did not land leaves it as the ledger rendered it, whatever an
  * `onBeforeCompress` hook handed the strategy. In the middle of a tool turn a
  * compaction waits for the turn to end, unless it cannot wait; then the whole
- * window collapses into the summary.
+ * window collapses into the summary. One the provider signs
+ * (`onDemandCompaction`) waits for nothing and strips nothing.
  */
 export const overflowPhase: Phase = {
   name: 'overflow',
@@ -103,7 +104,9 @@ async function overflowWindow(
   prefix: PrefixCompile,
   forced: boolean,
 ): Promise<OverflowResult | null> {
-  const timing = compactionTiming(prefix, host, ctx.history, forced);
+  const wire = wireOf(ctx, prefix);
+  const signed = host.signedOverflow && wire !== undefined;
+  const timing = compactionTiming(prefix, host, ctx.history, forced, signed);
   if (timing === 'wait') return null;
   const result = await host.overflow(ctx.history, {
     signal: ctx.signal,
@@ -111,11 +114,11 @@ async function overflowWindow(
     appendOnly: true,
     pastLimit: timing === 'past-limit',
     collapse: timing === 'collapse',
-    wire: wireOf(ctx, prefix),
+    wire,
   });
   if (!result.meta.changed) return result;
 
-  const head = compactionHead(ctx.history, result.history, prefix);
+  const head = compactionHead(ctx.history, result, prefix);
   const before = invalidatedThinking(prefix.history, prefix.ledger);
   const brk = prefix.ledger.checkpoint('compaction', head.cut, head);
   ctx.history = prefix.ledger.window();
@@ -133,14 +136,19 @@ async function overflowWindow(
  * the one in progress still needs it. It cannot wait once the model asked
  * for a new window or the request is past the raw context window; then it
  * collapses the whole window.
+ *
+ * A `signed` strategy, handed a wire, has nothing to wait for: the turns it
+ * keeps keep their thinking, the one in progress included, so it lands in a
+ * tool turn as it does between turns.
  */
 function compactionTiming(
   prefix: PrefixCompile,
   host: PipelineHost,
   window: Message[],
   forced: boolean,
+  signed: boolean,
 ): 'now' | 'past-limit' | 'wait' | 'collapse' {
-  const midTurn = inToolTurn(prefix);
+  const midTurn = !signed && inToolTurn(prefix);
   if (midTurn && forced) return 'collapse';
   const past = pastLimit(prefix, host, window);
   if (!midTurn) return past ? 'past-limit' : 'now';
@@ -199,6 +207,7 @@ function wireOf(ctx: CompileContext, prefix: PrefixCompile): OverflowWire | unde
   const window = ctx.history;
   return {
     target: 'anthropic',
+    history: window,
     renderPrefix(end) {
       const messages = window.slice(0, end).map((m) => Assembler.orderKeysDeterministically(m));
       const {
@@ -224,12 +233,14 @@ function wireOf(ctx: CompileContext, prefix: PrefixCompile): OverflowWire | unde
  * Events kept ahead of that message go with what was summarized — the ledger
  * drops entries that render before `host[cut]`, and the `tail` phase states
  * their sources again. A result that kept no host message replaces them all.
+ * A result the provider signed is a signed head: nothing is stripped.
  */
 function compactionHead(
   window: readonly Message[],
-  landed: readonly Message[],
+  result: OverflowResult,
   { history, ledger }: PrefixCompile,
 ): PrefixHead {
+  const landed = result.history;
   const previous = ledger.head?.replacement ?? [];
   // The window is the head, then the host messages from its cut with the
   // events among them: walk it to find which messages are host ones.
@@ -254,6 +265,6 @@ function compactionHead(
       ...landed.slice(0, landed.length - kept),
       ...window.slice(start, first).filter((message) => previous.includes(message)),
     ],
-    signed: false,
+    signed: result.meta.signed !== undefined,
   };
 }

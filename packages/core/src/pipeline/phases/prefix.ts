@@ -44,12 +44,18 @@ function thinkingKeys(message: Message): string[] {
  * The messages whose thinking unsigned checkpoints invalidated: host messages
  * in a stripped range, and every message of an unsigned head. Nothing in such
  * a head was signed over what comes before it now — a pinned message put
- * back after the summary, or a copy a strategy kept of a later turn.
+ * back after the summary, or a copy a strategy kept of a later turn. A signed
+ * head vouches for its compaction block alone: anything else in it is what
+ * it kept of an unsigned head before it, sent without its thinking since.
  */
 function invalidatedMessages(history: readonly Message[], ledger: PrefixLedger): Message[] {
   const stripped = ledger.stripped.flatMap(([from, until]) => history.slice(from, until));
   const head = ledger.head;
-  return head && !head.signed ? [...stripped, ...head.replacement] : stripped;
+  if (!head) return stripped;
+  const carried = head.signed
+    ? head.replacement.filter((message) => message._anthropic_compaction === undefined)
+    : head.replacement;
+  return [...stripped, ...carried];
 }
 
 /** The thinking `ledger` has invalidated over `history`, by key: what is never sent again. */

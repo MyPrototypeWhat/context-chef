@@ -16,6 +16,13 @@ export {
   validateHandoffConfig,
 } from './handoff';
 export { getNewContextToolDefinition } from './newContextTool';
+export {
+  combinesServerAndOnDemand,
+  type OnDemandCompactionOptions,
+  type OnDemandCompactionRequest,
+  type OnDemandCompactor,
+  onDemandCompaction,
+} from './onDemand';
 export { type ResetOptions, reset } from './reset';
 export { type OverflowAliasConfig, resolveOverflowStrategy } from './resolve';
 export { isServerStrategy, type ServerOverflowStrategy, server } from './server';
@@ -38,5 +45,6 @@ export {
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
+  type OverflowWire,
   type WindowLineage,
 } from './types';

@@ -2,7 +2,7 @@
  * `background()` — summarize off-turn and swap the result in later.
  */
 
-import { wireDigest } from '../prefix/ledger';
+import { sameOnWire, wireDigest } from '../prefix/ledger';
 import type { Message } from '../types';
 import { extractPinnedMessages, messagesEquivalent } from './turns';
 import {
@@ -94,6 +94,22 @@ function stillApplies(job: BackgroundJob, input: OverflowInput, splitIndex: numb
   );
 }
 
+/**
+ * Whether a signed `result` may still land on `input.history`, whose first
+ * `splitIndex` messages it replaces: the provider signed it over the request
+ * those messages made then, so the wire must still render them as that
+ * request — a system prompt or tool list changed since, or thinking stripped
+ * since, is a request it was never signed over. Unsigned results always may.
+ */
+function stillSigned(result: OverflowResult, input: OverflowInput, splitIndex: number): boolean {
+  const signed = result.meta.signed;
+  if (!signed) return true;
+  const { wire } = input;
+  return (
+    wire?.history === input.history && sameOnWire(wire.renderPrefix(splitIndex), signed.request)
+  );
+}
+
 export interface BackgroundOverflowStrategy extends OverflowStrategy {
   /** @internal The in-flight job, for the runner's background bookkeeping. */
   readonly pendingJob: { settled: boolean } | undefined;
@@ -117,10 +133,14 @@ export interface BackgroundOverflowStrategy extends OverflowStrategy {
  * `anchored()` anchor never absorbs a summary that was thrown away.
  *
  * Under `appendOnly` the compile pipeline calls in only between turns, so a
- * job starts and lands only there, never while a tool turn is in progress.
+ * job starts and lands only there, never while a tool turn is in progress —
+ * unless `inner` is signed, whose results need not wait for a turn to end.
  * It still applies while the window it ran on is the start of the current
  * one — the window only grew; a checkpoint that rewrote anything in it, the
- * turns the job kept included, makes it stale. Two windows cannot wait a
+ * turns the job kept included, makes it stale. A signed job also needs the
+ * wire to render the request it was signed over exactly as before: a system
+ * prompt or tool list changed since rewrites no message, but it is a request
+ * the provider never signed. Two windows cannot wait a
  * compile for a job. One that collapses gets `inner` on the spot, and any
  * job, on an earlier window, is dropped. A request past the raw context
  * window (`pastLimit`) takes a finished job that still applies — and `inner`
@@ -159,6 +179,10 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
    * the window is past the raw context window all the same, and whatever
    * failure the second counted stays counted. The job is credited before the
    * second runs, so that failure is the only one counted.
+   *
+   * A signed job's block was never sent, so no request can be signed over
+   * the window it leaves: `inner` runs on the window this compile was handed
+   * instead, and what it returns takes the job's place.
    */
   const fitLanded = async (
     landed: OverflowResult,
@@ -167,17 +191,26 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
     if (input.tokenizer(landed.history) <= input.budget.limit) return landed;
     runner.succeed();
     const steps = built.get(landed) ?? [landed];
-    const again = await inner.apply({
-      ...input,
-      history: landed.history,
-      // Read off the landed window as the runner reads its own: what the job
-      // put back as pinned is the job's copy, not the object the host handed in.
-      pinned: extractPinnedMessages(landed.history),
-    });
+    const again = await inner.apply(
+      landed.meta.signed
+        ? input
+        : {
+            ...input,
+            history: landed.history,
+            // Read off the landed window as the runner reads its own: what the job
+            // put back as pinned is the job's copy, not the object the host handed in.
+            pinned: extractPinnedMessages(landed.history),
+          },
+    );
     if (!again.meta.changed) {
       const partial: OverflowResult = { ...landed, meta: { ...landed.meta, partial: true } };
       built.set(partial, steps);
       return partial;
+    }
+    if (landed.meta.signed) {
+      const named: OverflowResult = { ...again, meta: { ...again.meta, strategy: name } };
+      built.set(named, [again]);
+      return named;
     }
     const both: OverflowResult = {
       history: again.history,
@@ -220,7 +253,13 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
 
     const keptCount = commonSuffixLength(result.history, finished.source);
     const splitIndex = finished.source.length - keptCount;
-    if (splitIndex <= 0 || !stillApplies(finished, input, splitIndex)) return null;
+    if (
+      splitIndex <= 0 ||
+      !stillApplies(finished, input, splitIndex) ||
+      !stillSigned(result, input, splitIndex)
+    ) {
+      return null;
+    }
 
     const swapped: OverflowResult = {
       ...result,
@@ -236,6 +275,8 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
 
   return {
     name,
+    ...(inner.signed ? { signed: true as const } : {}),
+    parts: [inner],
 
     async apply(input: OverflowInput): Promise<OverflowResult> {
       if (input.collapse) return now(input);

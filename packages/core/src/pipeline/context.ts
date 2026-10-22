@@ -275,6 +275,11 @@ export interface PipelineHost {
       wire?: OverflowWire;
     },
   ): Promise<OverflowResult>;
+  /**
+   * The installed strategy is signed (`OverflowStrategy.signed`): handed a
+   * wire, it never needs to wait for a tool turn to end.
+   */
+  readonly signedOverflow: boolean;
   /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
   readBudget(history: Message[]): BudgetInfo;
   /**

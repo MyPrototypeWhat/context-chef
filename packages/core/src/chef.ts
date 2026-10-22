@@ -28,6 +28,7 @@ import {
 import type { Skill } from './modules/skill';
 import {
   type CompressionArchiveConfig,
+  combinesServerAndOnDemand,
   getNewContextToolDefinition,
   type HandoffConfig,
   isServerStrategy,
@@ -422,6 +423,9 @@ export interface ChefConfig {
    * in progress it waits for the turn to end, unless the window outgrew the
    * raw `contextWindow` or a new one was asked for ({@link requestNewContext});
    * then the whole window, the turn in progress included, becomes one summary.
+   * On Anthropic, `onDemandCompaction()` replaces what it summarizes with a
+   * block the provider signs: nothing is stripped, it waits for nothing, and
+   * pinned messages it summarized are said again at the end of the window.
    *
    * `true` is `{}`. Off by default, which compiles exactly what 4.x compiles.
    * Persist `snapshot().prefixLedger` along with the history when the chef
@@ -795,6 +799,17 @@ export class ContextChef {
     const userOnCompress = janitorConfig.onCompress;
     const userOnBeforeCompress = janitorConfig.onBeforeCompress;
     const strategy = this._resolveOverflowStrategy(config, janitorConfig);
+    if (combinesServerAndOnDemand(strategy)) {
+      this._warnOnce(
+        'server-on-demand-compaction',
+        '[context-chef] server() and onDemandCompaction() are configured together, and they never ' +
+          'both run: a request carrying server-side context_management cannot ask for an ' +
+          'on-demand compaction, and one that replays a signed compaction block cannot be ' +
+          'compacted by the server. On Anthropic a top-level server() owns the window and ' +
+          'onDemandCompaction() never runs there; anywhere else server() only runs its fallback. ' +
+          'Keep one of the two.',
+      );
+    }
     // `server()` as the overflow strategy says the same thing to the pipeline
     // as `contextManagement: { strategy: 'server' }`: the start phase resolves
     // the server-managed target from it, the adapt phase reads the edits
@@ -1085,6 +1100,9 @@ export class ContextChef {
       },
       overflow(history, options) {
         return chef.janitor.overflow(history, options);
+      },
+      get signedOverflow() {
+        return chef.janitor.signedOverflow;
       },
       readBudget(history) {
         return chef.janitor.readBudget(history);

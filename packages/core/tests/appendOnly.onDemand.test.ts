@@ -1,0 +1,538 @@
+/**
+ * `onDemandCompaction()` under `ChefConfig.appendOnly`: the request the model
+ * already answered goes back to Anthropic as it was sent, and the signed
+ * block that comes back replaces it — a checkpoint that strips nothing, so
+ * the turns kept after the block keep their thinking.
+ *
+ * Conversations are compiled turn by turn from the first request, as an agent
+ * loop does; every expected message is worked out by hand. The tokenizer
+ * counts 10 tokens a message against a trigger of 60 and a raw window of 100,
+ * so a window of 7 messages is over the trigger.
+ */
+
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import {
+  anthropicCompactionMessage,
+  background,
+  type ChefConfig,
+  type ChefEvents,
+  ContextChef,
+  chain,
+  checkPrefixContinuity,
+  type OnDemandCompactionRequest,
+  type OnDemandCompactor,
+  type OverflowStrategy,
+  onDemandCompaction,
+  Prompts,
+  reset,
+  server,
+  summarize,
+} from '../src/index';
+import type {
+  AnthropicPayload,
+  ChefLogger,
+  Message,
+  TargetPayload,
+  ToolDefinition,
+} from '../src/types';
+
+const silent: ChefLogger = { warn: () => {} };
+
+const user = (content: string): Message => ({ role: 'user', content });
+const reply = (content: string, signature: string): Message => ({
+  role: 'assistant',
+  content,
+  thinking: { thinking: `Reasoning signed ${signature}.`, signature },
+});
+const call = (id: string, signature: string): Message => ({
+  role: 'assistant',
+  content: '',
+  thinking: { thinking: 'Search first.', signature },
+  tool_calls: [{ id, type: 'function', function: { name: 'search', arguments: '{}' } }],
+});
+const result = (id: string, content: string): Message => ({
+  role: 'tool',
+  content,
+  tool_call_id: id,
+});
+
+/** q1 a1 q2 a2 …: reply i is signed SIG_i. One array, so every turn shares the host's objects. */
+const conversation = (pinned: string[] = []): ((n: number) => Message[]) => {
+  const qa: Message[] = [user('q1')];
+  for (let i = 1; i < 12; i++) qa.push(reply(`a${i}`, `SIG_${i}`), user(`q${i + 1}`));
+  for (const message of qa) if (pinned.includes(message.content)) message.pinned = true;
+  return (n) => qa.slice(0, 2 * n - 1);
+};
+const asked = conversation();
+
+/** What the Anthropic target sends. */
+const text = (role: 'user' | 'assistant', content: string) => ({
+  role,
+  content: [{ type: 'text', text: content }],
+});
+const answer = (i: number) => ({
+  role: 'assistant',
+  content: [
+    { type: 'thinking', thinking: `Reasoning signed SIG_${i}.`, signature: `SIG_${i}` },
+    { type: 'text', text: `a${i}` },
+  ],
+});
+/** The `n`th compaction block, as the API returned it and as every later request replays it. */
+const block = (n: number) => ({
+  type: 'compaction' as const,
+  content: `SUMMARY ${n}`,
+  signature: `SIG_COMPACTION_${n}`,
+});
+const compacted = (n: number) => ({ role: 'assistant', content: [block(n)] });
+const SUMMARY = (n: number) => Prompts.getCompactSummaryWrapper(`SUMMARY ${n}`);
+const BETA = 'compact-2026-09-04';
+const SIGNED = { reason: 'compaction', at: 0, signed: true, strippedThinking: 0 } as const;
+
+const search: ToolDefinition = {
+  name: 'search',
+  description: 'Search the web',
+  parameters: { type: 'object', properties: { q: { type: 'string' } } },
+};
+const State = z.object({ step: z.number() });
+
+const tokenizer = (messages: Message[]): number => messages.length * 10;
+const JANITOR = { contextWindow: 100, triggerRatio: 0.6, tokenizer };
+
+type CompressionModel = (messages: Message[]) => Promise<string>;
+type Build = (compact: OnDemandCompactor, compressionModel: CompressionModel) => OverflowStrategy;
+
+/** Signed, keeping the last turn; `summarize()` keeping the last turn where nothing can be signed. */
+const signedKeepingOne: Build = (compact, compressionModel) =>
+  onDemandCompaction({
+    compact,
+    fallback: summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+  });
+
+/**
+ * A chef that checks the pipeline invariants and records what it reports. Its
+ * compactor answers block 1, 2, … in turn; its fallback's compression model
+ * `SUMMARY 1`, `SUMMARY 2`, ….
+ */
+function chefWith(config: ChefConfig = {}, strategy: Build = signedKeepingOne) {
+  let blocks = 0;
+  const compact = vi.fn<OnDemandCompactor>(async () => ({
+    stop_reason: 'compaction',
+    content: [block(++blocks)],
+  }));
+  let summaries = 0;
+  const compressionModel = vi.fn(async () => `<summary>SUMMARY ${++summaries}</summary>`);
+  const chef = new ContextChef({
+    logger: silent,
+    appendOnly: true,
+    pipelineChecks: true,
+    janitor: JANITOR,
+    overflow: { strategy: strategy((...args) => compact(...args), compressionModel) },
+    ...config,
+  }).setSystemPrompt([{ role: 'system', content: 'You are terse.' }]);
+  const breaks: ChefEvents['prefix:break'][] = [];
+  const invariants: string[] = [];
+  chef.on('prefix:break', (event) => {
+    breaks.push(event);
+  });
+  chef.on('pipeline:invariant', ({ message }) => {
+    invariants.push(message);
+  });
+  return { chef, compact, compressionModel, breaks, invariants };
+}
+
+/** Compiles each turn in order, as the agent loop does; `settle` lets background work finish in between. */
+async function converse<P extends TargetPayload = AnthropicPayload>(
+  chef: ContextChef,
+  turns: Message[][],
+  { target = 'anthropic', settle = false }: { target?: string; settle?: boolean } = {},
+): Promise<P[]> {
+  const payloads: P[] = [];
+  for (const history of turns) {
+    payloads.push((await chef.setHistory(history).compile({ target })) as P);
+    if (settle) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return payloads;
+}
+
+function expectAppendOnly(payloads: TargetPayload[]) {
+  for (let i = 1; i < payloads.length; i++) {
+    expect(checkPrefixContinuity(payloads[i - 1], payloads[i])).toEqual({ ok: true });
+  }
+}
+
+/** What reaches the provider: the payload without `meta`. */
+const wire = (payload: TargetPayload): Omit<TargetPayload, 'meta'> => {
+  const { meta: _meta, ...rest } = payload;
+  return rest;
+};
+
+/** The signatures of the thinking blocks sent, in order. */
+const signatures = (payload: AnthropicPayload): string[] =>
+  payload.messages
+    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+    .flatMap((b) => (b.type === 'thinking' ? [b.signature] : []));
+
+const requested = (
+  compact: ReturnType<typeof chefWith>['compact'],
+  n = 1,
+): OnDemandCompactionRequest => compact.mock.calls[n - 1][0];
+
+describe('appendOnly onDemandCompaction(): the request it compacts is the one sent', () => {
+  it('asks for the window up to the reply it keeps, byte for byte as the last payloads sent it', async () => {
+    const { chef, compact } = chefWith();
+    chef.registerTools([search]);
+    chef.setDynamicState(State, { step: 1 });
+
+    // asked(4) is [q1, state, a1, …, a3, q4], over the trigger: a3 is the reply it keeps,
+    // and [q1, state, a1, q2, a2, q3] the request a3 answered — the third payload.
+    const payloads = await converse(chef, [1, 2, 3, 4].map(asked));
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    const request = requested(compact);
+    expect(request.payload).toEqual(wire(payloads[2]));
+    expect(JSON.stringify(request.payload.messages)).toBe(JSON.stringify(payloads[2].messages));
+    expect(request.compaction).toEqual({ type: 'summarize' });
+    expect(request.betas).toEqual([BETA]);
+    expect(request.payload).not.toHaveProperty('context_management');
+  });
+
+  it('compacts a request that starts with the block it returned last time', async () => {
+    const { chef, compact } = chefWith();
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5, 6].map(asked));
+
+    // [block 1, a3, q4, a4, q5, a5, q6]: [block 1, …, q5] is the fifth payload.
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(requested(compact, 2).payload.messages).toEqual(payloads[4].messages);
+    expect(requested(compact, 2).payload.messages[0]).toEqual(compacted(1));
+    expect(payloads[5].messages).toEqual([compacted(2), answer(5), text('user', 'q6')]);
+  });
+});
+
+describe('appendOnly onDemandCompaction(): a signed checkpoint strips nothing', () => {
+  it('sends the block first, as returned, and keeps the thinking of the turns after it', async () => {
+    const { chef, breaks, invariants } = chefWith();
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5].map(asked));
+    const [, , , landed, next] = payloads;
+
+    expect(landed.messages).toEqual([compacted(1), answer(3), text('user', 'q4')]);
+    expect(landed.betas).toEqual([BETA]);
+    expect(landed.meta?.prefix?.break).toEqual(SIGNED);
+    expect(breaks).toEqual([{ ...SIGNED, windowId: landed.meta?.windowId }]);
+    expect(next.messages).toEqual([...landed.messages, answer(4), text('user', 'q5')]);
+    expect(next.betas).toEqual([BETA]);
+    expect(signatures(next)).toEqual(['SIG_3', 'SIG_4']);
+    expectAppendOnly(payloads.slice(0, 3));
+    expectAppendOnly(payloads.slice(3));
+    expect(invariants).toEqual([]);
+  });
+
+  it('lands in the middle of a tool turn, which keeps its thinking', async () => {
+    const { chef, compact, breaks } = chefWith();
+    // asked(3) fits; the tool step after it is over the trigger.
+    const loop = [...asked(3), call('t1', 'SIG_C1'), result('t1', 'r1')];
+    const done = [...loop, reply('a3', 'SIG_3'), user('q4')];
+
+    const payloads = await converse(chef, [asked(1), asked(2), asked(3), loop, done]);
+
+    expect(requested(compact).payload).toEqual(wire(payloads[2]));
+    expect(payloads[3].messages).toEqual([
+      compacted(1),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Search first.', signature: 'SIG_C1' },
+          { type: 'text', text: '' },
+          { type: 'tool_use', id: 't1', name: 'search', input: {} },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r1' }] },
+    ]);
+    expect(signatures(payloads[4])).toEqual(['SIG_C1', 'SIG_3']);
+    expect(breaks.map((b) => [b.reason, b.signed])).toEqual([['compaction', true]]);
+    expectAppendOnly(payloads.slice(3));
+  });
+
+  it('keeps no turn when asked to: the block stands for the whole window', async () => {
+    const { chef } = chefWith({}, (compact) => onDemandCompaction({ compact, keepRecentTurns: 0 }));
+
+    const [, , , landed, next] = await converse(chef, [1, 2, 3, 4, 5].map(asked));
+
+    expect(landed.messages).toEqual([compacted(1)]);
+    expect(next.messages).toEqual([compacted(1), answer(4), text('user', 'q5')]);
+  });
+
+  it('keeps stripped the thinking of what it keeps of an unsigned head before it', async () => {
+    const pinnedA1 = conversation(['a1']);
+    const { chef, compact, compressionModel } = chefWith({}, (compact, compressionModel) =>
+      chain(
+        onDemandCompaction({ compact, keepRecentTurns: 2 }),
+        summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+      ),
+    );
+    compact.mockImplementationOnce(async () => ({ stop_reason: 'end_turn', content: [] }));
+
+    // The first compaction fails, and summarize() lands [SUMMARY 1, a1, q4] in its place:
+    // a1, put back after the summary, goes without its thinking from then on.
+    const payloads = await converse(chef, [1, 2, 3, 4].map(pinnedA1));
+    chef.requestNewContext();
+    const [next] = await converse(chef, [pinnedA1(5)]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(signatures(payloads[2])).toEqual(['SIG_1', 'SIG_2']);
+    expect(payloads[3].messages).toEqual([
+      text('user', SUMMARY(1)),
+      text('assistant', 'a1'),
+      text('user', 'q4'),
+    ]);
+    // Two turns kept: a1 and what follows it, a4 and what follows it.
+    expect(requested(compact, 2).payload.messages).toEqual([text('user', SUMMARY(1))]);
+    expect(next.messages).toEqual([
+      compacted(1),
+      text('assistant', 'a1'),
+      text('user', 'q4'),
+      answer(4),
+      text('user', 'q5'),
+    ]);
+    expect(signatures(next)).toEqual(['SIG_4']);
+  });
+
+  it('reports the block to onCompress, for the summarized span', async () => {
+    const onCompress = vi.fn();
+    const { chef } = chefWith({ janitor: { ...JANITOR, onCompress } });
+
+    await converse(chef, [1, 2, 3, 4].map(asked));
+
+    expect(onCompress).toHaveBeenCalledTimes(1);
+    expect(onCompress).toHaveBeenCalledWith(anthropicCompactionMessage(block(1)), 5, {
+      compressedMessages: asked(4).slice(0, 5),
+    });
+  });
+});
+
+describe('appendOnly onDemandCompaction(): a response that is no compaction', () => {
+  it('leaves the window alone and counts toward the circuit breaker', async () => {
+    const warn = vi.fn();
+    const { chef, compact, breaks } = chefWith({ logger: { warn } }, (compact) =>
+      onDemandCompaction({ compact }),
+    );
+    compact.mockImplementation(async () => ({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Here is a summary.' }],
+    }));
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5, 6, 7].map(asked));
+
+    // Three failures open the breaker: the seventh compile asks for nothing.
+    expect(compact).toHaveBeenCalledTimes(3);
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "[context-chef] on-demand compaction stopped with 'end_turn', not 'compaction' — history left unchanged (failure 1/3 toward circuit breaker)",
+      "[context-chef] on-demand compaction stopped with 'end_turn', not 'compaction' — history left unchanged (failure 2/3 toward circuit breaker)",
+      "[context-chef] on-demand compaction stopped with 'end_turn', not 'compaction' — history left unchanged (failure 3/3 toward circuit breaker)",
+    ]);
+    expect(payloads[3].messages).toHaveLength(7);
+    expect(breaks).toEqual([]);
+    expectAppendOnly(payloads);
+  });
+});
+
+describe('appendOnly onDemandCompaction(): pinned messages it summarized', () => {
+  const PINNED_Q2 = (rev: number) =>
+    `<pinned_messages rev="${rev}">\n${Prompts.PINNED_RESTATED}\n\n<message role="user">q2</message>\n</pinned_messages>`;
+
+  it('says them again after the turns it keeps, never between those and the block', async () => {
+    const pinnedQ2 = conversation(['q2']);
+    const { chef, invariants } = chefWith();
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5].map(pinnedQ2));
+    const [, , , landed, next] = payloads;
+
+    expect(landed.messages).toEqual([
+      compacted(1),
+      answer(3),
+      text('user', 'q4'),
+      text('user', PINNED_Q2(1)),
+    ]);
+    expect(next.messages).toEqual([...landed.messages, answer(4), text('user', 'q5')]);
+    expectAppendOnly(payloads.slice(3));
+    expect(invariants).toEqual([]);
+  });
+
+  it('says them again once the next compaction summarizes what said them', async () => {
+    const pinnedQ2 = conversation(['q2']);
+    const { chef, compact } = chefWith();
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5, 6].map(pinnedQ2));
+
+    // [block 1, a3, q4, pinned, a4, q5, a5, q6]: the pinned event goes into block 2.
+    expect(requested(compact, 2).payload.messages).toEqual(payloads[4].messages);
+    expect(payloads[5].messages).toEqual([
+      compacted(2),
+      answer(5),
+      text('user', 'q6'),
+      text('user', PINNED_Q2(1)),
+    ]);
+  });
+
+  it('withdraws what it said again once the host unpins it', async () => {
+    const pinnedQ2 = conversation(['q2']);
+    const { chef } = chefWith();
+
+    const [, , , landed] = await converse(chef, [1, 2, 3, 4].map(pinnedQ2));
+    pinnedQ2(2)[2].pinned = false;
+    const [next] = await converse(chef, [pinnedQ2(5)]);
+
+    expect(next.messages).toEqual([
+      ...landed.messages,
+      answer(4),
+      text('user', 'q5'),
+      text(
+        'user',
+        '<pinned_messages rev="2" withdrawn="true">The messages restated earlier as pinned are no longer pinned.</pinned_messages>',
+      ),
+    ]);
+  });
+
+  it('says nothing again of a compaction the host history resumes from, pinned as it is', async () => {
+    // A history kept from an earlier session opens with the block that session got back.
+    const resumed = (n: number) => [anthropicCompactionMessage(block(0)), ...asked(n)];
+    const { chef, compact } = chefWith();
+
+    const payloads = await converse(chef, [1, 2, 3, 4].map(resumed));
+
+    expect(requested(compact).payload.messages).toEqual(payloads[2].messages);
+    expect(requested(compact).payload.messages[0]).toEqual(compacted(0));
+    expect(payloads[3].messages).toEqual([compacted(1), answer(3), text('user', 'q4')]);
+  });
+
+  it('says nothing again of a pinned message the turns it keeps hold', async () => {
+    const pinnedA3 = conversation(['a3']);
+    const { chef } = chefWith();
+
+    const [, , , landed] = await converse(chef, [1, 2, 3, 4].map(pinnedA3));
+
+    expect(landed.messages).toEqual([compacted(1), answer(3), text('user', 'q4')]);
+  });
+});
+
+describe('appendOnly onDemandCompaction(): where nothing can be signed', () => {
+  it('runs its fallback on a target that signs nothing', async () => {
+    const { chef, compact, compressionModel } = chefWith();
+
+    const payloads = await converse(chef, [1, 2, 3, 4].map(asked), { target: 'openai' });
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(payloads[3].messages.map((m) => m.content)).toEqual([
+      'You are terse.',
+      SUMMARY(1),
+      'q4',
+    ]);
+  });
+
+  it('runs its fallback before the first request, and compacts signed from then on', async () => {
+    const { chef, compact, compressionModel, breaks } = chefWith();
+
+    // Nothing was sent before asked(4); [SUMMARY 1, q4, a4, …, q7] is over the trigger again.
+    const payloads = await converse(chef, [4, 5, 6, 7].map(asked));
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(requested(compact).payload.messages).toEqual(payloads[2].messages);
+    expect(payloads[3].messages).toEqual([compacted(1), answer(6), text('user', 'q7')]);
+    // The first compile meets replies its ledger never saw: a `ledger` checkpoint first.
+    expect(breaks.map((b) => [b.reason, b.signed])).toEqual([
+      ['ledger', false],
+      ['compaction', false],
+      ['compaction', true],
+    ]);
+  });
+});
+
+describe('appendOnly onDemandCompaction() with server()', () => {
+  const compact: OnDemandCompactor = async () => ({ stop_reason: null, content: [] });
+  const od = (fallback?: OverflowStrategy) => onDemandCompaction({ compact, fallback });
+
+  it.each([
+    ['server() falling back to it', () => server(undefined, { fallback: od() })],
+    ['it falling back to server()', () => od(server())],
+    ['both in a chain', () => chain(server(), background(od()))],
+  ])('warns once, at construction: %s', async (_, strategy) => {
+    const warn = vi.fn();
+    const chef = new ContextChef({
+      logger: { warn },
+      appendOnly: true,
+      janitor: JANITOR,
+      overflow: { strategy: strategy() },
+    });
+    await chef.setHistory(asked(1)).compile({ target: 'anthropic' });
+    await chef.setHistory(asked(2)).compile({ target: 'anthropic' });
+
+    const warned = warn.mock.calls.filter(([message]) =>
+      String(message).includes('onDemandCompaction'),
+    );
+    expect(warned).toHaveLength(1);
+    expect(warned[0][0]).toMatch(/server\(\).*never both run/);
+  });
+
+  it('says nothing of a configuration with one of them', () => {
+    const warn = vi.fn();
+    new ContextChef({ logger: { warn }, overflow: { strategy: chain(od(), reset()) } });
+    new ContextChef({ logger: { warn }, overflow: { strategy: server() } });
+
+    expect(warn.mock.calls.filter(([m]) => String(m).includes('onDemandCompaction'))).toEqual([]);
+  });
+});
+
+describe('appendOnly background(onDemandCompaction())', () => {
+  it('lands the job with the turns that arrived while it ran', async () => {
+    const { chef, compact, breaks } = chefWith({}, (compact) =>
+      background(onDemandCompaction({ compact })),
+    );
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5].map(asked), { settle: true });
+
+    // The job started on asked(4) and asked for [q1, …, q3]; a4 and q5 came after it.
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(requested(compact).payload).toEqual(wire(payloads[2]));
+    expect(payloads[3].messages).toHaveLength(7);
+    expect(payloads[4].messages).toEqual([
+      compacted(1),
+      answer(3),
+      text('user', 'q4'),
+      answer(4),
+      text('user', 'q5'),
+    ]);
+    expect(breaks.map((b) => [b.reason, b.signed])).toEqual([['compaction', true]]);
+    expectAppendOnly(payloads.slice(0, 4));
+  });
+
+  it('drops the job when the system prompt changed while it ran', async () => {
+    let release: () => void = () => {};
+    const { chef, compact, breaks } = chefWith({}, (compact) =>
+      background(onDemandCompaction({ compact })),
+    );
+    compact.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ stop_reason: 'compaction', content: [block(1)] });
+        }),
+    );
+
+    await converse(chef, [1, 2, 3, 4].map(asked));
+    chef.setSystemPrompt([{ role: 'system', content: 'You are terse. Answer in French.' }]);
+    await converse(chef, [asked(5)]);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A retry of asked(5): the finished job is offered the window it no longer applies to.
+    const [after] = await converse(chef, [asked(5)]);
+
+    // The job asked for [q1, …, q3] behind the first system prompt, which no request sends now,
+    // and a new one starts on the window as it is.
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(after.messages).toHaveLength(9);
+    expect(breaks.map((b) => b.reason)).toEqual(['system']);
+  });
+});
