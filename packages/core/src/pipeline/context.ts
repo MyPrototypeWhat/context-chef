@@ -19,6 +19,7 @@ import type {
   ToolDefinition,
 } from '../types';
 import type { Vocabulary } from '../vocabulary';
+import type { SentPayload } from './checks';
 import type { SlotRegistry } from './slots';
 
 /**
@@ -81,6 +82,11 @@ export interface PrefixCompile {
   readonly clearAt: boolean;
   /** What the payload sends ahead of the window, read once `adapt` built it. */
   sent?: PrefixSent;
+  /**
+   * `pipelineChecks`: the payload as the next compile's cross-turn check
+   * compares with it, staged by `audit` and kept once `done` committed it.
+   */
+  sentForCheck?: SentPayload;
 }
 
 /**

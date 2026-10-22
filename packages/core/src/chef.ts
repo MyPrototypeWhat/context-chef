@@ -374,7 +374,11 @@ export interface ChefConfig {
    * Dev-mode pipeline invariants. When true, `compile()` verifies after every
    * `after-assemble` handler that pinned messages survived and tool
    * call/result pairs are still paired, and after the tail phase that nothing
-   * ahead of the tail insertion point changed.
+   * ahead of the tail insertion point changed. With {@link appendOnly}, each
+   * payload is also checked against the one the chef sent before it: unless
+   * the compile reported a checkpoint, it must repeat that payload — up to its
+   * last reply while nothing answered it, all but a trailing prefill once a
+   * reply did — and send every thinking signature it sent.
    *
    * Violations are REPORTED, never enforced: each one goes to
    * `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event.
@@ -556,7 +560,9 @@ export interface ChefEvents {
   /**
    * A pipeline invariant was violated: a `ChefConfig.pipelineChecks` finding
    * (a slot handler dropped a pinned message, split a tool pair, or rewrote
-   * content ahead of the tail insertion point), or a request the pipeline
+   * content ahead of the tail insertion point; with `appendOnly`, a payload
+   * that stopped repeating the one sent before it with no checkpoint
+   * reported), or a request the pipeline
    * could not honour — a `requestNewContext()` dropped because the target is
    * server-managed or a `before-overflow` handler vetoed the compile, which is
    * reported whatever `pipelineChecks` says. Reported only; compile()

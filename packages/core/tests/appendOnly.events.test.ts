@@ -520,10 +520,13 @@ describe('appendOnly: a source is appended again only when what it says changed'
 
   it("warns once when prefillMode 'native' is set explicitly on a target without native prefill", async () => {
     const warn = vi.fn();
-    const { chef } = chefWith({ logger: { warn } });
+    const { chef, invariants } = chefWith({ logger: { warn } });
     chef.withGuardrails({ prefill: '<out>', prefillMode: 'native' });
 
     const [, payload] = await converse(chef, [turn1, turn3]);
+
+    // The cross-turn check sees it too: turn 1's question went out with the prefill folded in.
+    expect(invariants).toEqual([expect.stringContaining('at messages[1]')]);
 
     const warned = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('native'));
     expect(warned).toEqual([

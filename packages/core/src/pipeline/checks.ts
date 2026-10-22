@@ -172,3 +172,88 @@ export function checkPrefixContinuity(
   }
   return { ok: true };
 }
+
+/** A payload a committed `appendOnly` compile sent, as the next compile is compared with it. */
+export interface SentPayload {
+  /** What it sent the model: the `PrefixComparable` fields, as plain data. */
+  readonly payload: PrefixComparable;
+  /** Leading messages (Responses: input items) up to and including its last reply. */
+  readonly replied: number;
+  /** Leading messages without the prefill it ended with, if any: what a reply to it continues. */
+  readonly asked: number;
+  /** The host history it was compiled over. */
+  readonly hostLength: number;
+}
+
+/** `payload` with only its first `count` messages (or input items). */
+function leading(payload: PrefixComparable, count: number): PrefixComparable {
+  return {
+    ...payload,
+    ...(payload.messages ? { messages: payload.messages.slice(0, count) } : {}),
+    ...(payload.input ? { input: payload.input.slice(0, count) } : {}),
+  };
+}
+
+/** Every thinking signature `payload` sends, on any target: what the provider verifies. */
+function thinkingSignatures(payload: PrefixComparable): Set<string> {
+  const found = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== 'object' || value === null) return;
+    const node = value as Record<string, unknown>;
+    const signature =
+      node.type === 'thinking'
+        ? node.signature
+        : node.type === 'redacted_thinking'
+          ? node.data
+          : node.type === 'reasoning'
+            ? node.encrypted_content
+            : node.thoughtSignature;
+    if (typeof signature === 'string') found.add(signature);
+    for (const child of Object.values(node)) visit(child);
+  };
+  visit(payload.messages ?? payload.input);
+  return found;
+}
+
+/**
+ * `appendOnly`'s promise across turns, for a compile that reported no
+ * checkpoint: it still sends what `prev`, the payload committed before it,
+ * sent, and only appends. Once a reply answered `prev` — `answered`, read off
+ * the host history — that holds for all of it but a trailing prefill, which
+ * the reply replaced. Until then, only up to its last reply: what follows is
+ * the request nobody answered, whose events may be said again on a retry or
+ * move behind a user turn the host appended. No thinking signature `prev`
+ * sent may be missing either.
+ */
+export function checkSentPrefix(
+  prev: SentPayload,
+  next: PrefixComparable,
+  answered: boolean,
+): string[] {
+  const violations: string[] = [];
+  const continuity = checkPrefixContinuity(
+    leading(prev.payload, answered ? prev.asked : prev.replied),
+    next,
+  );
+  if (continuity.firstDivergence) {
+    violations.push(
+      `appendOnly: this payload stops repeating the one sent before it at ` +
+        `${continuity.firstDivergence.path}, and this compile reported no checkpoint — ` +
+        'something the ledger does not see (a slot handler, a hook that edited the history ' +
+        'in place, the target adapter) rewrote what was already sent',
+    );
+  }
+  const sent = thinkingSignatures(next);
+  const missing = [...thinkingSignatures(prev.payload)].filter((s) => !sent.has(s));
+  if (missing.length > 0) {
+    violations.push(
+      `appendOnly: ${missing.length} thinking signature(s) sent before are no longer sent ` +
+        `(first: ${missing[0]}), and this compile reported no checkpoint`,
+    );
+  }
+  return violations;
+}
