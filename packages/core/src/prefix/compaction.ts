@@ -86,8 +86,10 @@ export async function compactWindow({
     pastLimit: past,
     collapse: timing === 'collapse',
     wire,
-    // What onCompress hands a host to write back: the head this result becomes.
-    replacementOf: (landed) => [...compactionHead(window, landed, history, ledger).replacement],
+    // What onCompress hands a host to write back: a copy of the head this result
+    // becomes, which the host may edit without touching the head itself.
+    replacementOf: (landed) =>
+      compactionHead(window, landed, history, ledger).replacement.map((m) => structuredClone(m)),
   });
   if (!result.meta.changed) return { result };
   return { result, head: compactionHead(window, result, history, ledger) };

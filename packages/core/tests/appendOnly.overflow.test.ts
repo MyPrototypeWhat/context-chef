@@ -422,6 +422,21 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
     expect(invariants).toEqual([]);
   });
 
+  it('keeps the head as it landed when the host edits the replacement it was handed', async () => {
+    // A host that normalizes what it is handed, in place, before storing it.
+    const onCompress = (_summary: Message, _count: number, details: CompressionDetails) => {
+      for (const message of details.replacement ?? []) {
+        message.content = message.content.toUpperCase();
+      }
+    };
+    const { chef } = chefWith({ janitor: { ...JANITOR, onCompress } });
+
+    const payloads = await converse(chef, [1, 2, 3, 4, 5].map(asked));
+
+    expect(payloads[3].messages).toEqual([text('user', SUMMARY(1)), text('user', 'q4')]);
+    expect(payloads[4].messages).toEqual([...payloads[3].messages, answer(4), text('user', 'q5')]);
+  });
+
   it('counts only the host messages it compressed, never the events among them', async () => {
     const { counts } = await persisting((s) => [s], {
       turns: 5,

@@ -159,7 +159,8 @@ export interface CompressionDetails {
    * as it was in the head. Under `appendOnly`, `compressedMessages` and the
    * count leave out the chef's own events, which the host never had — but a
    * summary the host did not write back is summarized again by a later
-   * compaction, and shows up in that one's `compressedMessages`.
+   * compaction, and shows up in that one's `compressedMessages`. A copy:
+   * editing it changes nothing the chef sends.
    */
   replacement?: Message[];
 }
