@@ -221,6 +221,8 @@ onUsage (after each model iteration)
   11. Feed back to the conversation's Janitor for the next budget check
 ```
 
+**With `appendOnly`** the flow differs. The `init` firing passes the config through, and the work happens in each model call's firing (`beforeModel`, `structuredOutput`). The middleware first reads back what the engine carried from its own previous firing, `clear` runs before compression, and the conversation's ledger replays what earlier calls sent: a compression lands once instead of being recomputed, and dynamic state is appended as a user-message event when it changes, never replaced and never put in `systemPrompts`. Usage is reported only for requests the ledger kept. See [Append-Only Prefix](/guide/append-only#tanstack-ai-specifics).
+
 ## Need more control?
 
 For tool namespaces, core memory, or snapshot/restore, use [`@context-chef/core`](/packages/core) directly.

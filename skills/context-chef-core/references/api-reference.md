@@ -195,6 +195,19 @@ interface ChefConfig {
    */
   pipelineChecks?: boolean;
 
+  /**
+   * 4.3 — keep what was sent as the prefix of the next payload (Claude's
+   * thinking signature check, provider prefix caches). Injections become events
+   * appended once; a compaction lands once (onDemandCompaction() for a compaction
+   * Anthropic signs); every rewrite is a checkpoint reported through
+   * 'prefix:break' and CompileMeta.prefix. Off by default, and off it changes
+   * nothing. A chef created per request saves snapshot() after each compile and
+   * after the request's tool calls, and restores it on the next request — with
+   * memory in a shared store, as { ...saved, modules: { ...saved.modules, memory: null } }.
+   * Guide: https://myprototypewhat.github.io/context-chef/guide/append-only
+   */
+  appendOnly?: boolean | { clearAt?: boolean };
+
   /** Sink for degradation warnings across all modules. Defaults to console.
    *  A module-level logger in vfs/janitor config wins over this one. */
   logger?: ChefLogger;                  // { warn(message, ...args): void }
@@ -251,9 +264,12 @@ interface ChefConfig {
 `src/pipeline/phases/<name>.ts`:
 
 ```
-start → transform-tool-results → handoff → overflow → inject → memory
+start → transform-tool-results → prefix → handoff → overflow → inject → memory
       → skill → assemble → tail → adapt → audit → done
 ```
+
+`prefix` (4.3) runs only with `appendOnly`: it replays the ledger over the history
+and reports any checkpoint.
 
 Slots are the public composition surface. `chef.use(slot, handler)` registers,
 `chef.unuse(slot, handler)` removes one registration. Handlers run in
@@ -294,6 +310,7 @@ interface ChefEvents {
   'pipeline:invariant': { phase: PhaseName; message: string }; // 4.2, pipelineChecks only
   'memory:changed':     MemoryChangeEvent;
   'memory:expired':     MemoryEntry;
+  'prefix:break':       { reason: PrefixBreakReason; at: number; signed: boolean; strippedThinking: number; windowId?: string }; // 4.3, appendOnly only
 }
 ```
 

@@ -221,6 +221,8 @@ onUsage (after each model iteration)
   11. Feed back to the conversation's Janitor for the next budget check
 ```
 
+**打开 `appendOnly` 时**流程不同。`init` 触发原样放行，工作发生在每次模型调用的触发里（`beforeModel`、`structuredOutput`）。middleware 先读回引擎从它上一次触发带过来的内容，`clear` 在压缩之前运行，对话的 ledger 会重放之前调用发出的内容：压缩只落地一次，不再重算；dynamic state 在变化时作为一条 user 消息事件追加，不会被替换，也不会放进 `systemPrompts`。只有 ledger 保留下来的请求才上报用量。见 [Append-only 前缀](/zh/guide/append-only#tanstack-ai-的细节)。
+
 ## 需要更多控制？
 
 工具 namespace、核心记忆、快照/恢复等高级特性，请直接使用 [`@context-chef/core`](/zh/packages/core)。
