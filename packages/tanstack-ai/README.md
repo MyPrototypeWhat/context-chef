@@ -205,7 +205,7 @@ contextChefMiddleware({
 })
 ```
 
-State is serialized to XML and injected into the last user message (leveraging recency bias) or as a system prompt. `getState` is called at init and at every agent iteration; the previously injected block is **replaced**, never duplicated.
+State is serialized to XML and injected into the last user message (leveraging recency bias) or as a system prompt. `getState` is called at init and at every agent iteration; the previously injected block is **replaced**, never duplicated. With `appendOnly`, `getState` runs on each model call's firing only, not at init, and nothing is replaced: a changed state is appended as a new user message, and earlier ones stay where they were sent.
 
 ### Skill Injection
 
@@ -230,7 +230,7 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`.
+`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`. With `appendOnly`, `init` passes through and it runs on each model call's firing only, after the conversation is recorded, and what it adds is not carried: whatever it adds or changes must come out identical, in the same place, on every call. Put content that changes per call in `dynamicState`.
 
 ### Append-Only Mode
 
@@ -314,13 +314,13 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. |
 | `compact` | `CompactConfig` | No | Mechanical pruning of reasoning, tool calls, and empty messages (`reasoning` / `toolCalls` incl. per-tool array form / `emptyMessages`) |
 | `clear` | `ClearTarget[]` | No | Placeholder-style clearing. `'tool-result'` targets become `'[Old tool result content cleared]'` (+ auto explainer prompt); `'thinking'` strips reasoning. Runs AFTER compression. `ClearTarget` is exported from `@context-chef/core`. |
-| `dynamicState` | `DynamicStateConfig` | No | Runtime state injection as XML (replaced per iteration, never duplicated) |
+| `dynamicState` | `DynamicStateConfig` | No | Runtime state injection as XML (replaced per iteration, never duplicated; with `appendOnly`, appended as a new user message when it changes) |
 | `skill` | `Skill \| () => Skill \| null \| undefined` | No | Inject the active skill's instructions as a system prompt (idempotent) |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
 | `maxSessions` | `number` | No | Cap on concurrently tracked conversations (default: 256, LRU-evicted) |
 | `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the TanStack-format (`ModelMessage[]`) slice the summary replaced — use it to persist the summary boundary in your store. |
 | `onBeforeCompress` | `(history, tokenInfo) => msgs \| null` | No | Hook before compression with override capability |
-| `transformContext` | `(msgs, prompts, ctx) => { messages, systemPrompts }` | No | Post-compression transformation. Runs per iteration — must be idempotent. |
+| `transformContext` | `(msgs, prompts, ctx) => { messages, systemPrompts }` | No | Post-compression transformation. Runs per iteration — must be idempotent. With `appendOnly`, not at init, and its output must be identical on every call. |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings; defaults to `console`. |
 | `appendOnly` | `boolean \| { clearAt?: boolean }` | No | Keep what was sent: each model call's request repeats the conversation's previous one and only appends. See [Append-Only Mode](#append-only-mode). `clearAt` is ignored here. |
 | `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | No | `appendOnly`: called for each checkpoint a call applies — `{ sessionId, reason, at, signed, strippedThinking }`. |

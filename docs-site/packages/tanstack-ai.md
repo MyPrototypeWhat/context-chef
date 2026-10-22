@@ -115,7 +115,7 @@ contextChefMiddleware({
 })
 ```
 
-State is serialized to XML and injected into the last user message (leveraging recency bias) or as a system prompt. `getState` is called at init and at every agent iteration; the previously injected block is **replaced**, never duplicated.
+State is serialized to XML and injected into the last user message (leveraging recency bias) or as a system prompt. `getState` is called at init and at every agent iteration; the previously injected block is **replaced**, never duplicated. With `appendOnly`, `getState` runs on each model call's firing only, not at init, and nothing is replaced: a changed state is appended as a new user message, and earlier ones stay where they were sent.
 
 ### Skill Injection
 
@@ -136,7 +136,7 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`.
+`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`. With `appendOnly`, `init` passes through and it runs on each model call's firing only, after the conversation is recorded, and what it adds is not carried: whatever it adds or changes must come out identical, in the same place, on every call. Put content that changes per call in `dynamicState`.
 
 ### Append-Only Mode
 

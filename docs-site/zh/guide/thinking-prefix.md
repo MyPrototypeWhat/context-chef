@@ -33,7 +33,7 @@ checkPrefixContinuity(first, second);
 - 客户端的 overflow（`summarize()`、`anchored()`）：它们的摘要替换掉之前的轮次，而且没有 Anthropic 能验证的签名；
 - `compact()` 清理工具结果，以及 offload 一个模型已经完整看过的工具结果。
 
-[`appendOnly`](/zh/guide/append-only) 解决的就是这个问题：chef 添加的内容只追加一次，留在发送时的位置；压缩只落地一次，不再每轮重算；仍然会改写之前轮次的操作都成为被报告的检查点，失效的 thinking 不会再放进请求。[`onDemandCompaction`](/zh/guide/append-only#签名压缩-ondemandcompaction) 是唯一能让后面轮次保留 thinking 的压缩方式。
+[`appendOnly`](/zh/guide/append-only) 解决的就是这个问题：chef 添加的内容只追加一次，留在发送时的位置；压缩只落地一次，不再每轮重算；仍然会改写之前轮次的操作都成为被报告的检查点，失效的 thinking 不会再放进请求。[`onDemandCompaction`](/zh/guide/append-only#签名压缩-ondemandcompaction) 是唯一能让后面轮次保留 thinking 的客户端压缩方式。
 
 ## 安全网：`drop_block`
 

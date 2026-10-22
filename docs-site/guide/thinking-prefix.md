@@ -33,7 +33,7 @@ By default ContextChef renders its injections at the tail of every compile and n
 - client-side overflow (`summarize()`, `anchored()`), whose summary replaces earlier turns without a signature Anthropic can verify;
 - `compact()` tool-result clearing, and offloading a tool result the model has already seen in full.
 
-[`appendOnly`](/guide/append-only) changes that. What the chef adds is appended once and stays where it was sent, a compaction lands once instead of being recomputed, and anything that still rewrites an earlier turn is a reported checkpoint whose invalidated thinking is left out of the request. [`onDemandCompaction`](/guide/append-only#signed-compaction-ondemandcompaction) is the one compaction that keeps the thinking of the turns after it.
+[`appendOnly`](/guide/append-only) changes that. What the chef adds is appended once and stays where it was sent, a compaction lands once instead of being recomputed, and anything that still rewrites an earlier turn is a reported checkpoint whose invalidated thinking is left out of the request. [`onDemandCompaction`](/guide/append-only#signed-compaction-ondemandcompaction) is the one client-side compaction that keeps the thinking of the turns after it.
 
 ## Safety net: `drop_block`
 

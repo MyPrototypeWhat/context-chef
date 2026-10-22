@@ -115,7 +115,7 @@ contextChefMiddleware({
 })
 ```
 
-状态序列化为 XML 后注入最后一条 user 消息（利用近因偏置）或作为 system prompt。`getState` 在初始化和每次 agent 迭代时调用；之前注入的块会被**替换**，永不重复。
+状态序列化为 XML 后注入最后一条 user 消息（利用近因偏置）或作为 system prompt。`getState` 在初始化和每次 agent 迭代时调用；之前注入的块会被**替换**，永不重复。打开 `appendOnly` 时，`getState` 只在每次模型调用的触发里运行，初始化时不调用，也不再替换：状态变化时追加一条新的 user 消息，之前的留在发送时的位置。
 
 ### Skill 注入
 
@@ -136,7 +136,7 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。
+`transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。打开 `appendOnly` 时，`init` 原样放行，它只在每次模型调用的触发里、在对话被记录之后运行，添加的内容也不会被带入下一次：它添加或改动的内容，每次调用都必须完全一样、位置也一样。每次调用都会变的内容请放进 `dynamicState`。
 
 ### Append-only 模式
 
