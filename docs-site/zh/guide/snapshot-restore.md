@@ -12,9 +12,12 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 
 ## 快照包含什么
 
-- **History** 以及下次编译要注入的动态状态。
+- **System prompt**、**History** 以及下次编译要注入的动态状态。
+- **工具** —— pruner 持有的一切：注册的工具、namespace 和按需加载的 toolkit，以及被拦截的工具。
 - **Janitor 状态** —— 包括压缩失败计数（熔断器），以及 `'incremental-anchored'` 模式下的持久 anchor 文档。后台压缩状态*不*进快照。
 - **Memory** 条目。
+- **当前激活的 skill** —— 它的名字（`restore()` 时会在 skill 注册表里重新查找），以及它当时的指令原文，即使注册表是空的也能保留下来。注册表本身不进快照：在 `restore()` 之前调用 `registerSkills`。
+- **Announcement** —— 所有常驻的 announcement，按插入顺序。
 - **护栏 options** <Badge type="tip" text="v4" /> —— v4 中 `withGuardrails` 是存储态，因此 `ChefSnapshot` 增加了 `guardrailOptions`，快照/恢复完整往返。
 - **handoff 通知标记** <Badge type="tip" text="4.2" /> —— `ChefSnapshot.handoffNoticedWindow` 记录通知已经为哪个窗口发过。窗口谱系本身会随 janitor 状态往返，没有这个字段的话，恢复出来的会话就会停在一个「已经通知过」的窗口上却把标记清空了，于是每一轮都重发一次通知。
 - **append-only ledger** <Badge type="tip" text="4.3" /> —— 打开 `appendOnly` 时，`ChefSnapshot.prefixLedger` 记录 chef 在哪里追加了什么、上一次发送了什么，`modelMemoryWrites` 记录哪些 memory 写入是模型做的。恢复它们不算检查点。每个请求新建一个 chef 时，必须在每次 compile 之后保存它的快照，在请求的 tool call 执行完后再保存一次，并在下一个请求里恢复：没有 ledger，每个请求一开始都是一次 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的 thinking。memory 放在共享存储里时，恢复时跳过快照里的 memory（恢复这一部分会把共享存储回滚到保存时的样子）：`chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })`。skill 在 `restore()` 之前注册；system prompt、tools 和状态在它之后设置，因为它会用保存的值替换这些。见 [Append-only 前缀](/zh/guide/append-only#持久化对话)。
