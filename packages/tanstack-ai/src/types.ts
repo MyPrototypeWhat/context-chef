@@ -197,6 +197,11 @@ export interface DynamicStateConfig {
    * Returns the current state object. Auto-converted to XML via `objectToXml`.
    * Called on every model invocation (init and each agent iteration); the
    * previously injected block is replaced, never duplicated.
+   *
+   * With {@link ContextChefOptions.appendOnly} it is called on each model
+   * call's firing only, not at init, and nothing is replaced: a state that
+   * changed is appended as a new event, and earlier ones stay where they were
+   * sent.
    */
   getState: () => Record<string, unknown> | Promise<Record<string, unknown>>;
   /**
