@@ -37,6 +37,7 @@ import {
   server,
   summarize,
 } from '../src/index';
+import { unchanged } from '../src/overflow/types';
 import type {
   AnthropicPayload,
   ChefLogger,
@@ -1316,6 +1317,87 @@ describe('appendOnly overflow: a request past the raw window at a turn boundary 
     const [next] = await converse(chef, [asked(12)]);
     expect(next.messages).toEqual([text('user', SUMMARY(2)), text('user', 'q12')]);
     expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+  });
+
+  describe('with background() inside chain()', () => {
+    /** A step that never changes the window. */
+    const declines: OverflowStrategy = {
+      name: 'declines',
+      apply: async (input) => unchanged(input, 'declines', 'nothing to do'),
+    };
+    /** `inBackground`, its model throwing from the second call on: the refit always fails. */
+    const refitFails = (model: CompressionModel) => {
+      let calls = 0;
+      return inBackground(async (messages) => {
+        if (++calls > 1) throw new Error('model down');
+        return model(messages);
+      });
+    };
+
+    it('credits the job before its refit through the chain: a failure before it does not stay', async () => {
+      const { chef } = chefWith({}, (model) => chain(failingOn(1, 3)(model), declines));
+
+      // As without the chain: the job at q4 fails, the one at q5 lands at q12, its refit fails.
+      const payloads = await converseSettling(chef, [1, 2, 3, 4, 5, 12].map(asked));
+
+      expect(payloads[5].messages[0]).toEqual(text('user', SUMMARY(1)));
+      expect(payloads[5].messages).toHaveLength(16);
+      expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+    });
+
+    it('keeps a failed refit counted though a later step changes nothing', async () => {
+      const { chef } = chefWith({}, (model) => chain(refitFails(model), declines));
+
+      const payloads = await converseSettling(chef, [1, 2, 3, 4, 12].map(asked));
+
+      expect(payloads[4].messages[0]).toEqual(text('user', SUMMARY(1)));
+      expect(payloads[4].messages).toHaveLength(18);
+      expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+    });
+
+    it('keeps a failed refit counted though a later step rescues the window', async () => {
+      // Past the raw window only, it keeps the request alone; a reset() would also run when
+      // the job starts, the background step having changed nothing yet.
+      const lastResort: OverflowStrategy = {
+        name: 'last-resort',
+        async apply(input) {
+          if (!input.pastLimit) return unchanged(input, 'last-resort', 'within the raw window');
+          const evicted = input.history.slice(0, -1);
+          return {
+            history: input.history.slice(-1),
+            evicted,
+            span: evicted,
+            meta: { strategy: 'last-resort', windowId: input.window.current, changed: true },
+          };
+        },
+      };
+      const { chef } = chefWith({}, (model) => chain(refitFails(model), lastResort));
+
+      const payloads = await converseSettling(chef, [1, 2, 3, 4, 12].map(asked));
+
+      expect(payloads[4].messages).toEqual([text('user', 'q12')]);
+      expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(1);
+    });
+
+    it('clears the count once the job and its refit both succeed', async () => {
+      const { chef, compressionModel } = chefWith({}, (model) =>
+        chain(inBackground(model), declines),
+      );
+      const fresh = chef.snapshot();
+      chef.restore({
+        ...fresh,
+        modules: {
+          ...fresh.modules,
+          janitor: { ...fresh.modules.janitor, consecutiveFailures: 2 },
+        },
+      });
+
+      const payloads = await converseSettling(chef, [1, 2, 3, 4, 12].map(asked));
+
+      expect(compressionModel).toHaveBeenCalledTimes(2);
+      expect(payloads[4].messages).toEqual([text('user', SUMMARY(2)), text('user', 'q12')]);
+      expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+    });
   });
 
   it('reads no report once a checkpoint changed the request it came back for', async () => {
