@@ -1,6 +1,7 @@
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
-import { opensAfterUserTurn, type PrefixLedger } from './ledger';
+import type { PrefixLedger } from './ledger';
+import { opensAfterUserTurn } from './render';
 import type { InjectionSource, PrefixCandidate, PrefixEntry, PrefixHead } from './types';
 
 /**

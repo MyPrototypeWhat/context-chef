@@ -10,13 +10,12 @@ export {
 } from './events';
 export {
   FRESH_LEDGER_REPLIES,
-  followsUserTurn,
   isReply,
   PrefixLedger,
   reasonedReplies,
-  renderGroup,
 } from './ledger';
 export { type MemoryEntryXml, type MemoryNow, type MemoryWords, memoryEvents } from './memory';
+export { followsUserTurn, renderGroup } from './render';
 export {
   invalidatedMessages,
   invalidatedThinking,
