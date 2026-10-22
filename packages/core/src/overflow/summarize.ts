@@ -10,7 +10,13 @@
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
 import { resetNotice } from './reset';
-import { openingPlaceholder, renderSummaryMessage, summarizeHistory, summaryHead } from './summary';
+import {
+  openingBlockEnd,
+  openingPlaceholder,
+  renderSummaryMessage,
+  summarizeHistory,
+  summaryHead,
+} from './summary';
 import { groupIntoTurns, type Turn, waitingCallStart } from './turns';
 import {
   detachedRunner,
@@ -263,7 +269,8 @@ export class SummarizingStrategy implements OverflowStrategy {
       : input.forced
         ? forcedSplit(history)
         : this.splitIndex(input);
-    if (splitIndex === null || splitIndex <= 0) {
+    // Nothing before the end of the block the window opens with is anything to compress.
+    if (splitIndex === null || splitIndex <= openingBlockEnd(history)) {
       return unchanged(
         input,
         this.name,

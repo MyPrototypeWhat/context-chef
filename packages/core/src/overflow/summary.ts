@@ -174,6 +174,21 @@ const leadsSummary = (messages: readonly Message[], i: number): boolean =>
   isCompaction(messages[i]) || (isOpeningPlaceholder(messages[i]) && isCompaction(messages[i + 1]));
 
 /**
+ * Where the compaction block a history opens with ends: past the system
+ * messages ahead of it and the opening placeholder right before it; 0 when it
+ * opens with none. Placeholder and block are one unit, and only what follows
+ * them is anything to compress: a split or a cut at or before this index
+ * compresses nothing, and one between the two would put the block behind
+ * what replaced the placeholder (`compaction_block_misplaced`).
+ */
+export function openingBlockEnd(history: readonly Message[]): number {
+  let i = 0;
+  while (i < history.length && history[i].role === 'system') i++;
+  if (i < history.length && isOpeningPlaceholder(history[i]) && isCompaction(history[i + 1])) i++;
+  return isCompaction(history[i]) ? i + 1 : 0;
+}
+
+/**
  * The opening placeholder `history` holds right before the pinned compaction
  * block it opens with, if any: a summary that rebuilds the window keeps it
  * with the block, as it keeps the block.

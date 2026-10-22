@@ -95,7 +95,12 @@ export function planCompaction(history: Message[], options: PlanCompactionOption
 /**
  * One-shot durable compaction: plan a turn-safe split, summarize the old slice,
  * and return a new history ready to persist — `[...system, <summary>, ...toKeep]`,
- * with a compaction block `toKeep` starts with ahead of the summary.
+ * with a compaction block `toKeep` starts with ahead of the summary, and the
+ * placeholder user turn ahead of the block (`ensureValidHistory` opens such a
+ * history with one, and a text target needs it first): `[...system,
+ * placeholder, block, <summary>, ...rest]`. A history that opens with a block
+ * and no placeholder gains one. A split that leaves nothing but the
+ * placeholder to summarize compacts nothing.
  *
  * The recommended way to keep a long conversation lean when you own the message
  * store. Run it between model calls and replace your stored messages with the

@@ -695,6 +695,51 @@ describe('overflow — a history resumed from a compaction block', () => {
     expect(JSON.stringify(onCompress.mock.calls[0][0])).toContain('ALIAS EQUIVALENCE');
   });
 
+  it.each([
+    false,
+    true,
+  ])('compacts nothing when the turns it keeps leave only the block before them (appendOnly %s)', async (appendOnly) => {
+    // The first request after the resume, over the trigger: the block is a large summary.
+    const { history } = fromAnthropic([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'compaction', content: `EARLIER ${'x'.repeat(400)}`, signature: 'SIG_0' },
+        ],
+      },
+      { role: 'user', content: 'q1' },
+    ] as unknown as MessageParam[]);
+    const model = vi.fn(async () => '<summary>SUM</summary>');
+    const chef = new ContextChef({
+      appendOnly,
+      logger: silent,
+      janitor: {
+        contextWindow: 100,
+        triggerRatio: 1,
+        tokenizer: (messages) => JSON.stringify(messages).length / 4,
+      },
+      overflow: { strategy: summarize({ compressionModel: model, preserveRecentMessages: 2 }) },
+    }).setHistory(history);
+
+    const [first, retry] = [
+      (await chef.compile({ target: 'anthropic' })) as AnthropicPayload,
+      (await chef.compile({ target: 'anthropic' })) as AnthropicPayload,
+    ];
+
+    expect(model).not.toHaveBeenCalled();
+    for (const payload of [first, retry]) {
+      expect(payload.messages).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            { type: 'compaction', content: `EARLIER ${'x'.repeat(400)}`, signature: 'SIG_0' },
+          ],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      ]);
+    }
+  });
+
   it('keeps the opening user turn before the block, so a text target still opens with it', async () => {
     const { history } = fromAnthropic([
       { role: 'assistant', content: [{ type: 'compaction', content: 'EARLIER' }] },

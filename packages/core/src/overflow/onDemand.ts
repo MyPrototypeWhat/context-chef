@@ -11,6 +11,7 @@ import {
 import { isPrefill } from '../prefix/events';
 import type { AnthropicPayload, Message } from '../types';
 import { isServerStrategy } from './server';
+import { openingBlockEnd } from './summary';
 import {
   detachedRunner,
   type OverflowInput,
@@ -254,7 +255,9 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
 
       // A collapse keeps no turn the rules let it summarize.
       const keep = input.collapse ? 0 : keepRecentTurns;
-      const points = cutPoints(history);
+      // A cut at the block the window opens with, or before it, would compact nothing.
+      const floor = openingBlockEnd(history);
+      const points = cutPoints(history).filter((point) => point > floor);
       const replies = points.filter((point) => point < history.length);
       const cut = keep === 0 ? points[points.length - 1] : replies[replies.length - keep];
       if (cut === undefined) {

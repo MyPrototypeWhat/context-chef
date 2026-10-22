@@ -1,7 +1,9 @@
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type AnthropicCompactionBlock,
   anthropicCompactionMessage,
+  fromAnthropic,
 } from '../adapters/anthropicAdapter';
 import type { AnthropicPayload, Message, ToolDefinition } from '../types';
 import { background } from './background';
@@ -643,6 +645,24 @@ describe('onDemandCompaction()', () => {
       expect(fallback.commit).toHaveBeenCalledTimes(1);
       expect(fallback.discard).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('never cuts inside the pair a resumed window opens with: there is nothing before the block to compact', async () => {
+    const compact = compactor();
+    const [strategy, runner] = attached(onDemandCompaction({ compact }));
+    // [placeholder, block, q1]: the block is the only reply, and the placeholder all that precedes it.
+    const history = [
+      ...fromAnthropic([{ role: 'assistant', content: [block(0)] }] as unknown as MessageParam[])
+        .history,
+      user('q1'),
+    ];
+
+    const landed = await strategy.apply(inputOver(history));
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(landed.history).toBe(history);
+    expect(landed.meta.changed).toBe(false);
+    expect(runner.failures).toEqual([]);
   });
 
   it('never cuts at a prefill the window ends with: the request before it was never sent', async () => {

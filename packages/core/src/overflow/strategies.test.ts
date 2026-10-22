@@ -466,6 +466,83 @@ describe('a compaction block the window opens with', () => {
     expect(result.history.slice(2)).toEqual([messages[3]]);
   });
 
+  /** [placeholder, block] as fromAnthropic resumes a block, then `rest`. */
+  const opening = (...rest: Message[]): Message[] => [
+    ...fromAnthropic([
+      {
+        role: 'assistant',
+        content: [{ type: 'compaction', content: 'EARLIER', signature: 'SIG_0' }],
+      },
+    ] as unknown as MessageParam[]).history,
+    ...rest,
+  ];
+  const waiting: Message = {
+    role: 'assistant',
+    content: '',
+    tool_calls: [{ id: 't1', type: 'function', function: { name: 's', arguments: '{}' } }],
+  };
+
+  it.each([
+    [
+      'summarize(), recent turns',
+      () => summarize({ compressionModel: model, preserveRecentMessages: 4 }),
+      opening(...history(3)),
+      {},
+    ],
+    [
+      'anchored(), recent turns',
+      () => anchored({ compressionModel: model, split: 'recent-turns', preserveRecentMessages: 4 }),
+      opening(...history(3)),
+      {},
+    ],
+    [
+      'summarize(), ratio',
+      () => summarize({ compressionModel: model, preserveRatio: 1 }),
+      opening(...history(1)),
+      {},
+    ],
+    [
+      'summarize(), forced',
+      () => summarize({ compressionModel: model }),
+      opening(...history(1)),
+      { forced: true },
+    ],
+    [
+      'summarize(), collapsing up to a call waiting for its result',
+      () => summarize({ compressionModel: model }),
+      opening(waiting),
+      { collapse: true as const },
+    ],
+    [
+      'summarize(), a block with no placeholder',
+      () => summarize({ compressionModel: model, preserveRecentMessages: 2 }),
+      opening(...history(2)).slice(1),
+      {},
+    ],
+  ])('compresses nothing when its split falls in or right after the block the window opens with: %s', async (_, build, messages, overrides) => {
+    const [strategy] = attached(build());
+
+    const result = await strategy.apply(
+      makeInput({ history: messages, pinned: extractPinnedMessages(messages), ...overrides }),
+    );
+
+    expect(result.meta.changed).toBe(false);
+    expect(result.history).toBe(messages);
+  });
+
+  it('keeps the pair whole for reset(), which compresses around pinned messages', async () => {
+    const [strategy] = attached(reset());
+    const messages = opening(...history(2));
+
+    const result = await strategy.apply(
+      makeInput({ history: messages, pinned: extractPinnedMessages(messages) }),
+    );
+
+    expect(result.history.slice(0, 2)).toEqual(messages.slice(0, 2));
+    expect(result.history[2].content).toContain('Context window reset');
+    expect(result.history).toHaveLength(3);
+  });
+
   it.each([
     ['summarize()', () => summarize({ compressionModel: model, split: 'recent-turns' }), 'SUMMARY'],
     ['anchored()', () => anchored({ compressionModel: model, split: 'recent-turns' }), 'SUMMARY'],
