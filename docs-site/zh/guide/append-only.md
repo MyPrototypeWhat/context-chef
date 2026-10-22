@@ -141,7 +141,7 @@ const chef = new ContextChef({
 
 `snapshot()` 和 `restore()` 会把 ledger（`ChefSnapshot.prefixLedger`）和模型写入 memory 的记录（`ChefSnapshot.modelMemoryWrites`），连同 chef 的其他状态一起带上。恢复它们不算检查点：下一次 compile 会重复已经发送的内容。
 
-**每个请求新建一个 chef 时，必须保存它的快照，并在下一个请求里恢复。** 没有 ledger 的 chef 无从知道上一次请求发了什么。它的第一次 compile 会报告一次位于 0 的 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的全部 thinking，而且每个请求都这样。chef 第一次遇到这种情况、而 history 里已经有超过两条回复时，会 warn 一次。
+**每个请求新建一个 chef 时，必须保存它的快照，并在下一个请求里恢复。** 没有 ledger 的 chef 无从知道上一次请求发了什么。它的第一次 compile 会报告一次位于 0 的 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的全部 thinking，而且每个请求都这样。chef 第一次遇到这种情况、而 history 里已经有超过两条带 thinking 或推理的回复时，会 warn 一次。
 
 ```ts
 async function handleRequest(conversationId: string, history: Message[]) {
@@ -275,6 +275,6 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **还没在真实 API 上跑过。** 上面的行为都在本地按文档规则测试过。有些问题必须发真实请求才能回答，比如 Anthropic 是否接受最后一轮丢了 thinking 的工具循环，或者各个 AI SDK provider 怎样发送紧跟在工具结果后面的 user 事件。它们列在 [TODO.md](https://github.com/MyPrototypeWhat/context-chef/blob/main/TODO.md) 的 "Needs an API key" 下。
 - **请求仍可能超过原始上下文窗口**：摘要模型放弃时（没什么可压缩的，或单独一轮就比窗口还大）；`onDemandCompaction` 没有 fallback、签名尝试又失败时；压缩持续失败直到熔断器打开时。熔断器打开后，只有已经完成的后台任务会落地，这次 compile 不会再进一步压缩窗口。
 - **旧修订占 token。** 不打开 `clearAt` 时，频繁变化的状态会把每个修订都留在窗口里，直到被压缩吸收，所以压缩会来得更早。让状态保持粗粒度，或者让模型通过工具自己拉取。预算也仍然会计入已经被 `clear_at` 清除的提醒。
-- **新建的 chef 遇到 few-shot 示例**（问题之前就有的 assistant 回复）时，第一次 compile 会报告一次 `ledger` 检查点。末尾的 prefill 不会。
+- **新建的 chef 遇到 few-shot 示例**（问题之前就有的 assistant 回复）时，第一次 compile 会报告一次 `ledger` 检查点。它不会 warn：这些示例没有可丢的 thinking。末尾的 prefill 不算回复。
 - **slot handler 可以改写窗口。** `after-assemble` handler（已废弃的 `transformContext` 选项也是其中之一）和 `after-adapt` handler 在 ledger 之后运行：`pipelineChecks` 会报告它们的改写，但无法阻止。`onBeforeCompile` 或 `before-assemble` handler 注入的内容是 implicit context 事件，变化时才追加。
 - 如果某个请求必须在你修好原因之前发出去，[`drop_block` 安全网](/zh/guide/thinking-prefix#安全网-drop-block)仍然可用。

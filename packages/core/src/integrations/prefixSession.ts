@@ -1,7 +1,6 @@
 import type { Janitor } from '../modules/janitor';
 import {
   anchorLines,
-  answeredReplies,
   awaitsToolResults,
   compactWindow,
   dynamicStateSource,
@@ -13,6 +12,7 @@ import {
   type PrefixMeta,
   type PrefixSent,
   plainSent,
+  reasonedReplies,
   sourceEvents,
 } from '../prefix';
 import type { ChefLogger, Message } from '../types';
@@ -207,16 +207,17 @@ export class PrefixSession {
   }
 
   private warnLostLedger(history: readonly Message[]): void {
-    const replies = answeredReplies(history);
+    const replies = reasonedReplies(history);
     if (replies <= FRESH_LEDGER_REPLIES) return;
     this.options.warnOnce(
       'lost-ledger',
       `[context-chef] appendOnly: a session's prefix ledger is empty, but its history already ` +
-        `holds ${replies} replies, sent by a session that is gone — so their signed thinking was ` +
-        'invalidated (a `ledger` checkpoint). Sessions live in the integration instance (the ' +
-        'middleware): one created per request starts every session empty, and every call is ' +
-        'then a checkpoint, so create it once and reuse it. A restart, a serverless instance or ' +
-        'a session the pool evicted (`maxSessions`) costs one. Each instance logs this once.',
+        `holds ${replies} replies with reasoning, sent by a session that is gone — so their ` +
+        'signed thinking was invalidated (a `ledger` checkpoint). Sessions live in the ' +
+        'integration instance (the middleware): one created per request starts every session ' +
+        'empty, and every call is then a checkpoint, so create it once and reuse it. A restart, ' +
+        'a serverless instance or a session the pool evicted (`maxSessions`) costs one. Each ' +
+        'instance logs this once.',
     );
   }
 }

@@ -571,4 +571,27 @@ describe('appendOnly on, the ledger across sessions', () => {
     await compileAt(restored, turn4);
     expect(ledgerWarnings()).toEqual([]);
   });
+
+  it('reports few-shot examples a fresh chef meets, but does not warn: they carry no reasoning', async () => {
+    const warn = vi.fn();
+    const chef = chefWith({ logger: { warn } });
+    const breaks = breaksOf(chef);
+    const example = (content: string): Message => ({ role: 'assistant', content });
+    const fewShot = [
+      user('I love it'),
+      example('positive'),
+      user('I hate it'),
+      example('negative'),
+      user('It is ok'),
+      example('neutral'),
+      user('Best day ever'),
+    ];
+
+    await compileAt(chef, fewShot);
+
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([['ledger', 0, 0]]);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('prefixLedger'))).toEqual(
+      [],
+    );
+  });
 });

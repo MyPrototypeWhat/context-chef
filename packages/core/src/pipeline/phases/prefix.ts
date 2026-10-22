@@ -1,6 +1,5 @@
 import { sendsNothing, withoutThinking } from '../../adapters/anthropicAdapter';
 import {
-  answeredReplies,
   FRESH_LEDGER_REPLIES,
   invalidatedThinking,
   newlyStrippedThinking,
@@ -8,6 +7,7 @@ import {
   type PrefixMeta,
   type PrefixSent,
   plainSent,
+  reasonedReplies,
   thinkingKeys,
 } from '../../prefix';
 import type { Message, TargetPayload } from '../../types';
@@ -107,17 +107,17 @@ export const prefixPhase: Phase = {
     if (!brk) return;
 
     if (fresh && brk.reason === 'ledger') {
-      const replies = answeredReplies(history);
+      const replies = reasonedReplies(history);
       if (replies > FRESH_LEDGER_REPLIES) {
         host.warnOnce(
           'append-only-fresh-ledger',
           `[context-chef] appendOnly: the prefix ledger is empty, but the history already ` +
-            `holds ${replies} replies, compiled by a chef whose ledger was not kept — the ` +
-            'thinking in them was invalidated (a `ledger` checkpoint). A chef created per ' +
-            'request must save its whole snapshot (it carries `prefixLedger`) after each ' +
-            'compile and restore it on the next request — with memory in a shared store, ' +
-            'with `modules.memory` set to null — before setting the system prompt, tools and ' +
-            'state (warned once).',
+            `holds ${replies} replies with reasoning, compiled by a chef whose ledger was not ` +
+            'kept — the thinking in them was invalidated (a `ledger` checkpoint). A chef ' +
+            'created per request must save its whole snapshot (it carries `prefixLedger`) ' +
+            'after each compile and restore it on the next request — with memory in a shared ' +
+            'store, with `modules.memory` set to null — before setting the system prompt, ' +
+            'tools and state (warned once).',
         );
       }
     }

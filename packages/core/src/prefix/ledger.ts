@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Assembler } from '../modules/assembler';
 import type { Message } from '../types';
-import { invalidatedMessages } from './thinking';
+import { invalidatedMessages, thinkingBlocks } from './thinking';
 import type {
   InjectionSource,
   PrefixBreak,
@@ -117,9 +117,10 @@ export const isReply = (message: Message): boolean =>
   message.role === 'assistant' && message._anthropic_compaction === undefined;
 
 /**
- * More replies than this behind a fresh ledger's `ledger` checkpoint, and the
- * ledger that sent them was not kept: a chef created per request that does
- * not persist it, or an integration session that lost it with its process.
+ * More replies with reasoning (`reasonedReplies`) than this behind a fresh
+ * ledger's `ledger` checkpoint, and the ledger that sent them was not kept: a
+ * chef created per request that does not persist it, or an integration
+ * session that lost it with its process.
  */
 export const FRESH_LEDGER_REPLIES = 2;
 
@@ -127,9 +128,30 @@ export const FRESH_LEDGER_REPLIES = 2;
  * The replies `history` holds that something follows: a trailing assistant
  * message nothing follows yet — a prefill — answered nothing so far.
  */
-export function answeredReplies(history: readonly Message[]): number {
+function answeredReplies(history: readonly Message[]): number {
+  return countReplies(history, isReply);
+}
+
+/**
+ * The answered replies (`answeredReplies`) that carry reasoning a provider
+ * replays with them: thinking, OpenAI reasoning items, a Gemini thought
+ * signature. Those are what a `ledger` checkpoint costs; plain replies, such
+ * as few-shot examples, lose nothing.
+ */
+export function reasonedReplies(history: readonly Message[]): number {
+  return countReplies(
+    history,
+    (message) =>
+      isReply(message) &&
+      (thinkingBlocks(message) > 0 ||
+        message._openai_reasoning !== undefined ||
+        message._gemini_thought_signature !== undefined),
+  );
+}
+
+function countReplies(history: readonly Message[], counts: (message: Message) => boolean): number {
   let replies = 0;
-  for (let i = 0; i < history.length - 1; i++) if (isReply(history[i])) replies++;
+  for (let i = 0; i < history.length - 1; i++) if (counts(history[i])) replies++;
   return replies;
 }
 

@@ -10,12 +10,12 @@ export {
   sourceEvents,
 } from './events';
 export {
-  answeredReplies,
   FRESH_LEDGER_REPLIES,
   followsUserTurn,
   isReply,
   PrefixLedger,
   plainSent,
+  reasonedReplies,
   renderGroup,
   wireDigest,
 } from './ledger';

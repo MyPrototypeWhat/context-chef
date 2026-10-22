@@ -361,6 +361,17 @@ describe('PrefixSession: checkpoints', () => {
     expect(lost[0][0]).toContain('3 replies');
   });
 
+  it('does not warn when the replies a fresh session meets carry no reasoning', async () => {
+    const { session, logger } = poolWith(NO_COMPRESSION);
+    const plain = asked(4).map(({ thinking: _thinking, ...message }) => message);
+    const first = await session.compile(callWith(plain));
+
+    expect(first.breaks).toEqual([{ reason: 'ledger', at: 0, signed: false, strippedThinking: 0 }]);
+    expect(logger.warn.mock.calls.filter(([m]) => String(m).includes('ledger is empty'))).toEqual(
+      [],
+    );
+  });
+
   it('keeps nothing of a call that failed, so the next one meets the same checkpoint', async () => {
     let failing = true;
     const failOnce: OverflowStrategy = {
