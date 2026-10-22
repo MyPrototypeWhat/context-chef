@@ -1,0 +1,24 @@
+---
+"@context-chef/core": minor
+---
+
+New opt-in `ChefConfig.appendOnly`: every payload repeats the one sent before it and only appends.
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API rejects (400) a request that replays one after an earlier turn changed. ContextChef rendered its injections (dynamic state, announcements, memory, skill instructions, the guardrail, the handoff notice) at the tail of each compile and moved them to the new tail on the next one, and in-flight compaction recomputed its summary, so earlier turns changed on every request. On every provider that also meant prompt-cache misses from the first moved injection on.
+
+With `appendOnly: true` (or `{ clearAt: true }`):
+
+- What the chef adds is an event: its own message, appended once after the turn it changed in and replayed there unchanged, never between tool calls and their results. A change appends a new revision (`<dynamic_state rev="2">`), a withdrawn source a tombstone. An unset `skillPlacement` or `memoryPlacement` takes the event form (`'tail'`, `'before_history_tail'`); an explicit `'after_system'` is honored, and each change is reported as a `system` checkpoint. Memory is stated as one snapshot per window, then only as deltas for changes the model wasn't told about: writes it made through `chef.handleTool` aren't pushed back. On OpenAI and Gemini an unset guardrail `prefillMode` means `'instruction'`. Your history is never written to.
+- `{ clearAt: true }` on Anthropic turns the system-channel sources into turn-scoped reminders (`clear_at: 'next_user_message'`, new `Message._clear_at`), and adds the beta to `payload.betas`.
+- A compaction lands once and stands in for what it summarized on every later compile. An unsigned one waits for a user-turn boundary, and collapses a tool turn into one summary only when the request would exceed `contextWindow` or the model asked for a new window.
+- Anything that rewrites what was sent (an edited history, a new system prompt or tool list, a compaction, a cleared history, a chef with no record of the previous request) is a checkpoint, reported through the new `prefix:break` event and `CompileMeta.prefix` (`{ stable, break? }`). On Anthropic the thinking a checkpoint invalidated is left out of later requests: a parsed message keeps its other blocks verbatim, and a reply that held only thinking is left out.
+- `onDemandCompaction({ compact, keepRecentTurns?, instructions?, fallback? })` asks Anthropic for a compaction it signs (beta `compact-2026-09-04`), so the turns kept after the block keep their thinking. Every request that replays the block carries the beta. New types `OnDemandCompactionOptions`, `OnDemandCompactionRequest`, `OnDemandCompactor` and `AnthropicCompactionBlock`, and `anthropicCompactionMessage(block)`. The chef and `createJanitorPool` warn once when it is configured together with `server()`.
+- With `pipelineChecks`, each payload is also compared with the one sent before it, and a difference no checkpoint declared is reported through `pipeline:invariant`.
+- `ChefSnapshot.prefixLedger` and `ChefSnapshot.modelMemoryWrites` carry the record. A chef created per request must persist its snapshot and restore it on the next request; without it every request starts with a `ledger` checkpoint, warned once when the history already holds more than two replies.
+- `CompressionDetails.replacement` is what to write back to persist a compaction, and `compressedMessages` and the count leave out the chef's events.
+
+For custom strategies and adapters: `OverflowStrategy.discard?()` drops a finished result that is waiting to land; `OverflowInput.pendingOnly` marks a call made only to land such a result; under `appendOnly` the input also carries `appendOnly`, `midToolTurn`, `collapse`, `pastLimit` and `wire` (`OverflowWire`, the window as it was sent). `ITargetAdapter.nativePrefill` says whether a target continues a trailing assistant message.
+
+Also new: `fromAnthropic(messages, system, { keepPositionalSystem: true })` keeps mid-conversation system messages in place; `auditAnthropicCachePlacement(payload, { appendOnly })` audits only the system prompt for an append-only payload; `PrefixLedger` and its types; and `createPrefixSessionPool` with the `PrefixSession` type, the session helper the framework integrations build on.
+
+Off, which is the default, `appendOnly` changes nothing.
