@@ -139,7 +139,7 @@ const chef = new ContextChef({
 
 `snapshot()` 和 `restore()` 会把 ledger（`ChefSnapshot.prefixLedger`）和模型写入 memory 的记录（`ChefSnapshot.modelMemoryWrites`），连同 chef 的其他状态一起带上。恢复它们不算检查点：下一次 compile 会重复已经发送的内容。
 
-**每个请求新建一个 chef 时，必须保存这两个字段，并在下一个请求里恢复。** 没有 ledger 的 chef 无从知道上一次请求发了什么。它的第一次 compile 会报告一次位于 0 的 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的全部 thinking，而且每个请求都这样。chef 第一次遇到这种情况、而 history 里已经有超过两条回复时，会 warn 一次。
+**每个请求新建一个 chef 时，必须保存它的快照，并在下一个请求里恢复。** 没有 ledger 的 chef 无从知道上一次请求发了什么。它的第一次 compile 会报告一次位于 0 的 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的全部 thinking，而且每个请求都这样。chef 第一次遇到这种情况、而 history 里已经有超过两条回复时，会 warn 一次。
 
 ```ts
 async function handleRequest(conversationId: string, history: Message[]) {
@@ -149,26 +149,24 @@ async function handleRequest(conversationId: string, history: Message[]) {
     memory: {},
     janitor: { contextWindow: 200_000, compressionModel },
   });
-  const saved = await db.load(conversationId); // { prefixLedger, modelMemoryWrites }，以 JSON 存储
-  if (saved) {
-    chef.restore({
-      ...chef.snapshot(),
-      prefixLedger: saved.prefixLedger,
-      modelMemoryWrites: saved.modelMemoryWrites,
-    });
-  }
+  const saved = await db.load(conversationId); // 一个 ChefSnapshot，以 JSON 存储
+  if (saved) chef.restore({ ...saved, modules: { ...saved.modules, memory: null } });
+  // 这个请求的状态（setDynamicState、announce 等）在 restore() 之后再设置。
 
   const payload = await chef.setHistory(history).compile({ target: "anthropic" });
-  await runTurn(chef, payload); // 发送请求，并执行其中的 tool call（chef 自己的工具交给 chef.handleTool）
+  await db.save(conversationId, chef.snapshot()); // 1. 请求发出之前
 
-  // 最后保存，在这个请求的所有 handleTool 调用之后。
-  const { prefixLedger, modelMemoryWrites } = chef.snapshot();
-  await db.save(conversationId, { prefixLedger, modelMemoryWrites });
+  // 发送请求，把回复原样加进这个对话的 history（下一个请求的 history 里必须有它），
+  // 再执行其中的 tool call（chef 自己的工具交给 chef.handleTool）。
+  await runTurn(chef, payload);
+  await db.save(conversationId, chef.snapshot()); // 2. 所有 handleTool 调用之后
 }
 ```
 
-- **memory 放在共享存储里时，只恢复这两个字段。** 快照里也带着 memory，恢复整份快照会把共享存储回滚到保存时的样子：之后不管是这个对话还是其他对话写入的 memory，都会丢失。如果 chef 的状态只存在于快照里，恢复整份快照没有问题。
-- **在请求结束时保存**，放在所有 `handleTool` 调用之后。在保存之后才发生的模型写入，下一个请求会把它当作你的代码写入的一样，再推送给模型。
+- **恢复时跳过 memory**（`memory: null`），因为它存在共享存储里。恢复快照里的那份副本，会把存储回滚到保存时的样子，之后不管是这个对话还是其他对话写入的 memory 都会丢失。其余状态都会恢复，包括 overflow runner 的状态（窗口、熔断器、上报的用量）和 handoff 提醒的标记。如果 chef 的状态只存在于快照里，就恢复整份快照。
+- **第一次保存**保证已经发出的请求一定有记录，即使在回复存好之后有地方抛错。没有它，下一个请求会恢复更早的 ledger，在一个 thinking 签名时并不存在的前缀上回放 thinking，而且什么都不报告。如果一个请求里 compile 了不止一次，每次 compile 之后都要保存。
+- **第二次保存**记录模型通过 `handleTool` 写入的 memory，这样下一个请求就不会把它们再推送给模型。如果进程在两次保存之间崩溃，代价只是某条 memory 再声明一次，对话不会坏。
+- memory 的轮次计数属于被跳过的那部分，所以每个请求新建的 chef 每次都从零开始计算按轮次的 TTL。使用共享存储时，请用 `{ ms }` 形式的 TTL。
 
 **持久化压缩结果**是可选的：head 存在 ledger 里，你的 history 可以保留每一条消息。只有想让存储本身变小时才需要写回。写回时，把 `details.replacement` 原样、按顺序写到它替换掉的那些消息的位置，也就是你 history 里的前 `count` 条：
 

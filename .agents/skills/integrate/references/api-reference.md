@@ -109,9 +109,9 @@ interface ChefConfig {
    *  (off, it changes nothing). Changes defaults only: unset skillPlacement → 'tail',
    *  unset memoryPlacement → 'before_history_tail', unset guardrail prefillMode →
    *  'instruction' on targets without native prefill. A chef created per request must
-   *  save snapshot().prefixLedger + .modelMemoryWrites at the end of each request and
-   *  restore just those two fields (memory in a shared store would roll back with a
-   *  whole snapshot), or every request is a `ledger` checkpoint. */
+   *  save snapshot() after each compile and after the request's tool calls, and restore
+   *  it on the next request, or every request is a `ledger` checkpoint. With memory in a
+   *  shared store, restore { ...saved, modules: { ...saved.modules, memory: null } }. */
   appendOnly?: boolean | { clearAt?: boolean };   // AppendOnlyConfig; clearAt: Anthropic turn-scoped reminders
 
   defaultTarget?: TargetProvider | ITargetAdapter;   // options.target → this → 'openai'
@@ -425,7 +425,7 @@ chef.on('prefix:break', ({ reason, at, strippedThinking }) => { /* a checkpoint 
 | `AppendOnlyConfig` | `{ clearAt?: boolean }` — Anthropic: system-channel sources become turn-scoped reminders |
 | `PrefixMeta` / `PrefixBreakReason` | `CompileMeta.prefix` and its `break.reason` |
 | `ChefEvents['prefix:break']` | a checkpoint this compile applied |
-| `ChefSnapshot.prefixLedger` (`PrefixLedgerSnapshot`) / `modelMemoryWrites` | a chef created per request saves them at the end of each request and restores them on the next: `chef.restore({ ...chef.snapshot(), prefixLedger, modelMemoryWrites })` (a whole snapshot also restores memory, rolling a shared store back) |
+| `ChefSnapshot.prefixLedger` (`PrefixLedgerSnapshot`) / `modelMemoryWrites` | a chef created per request saves its snapshot after each compile and after the request's tool calls, and restores it on the next request; with memory in a shared store, without its memory part: `chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })` |
 | `PrefixLedger` | the pure ledger class: reconcile a history, append events, apply checkpoints, snapshot |
 | `onDemandCompaction` + `OnDemandCompactionOptions` / `OnDemandCompactionRequest` / `OnDemandCompactor` | signed compaction (table above) |
 | `anthropicCompactionMessage(block)` / `AnthropicCompactionBlock` | the history message that replays a signed compaction block |

@@ -183,9 +183,12 @@ export interface ChefSnapshot {
   readonly handoffNoticedWindow?: string;
   /**
    * The append-only prefix ledger, present when `appendOnly` is on. Restored
-   * together with the history: a chef created per request must persist it,
-   * or every request starts a new ledger. A snapshot without it restores as
-   * an empty ledger.
+   * together with the history: a chef created per request saves its snapshot
+   * after each compile and again after the request's tool calls, and restores
+   * it on the next request, or every request starts a new ledger. With memory
+   * in a shared store, restore it with `modules.memory` set to `null`, so the
+   * store is not rolled back. A snapshot without it restores as an empty
+   * ledger.
    */
   readonly prefixLedger?: PrefixLedgerSnapshot;
   /**
@@ -433,9 +436,11 @@ export interface ChefConfig {
    * block the provider signs: nothing is stripped, it waits for nothing, and
    * pinned messages it summarized are said again at the end of the window.
    *
-   * `true` is `{}`. Off by default, which compiles exactly what 4.x compiles.
-   * Persist `snapshot().prefixLedger` along with the history when the chef
-   * does not outlive a request.
+   * `true` is `{}`. Off by default, and off it changes nothing. A chef that
+   * does not outlive a request saves its snapshot after each compile and again
+   * after the request's tool calls, and restores it on the next request —
+   * with memory in a shared store, with `modules.memory` set to `null`, so the
+   * store is not rolled back.
    */
   appendOnly?: boolean | AppendOnlyConfig;
   /**

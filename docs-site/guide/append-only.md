@@ -137,9 +137,9 @@ The compaction request carries the cache breakpoints the window had when it was 
 
 ## Persisting a conversation
 
-`snapshot()` and `restore()` carry the ledger (`ChefSnapshot.prefixLedger`) and the record of the model's memory writes (`ChefSnapshot.modelMemoryWrites`) along with the rest of the chef's state. Restoring them is not a checkpoint: the next compile repeats what was sent.
+`snapshot()` and `restore()` carry the ledger (`ChefSnapshot.prefixLedger`) and the record of the model's memory writes (`ChefSnapshot.modelMemoryWrites`) with the rest of the chef's state. Restoring them is not a checkpoint: the next compile repeats what was sent.
 
-**A chef created per request must save these two fields and restore them on the next request.** A chef without its ledger can't know what the previous request sent. Its first compile reports a `ledger` checkpoint at 0, which on Anthropic strips all the thinking in the history, on every request. The chef warns once when it meets a history with more than two replies this way.
+**A chef created per request must save its snapshot and restore it on the next request.** A chef without its ledger can't know what the previous request sent. Its first compile reports a `ledger` checkpoint at 0, which on Anthropic strips all the thinking in the history, on every request. The chef warns once when it meets a history with more than two replies this way.
 
 ```ts
 async function handleRequest(conversationId: string, history: Message[]) {
@@ -149,26 +149,25 @@ async function handleRequest(conversationId: string, history: Message[]) {
     memory: {},
     janitor: { contextWindow: 200_000, compressionModel },
   });
-  const saved = await db.load(conversationId); // { prefixLedger, modelMemoryWrites }, stored as JSON
-  if (saved) {
-    chef.restore({
-      ...chef.snapshot(),
-      prefixLedger: saved.prefixLedger,
-      modelMemoryWrites: saved.modelMemoryWrites,
-    });
-  }
+  const saved = await db.load(conversationId); // a ChefSnapshot, stored as JSON
+  if (saved) chef.restore({ ...saved, modules: { ...saved.modules, memory: null } });
+  // Set this request's state (setDynamicState, announce, …) after restore().
 
   const payload = await chef.setHistory(history).compile({ target: "anthropic" });
-  await runTurn(chef, payload); // send it, and run its tool calls (chef.handleTool for the chef's own)
+  await db.save(conversationId, chef.snapshot()); // 1. before the request goes out
 
-  // Last, after every handleTool call of this request.
-  const { prefixLedger, modelMemoryWrites } = chef.snapshot();
-  await db.save(conversationId, { prefixLedger, modelMemoryWrites });
+  // Send it, add the reply to the conversation's history exactly as it came back
+  // (the next request's history must hold it), and run its tool calls
+  // (chef.handleTool for the chef's own).
+  await runTurn(chef, payload);
+  await db.save(conversationId, chef.snapshot()); // 2. after every handleTool call
 }
 ```
 
-- **Restore only these two fields when memory lives in a shared store.** The snapshot also carries memory, and restoring a whole snapshot rolls the shared store back to the moment it was saved: a memory write made since, by this conversation or any other, is lost. When the chef's state lives only in the snapshot, restoring the whole snapshot is fine.
-- **Save at the end of the request**, after every `handleTool` call. A memory write the model made after the save is pushed back to it on the next request, as if your code had made it.
+- **Memory is left out of the restore** (`memory: null`) because it lives in the shared store. Restoring the snapshot's copy would roll the store back to the moment of the save, and a memory write made since, by this conversation or any other, would be lost. Everything else is restored, the overflow runner's state (window, circuit breaker, reported usage) and the handoff notice flag included. When the chef's state lives only in the snapshot, restore the whole snapshot.
+- **The first save** means a request that went out always has its record, even if something throws after its reply is stored. Without it the next request restores an older ledger and replays thinking over a prefix it wasn't signed over, with nothing reported. If one request compiles more than once, save after each compile.
+- **The second save** records the memory writes the model made through `handleTool`, so they aren't pushed back to it on the next request. If the process dies between the two saves, the cost is one memory note stated again, never a broken conversation.
+- Memory's turn counter is part of the memory you leave out, so a per-request chef counts turn-based TTLs from zero on every request. With a shared store, use `{ ms }` TTLs.
 
 **Persisting a compaction** is optional: the head lives in the ledger, and your history can keep every message. Write it into your store when you want the store itself to shrink. Then write back `details.replacement` exactly and in order, in place of the messages it replaced, which are the first `count` messages of your history:
 

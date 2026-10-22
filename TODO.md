@@ -754,7 +754,7 @@ Everything below is unverified because no key was available. Each line is one ex
 
 ## Deferred (append-only)
 
-- **Per-request restore**: a chef created per request restores only its conversation's prefix state with `chef.restore({ ...chef.snapshot(), prefixLedger, modelMemoryWrites })`, because a whole snapshot also restores memory and rolls a shared store back. Consider a restore API that takes only the conversation's prefix state.
+- **Per-request restore (optional ergonomics)**: a per-request chef with memory in a shared store restores `{ ...saved, modules: { ...saved.modules, memory: null } }` so the store isn't rolled back. A `restore()` option that skips the modules living in a shared store would say that directly.
 - **Ledger cost**: each compile digests the full history twice, and while a compaction head stands, every summarized message once more; add a per-message digest cache if profiling shows it matters.
 - **Ledger anchors**: `PrefixLedger.append` accepts an anchor whose group a reply already answered; consider rejecting anchors before the last assistant message except the prefill slot.
 - **Memory**: a memory hook or `memory:changed` listener that rewrites the key the model just wrote is recorded as the model's write, so that change isn't pushed; close it by having `Memory.set` return the entry it wrote.
