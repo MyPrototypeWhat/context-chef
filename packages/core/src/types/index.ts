@@ -106,7 +106,10 @@ export interface Attachment {
  * stripped thinking or a dropped part falls back to rebuilding from IR fields.
  */
 export interface AnthropicOrigin {
-  /** Original content blocks; present on part 0 only. */
+  /**
+   * Original content blocks; present on part 0 only. A copy, so an image or
+   * document's base64 is held here as well as in `attachments`.
+   */
   blocks?: unknown[];
   /** This message's index within the group. */
   part: number;
