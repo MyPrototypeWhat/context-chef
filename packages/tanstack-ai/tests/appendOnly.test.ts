@@ -1070,6 +1070,20 @@ describe('appendOnly: construction warnings', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it('warns once that transformContext must give the same bytes every call, and only under appendOnly', () => {
+    const transformContext = (messages: ModelMessage[], systemPrompts: SystemPrompt[]) => ({
+      messages,
+      systemPrompts,
+    });
+    const on = middlewareWith({ transformContext });
+    const off = middlewareWith({ appendOnly: false, transformContext });
+
+    expect(warnings(on.warn, '`transformContext` runs on every call')).toHaveLength(1);
+    expect(on.warn.mock.calls[0][0]).toContain('thinking signed over an earlier call');
+    expect(on.warn.mock.calls[0][0]).toContain('`dynamicState`');
+    expect(off.warn).not.toHaveBeenCalled();
+  });
+
   it('accepts clearAt, warns once that it is ignored, and keeps events on the user channel', async () => {
     const { send, warn } = middlewareWith({
       appendOnly: { clearAt: true },

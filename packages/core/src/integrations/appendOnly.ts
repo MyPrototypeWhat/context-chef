@@ -18,14 +18,17 @@ export interface AppendOnlyOptions {
     readonly toolCalls?: string | ReadonlyArray<{ readonly type: string }>;
   };
   readonly clear?: readonly ClearTarget[];
+  /** The integration's hook over each call's request, after the conversation is recorded. */
+  readonly transformContext?: unknown;
 }
 
 /**
  * `appendOnly` in a framework integration: the settings that cost what it is
  * for, warned once as the integration is created. `clearAt` has nothing to
- * act on there, and a `compact` or `clear` cut that moves with the
- * conversation rewrites a message an earlier call sent on nearly every call.
- * Nothing with `appendOnly` off.
+ * act on there; a `compact` or `clear` cut that moves with the conversation
+ * rewrites a message an earlier call sent on nearly every call; and
+ * `transformContext` changes each request after the ledger recorded it,
+ * where no checkpoint can see it. Nothing with `appendOnly` off.
  *
  * @internal
  */
@@ -54,6 +57,15 @@ export function warnAppendOnlyConfig(
         'that reaches a message it summarized also drops its summary, and the conversation is ' +
         "summarized again on every call. Use 'all', which rewrites each message once before it " +
         `is first sent, or the provider's own context editing${editing}.`,
+    );
+  }
+  if (options.transformContext) {
+    logger.warn(
+      '[context-chef] appendOnly: `transformContext` runs on every call after the conversation ' +
+        'is recorded, so whatever it adds or changes must come out byte-identical, at the same ' +
+        `position, on every call: otherwise ${wording.thinking} signed over an earlier call is ` +
+        'replayed over a prefix it was not signed over, and nothing reports it. Put content ' +
+        'that changes from call to call in `dynamicState`, which is appended once, as an event.',
     );
   }
 }

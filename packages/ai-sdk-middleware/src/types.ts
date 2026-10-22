@@ -372,6 +372,14 @@ export interface ContextChefOptions {
   /**
    * Transform the AI SDK prompt after compression, before sending to the model.
    * Use for custom prompt manipulation, RAG injection, etc.
+   *
+   * With {@link appendOnly} it runs on every call after the session recorded
+   * the prompt. Whatever it adds or changes must come out byte-identical, at
+   * the same position, on every call: otherwise reasoning signed over an
+   * earlier call is replayed over a prefix it was not signed over, and no
+   * checkpoint reports it. Put content that changes from call to call in
+   * `dynamicState`, which is appended once, as an event. Warned when the
+   * middleware is created.
    */
   transformContext?: (
     prompt: LanguageModelV4Prompt,

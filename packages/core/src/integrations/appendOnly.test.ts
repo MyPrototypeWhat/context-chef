@@ -68,6 +68,24 @@ describe('warnAppendOnlyConfig', () => {
   });
 });
 
+describe('warnAppendOnlyConfig: transformContext', () => {
+  it('says what a transformContext costs under appendOnly, and that per-call content belongs in dynamicState', () => {
+    const warn = vi.fn();
+    const transformContext = (messages: unknown) => messages;
+    warnAppendOnlyConfig({ appendOnly: true, transformContext }, { warn }, wording);
+    warnAppendOnlyConfig({ transformContext }, { warn }, wording);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toBe(
+      '[context-chef] appendOnly: `transformContext` runs on every call after the conversation ' +
+        'is recorded, so whatever it adds or changes must come out byte-identical, at the same ' +
+        'position, on every call: otherwise thinking signed over an earlier call is replayed ' +
+        'over a prefix it was not signed over, and nothing reports it. Put content that changes ' +
+        'from call to call in `dynamicState`, which is appended once, as an event.',
+    );
+  });
+});
+
 describe('prefixBreakReporter', () => {
   it('hands each break on, and only warns when the handler throws', () => {
     const warn = vi.fn();
