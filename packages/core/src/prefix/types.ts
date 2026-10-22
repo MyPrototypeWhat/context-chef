@@ -55,7 +55,12 @@ export type InjectionSource =
  * the host history has grown to.
  */
 export interface PrefixEntry {
-  /** The host length when it was appended: it sits before `host[anchor]` or later (absolute index). */
+  /**
+   * Where it was appended, as an absolute host index: the end of the history
+   * at the time, or the slot before a prefill the history ended with, or ahead
+   * of a run of system messages it ended with (`eventAnchor()`). It renders
+   * before `host[anchor]` or later.
+   */
   readonly anchor: number;
   readonly channel: 'system' | 'user';
   /** What `sources` said: their current state, or the withdrawal notice of a tombstone. */

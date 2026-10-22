@@ -6,7 +6,6 @@ export {
   eventAnchor,
   isPrefill,
   type PushSource,
-  revisionOf,
   sourceEvents,
 } from './events';
 export {

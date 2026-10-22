@@ -27,7 +27,7 @@ export interface PushSource {
 const REVISION = /^<[\w-]+ rev="(\d+)"/;
 
 /** The revision `content` opens with, `0` when it carries none. */
-export function revisionOf(content: string): number {
+function revisionOf(content: string): number {
   const match = REVISION.exec(content);
   return match ? Number(match[1]) : 0;
 }
