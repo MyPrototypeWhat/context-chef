@@ -68,6 +68,21 @@
     "prefix": { "stable": 5 }
   },
   {
+    "from": 7,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.\n\n<dynamic_state rev=\"3\">\n  <step>3</step>\n  <file>c.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 7 }
+  },
+  {
     "from": 8,
     "messages": [
       {
@@ -77,7 +92,13 @@
           { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
         ],
         "role": "assistant"
-      },
+      }
+    ],
+    "prefix": { "stable": 8 }
+  },
+  {
+    "from": 9,
+    "messages": [
       {
         "content": [{ "content": "found 2", "tool_use_id": "call_2", "type": "tool_result" }],
         "role": "user"
@@ -85,14 +106,14 @@
       {
         "content": [
           {
-            "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+            "text": "<dynamic_state rev=\"4\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
             "type": "text"
           }
         ],
         "role": "user"
       }
     ],
-    "prefix": { "stable": 8 }
+    "prefix": { "stable": 9 }
   },
   {
     "from": 11,

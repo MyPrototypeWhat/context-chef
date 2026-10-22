@@ -182,7 +182,9 @@ const overflowing = (strategy: OverflowStrategy, config: ChefConfig = {}): Conte
 
 export const appendOnlySequences: AppendOnlySequence[] = [
   {
-    // State on the user channel, with implicit context, changed then cleared.
+    // State on the user channel, with implicit context, changed then cleared. A retry at the
+    // same length says the change again in the unanswered tail; the clearing, made while the
+    // model's tool call waits for its result, is said after the result.
     name: 'dynamic-state-user',
     build: () => {
       let retrieved = 'docs: v1';
@@ -194,14 +196,29 @@ export const appendOnlySequences: AppendOnlySequence[] = [
       });
       return built;
     },
-    steps: steps(
-      agentLoop(3),
-      {
-        2: (c) => c.setDynamicState(State, { step: 2, file: 'b.ts' }),
-        3: (c) => c.setDynamicState(z.null(), null),
-      },
-      { compiles: 5 },
-    ),
+    steps: (() => {
+      const loop = agentLoop(3);
+      const [first, firstResult, second, secondResult, third] = requests(loop);
+      return [
+        { history: first },
+        { history: firstResult },
+        {
+          history: second,
+          before: (c: ContextChef) => c.setDynamicState(State, { step: 2, file: 'b.ts' }),
+        },
+        {
+          history: second,
+          before: (c: ContextChef) => c.setDynamicState(State, { step: 3, file: 'c.ts' }),
+        },
+        {
+          // The second question's tool call, its result still to come.
+          history: loop.slice(0, second.length + 1),
+          before: (c: ContextChef) => c.setDynamicState(z.null(), null),
+        },
+        { history: secondResult },
+        { history: third },
+      ];
+    })(),
   },
   {
     // State on the system channel: a positional system message, never the top-level prompt.

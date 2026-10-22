@@ -52,23 +52,44 @@
     "prefix": { "stable": 5 }
   },
   {
-    "from": 5,
+    "from": 4,
     "messages": [
       {
-        "parts": [{ "functionCall": { "args": { "q": "topic 2" }, "name": "search" } }],
-        "role": "model"
-      },
-      {
         "parts": [
-          { "functionResponse": { "name": "call_2", "response": { "result": "found 2" } } },
+          { "text": "question 2" },
           {
-            "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+            "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.\n\n<dynamic_state rev=\"3\">\n  <step>3</step>\n  <file>c.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
           }
         ],
         "role": "user"
       }
     ],
+    "prefix": { "stable": 7 }
+  },
+  {
+    "from": 5,
+    "messages": [
+      {
+        "parts": [{ "functionCall": { "args": { "q": "topic 2" }, "name": "search" } }],
+        "role": "model"
+      }
+    ],
     "prefix": { "stable": 8 }
+  },
+  {
+    "from": 6,
+    "messages": [
+      {
+        "parts": [
+          { "functionResponse": { "name": "call_2", "response": { "result": "found 2" } } },
+          {
+            "text": "<dynamic_state rev=\"4\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action."
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 9 }
   },
   {
     "from": 7,
