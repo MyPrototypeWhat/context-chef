@@ -127,6 +127,7 @@ ContextChef 把无界的信息编译进有界的窗口。本 README 里的每一
 - **长程任务跑偏？** — Zod schema 强类型状态注入，每次调用前强制对齐当前任务焦点
 - **输出格式跑偏？** — Guardrail：`withGuardrails` 强制 XML 输出契约并设置 assistant prefill，在不支持原生 prefill 的 provider 上自动降级
 - **每轮都在击穿 prompt cache？** — `memoryPlacement: 'before_history_tail'` 和 `skillPlacement: 'tail'` 把易变文本移出可缓存前缀；`cacheAudit` 会点名仍然留在里面的内容
+- **Claude 拒绝回放的 thinking？** — `appendOnly`（4.3）：每次的 payload 都完整重复上一次，只在末尾追加。注入变成只追加一次的事件，压缩只落地一次（`onDemandCompaction()` 让 Anthropic 签名），任何改写已发送内容的操作都是被报告的检查点
 
 **③ 持久化 —— 离开窗口后住在哪**
 
@@ -540,7 +541,7 @@ chef.setHistory(safeHistory);
 
 > **边界契约**：所有 input adapter（`fromOpenAI` / `fromAnthropic` / `fromGemini`，以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`）都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize：IR 是内部协议，直接构造或 mutate 出来的 history 视为已满足契约。如果不确定，显式用 `ensureValidHistory(...)` 包一下。
 >
-> 用 `fromAnthropic` 解析的 history，只要没被改动，就会逐字节原样发回 Anthropic：所有 thinking 块、分开的 text 块、同一条 user 消息里的并行 tool result，以及 IR 不建模的块（server tool use、web search 结果）都保持进来时的样子，只有 cache breakpoint 会换成 chef 自己的。Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking 块连同它之前的全部内容签名，2026-08-31 及之后创建的账号上，只要较早的某一轮和模型当时看到的不一致，API 就返回 400。解析出的消息一旦被改动（tool result 被清除、thinking 被剥离），就会像以前一样从 IR 字段重建。尾部注入和客户端 overflow 仍会改动之前的轮次；在 append-only 模式上线前，可以在请求里设置 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`（beta `thinking-binding-controls-2026-08-01`），让对不上的 thinking 被丢掉而不是整个请求失败——见 [Claude thinking 前缀校验](https://myprototypewhat.github.io/context-chef/zh/guide/thinking-prefix)。
+> 用 `fromAnthropic` 解析的 history，只要没被改动，就会逐字节原样发回 Anthropic：所有 thinking 块、分开的 text 块、同一条 user 消息里的并行 tool result，以及 IR 不建模的块（server tool use、web search 结果）都保持进来时的样子，只有 cache breakpoint 会换成 chef 自己的。Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking 块连同它之前的全部内容签名，2026-08-31 及之后创建的账号上，只要较早的某一轮和模型当时看到的不一致，API 就返回 400。解析出的消息一旦被改动（tool result 被清除、thinking 被剥离），就会像以前一样从 IR 字段重建；打开 `appendOnly` 时，被检查点剥掉 thinking 的消息，其余的块保持进来时的样子。默认情况下，尾部注入和客户端 overflow 仍会改动之前的轮次。[`appendOnly`](https://myprototypewhat.github.io/context-chef/zh/guide/append-only) 让已发送的内容留在原处；也可以在请求里设置 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`（beta `thinking-binding-controls-2026-08-01`），让对不上的 thinking 被丢掉而不是整个请求失败——见 [Claude thinking 前缀校验](https://myprototypewhat.github.io/context-chef/zh/guide/thinking-prefix)。
 
 #### `chef.clearHistory(): this`
 
@@ -1396,6 +1397,30 @@ const snap = chef.snapshot("before risky tool call");
 
 chef.restore(snap); // rolls back everything: history, dynamic state, janitor state, memory
 ```
+
+---
+
+### Append-only 前缀（4.3）
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 的每个 thinking 块，签名都覆盖它前面的全部内容；之前某一轮变了还回放这段 thinking，请求就会被拒（400）。默认情况下，chef 每次 compile 都把注入渲染在末尾，上一轮它们所在的位置因此改变，在途摘要也会重算。打开 `appendOnly` 后，每次的 payload 都完整重复上一次，只在末尾追加：
+
+```typescript
+const chef = new ContextChef({
+  appendOnly: true,
+  janitor: { contextWindow: 200_000, compressionModel },
+});
+
+chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
+  // something rewrote what was already sent: a reported checkpoint
+});
+```
+
+- dynamic state、announcement、skill 指令、memory、guardrail 和 handoff 提醒都变成事件：在它们变化的那一轮之后追加一次，之后原样留在那里。chef 从不改写你的 history。
+- 压缩只落地一次，没签名的压缩会等到 user 轮边界。`onDemandCompaction({ compact, fallback })` 请 Anthropic 做一次由它签名的压缩，后面轮次的 thinking 得以保留。
+- 任何改写已发送内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，通过 `prefix:break` 和 `meta.prefix` 报告。在 Anthropic 上，失效的 thinking 不会再放进请求。
+- 每个请求新建一个 chef 时，必须保存 `snapshot()`，并在下一个请求里 `restore()`，否则每个请求一开始都是一次 `ledger` 检查点。
+
+默认关闭，关闭时编译结果完全不变。AI SDK 和 TanStack AI 的 middleware 同样支持 `appendOnly`。完整指南：[Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only)。
 
 ---
 

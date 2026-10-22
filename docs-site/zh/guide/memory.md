@@ -136,3 +136,7 @@ const chef = new ContextChef({
 当动态状态也注入在尾部（`dynamicStatePlacement: 'last_user'`）时，最后一条 user 消息内部的顺序是：原始内容 → `<memory>` → `<dynamic_state>` → `<implicit_context>` → announcements → 锚点行。当动态状态走自己的 system 消息（`dynamicStatePlacement: 'system'`）时，记忆仍然注入在 user 尾部，且不带锚点。
 
 这是[五轴架构](/zh/guide/architecture)里的 ②：说明是前缀，数据是尾部。
+
+::: tip `appendOnly` 下 <Badge type="tip" text="4.3" />
+打开 [`appendOnly`](/zh/guide/append-only#memory) 后，没设置 `memoryPlacement` 时等于 `'before_history_tail'`，数据块变成事件：窗口开始时一份快照，之后只为模型不知道的变化追加 delta（你自己调用的 `set()` / `delete()`、TTL 过期）。模型通过 `chef.handleTool` 做的写入不会再推回去。显式设置的 `'after_system'` 会照办，这时每次 memory 变化都是一次 `system` 检查点。`injectedMemoryKeys` 列出这次编译的快照或 delta 涉及的 key。
+:::

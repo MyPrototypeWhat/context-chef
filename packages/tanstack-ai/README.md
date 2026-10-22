@@ -232,6 +232,32 @@ contextChefMiddleware({
 
 `transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`.
 
+### Append-Only Mode
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign their thinking over everything before it, and reject a request that replays it after an earlier message changed. Every provider's prompt cache also misses from the first changed message on. By default the middleware replaces its dynamic-state block on every iteration and recomputes a compression summary on every call over budget. With `appendOnly: true`, each model call's request repeats the one the conversation sent before and only appends:
+
+```typescript
+// Create once, reuse for every chat() call
+const contextChef = contextChefMiddleware({
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { adapter: summarizerAdapter },
+  onPrefixBreak: (event) => console.info(event),
+});
+
+const stream = chat({ adapter, messages, threadId: conversationId, middleware: [contextChef] });
+```
+
+- `dynamicState` becomes its own user message, appended once after the turn it changed in, with either placement; `systemPrompts` is left alone. A compression lands once: later calls send its summary in place of what it covers.
+- Anything that rewrites what an earlier call sent (an edited history, a new system prompt, skill or tool list, a compression) is a checkpoint, reported to `onPrefixBreak`. Thinking that carries a signature (`@tanstack/ai-anthropic`) is removed from that point on; unsigned thinking stays.
+- Pass a `threadId` per conversation (otherwise every run starts empty) and create the middleware once: conversations live in the middleware instance.
+- The work happens in each model call's `onConfig` firing; `init` passes through. Within a `chat()` run the engine carries what `onConfig` returned into the next iteration, so no other middleware may change those messages. Persist the client's conversation, not the engine's messages, which hold the middleware's events.
+- The structured-output call, which goes out without tools, is a one-off: no checkpoint for the conversation.
+- `compact` / `clear` settings that move with the conversation (`'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
+- To persist a compression, write `details.replacement` back in place of `details.compressedMessages` in `onCompress`.
+
+Full rules: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only#tanstack-ai-specifics).
+
 ### Never Breaks the Host Run
 
 In `@tanstack/ai` 0.44, a middleware hook that throws fails the whole `chat()` run. This middleware wraps every hook body: on an unexpected error it logs through the configured `logger` and passes the request through unchanged instead of breaking your call.
@@ -258,6 +284,8 @@ if (compacted !== storedMessages) {
 - `summarizeTanStackMessages(messages, adapter, opts?)` — just the summary string, using the same pipeline as `compress`.
 
 A "turn" is one user/assistant message, or an assistant with its tool-calls plus all their tool results — the split never orphans a tool result. Don't combine durable compaction with middleware `compress` on the same conversation (double compression).
+
+`keptReasoning: 'strip'` (on both `compactTanStackMessages` and `planCompactionTanStackMessages`) removes the thinking from the kept messages, and drops a reply that held nothing else. A summary you write yourself is a checkpoint nobody signed, so on Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 thinking kept after it no longer verifies; `'strip'` returns a history you can send as it is. Default `'keep'`.
 
 ## API
 
@@ -294,6 +322,8 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `onBeforeCompress` | `(history, tokenInfo) => msgs \| null` | No | Hook before compression with override capability |
 | `transformContext` | `(msgs, prompts, ctx) => { messages, systemPrompts }` | No | Post-compression transformation. Runs per iteration — must be idempotent. |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings; defaults to `console`. |
+| `appendOnly` | `boolean \| { clearAt?: boolean }` | No | Keep what was sent: each model call's request repeats the conversation's previous one and only appends. See [Append-Only Mode](#append-only-mode). `clearAt` is ignored here. |
+| `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | No | `appendOnly`: called for each checkpoint a call applies — `{ sessionId, reason, at, signed, strippedThinking }`. |
 | `overflow` | `{ strategy?, archive? }` | No | The overflow axis — see [Overflow Strategies](#overflow-strategies). |
 | `overflow.strategy` | `OverflowStrategy` | No | `summarize()` / `anchored()` / `reset()` / `chain()` / `background()` from `@context-chef/core`, or your own. Supersedes the `compress` tuning options (`compress.adapter` included); the runner concerns still apply. Configuring one makes `contextWindow` required. |
 | `overflow.archive` | `CompressionArchiveConfig` | No | `{ store: (serialized, { messageCount }) => uri }` — keeps the evicted span retrievable behind the URI the summary cites. The `'vfs'` shorthand is core-only. |

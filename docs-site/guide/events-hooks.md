@@ -100,6 +100,7 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `pipeline:invariant` <Badge type="tip" text="4.2" /> | `{ phase, message }` | A `pipelineChecks` invariant was violated. Reported only — `compile()` continues |
 | `memory:changed` | `{ type, key, value, oldValue }` | Emitted after any memory mutation (set, delete, expire) |
 | `memory:expired` | `MemoryEntry` | Emitted when a memory entry expires during `compile()` |
+| `prefix:break` <Badge type="tip" text="4.3" /> | `{ reason, at, signed, strippedThinking, windowId? }` | `appendOnly` only: this compile rewrote what was already sent (a checkpoint). See [Append-Only Prefix](/guide/append-only#turning-it-on) |
 
 Events are **observation-only** — they don't affect control flow. Use a slot when you need to change something.
 
@@ -121,6 +122,7 @@ chef.on('pipeline:invariant', ({ phase, message }) => {
 
 - Once after the whole `after-assemble` chain: pinned messages still present, tool call/result pairs still paired. The comparison is the list the chain started from against the list it produced, so a violation names the chain rather than the handler that caused it.
 - After the `tail` phase: nothing ahead of the tail insertion point changed, compared byte for byte against a pre-`tail` snapshot.
+- With [`appendOnly`](/guide/append-only#checking-it-pipelinechecks) <Badge type="tip" text="4.3" />, after the payload is built: it repeats the payload the chef sent before it, unless the compile reported a checkpoint. A slot handler that rewrites earlier messages is caught here.
 
 Violations are **reported, never enforced** — mechanism, not policy. Each goes to `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event; `compile()` never throws because of a check. It costs a snapshot plus a serialization pass per compile, so keep it off in production. Default `false`.
 

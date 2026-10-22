@@ -138,6 +138,24 @@ contextChefMiddleware({
 
 `transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`.
 
+### Append-Only Mode
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 reject a request that replays thinking after anything before it changed, and every provider's prompt cache misses from the first changed message. By default the middleware replaces its dynamic-state block on every iteration and recomputes a compression summary on every call over budget. With `appendOnly: true`, each model call's request repeats the one the conversation sent before and only appends; anything that still rewrites it is a checkpoint, reported to `onPrefixBreak`.
+
+```typescript
+// Create once, reuse for every chat() call
+const contextChef = contextChefMiddleware({
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { adapter: summarizerAdapter },
+  onPrefixBreak: (event) => console.info(event),
+});
+
+const stream = chat({ adapter, messages, threadId: conversationId, middleware: [contextChef] });
+```
+
+Pass a `threadId` per conversation (otherwise each run starts empty), and create the middleware once. `dynamicState` becomes its own user message, appended once per change; a compression lands once; only thinking that carries a signature is stripped at a checkpoint. No other middleware may change the messages this one returns, and you should persist the client's conversation rather than the engine's messages. See [Append-Only Prefix](/guide/append-only#tanstack-ai-specifics) for the full rules.
+
 ### Never Breaks the Host Run
 
 In `@tanstack/ai` 0.44, a middleware hook that throws fails the whole `chat()` run. This middleware wraps every hook body: on an unexpected error it logs through the configured `logger` and passes the request through unchanged instead of breaking your call.
@@ -174,7 +192,7 @@ Don't combine durable compaction with middleware `compress` on the same conversa
 | `createCompressionAdapter(adapter)` | Adapts any TanStack text adapter into the `(messages) => Promise<string>` callback core expects |
 | `compactTanStackMessages` / `planCompactionTanStackMessages` / `summarizeTanStackMessages` | Durable compaction helpers |
 
-Key `contextChefMiddleware` options: `contextWindow` (required only with compression), `compress` (`adapter`, `preserveRatio`, `toolResultStubThreshold`, `usagePreference`), `truncate`, `compact`, `clear`, `dynamicState`, `skill`, `tokenizer`, `maxSessions`, `onCompress`, `onBeforeCompress`, `transformContext`, `logger`. See the [full README on GitHub](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai) for the complete option tables.
+Key `contextChefMiddleware` options: `contextWindow` (required only with compression), `compress` (`adapter`, `preserveRatio`, `toolResultStubThreshold`, `usagePreference`), `truncate`, `compact`, `clear`, `dynamicState`, `skill`, `tokenizer`, `maxSessions`, `onCompress`, `onBeforeCompress`, `transformContext`, `logger`, `appendOnly`, `onPrefixBreak`. `compactTanStackMessages` / `planCompactionTanStackMessages` also take `keptReasoning: 'strip'` ([why](/guide/durable-compaction#kept-reasoning)). See the [full README on GitHub](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai) for the complete option tables.
 
 ## How It Works
 

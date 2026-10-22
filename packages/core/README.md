@@ -69,6 +69,7 @@ Overflow is not a feature of its own: it is information moving from ① to ③, 
 - **Output format drifting?** — Guardrail: `withGuardrails` enforces an XML output contract and sets an assistant prefill, auto-degraded on providers without native prefill
 - **Mode-based behavior?** — `Skill` primitive bundles instructions and tool annotations per phase; loadable from `SKILL.md` files (compatible with Claude Code / Mastra / OpenCode formats)
 - **Cache invalidated every turn?** — `memoryPlacement` / `skillPlacement` move volatile blocks out of the cached prefix into the tail channel; `cacheAudit: true` reports breakpoints that sit behind volatile content
+- **Claude rejecting replayed thinking?** — `appendOnly` (4.3): every payload repeats the one before and only appends. Injections become events appended once, a compaction lands once (signed by Anthropic with `onDemandCompaction()`), and anything that rewrites what was sent is a reported checkpoint
 - **Window about to be cut?** — Handoff budget (4.2): `overflow.handoff` reserves tokens above the trigger and delivers one tail notice per window, so the model can persist what matters before the library evicts mechanically
 
 **③ Persistence — where it lives once it is out of the window**
@@ -1415,6 +1416,30 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 
 ---
 
+### Append-only prefix (4.3)
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign every thinking block over everything before it, and reject a request (400) that replays one after an earlier turn changed. By default the chef renders its injections at the tail of every compile, so the turn they sat in last time changes, and an in-flight summary is recomputed. With `appendOnly`, each payload repeats the one before it and only appends:
+
+```typescript
+const chef = new ContextChef({
+  appendOnly: true,
+  janitor: { contextWindow: 200_000, compressionModel },
+});
+
+chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
+  // something rewrote what was already sent: a reported checkpoint
+});
+```
+
+- Dynamic state, announcements, skill instructions, memory, the guardrail and the handoff notice become events: appended once, after the turn they changed in, and sent there unchanged from then on. Your history is never written to.
+- A compaction lands once, and an unsigned one waits for a user-turn boundary. `onDemandCompaction({ compact, fallback })` asks Anthropic for a compaction it signs, which keeps the thinking of the turns after it.
+- Anything that rewrites what was sent (an edited history, a new system prompt or tool list, a compaction) is a checkpoint, reported through `prefix:break` and `meta.prefix`. On Anthropic the thinking it invalidated is left out of the request.
+- A chef created per request must save `snapshot()` and `restore()` it on the next request, or every request starts with a `ledger` checkpoint.
+
+Off by default, and off nothing compiles differently. The AI SDK and TanStack AI middlewares take `appendOnly` too. Full guide: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only).
+
+---
+
 ### Lifecycle Events
 
 Unified event system for observability across all internal modules. Subscribe via `chef.on()`, unsubscribe via `chef.off()`.
@@ -1603,7 +1628,7 @@ chef.on("pipeline:invariant", ({ phase, message }) => {
 
 Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a native prefill; set `prefillMode: 'instruction'` on `withGuardrails` for them.
 
-History parsed with `fromAnthropic` goes back to Anthropic byte-for-byte as long as nothing has changed it: all thinking blocks, separate text blocks, parallel tool results in one user message, and blocks the IR doesn't model (server tool use, web search results) come out as they came in. Only cache breakpoints are swapped for the chef's own. Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. Once a parsed message is modified (a cleared tool result, stripped thinking), it is rebuilt from IR fields as before. Tail injections and client-side overflow still change earlier turns; until an append-only mode lands, a request can set `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` (beta `thinking-binding-controls-2026-08-01`) to drop mismatched thinking instead of failing — see [Claude Thinking Prefix Check](https://myprototypewhat.github.io/context-chef/guide/thinking-prefix).
+History parsed with `fromAnthropic` goes back to Anthropic byte-for-byte as long as nothing has changed it: all thinking blocks, separate text blocks, parallel tool results in one user message, and blocks the IR doesn't model (server tool use, web search results) come out as they came in. Only cache breakpoints are swapped for the chef's own. Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. Once a parsed message is modified (a cleared tool result, stripped thinking), it is rebuilt from IR fields as before; under `appendOnly`, a message whose thinking a checkpoint stripped keeps its other blocks as they came in. By default, tail injections and client-side overflow still change earlier turns. [`appendOnly`](https://myprototypewhat.github.io/context-chef/guide/append-only) keeps what was sent where it was sent, and a request can set `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` (beta `thinking-binding-controls-2026-08-01`) to drop mismatched thinking instead of failing — see [Claude Thinking Prefix Check](https://myprototypewhat.github.io/context-chef/guide/thinking-prefix).
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 

@@ -178,6 +178,31 @@ compact: {
 }
 ```
 
+### Append-only 模式
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 的推理签名覆盖它前面的全部内容，之前的消息变了还回放这段推理，请求就会被拒；所有 provider 的提示缓存也会从第一条被改动的消息开始失效。默认情况下，middleware 会改写之前的消息：dynamic state 跟着最后一条 user 消息移动，超出预算时每次调用都重新计算压缩摘要。打开 `appendOnly: true` 后，每次调用的 prompt 都重复这个 session 上一次发出的内容，只在末尾追加：
+
+```typescript
+const model = withContextChef(baseModel, {
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { model: summarizerModel },
+  onPrefixBreak: ({ sessionId, reason, at, strippedThinking }) => {
+    console.info(`[${sessionId}] checkpoint (${reason}) at message ${at}`, { strippedThinking });
+  },
+});
+
+await generateText({ model, messages, providerOptions: { contextChef: { sessionId: conversationId } } });
+```
+
+- 无论哪种 placement，`dynamicState` 都变成一条独立的 user 消息，在它变化的那一轮之后只追加一次。压缩只落地一次：之后的调用用它的摘要代替被摘要的内容。
+- 任何改写之前调用所发内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，报告给 `onPrefixBreak`。Anthropic 系 provider（`@ai-sdk/anthropic`、`@ai-sdk/amazon-bedrock`）签名的推理从那里开始被去掉；其他推理保留。
+- 被包装的模型只创建一次，每个对话传自己的 `sessionId`。session 存在 middleware 实例里：每个请求新建一个的话，每个 session 都从空白开始；同一个 session 里的调用逐个执行。
+- 随对话移动的 `compact` / `clear` 设置（`'before-last-…'`、`keepRecent`）和 `transformContext` 会在创建 middleware 时 warn。这里忽略 `clearAt`。
+- 要持久化压缩结果，在 `onCompress` 里把 `details.replacement` 写回 `details.compressedMessages` 的位置。
+
+完整规则见 [Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only#ai-sdk-和-tanstack-ai)。
+
 ## API
 
 ### `withContextChef(model, options)`
@@ -213,6 +238,8 @@ const wrappedModel = withContextChef(model, options);
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
 | `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV3Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
 | `logger` | `ChefLogger` | 否 | 降级警告的输出目标（存储写入失败、缺少 usage 数据、配置异常等），默认 `console`。转发给底层 Janitor 和 Offloader。 |
+| `appendOnly` | `boolean \| { clearAt?: boolean }` | 否 | 保留已发送的内容：每次调用的 prompt 都重复这个 session 上一次的内容，只在末尾追加。见 [Append-only 模式](#append-only-模式)。这里忽略 `clearAt`。 |
+| `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | 否 | `appendOnly`：每次调用应用一个检查点时调用 —— `{ sessionId, reason, at, signed, strippedThinking }`。 |
 | `overflow` | `{ strategy?, archive? }` | 否 | 溢出轴 —— 见[溢出策略（Overflow）](#溢出策略overflow)。 |
 | `overflow.strategy` | `OverflowStrategy` | 否 | 来自 `@context-chef/core` 的 `summarize()` / `anchored()` / `reset()` / `chain()` / `background()`，或自定义实现。会覆盖 `compress` 的调参项（含 `compress.model`）；runner 侧配置继续生效。配置后 `contextWindow` 变为必填。 |
 | `overflow.archive` | `CompressionArchiveConfig` | 否 | `{ store: (serialized, { messageCount }) => uri }` —— 让被驱逐的片段仍可通过摘要引用的 URI 取回。`'vfs'` 简写仅 core 支持。 |
@@ -294,6 +321,7 @@ if (next !== messages) await save(next); // no-op 时跳过持久化
 - system 消息逐字保留、永不被摘要。
 - 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回同一个 `messages` 引用** —— 因此可通过 `next !== messages` 在 no-op 时跳过持久化。可无条件调用;仅当模型调用抛错时才抛错。
 - 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
+- `keptReasoning: 'strip'` 去掉保留消息里的推理，只剩推理的回复整条去掉。你自己写的摘要是一个没人签名的检查点，在 Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 上，保留在它后面的推理就无法再通过验证；`'strip'` 返回一个可以直接发送的 history。默认 `'keep'`。`planCompactionModelMessages` 同样接受它。
 
 > 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
 

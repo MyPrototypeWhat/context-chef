@@ -24,6 +24,8 @@ chef.setSystemPrompt(system).setHistory(history);
 
 **`fromAnthropic` 解析的历史原样回放。** 用 `fromAnthropic` 解析的历史，只要没被改动过，编译回 Anthropic target 时就逐字节一致：每个 thinking block、各自独立的 text block、IR 不建模的块（server tool use、web search 结果、compaction block 的签名）都原样保留，并行 tool result 和其后的用户文本也仍在同一条 user message 里。每条解析出的消息在 `Message._anthropic_origin` 里记录自己的来源。之所以这样做，是因为 Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking block 连同它之前的全部内容做签名，在 2026-08-31 及之后创建的账号上，只要更早的某一轮和模型当时看到的不一致，API 就返回 400。你改动过的消息（清掉了 tool result、剥掉了 thinking）照旧从 IR 字段重建；原消息里的 `cache_control` 标记会被 chef 自己的断点替换。还有哪些功能会改动之前的轮次，以及 `drop_block` 安全网，见 [Claude thinking 前缀校验](/zh/guide/thinking-prefix)。
 
+**对话中间的 system 消息** <Badge type="tip" text="4.3" />**。** `fromAnthropic` 会跳过解析出的请求里位于对话中间的 `role: "system"` 消息，所以原来有这类消息的 history 会在那个位置发生变化。`fromAnthropic(messages, system, { keepPositionalSystem: true })` 把它们作为 positional system 消息留在原处，原样发回。只对你自己代码写的 system 消息使用它：chef 编译出的 payload 里还有 chef 自己的 announcement 和事件，chef 会自己再加一遍。在 [`appendOnly`](/zh/guide/append-only) 下，被检查点剥掉 thinking 的解析消息，其余的块都保持进来时的样子。
+
 多模态内容（图片、文件）自动转换为 IR `attachments` 字段：
 
 | Provider 格式                    | IR 字段                              |
@@ -41,7 +43,7 @@ chef.setSystemPrompt(system).setHistory(history);
 | 格式                      | Chat Completions                   | Messages API                                                   | generateContent                      |
 | 缓存断点                  | 移除                               | `cache_control: { type: 'ephemeral' }`                         | 移除（使用独立的 CachedContent API） |
 | Prefill（尾部 assistant） | 降级为指令                         | 原生支持；不接受 prefill 的模型用 `prefillMode: 'instruction'` | 降级为指令                           |
-| `thinking` 字段           | 移除                               | 映射为 `ThinkingBlockParam`                                    | 移除                                 |
+| `thinking` 字段           | 移除                               | 映射为 `ThinkingBlockParam`；没有签名则不发送                  | 移除                                 |
 | 工具调用                  | `tool_calls` 数组                  | `tool_use` blocks                                              | `functionCall` parts                 |
 | `attachments`             | `image_url` / `file` content parts | `image` / `document` blocks                                    | `inlineData` / `fileData` parts      |
 
@@ -121,3 +123,5 @@ adapterRegistry.unregisterBySource("my-plugin");
 ```
 
 > **替换内置名**（如 `register('openai', myFork)`）会保留 strict overload 的 payload 返回类型 —— `compile({ target: 'openai' })` 仍标注为 `Promise<OpenAIPayload>`，因此你的替换实现在运行时必须遵守该 shape。TypeScript 无法在替换层面强制这个约束。
+
+如果 adapter 不能让请求以 assistant 消息结尾、会把 prefill 转成指令，应通过 `nativePrefill: false` 说明这一点（包装其他 adapter 时，沿用被包装 adapter 的值）。在 [`appendOnly`](/zh/guide/append-only) 下，chef 会把 guardrail prefill 作为指令只发一次，而不是让 adapter 每轮把它并进不同的 user 消息。

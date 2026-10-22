@@ -86,6 +86,8 @@ fires slot handlers at the boundaries.
 type PhaseName =
   | 'start'                 // compile:start event, abort check
   | 'transform-tool-results'// transformToolResult over tool messages (pre-overflow)
+  | 'prefix'                // appendOnly: replay the ledger over the history, detect checkpoints (4.3)
+  | 'handoff'               // handoff budget notice, once per window (Phase 3)
   | 'overflow'              // Janitor budget check + strategy (Phase 2 plugs in here)
   | 'inject'                // onBeforeCompile → implicit context
   | 'memory'                // Memory.compileArtifacts → sandwich parts
@@ -93,7 +95,7 @@ type PhaseName =
   | 'assemble'              // sandwich assembly (system layers + history + placements)
   | 'tail'                  // tail stitch + announcements + positional system
   | 'adapt'                 // target adapter + tools + server-managed payload
-  | 'audit'                 // cacheAudit (Anthropic) + dev invariants
+  | 'audit'                 // cacheAudit (Anthropic) + dev invariants (+ appendOnly cross-turn check)
   | 'done';                 // compile:done event
 
 interface CompileContext {           // mutable, flows through phases
@@ -181,6 +183,14 @@ interface OverflowStrategy {
   restore?(state: unknown): void;
 }
 ```
+
+`appendOnly` (4.3) added fields without changing these shapes for 4.x callers:
+`OverflowInput.pendingOnly` (a call made only to land a finished result; 4.x too), and,
+under `appendOnly` only, `appendOnly`, `midToolTurn`, `collapse`, `pastLimit` and
+`wire` (`OverflowWire`: the window as it was sent, for a signed strategy);
+`OverflowResult.meta.partial` / `meta.signed`; `OverflowStrategy.discard?()`, `signed?`
+and the internal `parts?`. `onDemandCompaction()` is the signed built-in. See
+`docs-site/guide/append-only.md`.
 
 Built-ins (each a factory in `src/overflow/`):
 

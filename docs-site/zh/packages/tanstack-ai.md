@@ -138,6 +138,24 @@ contextChefMiddleware({
 
 `transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。
 
+### Append-only 模式
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会拒绝这样的请求：回放的 thinking 前面有任何内容发生了变化；所有 provider 的提示缓存也会从第一条被改动的消息开始失效。默认情况下，middleware 每轮迭代都会替换它的 dynamic state 块，超出预算时每次调用都重新计算压缩摘要。打开 `appendOnly: true` 后，每次模型调用的请求都重复这个对话上一次发出的内容，只在末尾追加；仍然会改写它的操作都是检查点，报告给 `onPrefixBreak`。
+
+```typescript
+// 只创建一次，每次 chat() 调用都复用
+const contextChef = contextChefMiddleware({
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { adapter: summarizerAdapter },
+  onPrefixBreak: (event) => console.info(event),
+});
+
+const stream = chat({ adapter, messages, threadId: conversationId, middleware: [contextChef] });
+```
+
+每个对话传自己的 `threadId`（不传的话每次 run 都从空白开始），middleware 只创建一次。`dynamicState` 变成独立的 user 消息，每次变化只追加一次；压缩只落地一次；检查点只剥带签名的 thinking。其他 middleware 不能修改本 middleware 返回的消息；持久化时保存客户端的对话，而不是引擎的消息。完整规则见 [Append-only 前缀](/zh/guide/append-only#tanstack-ai-的细节)。
+
 ### 永不打断 host run
 
 在 `@tanstack/ai` 0.44 中，middleware 钩子抛异常会让整个 `chat()` run 失败。本 middleware 包裹每个钩子体：遇到意外错误时通过配置的 `logger` 记录，并原样透传请求，而不是打断你的调用。
@@ -174,7 +192,7 @@ if (compacted !== storedMessages) {
 | `createCompressionAdapter(adapter)` | 把任意 TanStack text adapter 适配成 core 期望的 `(messages) => Promise<string>` 回调 |
 | `compactTanStackMessages` / `planCompactionTanStackMessages` / `summarizeTanStackMessages` | 持久化压缩 helper |
 
-`contextChefMiddleware` 关键选项：`contextWindow`（仅压缩时必填）、`compress`（`adapter`、`preserveRatio`、`toolResultStubThreshold`、`usagePreference`）、`truncate`、`compact`、`clear`、`dynamicState`、`skill`、`tokenizer`、`maxSessions`、`onCompress`、`onBeforeCompress`、`transformContext`、`logger`。完整选项表见 [GitHub 上的完整 README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai)。
+`contextChefMiddleware` 关键选项：`contextWindow`（仅压缩时必填）、`compress`（`adapter`、`preserveRatio`、`toolResultStubThreshold`、`usagePreference`）、`truncate`、`compact`、`clear`、`dynamicState`、`skill`、`tokenizer`、`maxSessions`、`onCompress`、`onBeforeCompress`、`transformContext`、`logger`、`appendOnly`、`onPrefixBreak`。`compactTanStackMessages` / `planCompactionTanStackMessages` 还接受 `keptReasoning: 'strip'`（[原因](/zh/guide/durable-compaction#保留轮次的推理)）。完整选项表见 [GitHub 上的完整 README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai)。
 
 ## 工作原理
 

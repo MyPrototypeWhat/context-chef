@@ -100,6 +100,7 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `pipeline:invariant` <Badge type="tip" text="4.2" /> | `{ phase, message }` | 一条 `pipelineChecks` 不变量被违反。仅上报 —— `compile()` 继续 |
 | `memory:changed` | `{ type, key, value, oldValue }` | 任何记忆变更（set、delete、expire）之后发出 |
 | `memory:expired` | `MemoryEntry` | `compile()` 期间某条记忆过期时发出 |
+| `prefix:break` <Badge type="tip" text="4.3" /> | `{ reason, at, signed, strippedThinking, windowId? }` | 仅 `appendOnly`：这次编译改写了已经发送的内容（一次检查点）。见 [Append-only 前缀](/zh/guide/append-only#打开它) |
 
 事件是**只观察**的 —— 它们不影响控制流。需要改点什么时，用 slot。
 
@@ -121,6 +122,7 @@ chef.on('pipeline:invariant', ({ phase, message }) => {
 
 - 整条 `after-assemble` 链跑完之后检查一次：固定消息仍在，tool call / result 仍然配对。比对的是链的输入和链的输出，所以违规报的是整条链，而不是造成它的那个处理器。
 - `tail` 阶段之后：tail 插入点之前的内容一字未变，与 `tail` 之前的快照逐字节比对。
+- 打开 [`appendOnly`](/zh/guide/append-only#检查它-pipelinechecks) 时 <Badge type="tip" text="4.3" />，payload 生成之后：除非这次编译报告了检查点，否则它必须重复 chef 上一次发出的 payload。改写之前消息的 slot handler 会在这里被发现。
 
 违反只被**上报，绝不阻断** —— 机制，而非策略。每一条都会送到 `ChefConfig.logger`（或 `console`）以及 `pipeline:invariant` 事件；`compile()` 绝不会因为一次检查而抛异常。它的代价是每次编译一次快照加一次序列化，所以生产环境请关掉。默认 `false`。
 

@@ -31,6 +31,10 @@ Six built-ins, each a factory in `@context-chef/core`. Four are policies; two ar
 
 `chain` moves on when a strategy changed nothing **or** left the history still above the trigger, and stops at the first one that brings the window back under budget. `background` returns the over-budget history unchanged from the first compile and swaps the finished result in later — only while it still applies, checked by content equivalence, so a span that was rewritten in the meantime discards the job rather than corrupting the window.
 
+::: tip Under `appendOnly` <Badge type="tip" text="4.3" />
+With [`appendOnly`](/guide/append-only#compaction) a compaction lands once: its result stands in for what it summarized on every later compile instead of being recomputed, and an unsigned one waits for a user-turn boundary unless the request would exceed `contextWindow`. A seventh factory, `onDemandCompaction()`, asks Anthropic for a compaction it signs, which keeps the thinking of the turns after it; it needs `appendOnly` and takes a `fallback` strategy for everywhere else.
+:::
+
 ```typescript
 import { anchored, background, ContextChef, server, summarize } from '@context-chef/core';
 
@@ -252,6 +256,7 @@ interface OverflowStrategy {
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // the result actually entered the window
   pending?(): boolean;                     // a finished result is still waiting to land
+  discard?(): void;                        // drop that result unlanded, counting nothing
   snapshot?(): unknown;                    // serialized into JanitorSnapshot
   restore?(state: unknown): void;
   attach?(runner: OverflowRunner): void;   // the runner installs its breaker + logger
@@ -262,7 +267,9 @@ interface OverflowStrategy {
 
 `evicted` means "left the window". `span` is the range the summary covers — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. Both are required: a strategy that re-inserts nothing repeats `evicted`, and a result that changed nothing declares both empty. `span` is what `onCompress` gets as `details.compressedMessages`, what the archive stores, and what the citation counts.
 
-`pending()` is optional and belongs to off-turn strategies. The runner asks before evaluating the budget: `background()` answers `true` while a finished job is waiting, so a summary that completed after the history dropped back under the trigger still lands on the next compile rather than waiting for the window to fill again.
+`pending()` is optional and belongs to off-turn strategies. The runner asks before evaluating the budget: `background()` answers `true` while a finished job is waiting, so a summary that completed after the history dropped back under the trigger still lands on the next compile rather than waiting for the window to fill again. A call made only for that comes with `input.pendingOnly`: land what is waiting, compute nothing new. `discard()` drops a waiting result whose window is gone, without landing or counting it.
+
+Under [`appendOnly`](/guide/append-only#compaction) the input also says where the compile stands: `midToolTurn` (a tool turn is in progress), `collapse` (it can't wait: keep no turn), `pastLimit` (the request is past the raw context window at a turn boundary: act now) and, for a strategy the provider signs, `wire`. See the `OverflowInput` JSDoc.
 
 ```typescript
 const dropToolResults: OverflowStrategy = {
@@ -311,7 +318,7 @@ These stay on the Janitor. They are budget and lifecycle concerns, not policy.
 | `triggerRatio` | `number` | `0.7` | Fraction of `contextWindow` at which overflow fires ("pre-rot"). Set `1` to restore the pre-4.0 trigger-at-window behavior. |
 | `tokenizer` | `(msgs: Message[]) => number` | — | Enables the tokenizer path for precise per-message token calculation. |
 | `usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | `'max'` | Which token source drives the trigger when both `tokenizer` and `reportTokenUsage` are set. |
-| `onCompress` | `(summary, count, details) => void` | — | Fires after an overflow lands. `details.compressedMessages` is the exact slice of history the summary replaced. |
+| `onCompress` | `(summary, count, details) => void` | — | Fires after an overflow lands. `details.compressedMessages` is the exact slice of history the summary replaced. Under `appendOnly`, `details.replacement` is what to write back in its place to persist it ([how](/guide/append-only#persisting-a-conversation)). |
 | `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | Fires once the budget verdict says overflow will run, before the strategy. Return a replacement history to intervene, `null` to proceed. Not deprecated. |
 | `logger` | `ChefLogger` | — | Sink for degradation warnings (storage / compaction); defaults to `console`. |
 
@@ -350,6 +357,8 @@ chef.use('before-overflow', ({ history, budget }) => {
   if (streamingInProgress) return false; // don't rewrite history mid-stream
 });
 ```
+
+Under [`appendOnly`](/guide/append-only), a history `onBeforeCompress` returns reaches the payload only when a compaction lands, and `onDemandCompaction()` can't sign a window a hook rewrote: it runs its fallback.
 
 See [Events & Hooks](/guide/events-hooks) for the full slot list.
 
@@ -402,4 +411,4 @@ chef.setHistory(safeHistory);
 
 ## `chef.clearHistory(): this`
 
-Explicitly clear history and reset the runner's state — circuit breaker, strategy state, and the window lineage — when switching topics or completing sub-tasks. Announcements survive; retract them explicitly.
+Explicitly clear history and reset the runner's state — circuit breaker, strategy state, and the window lineage — when switching topics or completing sub-tasks. Announcements survive; retract them explicitly. With `appendOnly` the ledger starts over too, and the next compile reports a `ledger` checkpoint.

@@ -38,3 +38,7 @@ const model = withContextChef(anthropic('claude-sonnet-4-6'), {
 ```
 
 详见 [ai-sdk-middleware 包页面](/zh/packages/ai-sdk-middleware#anthropic-服务端上下文管理)。
+
+## 配合 `appendOnly` <Badge type="tip" text="4.3" />
+
+Claude 的 thinking 校验比较的是你发出的内容，所以服务端做的 compaction 和 context editing 不算你这边的改写：`server()` 在 [`appendOnly`](/zh/guide/append-only) 下照常可用。它不能和 `onDemandCompaction()`（由客户端发起、Anthropic 签名的压缩）组合：带 `context_management` 的请求不能要求按需压缩，回放其压缩块的请求也不能被服务端压缩。两者同时配置时，构造阶段会 warn 一次。

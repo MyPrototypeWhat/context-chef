@@ -148,6 +148,23 @@ const result = await generateText({
 
 不带 `sessionId` 的调用共享一个默认会话 —— 单对话进程没问题，多用户服务则是错误用法。最多并发跟踪 `maxSessions` 个会话（默认 256，LRU 淘汰）。
 
+## Append-only 模式
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会拒绝这样的请求：回放的推理前面有任何内容发生了变化；所有 provider 的提示缓存也会从第一条被改动的消息开始失效。默认情况下，middleware 每次调用都会改写之前的消息：dynamic state 跟着最后一条 user 消息移动，超出预算时压缩摘要每次调用都重新计算。打开 `appendOnly: true` 后，每次调用的 prompt 都重复这个 session 上一次发出的内容，只在末尾追加；仍然会改写它的操作都是检查点，报告给 `onPrefixBreak`。
+
+```typescript
+const model = withContextChef(baseModel, {
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { model: summarizerModel },
+  onPrefixBreak: ({ sessionId, reason, at, strippedThinking }) => {
+    console.info(`[${sessionId}] checkpoint (${reason}) at message ${at}`, { strippedThinking });
+  },
+});
+```
+
+被包装的模型只创建一次，每个对话传自己的 `sessionId`：session 存在 middleware 实例里，每个请求新建一个的话，每个 session 都从空白开始。`dynamicState` 变成独立的 user 消息，每次变化只追加一次；压缩只落地一次；检查点只剥 Anthropic 系 provider 签名的推理。随对话移动的设置（`'before-last-…'`、`keepRecent`）和 `transformContext` 会 warn。完整规则见 [Append-only 前缀](/zh/guide/append-only#ai-sdk-和-tanstack-ai)。
+
 ## Compact（机械裁剪）
 
 零 LLM 成本的消息裁剪，走 AI SDK 的 `pruneMessages` —— 移除 reasoning、tool call 和空消息：
@@ -174,7 +191,7 @@ const model = withContextChef(openai('gpt-4o'), {
 | `planCompactionModelMessages(messages, opts)` | 其背后的同步轮次安全切分 |
 | `summarizeModelMessages(messages, model, opts?)` | `ModelMessage` 层摘要器 |
 
-`withContextChef` 关键选项：`contextWindow`（必填）、`compress`（`model`、`preserveRatio`、`toolResultStubThreshold`、`usagePreference`）、`allowDoubleCompression`、`truncate`（`threshold`、`headChars`、`tailChars`、`storage`、`perTool`）、`compact`、`clear`、`tokenizer`、`onCompress`、`logger`。完整选项表见 [GitHub 上的完整 README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/ai-sdk-middleware)。
+`withContextChef` 关键选项：`contextWindow`（必填）、`compress`（`model`、`preserveRatio`、`toolResultStubThreshold`、`usagePreference`）、`allowDoubleCompression`、`truncate`（`threshold`、`headChars`、`tailChars`、`storage`、`perTool`）、`compact`、`clear`、`tokenizer`、`onCompress`、`logger`、`appendOnly`、`onPrefixBreak`。`compactModelMessages` / `planCompactionModelMessages` 还接受 `keptReasoning: 'strip'`（[原因](/zh/guide/durable-compaction#保留轮次的推理)）。完整选项表见 [GitHub 上的完整 README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/ai-sdk-middleware)。
 
 ## 工作原理
 

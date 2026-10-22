@@ -29,7 +29,14 @@ import {
 
   // Overflow (4.2) — what leaves the window
   summarize, anchored, server, reset, chain, background,
+  onDemandCompaction,   // 4.3: Anthropic-signed compaction; needs appendOnly
   renderSummaryMessage, renderHandoffNotice, validateHandoffConfig,
+
+  // Append-only prefix (4.3)
+  checkPrefixContinuity,      // first place a payload stops repeating the previous one
+  PrefixLedger,               // the pure ledger class behind appendOnly
+  anthropicCompactionMessage, // the history message that replays a signed compaction block
+  createPrefixSessionPool,    // appendOnly sessions for framework integrations
 
   // Library-owned tools (4.2)
   getContextToolDefinition,      // the single `context` tool — static, frozen, cache-safe
@@ -92,8 +99,18 @@ interface ChefConfig {
   skillPlacement?: 'after_system' | 'tail';
   /** 4.1 — audit Anthropic payloads for volatile content in the cached prefix. */
   cacheAudit?: boolean;
-  /** 4.2 — dev-mode pipeline invariants; reported, never thrown. Default false. */
+  /** 4.2 — dev-mode pipeline invariants; reported, never thrown. Default false.
+   *  4.3: with appendOnly, also checks each payload repeats the one sent before it. */
   pipelineChecks?: boolean;
+
+  /** 4.3 — keep what was sent as the prefix of the next payload. Injections become
+   *  events appended once; a compaction lands once; every rewrite is a checkpoint
+   *  reported through `prefix:break` and `meta.prefix`. `true` = `{}`. Off by default
+   *  (4.x output unchanged). Changes defaults only: unset skillPlacement → 'tail',
+   *  unset memoryPlacement → 'before_history_tail', unset guardrail prefillMode →
+   *  'instruction' on targets without native prefill. A chef created per request must
+   *  persist snapshot() and restore() it, or every request is a `ledger` checkpoint. */
+  appendOnly?: boolean | { clearAt?: boolean };   // AppendOnlyConfig; clearAt: Anthropic turn-scoped reminders
 
   defaultTarget?: TargetProvider | ITargetAdapter;   // options.target → this → 'openai'
   logger?: ChefLogger;                               // { warn(message, ...args): void }
@@ -137,6 +154,9 @@ interface JanitorConfig {
   toolResultStubThreshold?: number;
 
   onCompress?: (summaryMessage: Message, truncatedCount: number, details: CompressionDetails) => void | Promise<void>;
+  // CompressionDetails = { compressedMessages: Message[]; replacement?: Message[] }
+  // replacement (4.3, appendOnly only): what to write back, in order, in place of the
+  // first truncatedCount messages to persist the compaction. Counts exclude the chef's events.
   onBeforeCompress?: (
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
@@ -160,12 +180,18 @@ interface OverflowStrategy {
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // fires only when a result lands
   pending?(): boolean;                     // a finished off-turn result is waiting to land
+  discard?(): void;                        // 4.3: drop that result unlanded, counting nothing
   attach?(runner: OverflowRunner): void;
   snapshot?(): unknown;
   restore?(state: unknown): void;
+  readonly signed?: true;                  // 4.3: the provider signs what it returns (onDemandCompaction)
 }
-// OverflowInput  = { history, budget, tokenizer, pinned, window, forced?, signal? }
-// OverflowResult = { history, evicted, span, summary?, meta: { strategy, windowId, changed, reason? } }
+// OverflowInput  = { history, budget, tokenizer, pinned, window, forced?, signal?,
+//                    pendingOnly?,        // 4.3: called only to land a finished result
+//                    appendOnly?, midToolTurn?, collapse?, pastLimit?, wire? }   // 4.3, appendOnly
+// OverflowResult = { history, evicted, span, summary?,
+//                    meta: { strategy, windowId, changed, reason?, partial?, signed? } }
+// OverflowWire (4.3) = { target, history, renderPrefix(end) }: the window as it was sent
 // Both are required. `evicted` left the window; `span` is what the summary covers
 // (evicted + re-inserted pinned turns); a no-op result declares both empty. onCompress,
 // the archive payload and the citation count all read `span`.
@@ -179,6 +205,7 @@ interface OverflowStrategy {
 | `reset(opts)` | keeps `pinned` and nothing else. Safe only with `archive` |
 | `chain(...s)` | escalates when a strategy returned `changed: false` or is still over budget |
 | `background(s)` | first over-budget compile returns unchanged, a later one swaps the finished result in if the span is still a prefix |
+| `onDemandCompaction({ compact, keepRecentTurns?, instructions?, fallback? })` | 4.3, `appendOnly` on Anthropic: the request already answered goes back with `compaction: { type: 'summarize' }` (beta `compact-2026-09-04`) and the signed block replaces it; kept turns keep their thinking. `compact(request, signal)` sends `OnDemandCompactionRequest = { payload, compaction, betas }` and returns `{ stop_reason, content }`. Give a `fallback`: it runs wherever nothing can be signed. Compose as `onDemandCompaction({ fallback })`, not `chain()`. Warns with `server()` |
 
 `archive` is strategy-agnostic: the span a strategy compressed is stored (pinned turns it re-inserted included) and the URI is cited in the summary. `handoff` reserves headroom above the trigger and delivers one tail notice per window telling the model to write state into `memory/` / `notes/` first. `getNewContextToolDefinition()` + `chef.requestNewContext()` let the model close a window deliberately.
 
@@ -287,6 +314,8 @@ interface Message {
   _positional?: boolean;            // 4.1: a system message that stays in place
   thinking?: ThinkingContent;
   redacted_thinking?: RedactedThinking;
+  _clear_at?: 'next_user_message';  // 4.3: turn-scoped positional system message (Anthropic)
+  _chef_event?: true;               // 4.3: set by the chef on its appendOnly events, never by you
 }
 ```
 
@@ -334,8 +363,8 @@ interface Message {
 | `compile({ target })` | `'openai'` / `'openai-responses'` / `'anthropic'` / `'gemini'` / a registered name / an adapter instance |
 | `reportTokenUsage(count): this` | Feed the API-reported token count |
 | `requestNewContext(): this` | 4.2: next compile applies the overflow strategy regardless of budget |
-| `snapshot(label?)` / `restore(snapshot)` | Full state capture and rollback |
-| `on(event, handler)` / `off(event, handler)` | `compile:start` / `compile:done` / `compress:start` / `compress:end` / `compress` / `offload:created` / `pruner:tool-blocked` / `pipeline:invariant` / `memory:changed` / `memory:expired`. Error-isolated |
+| `snapshot(label?)` / `restore(snapshot)` | Full state capture and rollback. 4.3: with `appendOnly` the snapshot carries `prefixLedger` and `modelMemoryWrites` |
+| `on(event, handler)` / `off(event, handler)` | `compile:start` / `compile:done` / `compress:start` / `compress:end` / `compress` / `offload:created` / `pruner:tool-blocked` / `pipeline:invariant` / `memory:changed` / `memory:expired` / `prefix:break` (4.3: `{ reason, at, signed, strippedThinking, windowId? }`). Error-isolated |
 
 ## Payload types
 
@@ -346,8 +375,15 @@ GeminiPayload           { messages, systemInstruction?, tools?, meta? }
 OpenAIResponsesPayload  { instructions?, input, tools?, meta? }
 
 CompileMeta { injectedMemoryKeys: string[]; memoryExpiredKeys: string[];
-              activeSkillName?: string; windowId?: string }
+              activeSkillName?: string; windowId?: string;
+              prefix?: PrefixMeta }   // 4.3, appendOnly only
+
+PrefixMeta { stable: number;          // window messages identical to the previous payload's
+             break?: { reason: 'compaction' | 'history' | 'system' | 'tools' | 'ledger';
+                       at: number; signed: boolean; strippedThinking: number } }
 ```
+
+`AnthropicPayload.betas` also carries `mid-conversation-system-clear-at-2026-08-21` when a message is turn-scoped, and `compact-2026-09-04` when `appendOnly` replays a signed on-demand compaction block.
 
 ## Provider adapter behavior
 
@@ -356,10 +392,44 @@ CompileMeta { injectedMemoryKeys: string[]; memoryExpiredKeys: string[];
 | System messages | Kept inline | Separated to `system` (except `_positional`) | Separated to `systemInstruction` |
 | Cache breakpoints | Stripped | `cache_control: { type: 'ephemeral' }` | Stripped |
 | Prefill (trailing assistant) | Degraded to an instruction in the last user message | Native; models that reject it (Sonnet 4.6 / 5 / 5.5, Haiku 5.5) need `prefillMode: 'instruction'` | Degraded to `[System Note]` |
-| Thinking blocks | Dropped, or `<thinking>` text with `preserveThinkingAsText` | Mapped to `ThinkingBlockParam` | Dropped, or `<thinking>` text |
+| Thinking blocks | Dropped, or `<thinking>` text with `preserveThinkingAsText` | Mapped to `ThinkingBlockParam`; not sent without a signature | Dropped, or `<thinking>` text |
 | Tool calls format | `tool_calls` array | `tool_use` content blocks | `functionCall` parts (+ `thoughtSignature` echo) |
 
-History parsed with `fromAnthropic` is replayed to the Anthropic target byte-for-byte while unmodified (origin kept in `Message._anthropic_origin`): Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign each thinking block over every earlier turn, and accounts created on or after 2026-08-31 get a 400 when one differs. A modified message is rebuilt from IR fields; the original's `cache_control` markers give way to the chef's breakpoints.
+History parsed with `fromAnthropic` is replayed to the Anthropic target byte-for-byte while unmodified (origin kept in `Message._anthropic_origin`): Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign each thinking block over every earlier turn, and accounts created on or after 2026-08-31 get a 400 when one differs. A modified message is rebuilt from IR fields; the original's `cache_control` markers give way to the chef's breakpoints. 4.3: `fromAnthropic(messages, system, { keepPositionalSystem: true })` keeps mid-conversation system messages in place (`FromAnthropicOptions`); under `appendOnly`, a message whose thinking a checkpoint stripped keeps its other blocks verbatim. A custom adapter that turns a prefill into an instruction sets `ITargetAdapter.nativePrefill = false`. `auditAnthropicCachePlacement(payload, { appendOnly })` (`CacheAuditOptions`) audits only the system prompt under appendOnly.
+
+## Append-only prefix (4.3)
+
+`appendOnly` is opt-in and changes nothing when off. Guide: https://myprototypewhat.github.io/context-chef/guide/append-only
+
+```typescript
+const chef = new ContextChef({
+  appendOnly: true,
+  janitor: { contextWindow: 200_000 },
+  overflow: {
+    strategy: onDemandCompaction({
+      compact: ({ payload, compaction, betas }, signal) =>
+        client.beta.messages.create({ ...payload, model, max_tokens, thinking, compaction, betas }, { signal }),
+      fallback: summarize({ compressionModel }),
+    }),
+  },
+});
+chef.on('prefix:break', ({ reason, at, strippedThinking }) => { /* a checkpoint */ });
+```
+
+| Name | What it is |
+|---|---|
+| `AppendOnlyConfig` | `{ clearAt?: boolean }` — Anthropic: system-channel sources become turn-scoped reminders |
+| `PrefixMeta` / `PrefixBreakReason` | `CompileMeta.prefix` and its `break.reason` |
+| `ChefEvents['prefix:break']` | a checkpoint this compile applied |
+| `ChefSnapshot.prefixLedger` (`PrefixLedgerSnapshot`) / `modelMemoryWrites` | persist with the history when the chef does not outlive a request |
+| `PrefixLedger` | the pure ledger class: reconcile a history, append events, apply checkpoints, snapshot |
+| `onDemandCompaction` + `OnDemandCompactionOptions` / `OnDemandCompactionRequest` / `OnDemandCompactor` | signed compaction (table above) |
+| `anthropicCompactionMessage(block)` / `AnthropicCompactionBlock` | the history message that replays a signed compaction block |
+| `OverflowWire`, `OverflowStrategy.discard?()`, `OverflowInput.{pendingOnly, appendOnly, midToolTurn, collapse, pastLimit, wire}` | for custom strategies (see above) |
+| `CompressionDetails.replacement` | what to write back to persist a compaction |
+| `createPrefixSessionPool`, `PrefixSession` (type), `PrefixSessionBreak`, `PrefixSessionCall`, `PrefixSessionPoolConfig`, `PrefixSessionWindow`, `SignedThinking` | the session helper both framework integrations build on |
+
+Integrations: `@context-chef/ai-sdk-middleware` and `@context-chef/tanstack-ai` take `appendOnly?: boolean | { clearAt?: boolean }` (`clearAt` ignored there) and `onPrefixBreak?: (event: PrefixBreakEvent) => void`, where `PrefixBreakEvent` adds `sessionId`. Pass a `sessionId` (AI SDK `providerOptions.contextChef.sessionId`) or `threadId` (TanStack) per conversation, and create the middleware once. Their durable helpers (`compactModelMessages` / `planCompactionModelMessages`, `compactTanStackMessages` / `planCompactionTanStackMessages`) take `keptReasoning?: 'keep' | 'strip'` (`KeptReasoningOptions`).
 
 ## Deprecated in 4.2 (removed in 5.0)
 

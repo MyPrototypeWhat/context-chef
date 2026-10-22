@@ -31,6 +31,10 @@ const chef = new ContextChef({
 
 `chain` 在某个策略什么都没改**或**历史仍在触发线之上时继续往下走，并停在第一个把窗口压回预算内的策略上。`background` 让第一次超预算的编译原样返回历史，之后再把完成的结果换入 —— 且只在结果仍然适用时换入，判定用的是内容等价，因此期间被改写过的片段会丢弃该任务，而不是污染窗口。
 
+::: tip `appendOnly` 下 <Badge type="tip" text="4.3" />
+打开 [`appendOnly`](/zh/guide/append-only#压缩) 后，压缩只落地一次：之后每次编译都用它的结果代替被摘要的内容，不再重算；没签名的压缩会等到 user 轮边界，除非请求会超过 `contextWindow`。第七个工厂函数 `onDemandCompaction()` 请 Anthropic 做一次由它签名的压缩，后面轮次的 thinking 因此得以保留；它需要 `appendOnly`，并接受一个 `fallback` 策略用于其他所有场景。
+:::
+
 ```typescript
 import { anchored, background, ContextChef, server, summarize } from '@context-chef/core';
 
@@ -252,6 +256,7 @@ interface OverflowStrategy {
   apply(input: OverflowInput): Promise<OverflowResult>;
   commit?(result: OverflowResult): void;   // the result actually entered the window
   pending?(): boolean;                     // a finished result is still waiting to land
+  discard?(): void;                        // drop that result unlanded, counting nothing
   snapshot?(): unknown;                    // serialized into JanitorSnapshot
   restore?(state: unknown): void;
   attach?(runner: OverflowRunner): void;   // the runner installs its breaker + logger
@@ -262,7 +267,9 @@ interface OverflowStrategy {
 
 `evicted` 的意思是「离开了窗口」。`span` 是摘要所覆盖的那一段 —— 同样这批消息，再加上策略原样塞回去、其实并没有离开窗口的 pinned 轮次。两个字段都是必填的：没有塞回任何东西的策略就把 `evicted` 原样再给一遍，什么都没改变的结果则两者都置空。`onCompress` 拿到的 `details.compressedMessages`、归档存下来的内容，以及引用里数的条数，读的都是 `span`。
 
-`pending()` 是可选的，属于离线执行的策略。runner 在评估预算之前会问一次：`background()` 在有已完成的任务等着落地时返回 `true`，所以一份在历史已经回落到触发线以下之后才算完的摘要，仍然会在下一次编译落地，而不用等窗口重新填满。
+`pending()` 是可选的，属于离线执行的策略。runner 在评估预算之前会问一次：`background()` 在有已完成的任务等着落地时返回 `true`，所以一份在历史已经回落到触发线以下之后才算完的摘要，仍然会在下一次编译落地，而不用等窗口重新填满。只为这件事发起的调用会带上 `input.pendingOnly`：把等着的结果落地，不要计算任何新东西。`discard()` 丢弃一个窗口已经不存在的待落地结果，既不落地也不计数。
+
+在 [`appendOnly`](/zh/guide/append-only#压缩) 下，input 还会说明这次编译处在什么位置：`midToolTurn`（工具轮正在进行）、`collapse`（等不了：一轮都不保留）、`pastLimit`（在轮次边界上请求已经超过原始上下文窗口：现在就处理），以及给 provider 签名策略用的 `wire`。详见 `OverflowInput` 的 JSDoc。
 
 ```typescript
 const dropToolResults: OverflowStrategy = {
@@ -311,7 +318,7 @@ const chef = new ContextChef({
 | `triggerRatio` | `number` | `0.7` | 触发溢出的 `contextWindow` 占比（「腐烂前」提前压缩）。设为 `1` 可恢复 4.0 之前打满窗口才触发的行为。 |
 | `tokenizer` | `(msgs: Message[]) => number` | — | 启用 tokenizer 路径，精确计算每条消息的 token 数。 |
 | `usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | `'max'` | 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。 |
-| `onCompress` | `(summary, count, details) => void` | — | 一次溢出落地后触发。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
+| `onCompress` | `(summary, count, details) => void` | — | 一次溢出落地后触发。`details.compressedMessages` 是被摘要替换的那段消息切片。`appendOnly` 下，要持久化就把 `details.replacement` 写回它的位置（[做法](/zh/guide/append-only#持久化对话)）。 |
 | `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | 预算判定认为要执行溢出之后、策略运行之前触发。返回替换后的历史来介入，返回 `null` 则照常继续。未废弃。 |
 | `logger` | `ChefLogger` | — | 降级警告的日志接收器（存储 / 压缩），默认使用 `console`。 |
 
@@ -350,6 +357,8 @@ chef.use('before-overflow', ({ history, budget }) => {
   if (streamingInProgress) return false; // don't rewrite history mid-stream
 });
 ```
+
+在 [`appendOnly`](/zh/guide/append-only) 下，`onBeforeCompress` 返回的 history 只有在压缩落地时才会进入 payload；被 hook 改写过的窗口，`onDemandCompaction()` 也无法签名，会改跑它的 fallback。
 
 完整的 slot 列表见[事件与钩子](/zh/guide/events-hooks)。
 
@@ -402,4 +411,4 @@ chef.setHistory(safeHistory);
 
 ## `chef.clearHistory(): this`
 
-切换话题或完成子任务时，显式清空历史并重置 runner 的状态 —— 熔断器、策略状态和窗口谱系。announcement 会保留；需要时显式撤回。
+切换话题或完成子任务时，显式清空历史并重置 runner 的状态 —— 熔断器、策略状态和窗口谱系。announcement 会保留；需要时显式撤回。打开 `appendOnly` 时 ledger 也会从头开始，下一次编译报告一次 `ledger` 检查点。
