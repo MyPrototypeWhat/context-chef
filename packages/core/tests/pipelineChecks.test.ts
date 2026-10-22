@@ -323,6 +323,38 @@ describe('pipelineChecks — appendOnly across turns', () => {
     expect(events).toEqual([]);
   });
 
+  it('keeps nothing of a compile that failed after the check staged its payload', async () => {
+    let failed = false;
+    const { chef, events } = chefWith({
+      cacheAudit: true,
+      logger: {
+        // The cache audit runs after the check: its first warning throws, and that compile fails.
+        warn: (message) => {
+          if (failed || !String(message).includes('cache audit')) return;
+          failed = true;
+          throw new Error('logger down');
+        },
+      },
+    });
+    const sys = [{ role: 'system' as const, content: 'sys' }];
+    // Volatile state in the system prompt, under a breakpoint: the cache audit warns.
+    const volatile = [
+      { role: 'system' as const, content: 'sys <dynamic_state>', _cache_breakpoint: true },
+    ];
+
+    await chef.setHistory(turn1).compile({ target: 'anthropic' });
+    chef.setSystemPrompt(volatile);
+    await expect(chef.setHistory(turn2).compile({ target: 'anthropic' })).rejects.toThrow(
+      'logger down',
+    );
+    chef.setSystemPrompt(sys);
+    const next = await chef.setHistory(turn2).compile({ target: 'anthropic' });
+
+    // Compared with the first payload, which it repeats; the failed one was never sent.
+    expect(next.meta?.prefix?.break).toBeUndefined();
+    expect(events).toEqual([]);
+  });
+
   it('never compares without appendOnly, where every turn rewrites the tail', async () => {
     const { chef, events } = chefWith({ appendOnly: false });
     rewritesFirstQuestion(chef, 2);

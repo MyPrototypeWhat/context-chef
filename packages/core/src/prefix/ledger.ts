@@ -103,6 +103,16 @@ export const isReply = (message: Message): boolean =>
   message.role === 'assistant' && message._anthropic_compaction === undefined;
 
 /**
+ * The replies `history` holds that something follows: a trailing assistant
+ * message nothing follows yet — a prefill — answered nothing so far.
+ */
+export function answeredReplies(history: readonly Message[]): number {
+  let replies = 0;
+  for (let i = 0; i < history.length - 1; i++) if (isReply(history[i])) replies++;
+  return replies;
+}
+
+/**
  * Whether a message placed at `end` follows a user turn: the last message
  * before it that is not a system message is a user message or tool results.
  * `initial(i)` is the role initial of message `i`, as digests lead with it.
@@ -643,7 +653,7 @@ export class PrefixLedger {
     // assistant message nothing follows yet — a prefill — answered nothing, and
     // nor does the compaction block a resumed history opens with: it stands
     // for what came before it, and a reply after it is still one.
-    if (this.blank && history.some((m, i) => isReply(m) && i < history.length - 1)) {
+    if (this.blank && answeredReplies(history) > 0) {
       return { reason: 'ledger', hostIndex: 0 };
     }
     // A history break drops any entry anchored past the end along with the rest.

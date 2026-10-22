@@ -1,6 +1,5 @@
 import { auditAnthropicCachePlacement } from '../../adapters/anthropicCacheAudit';
-import type { PrefixLedger } from '../../prefix';
-import { isPrefill } from '../../prefix/events';
+import { isPrefill, isReply, type PrefixLedger } from '../../prefix';
 import type { AnthropicPayload, Message } from '../../types';
 import { checkSentPrefix, type PrefixComparable, type SentPayload } from '../checks';
 import type { CompileContext, Phase, PipelineHost } from '../context';
@@ -22,7 +21,7 @@ function prefillStart(messages: readonly Message[]): number {
 /** Just past the last reply ahead of a trailing prefill: 0 when nothing was answered. */
 function pastLastReply(messages: readonly Message[]): number {
   for (let i = prefillStart(messages); i > 0; i--) {
-    if (messages[i - 1].role === 'assistant') return i;
+    if (isReply(messages[i - 1])) return i;
   }
   return 0;
 }
@@ -55,6 +54,8 @@ async function checkAcrossTurns(ctx: CompileContext, host: PipelineHost): Promis
   }
 
   // The messages `adapt` rendered: a leading part counts as many items as it renders to.
+  // Re-rendered here without the after-adapt handlers, which can only move where the
+  // tolerated unanswered tail starts, not what the full payload sent.
   const messages = ctx.messages;
   const items = (count: number): number => {
     if (count >= messages.length) return sentItems(payload).length;

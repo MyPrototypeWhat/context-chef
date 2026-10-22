@@ -561,6 +561,11 @@ describe('appendOnly on, the ledger across sessions', () => {
 
     warn.mockClear();
     await compileAt(chefWith({ logger: { warn } }), turn3);
+    // A prefill the history ends with is no reply: turn 3's two replies and one are no warning.
+    await compileAt(chefWith({ logger: { warn } }), [
+      ...turn3,
+      { role: 'assistant', content: '{"price":' },
+    ]);
     const restored = chefWith({ logger: { warn } });
     restored.restore({ ...perRequest.snapshot(), history: turn4 });
     await compileAt(restored, turn4);

@@ -928,6 +928,22 @@ describe('appendOnly: an event waits for the results of the tool calls before it
     ]);
   });
 
+  it('stops holding once the host moves on without the results', async () => {
+    const { chef, breaks, invariants } = chefWith();
+    chef.setDynamicState(State, { step: 1 });
+
+    const [waiting, moved] = await converse(chef, [
+      [...turn1, call('t1', 'SIG_1')],
+      [...turn1, call('t1', 'SIG_1'), user('Never mind, skip the search.')],
+    ]);
+
+    expect(occurrences(waiting, '<step>')).toBe(0);
+    expectSentInOrder(moved, ['Never mind, skip the search.', `${state(1, 1)}\n\n${ANCHOR}`]);
+    expectAppendOnly([waiting, moved]);
+    expect(breaks).toEqual([]);
+    expect(invariants).toEqual([]);
+  });
+
   it('holds the handoff notice for the results too, rather than lose it for the window', async () => {
     const { chef } = chefWith({
       // 10 tokens per message; the notice is due with 50 or fewer left before 100.

@@ -383,7 +383,9 @@ export interface ChefConfig {
    * Violations are REPORTED, never enforced: each one goes to
    * `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event.
    * `compile()` never throws because of a check. Costs a snapshot + a
-   * serialization pass per compile, so keep it off in production. Default false.
+   * serialization pass per compile — with `appendOnly`, also a JSON copy of
+   * the payload and up to two adapter renders of a leading part of it — so
+   * keep it off in production. Default false.
    */
   pipelineChecks?: boolean;
   /**
@@ -562,11 +564,10 @@ export interface ChefEvents {
    * (a slot handler dropped a pinned message, split a tool pair, or rewrote
    * content ahead of the tail insertion point; with `appendOnly`, a payload
    * that stopped repeating the one sent before it with no checkpoint
-   * reported), or a request the pipeline
-   * could not honour — a `requestNewContext()` dropped because the target is
-   * server-managed or a `before-overflow` handler vetoed the compile, which is
-   * reported whatever `pipelineChecks` says. Reported only; compile()
-   * continues.
+   * reported), or a request the pipeline could not honour — a
+   * `requestNewContext()` dropped because the target is server-managed or a
+   * `before-overflow` handler vetoed the compile, which is reported whatever
+   * `pipelineChecks` says. Reported only; compile() continues.
    */
   'pipeline:invariant': {
     phase: PhaseName;

@@ -1,11 +1,13 @@
 export {
   awaitsToolResults,
   eventAnchor,
+  isPrefill,
   type PushSource,
   revisionOf,
   sourceEvents,
 } from './events';
 export {
+  answeredReplies,
   followsUserTurn,
   isReply,
   PrefixLedger,
