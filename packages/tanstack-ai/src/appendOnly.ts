@@ -4,6 +4,7 @@ import {
   type Message,
   objectToXml,
   type PrefixSession,
+  prefixBreakReporter,
   type SessionPool,
 } from '@context-chef/core';
 import {
@@ -18,7 +19,7 @@ import {
 } from '@tanstack/ai';
 
 import { systemPromptText, toTanStackAI, withoutThinkingBlocks } from './adapter';
-import type { ContextChefOptions, PrefixBreakEvent } from './types';
+import type { ContextChefOptions } from './types';
 
 /** The steps `appendOnly` shares with the 4.x transform, as the middleware runs them. */
 export interface SharedSteps {
@@ -83,13 +84,7 @@ export function appendOnlyHooks(
   sessions: SessionPool<PrefixSession>,
   steps: SharedSteps,
 ): AppendOnlyHooks {
-  const reportBreak = (event: PrefixBreakEvent) => {
-    try {
-      options.onPrefixBreak?.(event);
-    } catch (error) {
-      logger.warn('[context-chef] onPrefixBreak threw — the call goes ahead', error);
-    }
-  };
+  const reportBreak = prefixBreakReporter(options.onPrefixBreak, logger);
   // Next to each session, and gone with it.
   const conversations = new WeakMap<PrefixSession, Conversation>();
   const conversationOf = (session: PrefixSession): Conversation => {
@@ -219,53 +214,4 @@ function toolDefinition({ name, description, inputSchema, metadata }: Tool) {
     inputSchema: convertSchemaToJsonSchema(inputSchema),
     ...(Object.keys(settings).length > 0 ? { metadata: settings } : {}),
   };
-}
-
-/**
- * `appendOnly`: the settings that cost what it is for, warned by each
- * middleware instance as it is created. `clearAt` has nothing to act on here,
- * and a `compact` or `clear` cut that moves with the conversation rewrites a
- * message an earlier call sent on nearly every call.
- */
-export function warnAppendOnlyConfig(options: ContextChefOptions, logger: ChefLogger): void {
-  if (typeof options.appendOnly === 'object' && options.appendOnly.clearAt) {
-    logger.warn(
-      '[context-chef] appendOnly: `clearAt` is ignored by the middleware. The provider behind ' +
-        'the adapter is unknown and may move a mid-conversation system message into the system ' +
-        'prompt, so every event is a user message here, and a user message cannot be ' +
-        'turn-scoped.',
-    );
-  }
-  const moving = movingRewrites(options);
-  if (moving.length > 0) {
-    logger.warn(
-      `[context-chef] appendOnly: ${moving.join(', ')} ${moving.length > 1 ? 'move' : 'moves'} ` +
-        'with the conversation, rewriting messages earlier calls sent, so nearly every call is a ' +
-        "checkpoint: the provider's prefix cache misses from the rewritten message, and signed " +
-        'thinking is stripped from it on. Once a compression has landed, a rewrite that reaches ' +
-        'a message it summarized also drops its summary, and the conversation is summarized ' +
-        "again on every call. Use 'all', which rewrites each message once before it is first " +
-        "sent, or the provider's own context editing.",
-    );
-  }
-}
-
-/** The `compact` / `clear` settings whose cut moves with the conversation, as written. */
-function movingRewrites({ compact, clear }: ContextChefOptions): string[] {
-  const moving: string[] = [];
-  if (compact?.reasoning === 'before-last-message') {
-    moving.push("compact.reasoning: 'before-last-message'");
-  }
-  const toolCalls = compact?.toolCalls;
-  const types =
-    typeof toolCalls === 'string' ? [toolCalls] : (toolCalls ?? []).map((entry) => entry.type);
-  for (const type of types) {
-    if (type.startsWith('before-last-')) moving.push(`compact.toolCalls: '${type}'`);
-  }
-  for (const target of clear ?? []) {
-    if (typeof target === 'object' && target.keepRecent !== undefined) {
-      moving.push(`clear: { target: '${target.target}', keepRecent: ${target.keepRecent} }`);
-    }
-  }
-  return moving;
 }

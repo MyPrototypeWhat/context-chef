@@ -17,6 +17,7 @@ import {
   Prompts,
   type SummarizeHistoryOptions,
   summarizeHistory,
+  warnAppendOnlyConfig,
 } from '@context-chef/core';
 import {
   generateText,
@@ -27,7 +28,7 @@ import {
 } from 'ai';
 
 import { fromAISDK, signedReasoning, toAISDK } from './adapter';
-import { appendOnlyTransform, warnAppendOnlyConfig } from './appendOnly';
+import { appendOnlyTransform } from './appendOnly';
 import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
@@ -87,7 +88,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
           'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
           '`compactModelMessages` for durable compaction.',
       });
-  if (options.appendOnly) warnAppendOnlyConfig(options, logger);
+  warnAppendOnlyConfig(options, logger, {
+    provider: 'model',
+    thinking: 'reasoning',
+    contextEditing: 'providerOptions.anthropic.contextManagement',
+  });
 
   let invalidSessionKeyWarned = false;
   const flagInvalidSessionKey = (raw: unknown) => {

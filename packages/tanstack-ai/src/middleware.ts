@@ -9,6 +9,7 @@ import {
   normalizeSessionKey,
   objectToXml,
   Prompts,
+  warnAppendOnlyConfig,
 } from '@context-chef/core';
 import {
   type AnyTextAdapter,
@@ -22,7 +23,7 @@ import {
 import { resolveDebugOption } from '@tanstack/ai/adapter-internals';
 
 import { fromTanStackAI, signedThinking, systemPromptText, toTanStackAI } from './adapter';
-import { appendOnlyHooks, warnAppendOnlyConfig } from './appendOnly';
+import { appendOnlyHooks } from './appendOnly';
 import { compactMessages } from './compact';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
@@ -115,7 +116,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
           'compression, persist the summary via `onCompress` (replace the compressed slice in ' +
           'your own store), or use `compactTanStackMessages` for durable compaction.',
       });
-  if (options.appendOnly) warnAppendOnlyConfig(options, logger);
+  warnAppendOnlyConfig(options, logger, { provider: 'adapter', thinking: 'thinking' });
 
   let invalidThreadIdWarned = false;
   const flagInvalidThreadId = (raw: unknown) => {
