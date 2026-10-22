@@ -41,6 +41,11 @@ export interface GuardrailOptions {
    *
    * A native `prefill` is unaffected: it is always a trailing assistant
    * message.
+   *
+   * With `ChefConfig.appendOnly`, `'system'` makes the instructions the last
+   * system layer, where new options are a `system` checkpoint, and
+   * `'last_user'` sends them as their own user message, appended once each
+   * time the options change.
    */
   placement?: 'system' | 'last_user';
 }

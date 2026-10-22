@@ -17,7 +17,9 @@ export const HANDOFF_ANNOUNCEMENT_ID = '__handoff__';
  * on. Delivery goes through the announcement channel — the notice is a
  * statement of current system state, and that channel already knows where such
  * a statement belongs per target — but the announcement lives on the compile
- * context, so it is gone the moment the payload is built.
+ * context, so it is gone the moment the payload is built. Under `appendOnly`
+ * the notice is an event instead: appended once, and sent where it was from
+ * then on.
  *
  * Once per window, tracked by window id rather than by a counter: the point of
  * the notice is "the window you are in is about to end", and it stops being

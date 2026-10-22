@@ -71,8 +71,11 @@ export interface ContextToolHost {
   /**
    * Told of each memory write a call made, once it succeeded: the entry it
    * left, or `null` for a delete. The model reads the result of that call,
-   * so it knows what the write did; writes made anywhere else are not
-   * reported.
+   * so it knows what the write did; writes made anywhere else to another key
+   * are not reported. The entry is read back after the write's change
+   * notification, so a write to the same key that lands in between — a
+   * `memory:changed` listener, a memory hook, a concurrent write — is
+   * reported as part of the call's write.
    */
   memoryWritten?(key: string, entry: MemoryEntry | null): void;
 }

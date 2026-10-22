@@ -1459,9 +1459,11 @@ export class ContextChef {
    *
    * With `appendOnly`, the memory writes this call makes are the model's
    * own: its result tells the model, so they are not pushed back as a memory
-   * delta. A write anything else makes — your code, a `memory:changed`
-   * listener, a memory hook, even one this call set off — is the host's, and
-   * is pushed.
+   * delta. A write anything else makes to another key — your code, a
+   * `memory:changed` listener, a memory hook, even one this call set off — is
+   * the host's, and is pushed. One that rewrites the key this call just wrote,
+   * before the call reads the entry back, is recorded as part of the model's
+   * write: that change is not pushed until the key changes again.
    */
   public handleTool(call: ContextToolCall): Promise<string> {
     if (!this.ownsTool(call?.name)) {
@@ -1617,8 +1619,9 @@ export class ContextChef {
    * and the next compile appends a tombstone after it saying it was withdrawn
    * (`<announcement rev="…" id="…" withdrawn="true">`). With
    * `appendOnly: { clearAt: true }` on Anthropic, a system-channel
-   * announcement is a turn-scoped reminder instead, and retracting it just
-   * stops the reminders.
+   * announcement is a turn-scoped reminder instead, and retracting it stops
+   * the reminders; a tombstone is still appended when a retried request shows
+   * its reminder, or when it was stated earlier as an ordinary event.
    */
   public retractAnnouncement(id: string): boolean {
     return this._announcements.delete(id);

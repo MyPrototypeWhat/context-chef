@@ -23,7 +23,9 @@ export interface AppendOnlyConfig {
    * results count); it then stays in place, cleared, costing no tokens.
    *
    * A source that goes quiet just stops being repeated: no tombstone, unless
-   * its reminder still shows in the request being retried. A reminder needs a
+   * its reminder still shows in the request being retried, or a statement it
+   * made earlier stays in place (on the user channel, or from before
+   * `clearAt`) and would outlive every reminder. A reminder needs a
    * user turn right before it, so a request without one — an empty history, a
    * compile right after a reply — goes without. The chef adds the
    * `mid-conversation-system-clear-at-2026-08-21` beta to `payload.betas`.
