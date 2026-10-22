@@ -20,7 +20,8 @@ type Range = [from: number, until: number];
  * What a head stands for: digests of the host messages it summarized,
  * `host[0, cut)` when it landed, and how many of them lead with thinking
  * signed over the host messages before them alone (`intact`) — up to the
- * first event the compaction absorbed, or an older head's cut.
+ * first event the compaction absorbed, or an older head's cut; none once the
+ * system prompt or tools changed under the head.
  */
 interface Summarized {
   readonly digests: readonly string[];
@@ -580,6 +581,8 @@ export class PrefixLedger {
     } else if (reason === 'system' || reason === 'tools') {
       // Re-based by the next commit.
       this._lastSent = undefined;
+      // Every signature before the head was over the old ones too: none survives the head.
+      if (this.summarized) this.summarized = { ...this.summarized, intact: 0 };
     } else {
       if (hostIndex < previousCut) {
         this._head = undefined;

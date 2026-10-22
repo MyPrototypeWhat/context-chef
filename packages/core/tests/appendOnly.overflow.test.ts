@@ -405,6 +405,32 @@ describe('appendOnly overflow: a host that persists the summary through onCompre
   });
 });
 
+describe('appendOnly overflow: a head that no longer applies after the system prompt changed', () => {
+  it('sends none of the thinking signed over the old system prompt', async () => {
+    const { chef, breaks, invariants } = chefWith({
+      janitor: { ...JANITOR, contextWindow: 10_000 },
+    });
+    let store: Message[] = [qa[0]];
+    const payloads: AnthropicPayload[] = [];
+    for (let n = 1; n <= 6; n++) {
+      if (n === 4) chef.requestNewContext();
+      if (n === 5) chef.setSystemPrompt([{ role: 'system', content: 'You are brief.' }]);
+      // An edit of a message the head summarized: the head no longer applies.
+      if (n === 6) store[4] = user('q3 (edited)');
+      payloads.push(
+        (await chef.setHistory(store).compile({ target: 'anthropic' })) as AnthropicPayload,
+      );
+      store = [...store, qa[2 * n - 1], qa[2 * n]];
+    }
+
+    expect(breaks.map((b) => b.reason)).toEqual(['compaction', 'system', 'history']);
+    // a1 and a2 were signed under "You are terse."; everything goes out under "You are brief.".
+    expect(payloads[5].messages).toHaveLength(11);
+    expect(signatures(payloads[5])).toEqual([]);
+    expect(invariants).toEqual([]);
+  });
+});
+
 describe('appendOnly overflow: an unsigned compaction strips the thinking it invalidated', () => {
   it('strips the thinking of the turns it kept, on Anthropic', async () => {
     const { chef, invariants } = chefWith({}, keepLast(3));

@@ -110,7 +110,8 @@ export interface PrefixLedgerSnapshot {
   /**
    * What `head` stands for: digests of the host messages it summarized
    * (`host[0, cut)` when it landed), and how many of them lead with thinking
-   * signed over the host messages before them alone.
+   * signed over the host messages before them alone — none once the system
+   * prompt or tools changed under the head.
    */
   readonly summarized?: { readonly digests: readonly string[]; readonly intact: number };
   /** `reset()` since the last compile: the next one reports a `ledger` checkpoint at 0. */

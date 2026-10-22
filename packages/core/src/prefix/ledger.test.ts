@@ -934,6 +934,59 @@ describe('PrefixLedger — checkpoints', () => {
       expect(shape(next.window)).toEqual(shape(history));
     });
 
+    describe('after the system prompt changed under it', () => {
+      const signed = (content: string, signature: string): Message => ({
+        role: 'assistant',
+        content,
+        thinking: { thinking: 'Hm.', signature },
+      });
+      // q1 a1 q2 a2 q3 a3 q4 …, each reply signed.
+      const turns: Message[] = [user('q1')];
+      for (let i = 1; i < 8; i++) turns.push(signed(`a${i}`, `SIG_${i}`), user(`q${i + 1}`));
+      const v1 = { system: 'v1' };
+      const v2 = { system: 'v2' };
+
+      /** Followed to `turns[0, 7)`, compacted at 6, then sent once under `v2`. */
+      function changedUnderHead(): PrefixLedger {
+        const ledger = new PrefixLedger();
+        for (let n = 1; n <= 7; n += 2) compile(ledger, turns.slice(0, n), [], v1);
+        ledger.reconcile(turns.slice(0, 7));
+        ledger.checkpoint('compaction', 6, { cut: 6, replacement: [S], signed: false });
+        ledger.commit(turns.slice(0, 7), v1);
+        expect(compile(ledger, turns.slice(0, 7), [], v2).break?.reason).toBe('system');
+        return ledger;
+      }
+
+      it('strips from the start once it no longer applies: every signature was over the old one', () => {
+        const ledger = changedUnderHead();
+        const history = turns.slice(0, 7);
+        history[4] = user('q3 (edited)');
+        const next = compile(ledger, history, [], v2);
+
+        // a1 and a2 were signed over v1; it is v2 that goes out with them now.
+        expect(next.break).toEqual({ reason: 'history', at: 0, signed: false, stripped: [0, 7] });
+      });
+
+      it('carries that over a compaction that lands while the head stands', () => {
+        const ledger = changedUnderHead();
+        const history = turns.slice(0, 11);
+        compile(ledger, history.slice(0, 9), [], v2);
+        ledger.reconcile(history);
+        ledger.checkpoint('compaction', 10, {
+          cut: 10,
+          replacement: [user('<S2/>')],
+          signed: false,
+        });
+        ledger.commit(history, v2);
+
+        const edited = turns.slice(0, 13);
+        edited[8] = user('q5 (edited)');
+        const next = compile(ledger, edited, [], v2);
+
+        expect(next.break).toEqual({ reason: 'history', at: 0, signed: false, stripped: [0, 13] });
+      });
+    });
+
     it('keeps what it summarized across a snapshot', () => {
       const ledger = landed(long.slice(0, 9), 4, [S]);
       const restored = PrefixLedger.fromSnapshot(JSON.parse(JSON.stringify(ledger.snapshot())));
