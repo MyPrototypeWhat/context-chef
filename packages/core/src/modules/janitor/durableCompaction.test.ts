@@ -1,4 +1,6 @@
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
+import { AnthropicAdapter, fromAnthropic } from '../../adapters/anthropicAdapter';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { compactHistory, planCompaction } from './durableCompaction';
@@ -151,6 +153,28 @@ describe('compactHistory', () => {
 
     expect(result).toBe(history);
     expect(compress).not.toHaveBeenCalled();
+  });
+
+  it('keeps the compaction block a resumed Anthropic history opens with ahead of the summary', async () => {
+    const { history } = fromAnthropic([
+      { role: 'assistant', content: [{ type: 'compaction', content: 'EARLIER' }] },
+      { role: 'user', content: 'u1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'u2' },
+      { role: 'assistant', content: 'a2' },
+    ] as MessageParam[]);
+    const block = history.find((m) => m._anthropic_compaction !== undefined);
+
+    const result = await compactHistory(history, async () => 'SUM', { keepRecentTurns: 1 });
+
+    expect(result[0]).toBe(block);
+    expect(result[1].content).toBe(Prompts.getCompactSummaryWrapper('SUM'));
+    expect(contents(result.slice(2))).toEqual(['a2']);
+    // What the Anthropic target sends: the block first, as the API requires.
+    expect(new AnthropicAdapter().compile(result).messages[0]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'compaction', content: 'EARLIER' }],
+    });
   });
 
   it('puts the summary first when there is no system message', async () => {

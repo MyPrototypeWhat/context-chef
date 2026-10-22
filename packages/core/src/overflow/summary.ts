@@ -163,18 +163,19 @@ export function renderSummaryMessage(
 const isCompaction = (message: Message): boolean => message._anthropic_compaction !== undefined;
 
 /**
- * The start of a window a summary rebuilds: the summary (or notice) message,
- * then the pinned messages put back after it — except a compaction block
- * among them (`_anthropic_compaction`, pinned as `fromAnthropic` parses it),
- * which goes first. The API reads nothing before the block and rejects a
- * request with a message ahead of it (`compaction_block_misplaced`).
+ * A window a summary rebuilds: the summary (or notice) message, then `kept`,
+ * the messages it keeps after it — the pinned ones put back, the recent turns
+ * — except a compaction block among them (`_anthropic_compaction`, pinned as
+ * `fromAnthropic` parses it), which goes first. The API reads nothing before
+ * the block and rejects a request with a message ahead of it
+ * (`compaction_block_misplaced`).
  */
-export function summaryHead(summary: Message, pinned: readonly Message[]): Message[] {
-  if (!pinned.some(isCompaction)) return [summary, ...pinned];
+export function summaryHead(summary: Message, kept: readonly Message[]): Message[] {
+  if (!kept.some(isCompaction)) return [summary, ...kept];
   return [
-    ...pinned.filter(isCompaction),
+    ...kept.filter(isCompaction),
     summary,
-    ...pinned.filter((message) => !isCompaction(message)),
+    ...kept.filter((message) => !isCompaction(message)),
   ];
 }
 

@@ -1,3 +1,4 @@
+import { summaryHead } from '../../overflow/summary';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { ensureValidHistory } from '../../utils/ensureValidHistory';
@@ -29,7 +30,11 @@ export interface CompactionPlan {
    * `summarizeHistory`. Empty when there is nothing old enough to compact.
    */
   toSummarize: Message[];
-  /** The recent conversation turns to keep verbatim. */
+  /**
+   * The conversation to keep verbatim: the pinned turns of the old slice,
+   * then the recent turns. A compaction block it starts with goes before the
+   * summary (see {@link planCompaction}).
+   */
   toKeep: Message[];
 }
 
@@ -40,7 +45,11 @@ export interface CompactionPlan {
  * This is the provider-agnostic engine behind the AI SDK middleware's
  * `planCompaction`. Run it against your own message store, summarize
  * `toSummarize`, then persist `[...system, <summary>, ...toKeep]` so the history
- * actually shrinks. See {@link compactHistory} for the one-shot version.
+ * actually shrinks — except when `toKeep` starts with a compaction message
+ * (`_anthropic_compaction`, the block an Anthropic compaction returned): that
+ * message goes before the summary, `[...system, block, <summary>, ...rest]`,
+ * since the API rejects a request with anything ahead of the block. See
+ * {@link compactHistory} for the one-shot version, which does this for you.
  *
  * **Input contract:** `history` is a flat `Message[]` with any system messages
  * **inline** (`role: 'system'`). This matches `fromAISDK` output. The direct
@@ -82,7 +91,8 @@ export function planCompaction(history: Message[], options: PlanCompactionOption
 
 /**
  * One-shot durable compaction: plan a turn-safe split, summarize the old slice,
- * and return a new history ready to persist — `[...system, <summary>, ...toKeep]`.
+ * and return a new history ready to persist — `[...system, <summary>, ...toKeep]`,
+ * with a compaction block `toKeep` starts with ahead of the summary.
  *
  * The recommended way to keep a long conversation lean when you own the message
  * store. Run it between model calls and replace your stored messages with the
@@ -121,5 +131,5 @@ export async function compactHistory(
     content: Prompts.getCompactSummaryWrapper(summary),
   };
 
-  return [...plan.system, summaryMessage, ...plan.toKeep];
+  return [...plan.system, ...summaryHead(summaryMessage, plan.toKeep)];
 }
