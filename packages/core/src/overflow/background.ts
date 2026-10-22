@@ -243,6 +243,9 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
         started.result = result;
       })
       .catch((error) => {
+        // Aborted along with the compile that started it: nothing failed, and
+        // nothing is left to land.
+        if (input.signal?.aborted) return;
         // The inner strategy handles its own failures; this is a
         // belt-and-braces net for one that throws instead.
         runner.logger.warn('[context-chef] background compression job crashed unexpectedly', error);

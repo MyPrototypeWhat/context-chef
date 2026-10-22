@@ -155,6 +155,8 @@ try {
 1. **转发给处理器** —— `chef.on(event, (payload, signal?) => ...)` 会在第二个参数收到该 signal。处理器可以把它传给 `fetch`、数据库客户端或任何协作式 API。
 2. **在阶段边界检查** —— 在 `overflow`、`inject`、`memory`、`assemble` 和 `adapt` 之后。每一个都跟在可能任意久的 await 后面（压缩模型、记忆存储、你自己的处理器）。中断通过 `signal.throwIfAborted()` 抛出。
 
+中断之后才完成的压缩不会落地：`onCompress` 和 `compress` 事件都不触发，也不归档，编译在 `compress:end` 之前就抛出。`onDemandCompaction()` 会把 signal 交给它的 `compact` 函数，在那里中断不计失败，也不运行 fallback。
+
 `compile:start` 在第一次中断检查之前触发，因此观察者可能收到一次 `compile:start`，而该次编译最终抛异常、从不触发 `compile:done`。从外部 `memory().set()` / `delete()` 调用（在 `compile()` 之外）触发的记忆事件拿到的 `signal` 是 `undefined`。
 
 ## 并发模型

@@ -393,7 +393,9 @@ export interface CompileOptions {
    *   turn — TTL-based entries may expire one turn earlier than expected.
    * - **Cancellation is coarse-grained.** Long-running phases (`Janitor.compress`,
    *   user-supplied `onBeforeCompile` / `transformContext`) run to completion;
-   *   abort is only honored at the next phase boundary.
+   *   abort is only honored at the next phase boundary. A compression that
+   *   finishes after the abort doesn't land: `onCompress` and the `compress`
+   *   event don't fire, and the compile throws before `compress:end`.
    */
   signal?: AbortSignal;
 }

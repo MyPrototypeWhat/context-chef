@@ -392,6 +392,91 @@ describe('appendOnly onDemandCompaction(): a response that is no compaction', ()
   });
 });
 
+describe('appendOnly onDemandCompaction(): a compile aborted while it asks', () => {
+  it('counts nothing, runs no fallback and lands nothing; the retry compacts', async () => {
+    const warn = vi.fn();
+    const onCompress = vi.fn();
+    const { chef, compact, compressionModel } = chefWith({
+      logger: { warn },
+      janitor: { ...JANITOR, onCompress },
+    });
+    const controller = new AbortController();
+    // The compile is aborted while the request is in flight; the client honors the signal.
+    compact.mockImplementationOnce(async (_request, signal) => {
+      controller.abort();
+      signal?.throwIfAborted();
+      throw new Error('the signal was not handed on');
+    });
+    await converse(chef, [1, 2, 3].map(asked));
+    const window = chef.snapshot().modules.janitor.window;
+
+    // asked(6) is past the raw window: without the abort, a failure would run the fallback.
+    await expect(
+      chef.setHistory(asked(6)).compile({ target: 'anthropic', signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(compressionModel).not.toHaveBeenCalled();
+    expect(onCompress).not.toHaveBeenCalled();
+    expect(chef.snapshot().modules.janitor.window).toEqual(window);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+
+    const [retried] = await converse(chef, [asked(6)]);
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(retried.messages[0]).toEqual(compacted(1));
+    expect(onCompress).toHaveBeenCalledTimes(1);
+  });
+
+  it('lands nothing the compactor returned after the abort', async () => {
+    const onCompress = vi.fn();
+    const { chef, compact } = chefWith({ janitor: { ...JANITOR, onCompress } });
+    const controller = new AbortController();
+    // A client that doesn't honor the signal: the block comes back all the same.
+    compact.mockImplementationOnce(async () => {
+      controller.abort();
+      return { stop_reason: 'compaction', content: [block(1)] };
+    });
+    await converse(chef, [1, 2, 3].map(asked));
+
+    await expect(
+      chef.setHistory(asked(4)).compile({ target: 'anthropic', signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(onCompress).not.toHaveBeenCalled();
+    const [retried] = await converse(chef, [asked(4)]);
+    expect(retried.messages[0]).toEqual(compacted(1));
+  });
+
+  it('drops a background job aborted with the compile that started it, counting nothing', async () => {
+    const warn = vi.fn();
+    const { chef, compact } = chefWith({ logger: { warn } }, (compact) =>
+      background(onDemandCompaction({ compact })),
+    );
+    const controller = new AbortController();
+    let answer: () => void = () => {};
+    compact.mockImplementationOnce(async (_request, signal) => {
+      await new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      signal?.throwIfAborted();
+      return { stop_reason: 'compaction', content: [block(1)] };
+    });
+    await converse(chef, [1, 2, 3].map(asked));
+
+    // The job starts on asked(4); the host aborts that compile's signal before it is answered.
+    await chef.setHistory(asked(4)).compile({ target: 'anthropic', signal: controller.signal });
+    controller.abort();
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+    // Nothing waits to land: the next compile over the trigger starts another job.
+    await converse(chef, [asked(5)]);
+    expect(compact).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('appendOnly onDemandCompaction(): pinned messages it summarized', () => {
   const PINNED_Q2 = (rev: number) =>
     `<pinned_messages rev="${rev}">\n${Prompts.PINNED_RESTATED}\n\n<message role="user">q2</message>\n</pinned_messages>`;

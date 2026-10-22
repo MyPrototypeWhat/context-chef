@@ -1059,6 +1059,33 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
     });
   });
 
+  it('lands nothing for an aborted overflow: no onCompress, the lineage and the count stay', async () => {
+    const controller = new AbortController();
+    const onCompress = vi.fn();
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      onCompress,
+      // The compile is aborted while the summary is written.
+      compressionModel: async () => {
+        controller.abort();
+        return '<summary>S</summary>';
+      },
+    });
+    seedFailures(janitor, 2);
+    const window = { ...janitor.window };
+
+    await expect(
+      janitor.overflow(buildLongHistory(5), { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(onCompress).not.toHaveBeenCalled();
+    expect(janitor.window).toEqual(window);
+    expect(janitor['_consecutiveFailures']).toBe(2);
+  });
+
   describe('an open breaker and the raw context window', () => {
     it.each([
       ['runs the strategy between turns past the raw window', { pastLimit: true }, true],

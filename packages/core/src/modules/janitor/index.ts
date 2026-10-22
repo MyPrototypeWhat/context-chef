@@ -974,6 +974,9 @@ export class Janitor {
       ...(wire ? { wire } : {}),
       signal,
     });
+    // An aborted compile sends nothing, so nothing computed for it lands: no
+    // `onCompress`, no archive, the lineage and the breaker as they were.
+    signal?.throwIfAborted();
     if (!result.meta.changed) return result;
 
     // The overflow as a whole succeeded, so the breaker's count goes back to

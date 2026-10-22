@@ -353,6 +353,38 @@ describe('overflow runner', () => {
 
     expect(applied).toHaveBeenCalledTimes(3);
   });
+
+  it('lands nothing for a compile aborted while it compresses', async () => {
+    const controller = new AbortController();
+    const onCompress = vi.fn();
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: {
+        ...runnerConfig,
+        onCompress,
+        compressionModel: async () => {
+          controller.abort();
+          return SUMMARY;
+        },
+      },
+    }).setHistory(longHistory(8));
+    const events: string[] = [];
+    chef.on('compress', () => {
+      events.push('compress');
+    });
+    chef.on('compress:end', () => {
+      events.push('compress:end');
+    });
+    const before = chef.snapshot().modules.janitor.window;
+
+    await expect(
+      chef.compile({ target: 'openai', signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(onCompress).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(chef.snapshot().modules.janitor.window).toEqual(before);
+  });
 });
 
 /**
