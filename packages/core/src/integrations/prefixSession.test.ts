@@ -180,8 +180,10 @@ describe('PrefixSession: a compression lands once as the head', () => {
     expect(calls[5].messages).toEqual([summary, q4, a4, q5, a5, q6]);
     expect(calls[4].breaks).toEqual([]);
     expect(calls[5].breaks).toEqual([]);
-    // a4 came after the checkpoint: its thinking was signed over the summary.
-    expect(withoutThinking).not.toHaveBeenCalled();
+    // a4 and a5 came after the checkpoint: their thinking was signed over the summary.
+    expect(withoutThinking.mock.calls.map(([message]) => message)).not.toContain(a4);
+    expect(calls[5].messages[2]).toBe(a4);
+    expect(calls[5].messages[4]).toBe(a5);
     expectAppendOnly(calls.slice(3).map((c) => c.messages));
   });
 

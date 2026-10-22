@@ -58,7 +58,8 @@ export interface PrefixSessionPoolConfig<THostMessages>
   /**
    * A message without its thinking, in the integration's own format as well
    * as in IR: what a checkpoint leaves of a message whose thinking was signed
-   * over a prefix that is gone.
+   * over a prefix that is gone. Asked of every such message, so one without
+   * thinking comes back as it is.
    */
   withoutThinking: (message: Message) => Message;
 }
@@ -157,14 +158,12 @@ export class PrefixSession {
 
       report(() => ledger.reconcileSent(sent));
 
+      // Asked of every message whose thinking is invalid, whatever its IR says:
+      // only the integration knows what its own format carries.
       const invalid = new Set(invalidatedMessages(history, ledger));
       const messages = ledger
         .window()
-        .map((message) =>
-          invalid.has(message) && thinkingBlocks(message) > 0
-            ? this.options.withoutThinking(message)
-            : message,
-        );
+        .map((message) => (invalid.has(message) ? this.options.withoutThinking(message) : message));
       ledger.commit(history, sent);
       return { messages, breaks };
     } catch (error) {
