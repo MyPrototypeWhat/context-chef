@@ -106,10 +106,12 @@ interface ChefConfig {
   /** 4.3 — keep what was sent as the prefix of the next payload. Injections become
    *  events appended once; a compaction lands once; every rewrite is a checkpoint
    *  reported through `prefix:break` and `meta.prefix`. `true` = `{}`. Off by default
-   *  (4.x output unchanged). Changes defaults only: unset skillPlacement → 'tail',
+   *  (off, it changes nothing). Changes defaults only: unset skillPlacement → 'tail',
    *  unset memoryPlacement → 'before_history_tail', unset guardrail prefillMode →
    *  'instruction' on targets without native prefill. A chef created per request must
-   *  persist snapshot() and restore() it, or every request is a `ledger` checkpoint. */
+   *  save snapshot().prefixLedger + .modelMemoryWrites at the end of each request and
+   *  restore just those two fields (memory in a shared store would roll back with a
+   *  whole snapshot), or every request is a `ledger` checkpoint. */
   appendOnly?: boolean | { clearAt?: boolean };   // AppendOnlyConfig; clearAt: Anthropic turn-scoped reminders
 
   defaultTarget?: TargetProvider | ITargetAdapter;   // options.target → this → 'openai'
@@ -157,6 +159,8 @@ interface JanitorConfig {
   // CompressionDetails = { compressedMessages: Message[]; replacement?: Message[] }
   // replacement (4.3, appendOnly only): what to write back, in order, in place of the
   // first truncatedCount messages to persist the compaction. Counts exclude the chef's events.
+  // Slicing by the count assumes every earlier replacement was written back; after a missed
+  // write-back (or when persisting starts mid-conversation) keep the full history instead.
   onBeforeCompress?: (
     history: Message[],
     tokenInfo: { currentTokens: number; limit: number },
@@ -421,7 +425,7 @@ chef.on('prefix:break', ({ reason, at, strippedThinking }) => { /* a checkpoint 
 | `AppendOnlyConfig` | `{ clearAt?: boolean }` — Anthropic: system-channel sources become turn-scoped reminders |
 | `PrefixMeta` / `PrefixBreakReason` | `CompileMeta.prefix` and its `break.reason` |
 | `ChefEvents['prefix:break']` | a checkpoint this compile applied |
-| `ChefSnapshot.prefixLedger` (`PrefixLedgerSnapshot`) / `modelMemoryWrites` | persist with the history when the chef does not outlive a request |
+| `ChefSnapshot.prefixLedger` (`PrefixLedgerSnapshot`) / `modelMemoryWrites` | a chef created per request saves them at the end of each request and restores them on the next: `chef.restore({ ...chef.snapshot(), prefixLedger, modelMemoryWrites })` (a whole snapshot also restores memory, rolling a shared store back) |
 | `PrefixLedger` | the pure ledger class: reconcile a history, append events, apply checkpoints, snapshot |
 | `onDemandCompaction` + `OnDemandCompactionOptions` / `OnDemandCompactionRequest` / `OnDemandCompactor` | signed compaction (table above) |
 | `anthropicCompactionMessage(block)` / `AnthropicCompactionBlock` | the history message that replays a signed compaction block |

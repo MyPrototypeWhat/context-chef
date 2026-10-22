@@ -1418,15 +1418,15 @@ chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
 - dynamic state、announcement、skill 指令、memory、guardrail 和 handoff 提醒都变成事件：在它们变化的那一轮之后追加一次，之后原样留在那里。chef 从不改写你的 history。
 - 压缩只落地一次，没签名的压缩会等到 user 轮边界。`onDemandCompaction({ compact, fallback })` 请 Anthropic 做一次由它签名的压缩，后面轮次的 thinking 得以保留。
 - 任何改写已发送内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，通过 `prefix:break` 和 `meta.prefix` 报告。在 Anthropic 上，失效的 thinking 不会再放进请求。
-- 每个请求新建一个 chef 时，必须保存 `snapshot()`，并在下一个请求里 `restore()`，否则每个请求一开始都是一次 `ledger` 检查点。
+- 每个请求新建一个 chef 时，必须在每个请求结束时从 `snapshot()` 里保存 `prefixLedger` 和 `modelMemoryWrites`，并在下一个请求里恢复，否则每个请求一开始都是一次 `ledger` 检查点。memory 放在共享存储里时，只恢复这两个字段（`chef.restore({ ...chef.snapshot(), prefixLedger, modelMemoryWrites })`）：整份快照也带着 memory，恢复它会把共享存储回滚。
 
-默认关闭，关闭时编译结果完全不变。AI SDK 和 TanStack AI 的 middleware 同样支持 `appendOnly`。完整指南：[Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only)。
+默认关闭，关闭时 `appendOnly` 不改变任何行为。AI SDK 和 TanStack AI 的 middleware 同样支持 `appendOnly`。完整指南：[Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only)。
 
 ---
 
 ### 管道插槽（4.2）
 
-`compile()` 是一串有名字的阶段 —— `start` → `transform-tool-results` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`。插槽就是在这些阶段边界上触发的组合点。和事件不同，插槽 handler **参与**编译：它可以否决溢出、注入上下文、改写已装配的消息。
+`compile()` 是一串有名字的阶段 —— `start` → `transform-tool-results` → `prefix` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`。插槽就是在这些阶段边界上触发的组合点。和事件不同，插槽 handler **参与**编译：它可以否决溢出、注入上下文、改写已装配的消息。
 
 ```typescript
 chef

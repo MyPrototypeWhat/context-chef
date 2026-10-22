@@ -1419,15 +1419,15 @@ chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
 - Dynamic state, announcements, skill instructions, memory, the guardrail and the handoff notice become events: appended once, after the turn they changed in, and sent there unchanged from then on. Your history is never written to.
 - A compaction lands once, and an unsigned one waits for a user-turn boundary. `onDemandCompaction({ compact, fallback })` asks Anthropic for a compaction it signs, which keeps the thinking of the turns after it.
 - Anything that rewrites what was sent (an edited history, a new system prompt or tool list, a compaction) is a checkpoint, reported through `prefix:break` and `meta.prefix`. On Anthropic the thinking it invalidated is left out of the request.
-- A chef created per request must save `snapshot()` and `restore()` it on the next request, or every request starts with a `ledger` checkpoint.
+- A chef created per request must save `prefixLedger` and `modelMemoryWrites` from `snapshot()` at the end of each request and restore them on the next, or every request starts with a `ledger` checkpoint. With memory in a shared store, restore only those two fields (`chef.restore({ ...chef.snapshot(), prefixLedger, modelMemoryWrites })`): a whole snapshot carries memory too, and restoring it rolls the shared store back.
 
-Off by default, and off nothing compiles differently. The AI SDK and TanStack AI middlewares take `appendOnly` too. Full guide: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only).
+Off by default, and off `appendOnly` changes nothing. The AI SDK and TanStack AI middlewares take `appendOnly` too. Full guide: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only).
 
 ---
 
 ### Pipeline slots (4.2)
 
-`compile()` is an ordered list of named phases — `start` → `transform-tool-results` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`. Slots are the composition points fired at those boundaries. Unlike events, a slot handler **participates** in the compile: it can veto overflow, inject context, or rewrite the assembled messages.
+`compile()` is an ordered list of named phases — `start` → `transform-tool-results` → `prefix` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`. Slots are the composition points fired at those boundaries. Unlike events, a slot handler **participates** in the compile: it can veto overflow, inject context, or rewrite the assembled messages.
 
 ```typescript
 chef

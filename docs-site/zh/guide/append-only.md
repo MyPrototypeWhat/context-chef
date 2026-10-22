@@ -68,7 +68,7 @@ payload.meta?.prefix;
 | guardrail prefill | Anthropic：和以前一样是末尾的 assistant 消息（没有签名依赖它）。OpenAI 和 Gemini：没设置 `prefillMode` 时等于 `'instruction'`，和其他 guardrail 指令一起只发一次；显式设置 `'native'` 会照办，并 warn 一次 |
 | handoff 提醒 | 每个窗口一次，走 `'auto'` announcement 所走的通道 |
 
-事件永远不会插在 assistant 的 tool call 和它们的结果之间。tool call 等结果期间发生的变化，会紧跟在结果后面送到模型。同一次 compile 追加的内容最多合成一条 user 消息和一条 system 消息；状态块后面的那行说明会告诉模型：每个块都取代同类的旧块。
+事件永远不会插在 assistant 的 tool call 和它们的结果之间。tool call 等结果期间发生的变化，会紧跟在结果后面送到模型。同一次 compile 追加的内容最多合成一条 user 消息和一条 system 消息（打开 `clearAt` 时再加一条每轮提醒的 system 消息）；状态块后面的那行说明会告诉模型：每个块都取代同类的旧块。如果它们前面没有 user 轮（比如空 history，或者刚收到回复后的那次 compile），system 事件会改为一条 user 消息发出，这样 Anthropic 就不会把它们挪进顶层 `system`。
 
 ### 每轮提醒：`clearAt`
 
@@ -103,7 +103,7 @@ payload.meta?.prefix;
 
 ### 签名压缩：`onDemandCompaction`
 
-Anthropic 的按需压缩（beta `compact-2026-09-04`）把一个模型已经回答过的请求摘要成一个由 provider 签名的块。这个块替换掉它摘要的内容，块之后保留的轮次保留自己的 thinking。在 thinking 校验下，这是唯一什么都不剥的压缩，也是唯一不用等工具轮结束的压缩。它需要在 Anthropic target 上打开 `appendOnly`，从第二次请求起可用。
+Anthropic 的按需压缩（beta `compact-2026-09-04`）把一个模型已经回答过的请求摘要成一个由 provider 签名的块。这个块替换掉它摘要的内容，块之后保留的轮次保留自己的 thinking。在 thinking 校验下，这是唯一什么都不剥的客户端压缩（`server()` 的服务端压缩同样不会碰你发出的内容），也是唯一不用等工具轮结束的压缩。它需要在 Anthropic target 上打开 `appendOnly`，从第二次请求起可用。
 
 ```ts
 import { ContextChef, onDemandCompaction, summarize } from "@context-chef/core";
@@ -137,21 +137,38 @@ const chef = new ContextChef({
 
 ## 持久化对话
 
-`snapshot()` 和 `restore()` 会把 ledger（`ChefSnapshot.prefixLedger`）和模型写入 memory 的记录，连同 history 一起带上。两者一起恢复不算检查点：下一次 compile 会重复已经发送的内容。
+`snapshot()` 和 `restore()` 会把 ledger（`ChefSnapshot.prefixLedger`）和模型写入 memory 的记录（`ChefSnapshot.modelMemoryWrites`），连同 chef 的其他状态一起带上。恢复它们不算检查点：下一次 compile 会重复已经发送的内容。
 
-**每个请求新建一个 chef 时，必须保存它的快照，并在下一个请求里恢复。** 没有 ledger 的 chef 无从知道上一次请求发了什么。它的第一次 compile 会报告一次位于 0 的 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的全部 thinking，而且每个请求都这样。chef 第一次遇到这种情况、而 history 里已经有两条以上回复时，会 warn 一次。
+**每个请求新建一个 chef 时，必须保存这两个字段，并在下一个请求里恢复。** 没有 ledger 的 chef 无从知道上一次请求发了什么。它的第一次 compile 会报告一次位于 0 的 `ledger` 检查点，在 Anthropic 上会剥掉 history 里的全部 thinking，而且每个请求都这样。chef 第一次遇到这种情况、而 history 里已经有超过两条回复时，会 warn 一次。
 
 ```ts
-async function nextRequest(conversationId: string, history: Message[]) {
-  const chef = new ContextChef({ appendOnly: true, janitor: { contextWindow: 200_000, compressionModel } });
-  const saved = await db.load(conversationId); // 一个 ChefSnapshot，可以经 JSON 往返
-  if (saved) chef.restore(saved);
+async function handleRequest(conversationId: string, history: Message[]) {
+  const chef = new ContextChef({
+    appendOnly: true,
+    store: backend, // 跨请求、跨对话共享的 memory
+    memory: {},
+    janitor: { contextWindow: 200_000, compressionModel },
+  });
+  const saved = await db.load(conversationId); // { prefixLedger, modelMemoryWrites }，以 JSON 存储
+  if (saved) {
+    chef.restore({
+      ...chef.snapshot(),
+      prefixLedger: saved.prefixLedger,
+      modelMemoryWrites: saved.modelMemoryWrites,
+    });
+  }
 
   const payload = await chef.setHistory(history).compile({ target: "anthropic" });
-  await db.save(conversationId, chef.snapshot());
-  return payload;
+  await runTurn(chef, payload); // 发送请求，并执行其中的 tool call（chef 自己的工具交给 chef.handleTool）
+
+  // 最后保存，在这个请求的所有 handleTool 调用之后。
+  const { prefixLedger, modelMemoryWrites } = chef.snapshot();
+  await db.save(conversationId, { prefixLedger, modelMemoryWrites });
 }
 ```
+
+- **memory 放在共享存储里时，只恢复这两个字段。** 快照里也带着 memory，恢复整份快照会把共享存储回滚到保存时的样子：之后不管是这个对话还是其他对话写入的 memory，都会丢失。如果 chef 的状态只存在于快照里，恢复整份快照没有问题。
+- **在请求结束时保存**，放在所有 `handleTool` 调用之后。在保存之后才发生的模型写入，下一个请求会把它当作你的代码写入的一样，再推送给模型。
 
 **持久化压缩结果**是可选的：head 存在 ledger 里，你的 history 可以保留每一条消息。只有想让存储本身变小时才需要写回。写回时，把 `details.replacement` 原样、按顺序写到它替换掉的那些消息的位置，也就是你 history 里的前 `count` 条：
 
@@ -165,9 +182,11 @@ janitor: {
 },
 ```
 
-`replacement` 是摘要（或签名块）、放回摘要之后的 pinned 消息，以及它从更早的 head 里保留下来的内容。下一次 compile 会把这个 history 认作已经收下了这次压缩，什么都不报告。写回其他内容就和被摘要的内容对不上了：pinned 消息也被放回时只写摘要、写你自己的摘要、把摘要写成 system 消息，都会成为一次 `history` 检查点，你的 history 按原样发出。在 `appendOnly` 下，`compressedMessages` 和 `count` 不包含 chef 的事件，因为你的存储里本来就没有它们。每次压缩都要写回：没写回的那次，会被下一次压缩再摘要一遍，并出现在下一次的 `compressedMessages` 里。
+`replacement` 是摘要（或签名块）、放回摘要之后的 pinned 消息，以及它从更早的 head 里保留下来的内容。下一次 compile 会把这个 history 认作已经收下了这次压缩，什么都不报告。写回其他内容就和被摘要的内容对不上了：pinned 消息也被放回时只写摘要、写你自己的摘要、把摘要写成 system 消息，都会成为一次 `history` 检查点，你的 history 按原样发出。在 `appendOnly` 下，`compressedMessages` 和 `count` 不包含 chef 的事件，因为你的存储里本来就没有它们。
 
-用 `onDemandCompaction` 时，replacement 只有那个块。它摘要掉的 pinned 消息会和范围里的其他内容一起离开你的 history，chef 也会撤回对它们的重新声明。
+按 `count` 切片的前提是，你的存储里已经有之前的每一份 `replacement`。只要漏写回一次，下一次压缩就会把那份旧摘要再摘要一遍：这时 `count` 数的是那份摘要和它放回的 pinned 消息，而不是它所代表的你的那些消息，切片就错位了。你的存储要么留下已经被摘要过的消息，要么丢掉还没被摘要的消息，下一次 compile 会报告一次 `history` 检查点。漏写回之后，或者在对话进行到一半才开始持久化时，不要切片：保留完整的 history 即可，反正 head 存在 ledger 里。
+
+用 `onDemandCompaction` 时，replacement 只有那个块。写回它，就会把它摘要掉的 pinned 消息和范围里的其他内容一起移出你的 history，chef 也会撤回对它们的重新声明。如果你依赖 pinned 消息，就保留完整的 history，不要写回按需压缩的结果。
 
 - `clearHistory()` 会让 ledger 从头开始：下一次 compile 报告一次 `ledger` 检查点。
 - `fromAnthropic` 默认跳过解析出的请求里位于对话中间的 system 消息，这会让 history 在它们原来的位置发生变化。`fromAnthropic(messages, system, { keepPositionalSystem: true })` 会把它们留在原处，用于你自己代码写的 system 消息。见[适配器](/zh/guide/adapters)。
@@ -253,5 +272,5 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **请求仍可能超过原始上下文窗口**：摘要模型放弃时（没什么可压缩的，或单独一轮就比窗口还大）；`onDemandCompaction` 没有 fallback、签名尝试又失败时；压缩持续失败直到熔断器打开时。熔断器打开后，只有已经完成的后台任务会落地，这次 compile 不会再进一步压缩窗口。
 - **旧修订占 token。** 不打开 `clearAt` 时，频繁变化的状态会把每个修订都留在窗口里，直到被压缩吸收，所以压缩会来得更早。让状态保持粗粒度，或者让模型通过工具自己拉取。预算也仍然会计入已经被 `clear_at` 清除的提醒。
 - **新建的 chef 遇到 few-shot 示例**（问题之前就有的 assistant 回复）时，第一次 compile 会报告一次 `ledger` 检查点。末尾的 prefill 不会。
-- **slot handler 可以改写窗口。** `after-assemble` 和 `after-adapt` handler 在 ledger 之后运行：`pipelineChecks` 会报告它们的改写，但无法阻止。
+- **slot handler 可以改写窗口。** `after-assemble` handler（已废弃的 `transformContext` 选项也是其中之一）和 `after-adapt` handler 在 ledger 之后运行：`pipelineChecks` 会报告它们的改写，但无法阻止。`onBeforeCompile` 或 `before-assemble` handler 注入的内容是 implicit context 事件，变化时才追加。
 - 如果某个请求必须在你修好原因之前发出去，[`drop_block` 安全网](/zh/guide/thinking-prefix#安全网-drop-block)仍然可用。

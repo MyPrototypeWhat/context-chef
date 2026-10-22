@@ -68,7 +68,7 @@ payload.meta?.prefix;
 | Guardrail prefill | Anthropic: a trailing assistant message, as before (nothing signed depends on it). OpenAI and Gemini: an unset `prefillMode` means `'instruction'`, sent once with the other guardrail instructions; an explicit `'native'` is honored and warned once |
 | Handoff notice | once per window, on the channel an `'auto'` announcement takes |
 
-Events never go between an assistant's tool calls and their results. One that changes while tool calls are waiting for results reaches the model right after the results. Everything appended in one compile is joined into at most one user message and one system message, and the line after the state blocks tells the model that each block supersedes the earlier ones of its kind.
+Events never go between an assistant's tool calls and their results. One that changes while tool calls are waiting for results reaches the model right after the results. Everything appended in one compile is joined into one user message and one system message at most (with `clearAt`, plus one turn-scoped system message), and the line after the state blocks tells the model that each block supersedes the earlier ones of its kind. When no user turn comes before them, as in an empty history or a compile right after a reply, the system events go out as a user message instead, so Anthropic can't move them into the top-level `system`.
 
 ### Turn-scoped reminders: `clearAt`
 
@@ -103,7 +103,7 @@ Then the whole window, the turn in progress included, collapses into one summary
 
 ### Signed compaction: `onDemandCompaction`
 
-Anthropic's on-demand compaction (beta `compact-2026-09-04`) summarizes a request the model already answered into a block the provider signs. The block replaces what it summarized, and the turns kept after it keep their thinking. It is the only compaction that strips nothing under the thinking check, and the only one that doesn't wait for a tool turn to end. It needs `appendOnly` on the Anthropic target, from the second request on.
+Anthropic's on-demand compaction (beta `compact-2026-09-04`) summarizes a request the model already answered into a block the provider signs. The block replaces what it summarized, and the turns kept after it keep their thinking. It is the only client-side compaction that strips nothing under the thinking check (server-side compaction with `server()` doesn't touch what you sent either), and the only one that doesn't wait for a tool turn to end. It needs `appendOnly` on the Anthropic target, from the second request on.
 
 ```ts
 import { ContextChef, onDemandCompaction, summarize } from "@context-chef/core";
@@ -137,21 +137,38 @@ The compaction request carries the cache breakpoints the window had when it was 
 
 ## Persisting a conversation
 
-`snapshot()` and `restore()` carry the ledger (`ChefSnapshot.prefixLedger`) and the record of the model's memory writes along with the history. Restoring both is not a checkpoint: the next compile repeats what was sent.
+`snapshot()` and `restore()` carry the ledger (`ChefSnapshot.prefixLedger`) and the record of the model's memory writes (`ChefSnapshot.modelMemoryWrites`) along with the rest of the chef's state. Restoring them is not a checkpoint: the next compile repeats what was sent.
 
-**A chef created per request must save its snapshot and restore it on the next request.** A chef without its ledger can't know what the previous request sent. Its first compile reports a `ledger` checkpoint at 0, which on Anthropic strips all the thinking in the history, on every request. The chef warns once when it meets a history with more than two replies this way.
+**A chef created per request must save these two fields and restore them on the next request.** A chef without its ledger can't know what the previous request sent. Its first compile reports a `ledger` checkpoint at 0, which on Anthropic strips all the thinking in the history, on every request. The chef warns once when it meets a history with more than two replies this way.
 
 ```ts
-async function nextRequest(conversationId: string, history: Message[]) {
-  const chef = new ContextChef({ appendOnly: true, janitor: { contextWindow: 200_000, compressionModel } });
-  const saved = await db.load(conversationId); // a ChefSnapshot; it round-trips through JSON
-  if (saved) chef.restore(saved);
+async function handleRequest(conversationId: string, history: Message[]) {
+  const chef = new ContextChef({
+    appendOnly: true,
+    store: backend, // memory shared across requests and conversations
+    memory: {},
+    janitor: { contextWindow: 200_000, compressionModel },
+  });
+  const saved = await db.load(conversationId); // { prefixLedger, modelMemoryWrites }, stored as JSON
+  if (saved) {
+    chef.restore({
+      ...chef.snapshot(),
+      prefixLedger: saved.prefixLedger,
+      modelMemoryWrites: saved.modelMemoryWrites,
+    });
+  }
 
   const payload = await chef.setHistory(history).compile({ target: "anthropic" });
-  await db.save(conversationId, chef.snapshot());
-  return payload;
+  await runTurn(chef, payload); // send it, and run its tool calls (chef.handleTool for the chef's own)
+
+  // Last, after every handleTool call of this request.
+  const { prefixLedger, modelMemoryWrites } = chef.snapshot();
+  await db.save(conversationId, { prefixLedger, modelMemoryWrites });
 }
 ```
+
+- **Restore only these two fields when memory lives in a shared store.** The snapshot also carries memory, and restoring a whole snapshot rolls the shared store back to the moment it was saved: a memory write made since, by this conversation or any other, is lost. When the chef's state lives only in the snapshot, restoring the whole snapshot is fine.
+- **Save at the end of the request**, after every `handleTool` call. A memory write the model made after the save is pushed back to it on the next request, as if your code had made it.
 
 **Persisting a compaction** is optional: the head lives in the ledger, and your history can keep every message. Write it into your store when you want the store itself to shrink. Then write back `details.replacement` exactly and in order, in place of the messages it replaced, which are the first `count` messages of your history:
 
@@ -165,9 +182,11 @@ janitor: {
 },
 ```
 
-`replacement` is the summary (or the signed block), the pinned messages put back after it, and whatever it kept of an earlier head. The next compile reads the history as one that took the compaction in, and reports nothing. Anything else no longer matches what was summarized: the summary alone when pinned messages came back with it, a summary of your own, or the summary as a system message is a `history` checkpoint, and your history is sent as it is. Under `appendOnly`, `compressedMessages` and `count` leave out the chef's events, which your store never had. Write back every compaction: one you didn't write back is summarized again by the next and shows up in its `compressedMessages`.
+`replacement` is the summary (or the signed block), the pinned messages put back after it, and whatever it kept of an earlier head. The next compile reads the history as one that took the compaction in, and reports nothing. Anything else no longer matches what was summarized: the summary alone when pinned messages came back with it, a summary of your own, or the summary as a system message is a `history` checkpoint, and your history is sent as it is. Under `appendOnly`, `compressedMessages` and `count` leave out the chef's events, which your store never had.
 
-With `onDemandCompaction` the replacement is the block alone. Pinned messages it summarized leave your history with the rest of the span, and the chef withdraws its restatement of them.
+Slicing by `count` assumes your store already holds every earlier `replacement`. Miss one write-back, and the next compaction summarizes that earlier summary again: `count` then counts the summary and the pinned messages it put back rather than the messages of yours they stood for, so the slice is off. Your store keeps messages that were already summarized, or loses ones that weren't, and the next compile reports a `history` checkpoint. After a missed write-back, or when you start persisting in the middle of a conversation, don't slice: keep your full history, since the head lives in the ledger anyway.
+
+With `onDemandCompaction` the replacement is the block alone. Writing it back takes the pinned messages it summarized out of your history with the rest of the span, and the chef withdraws its restatement of them. If you rely on pinned messages, keep your full history instead of writing an on-demand compaction back.
 
 - `clearHistory()` starts the ledger over: the next compile reports a `ledger` checkpoint.
 - `fromAnthropic` skips the mid-conversation system messages of a parsed request by default, which changes the history where they were. `fromAnthropic(messages, system, { keepPositionalSystem: true })` keeps them in place; use it for the system messages your own code wrote. See [Adapters](/guide/adapters).
@@ -253,5 +272,5 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **A request can still exceed the raw context window** when the summarizer declines (nothing left to compress, a single turn larger than the window), when `onDemandCompaction` has no fallback and its signed attempt fails, and when compaction keeps failing until the circuit breaker opens. Past an open breaker only a background job that already finished lands, and the window isn't compacted further in that compile.
 - **Old revisions cost tokens.** Without `clearAt`, state that changes often leaves every revision in the window until a compaction absorbs it, so compaction comes sooner. Keep state coarse, or let the model pull it through a tool. The budget also still counts reminders that `clear_at` already cleared.
 - **A fresh chef that meets few-shot examples**, assistant replies ahead of the question, reports a `ledger` checkpoint on its first compile. A trailing prefill doesn't.
-- **Slot handlers can rewrite the window.** `after-assemble` and `after-adapt` handlers run after the ledger: `pipelineChecks` reports what they rewrite, but can't prevent it.
+- **Slot handlers can rewrite the window.** `after-assemble` handlers, the deprecated `transformContext` option among them, and `after-adapt` handlers run after the ledger: `pipelineChecks` reports what they rewrite, but can't prevent it. What `onBeforeCompile` or a `before-assemble` handler injects is an implicit-context event, appended when it changes.
 - For a request that has to go out before you can fix the cause, the [`drop_block` safety net](/guide/thinking-prefix#safety-net-drop-block) still applies.

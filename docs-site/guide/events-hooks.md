@@ -173,4 +173,6 @@ app.post('/agent', async (req, res) => {
 
 If memory needs to span requests, lift the store out (a shared `FileSystemBackend`, your own Redis-backed `StorageBackend`) and pass it to per-request chefs — store-level concurrency is the store's responsibility, not the chef's. See [Context store](/guide/context-store).
 
+With [`appendOnly`](/guide/append-only#persisting-a-conversation), a per-request chef also needs its conversation's ledger: save `prefixLedger` and `modelMemoryWrites` from `chef.snapshot()` at the end of each request, and restore just those two fields on the next. Restoring the whole snapshot would roll the shared store back.
+
 **Concurrent `compile()` calls on one instance queue (v4).** They are serialized (snapshot + serialize) instead of interleaving and corrupting shared state (turn counter, circuit breaker, signal stash). Inputs are snapshotted at call time — `setHistory()` between two queued calls means the first compile sees the old history, the second sees the new. A rejected compile does not poison the queue. The canonical pattern is still one chef per concurrent caller; the queue exists to make accidental sharing safe, not fast.
