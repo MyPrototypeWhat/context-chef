@@ -242,6 +242,22 @@ describe('PrefixSession: a compression lands once as the head', () => {
     ]);
   });
 
+  it('runs an on-demand compaction through its fallback: a session has no wire', async () => {
+    const compact = vi.fn();
+    const { session, compressionModel } = poolWith({}, (model) =>
+      onDemandCompaction({ compact, fallback: keepLast(1)(model) }),
+    );
+    const calls = [];
+    for (const n of [1, 2, 3, 4]) calls.push(await session.compile(callWith(asked(n))));
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(calls[3].messages).toEqual([{ role: 'user', content: SUMMARY(1) }, qa[6]]);
+    expect(calls[3].breaks).toEqual([
+      { reason: 'compaction', at: 0, signed: false, strippedThinking: 0 },
+    ]);
+  });
+
   it('leaves the window alone when told not to compress', async () => {
     const { session, compressionModel } = poolWith();
     for (const n of [1, 2, 3]) await session.compile(callWith(asked(n)));

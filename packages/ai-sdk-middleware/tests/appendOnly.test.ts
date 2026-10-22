@@ -16,6 +16,7 @@ import type {
   LanguageModelV4GenerateResult,
   LanguageModelV4Message,
   LanguageModelV4Prompt,
+  LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import { type Message, Prompts, summarize } from '@context-chef/core';
 import type { ModelMessage } from 'ai';
@@ -161,7 +162,34 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
     });
   };
 
-  return { middleware, send, respond, warn, breaks };
+  /** The same response, streamed: the count comes with the finish part. */
+  const respondStreaming = async (inputTokens: number) => {
+    const wrap = middleware.wrapStream;
+    if (!wrap) throw new Error('wrapStream is undefined');
+    const model = mockModel(inputTokens);
+    const finish: LanguageModelV4StreamPart = {
+      type: 'finish',
+      usage: (await model.doGenerate({ prompt: [] })).usage,
+      finishReason: { unified: 'stop', raw: undefined },
+    };
+    const { stream } = await wrap({
+      doGenerate: () => model.doGenerate({ prompt: [] }),
+      doStream: async () => ({
+        stream: new ReadableStream<LanguageModelV4StreamPart>({
+          start(controller) {
+            controller.enqueue(finish);
+            controller.close();
+          },
+        }),
+      }),
+      params: { prompt: [] },
+      model,
+    });
+    const reader = stream.getReader();
+    while (!(await reader.read()).done) {}
+  };
+
+  return { middleware, send, respond, respondStreaming, warn, breaks };
 }
 
 /** A prompt sent, as the cross-turn check compares the next one with it. */
@@ -260,15 +288,19 @@ describe('appendOnly: a compression lands once as the head', () => {
     expect(prompts[6]).toEqual([sys, summary(1), toolCall('t6'), toolResult('t6')]);
   });
 
-  it('counts what the loop added since the reported call on top of the report', async () => {
+  it.each([
+    'respond',
+    'respondStreaming',
+  ] as const)('counts what the loop added since the reported call on top of the report (%s)', async (how) => {
     const { compressionModel, strategy } = keepLastTurn();
-    const { send, respond } = middlewareWith({
+    const responder = middlewareWith({
       contextWindow: 100,
       tokenizer,
       overflow: { strategy },
     });
+    const { send } = responder;
     await send(rounds(1));
-    await respond(95);
+    await responder[how](95);
     const next = await send(rounds(2));
 
     // 95 reported for the 3 messages sent, plus 20 for the 2 since: past the raw window.
