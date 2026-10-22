@@ -645,6 +645,18 @@ describe('onDemandCompaction()', () => {
     });
   });
 
+  it('never cuts at a prefill the window ends with: the request before it was never sent', async () => {
+    const compact = compactor();
+    const [strategy] = attached(onDemandCompaction({ compact }));
+    const history = [...conversation(), { role: 'assistant' as const, content: 'Sure,' }];
+
+    const landed = await strategy.apply(inputOver(history));
+
+    // a2 is the last reply: the kept turn is a2, q3 and the prefill.
+    expect(requested(compact).payload.messages).toHaveLength(3);
+    expect(landed.history.slice(1)).toEqual(history.slice(3));
+  });
+
   it('is named after its fallback, as server() is', () => {
     const compact = compactor();
     expect(onDemandCompaction({ compact }).name).toBe('onDemandCompaction');

@@ -8,6 +8,7 @@ import {
   anthropicCompactionMessage,
   ON_DEMAND_COMPACTION_BETA,
 } from '../adapters/anthropicAdapter';
+import { isPrefill } from '../prefix/events';
 import type { AnthropicPayload, Message } from '../types';
 import { isServerStrategy } from './server';
 import {
@@ -76,17 +77,22 @@ export interface OnDemandCompactionOptions {
  * Where a compaction may cut: `[0, cut)` ends in a user turn — the last
  * message that is not a system message is a user message or tool results,
  * and every tool call before it has its result — and the kept messages start
- * with an assistant reply, or there are none (`history.length`). In order.
+ * with an assistant reply, or there are none (`history.length`). A prefill
+ * the window ends with is no reply: the request before it was never sent.
+ * In order.
  */
 function cutPoints(history: readonly Message[]): number[] {
+  let last = history.length - 1;
+  while (last >= 0 && history[last].role === 'system') last--;
+  const prefill = last >= 0 && isPrefill(history[last]) ? last : -1;
+
   const points: number[] = [];
   let afterUserTurn = false;
   const waiting = new Set<string>();
   for (let i = 0; i <= history.length; i++) {
     const message = history[i] as Message | undefined;
-    if (afterUserTurn && waiting.size === 0 && (!message || message.role === 'assistant')) {
-      points.push(i);
-    }
+    const reply = !message || (message.role === 'assistant' && i !== prefill);
+    if (afterUserTurn && waiting.size === 0 && reply) points.push(i);
     if (!message || message.role === 'system') continue;
     if (message.role === 'assistant') {
       waiting.clear();

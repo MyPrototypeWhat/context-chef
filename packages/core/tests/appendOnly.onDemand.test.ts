@@ -95,6 +95,8 @@ const search: ToolDefinition = {
   parameters: { type: 'object', properties: { q: { type: 'string' } } },
 };
 const State = z.object({ step: z.number() });
+const state = (step: number, rev: number) =>
+  `<dynamic_state rev="${rev}">\n  <step>${step}</step>\n</dynamic_state>`;
 
 const tokenizer = (messages: Message[]): number => messages.length * 10;
 const JANITOR = { contextWindow: 100, triggerRatio: 0.6, tokenizer };
@@ -195,6 +197,31 @@ describe('appendOnly onDemandCompaction(): the request it compacts is the one se
     expect(request.compaction).toEqual({ type: 'summarize' });
     expect(request.betas).toEqual([BETA]);
     expect(request.payload).not.toHaveProperty('context_management');
+  });
+
+  it('asks for a request that ends in a positional system event, as it was sent', async () => {
+    const { chef, compact } = chefWith(
+      { janitor: { contextWindow: 200, triggerRatio: 0.6, tokenizer } },
+      (compact) => onDemandCompaction({ compact }),
+    );
+
+    // The state changes every turn: each request ends in its own positional system event.
+    // asked(5) is [q1, state 1, a1, …, q5, state 5]: 14 messages, over the trigger of 120.
+    const payloads: AnthropicPayload[] = [];
+    for (const n of [1, 2, 3, 4, 5]) {
+      chef.setDynamicState(State, { step: n }, { placement: 'system' });
+      payloads.push(...(await converse(chef, [asked(n)])));
+    }
+
+    // a4 is the reply kept; the request it answered was the fourth payload.
+    expect(compact).toHaveBeenCalledTimes(1);
+    const request = requested(compact).payload;
+    expect(request).toEqual(wire(payloads[3]));
+    expect(request.messages.at(-1)).toEqual({
+      role: 'system',
+      content: [{ type: 'text', text: `${state(4, 4)}\n\n${Prompts.EVENT_STATE_ANCHOR}` }],
+    });
+    expect(payloads[4].messages.slice(0, 2)).toEqual([compacted(1), answer(4)]);
   });
 
   it('compacts a request that starts with the block it returned last time', async () => {
@@ -758,7 +785,15 @@ describe('appendOnly background(onDemandCompaction())', () => {
     expectAppendOnly(payloads.slice(0, 4));
   });
 
-  it('drops the job when the system prompt changed while it ran', async () => {
+  it.each([
+    [
+      'the system prompt',
+      'system',
+      (chef: ContextChef) =>
+        chef.setSystemPrompt([{ role: 'system', content: 'You are terse. Answer in French.' }]),
+    ],
+    ['the tool list', 'tools', (chef: ContextChef) => chef.registerTools([search])],
+  ] as const)('drops the job when %s changed while it ran', async (_, reason, change) => {
     let release: () => void = () => {};
     const { chef, compact, breaks } = chefWith({}, (compact) =>
       background(onDemandCompaction({ compact })),
@@ -771,17 +806,17 @@ describe('appendOnly background(onDemandCompaction())', () => {
     );
 
     await converse(chef, [1, 2, 3, 4].map(asked));
-    chef.setSystemPrompt([{ role: 'system', content: 'You are terse. Answer in French.' }]);
+    change(chef);
     await converse(chef, [asked(5)]);
     release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     // A retry of asked(5): the finished job is offered the window it no longer applies to.
     const [after] = await converse(chef, [asked(5)]);
 
-    // The job asked for [q1, …, q3] behind the first system prompt, which no request sends now,
+    // The job asked for [q1, …, q3] behind a system prompt and tools no request sends now,
     // and a new one starts on the window as it is.
     expect(compact).toHaveBeenCalledTimes(2);
     expect(after.messages).toHaveLength(9);
-    expect(breaks.map((b) => b.reason)).toEqual(['system']);
+    expect(breaks.map((b) => b.reason)).toEqual([reason]);
   });
 });

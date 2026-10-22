@@ -587,7 +587,10 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
    * `messagesXml` is one `<message>` per pinned message.
    */
   getPinnedEvent: (messagesXml: string, rev: number): string =>
-    `<pinned_messages rev="${rev}">\n${Prompts.PINNED_RESTATED}\n\n${messagesXml}\n</pinned_messages>`,
+    Prompts.getEventBlock(
+      `<pinned_messages>\n${Prompts.PINNED_RESTATED}\n\n${messagesXml}\n</pinned_messages>`,
+      rev,
+    ),
 
   PINNED_RESTATED:
     'These messages were pinned earlier in this conversation. The part of it that held them ' +

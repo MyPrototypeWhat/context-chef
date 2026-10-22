@@ -154,7 +154,7 @@ function lastOf(
  * provider's own fields — is a reply, and Anthropic rejects a prefill with
  * thinking anyway.
  */
-function isPrefill(message: Message): boolean {
+export function isPrefill(message: Message): boolean {
   return (
     message.role === 'assistant' &&
     !message.thinking &&
