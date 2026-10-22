@@ -225,28 +225,36 @@ const isSigned = (block: ThinkingBlock): boolean =>
 
 /**
  * `appendOnly`: the signed thinking a checkpoint invalidates, in the thinking
- * array a message round-trips through. A reply stripped of it keeps
- * everything else, unsigned thinking included; one that held nothing else is
- * left out.
+ * array a message round-trips through.
  */
 export const signedThinking: SignedThinking = {
   count: (message) => sentThinking(message)?.filter(isSigned).length ?? 0,
-  strip(message) {
-    const thinking = sentThinking(message);
-    if (!thinking?.some(isSigned)) return message;
-    const { thinking: _thinking, ...rest } = message as TanStackAIMessage;
-    const kept = thinking.filter((block) => !isSigned(block));
-    // Only an original array holds more than one block.
-    if (kept.length > 0 && rest._original) {
-      return {
-        ...rest,
-        thinking: { thinking: joinThinking(kept) },
-        _original: { ...rest._original, thinking: kept },
-      };
-    }
-    return rest.content || rest.tool_calls?.length || rest.attachments?.length ? rest : undefined;
-  },
+  strip: (message) => withoutThinkingBlocks(message, isSigned),
 };
+
+/**
+ * `message` without the thinking blocks `drop` picks, in the thinking array
+ * it round-trips through: a reply keeps everything else, its other blocks
+ * included, and one that held nothing else is `undefined`.
+ */
+export function withoutThinkingBlocks(
+  message: Message,
+  drop: (block: ThinkingBlock) => boolean,
+): Message | undefined {
+  const thinking = sentThinking(message);
+  if (!thinking?.some(drop)) return message;
+  const { thinking: _thinking, ...rest } = message as TanStackAIMessage;
+  const kept = thinking.filter((block) => !drop(block));
+  // Only an original array holds more than one block.
+  if (kept.length > 0 && rest._original) {
+    return {
+      ...rest,
+      thinking: { thinking: joinThinking(kept) },
+      _original: { ...rest._original, thinking: kept },
+    };
+  }
+  return rest.content || rest.tool_calls?.length || rest.attachments?.length ? rest : undefined;
+}
 
 /** The text of a `systemPrompts` entry, without its provider metadata. */
 export function systemPromptText(prompt: SystemPrompt): string {

@@ -10,12 +10,14 @@ import {
   type ChatMiddlewareConfig,
   type ChatMiddlewareContext,
   convertSchemaToJsonSchema,
+  EventType,
   type ModelMessage,
+  type StreamChunk,
   type SystemPrompt,
   type Tool,
 } from '@tanstack/ai';
 
-import { systemPromptText, toTanStackAI } from './adapter';
+import { systemPromptText, toTanStackAI, withoutThinkingBlocks } from './adapter';
 import type { ContextChefOptions, PrefixBreakEvent } from './types';
 
 /** The steps `appendOnly` shares with the 4.x transform, as the middleware runs them. */
@@ -28,6 +30,20 @@ export interface SharedSteps {
   sessionKey(ctx: ChatMiddlewareContext): string;
 }
 
+/** The middleware hooks `appendOnly` runs. */
+export interface AppendOnlyHooks {
+  /** `onConfig`: the request one firing sends. */
+  config(ctx: ChatMiddlewareContext, config: ChatMiddlewareConfig): Promise<Sent | undefined>;
+  /**
+   * Where the usage of the request a conversation last sent goes: its
+   * session, when that request was the window the ledger kept and something
+   * budgets; otherwise null.
+   */
+  usage(ctx: ChatMiddlewareContext): ((tokens: number) => void) | null;
+  /** `onChunk`: the signatures of thinking that answers a request the ledger did not keep. */
+  chunk(ctx: ChatMiddlewareContext, chunk: StreamChunk): void;
+}
+
 type Sent = Pick<ChatMiddlewareConfig, 'messages' | 'systemPrompts'>;
 
 /** What a conversation's last call in a chat() run was compiled from, and what it returned. */
@@ -37,19 +53,36 @@ interface Carried extends Sent {
   readonly sent: Sent;
 }
 
+/** What the middleware keeps of a conversation next to its session. */
+interface Conversation {
+  /** Its last call, so a config the engine carried within the run can be read back. */
+  carried?: Carried;
+  /**
+   * Whether the request it last sent is the window its ledger kept — not
+   * while a firing runs, nor after one failed and went out as the engine had
+   * it, nor after a one-off.
+   */
+  kept: boolean;
+  /**
+   * Signatures of thinking that answered a request the ledger did not keep:
+   * signed over a prefix the conversation never had, so never replayed in it.
+   */
+  readonly foreign: Set<string>;
+}
+
 /**
- * `onConfig` with `appendOnly`: the session rebuilds the conversation from
- * its ledger — the head of the last compression, the host's messages, the
- * events appended among them — so what an earlier call sent is sent again as
- * it was. The host's system prompts, the skill and the clear explainer go
- * ahead of it as in 4.x; a change there is a checkpoint.
+ * `appendOnly`: the session rebuilds the conversation from its ledger — the
+ * head of the last compression, the host's messages, the events appended
+ * among them — so what an earlier call sent is sent again as it was. The
+ * host's system prompts, the skill and the clear explainer go ahead of it as
+ * in 4.x; a change there is a checkpoint.
  */
-export function appendOnlyTransform(
+export function appendOnlyHooks(
   options: ContextChefOptions,
   logger: ChefLogger,
   sessions: SessionPool<PrefixSession>,
   steps: SharedSteps,
-): (ctx: ChatMiddlewareContext, config: ChatMiddlewareConfig) => Promise<Sent | undefined> {
+): AppendOnlyHooks {
   const reportBreak = (event: PrefixBreakEvent) => {
     try {
       options.onPrefixBreak?.(event);
@@ -57,57 +90,97 @@ export function appendOnlyTransform(
       logger.warn('[context-chef] onPrefixBreak threw — the call goes ahead', error);
     }
   };
-  // Per conversation, so a config the engine carried within a run can be read back.
-  const carried = new WeakMap<PrefixSession, Carried>();
-
-  return async (ctx, config) => {
-    // No model call follows init before its own firing, and in between the
-    // engine settles pending tool calls — which must not meet the placeholder
-    // results the IR boundary gives them.
-    if (ctx.phase === 'init') return undefined;
-
-    const sessionId = steps.sessionKey(ctx);
-    const session = sessions.get(sessionId);
-    const record = carried.get(session);
-    // A config from another run is the host's own, whatever it opens with.
-    const last = record && ctx.requestId && record.run === ctx.requestId ? record : undefined;
-    const messages = hostMessages(config.messages, last);
-    const systemPrompts =
-      last && sameItems(config.systemPrompts, last.sent.systemPrompts)
-        ? last.systemPrompts
-        : config.systemPrompts;
-
-    const conversation = await steps.prepare(messages);
-    // Cleared before the session compares anything: a placeholder that moves
-    // rewrites a message already sent, a checkpoint it has to see.
-    const history = options.clear?.length
-      ? clearMessages(conversation, { clear: options.clear })
-      : conversation;
-    const ahead = await steps.standing(systemPrompts);
-    const state = options.dynamicState
-      ? objectToXml(await options.dynamicState.getState(), 'dynamic_state')
-      : undefined;
-
-    const { messages: window, breaks } = await session.compile({
-      history,
-      // What the model reads ahead of the conversation; provider metadata (a
-      // cache breakpoint moving) is not part of it. The structured-output
-      // call goes out without tools.
-      sent: {
-        system: ahead.map(systemPromptText),
-        tools: ctx.phase === 'structuredOutput' ? [] : config.tools.map(toolDefinition),
-      },
-      dynamicState: state,
-      signal: ctx.signal,
-    });
-    for (const brk of breaks) reportBreak({ ...brk, sessionId });
-
-    let sent: Sent = { messages: toTanStackAI(window), systemPrompts: ahead };
-    if (options.transformContext) {
-      sent = await options.transformContext(sent.messages, sent.systemPrompts, ctx);
+  // Next to each session, and gone with it.
+  const conversations = new WeakMap<PrefixSession, Conversation>();
+  const conversationOf = (session: PrefixSession): Conversation => {
+    let conversation = conversations.get(session);
+    if (!conversation) {
+      conversation = { kept: false, foreign: new Set() };
+      conversations.set(session, conversation);
     }
-    carried.set(session, { run: ctx.requestId, messages, systemPrompts, sent });
-    return sent;
+    return conversation;
+  };
+
+  return {
+    async config(ctx, config) {
+      // No model call follows init before its own firing, and in between the
+      // engine settles pending tool calls — which must not meet the
+      // placeholder results the IR boundary gives them.
+      if (ctx.phase === 'init') return undefined;
+
+      const sessionId = steps.sessionKey(ctx);
+      const session = sessions.get(sessionId);
+      const conversation = conversationOf(session);
+      // Until this firing's window is kept, what goes out is not the ledger's.
+      conversation.kept = false;
+      const record = conversation.carried;
+      // A config from another run is the host's own, whatever it opens with.
+      const last = record && ctx.requestId && record.run === ctx.requestId ? record : undefined;
+      const messages = hostMessages(config.messages, last);
+      const systemPrompts =
+        last && sameItems(config.systemPrompts, last.sent.systemPrompts)
+          ? last.systemPrompts
+          : config.systemPrompts;
+
+      const prepared = await steps.prepare(messages);
+      // Cleared before the session compares anything: a placeholder that moves
+      // rewrites a message already sent, a checkpoint it has to see.
+      const history = options.clear?.length
+        ? clearMessages(prepared, { clear: options.clear })
+        : prepared;
+      const ahead = await steps.standing(systemPrompts);
+      const state = options.dynamicState
+        ? objectToXml(await options.dynamicState.getState(), 'dynamic_state')
+        : undefined;
+
+      // The structured-output call goes out without tools, a request outside
+      // the conversation: its own checkpoints apply to it alone.
+      const oneOff = ctx.phase === 'structuredOutput';
+      const { messages: window, breaks } = await session.compile({
+        history,
+        // What the model reads ahead of the conversation; provider metadata (a
+        // cache breakpoint moving) is not part of it.
+        sent: {
+          system: ahead.map(systemPromptText),
+          tools: oneOff ? [] : config.tools.map(toolDefinition),
+        },
+        dynamicState: state,
+        oneOff,
+        signal: ctx.signal,
+      });
+      if (!oneOff) for (const brk of breaks) reportBreak({ ...brk, sessionId });
+
+      const { foreign } = conversation;
+      const replayable =
+        foreign.size === 0
+          ? window
+          : window.flatMap((message) => {
+              const kept = withoutThinkingBlocks(message, (block) =>
+                foreign.has(block.signature ?? ''),
+              );
+              return kept ? [kept] : [];
+            });
+      let sent: Sent = { messages: toTanStackAI(replayable), systemPrompts: ahead };
+      if (options.transformContext) {
+        sent = await options.transformContext(sent.messages, sent.systemPrompts, ctx);
+      }
+      conversation.carried = { run: ctx.requestId, messages, systemPrompts, sent };
+      conversation.kept = !oneOff;
+      return sent;
+    },
+
+    usage(ctx) {
+      const session = sessions.get(steps.sessionKey(ctx));
+      return session.janitor && conversations.get(session)?.kept
+        ? (tokens) => session.reportTokenUsage(tokens)
+        : null;
+    },
+
+    chunk(ctx, chunk) {
+      if (chunk.type !== EventType.STEP_FINISHED || !chunk.signature) return;
+      const conversation = conversations.get(sessions.get(steps.sessionKey(ctx)));
+      if (conversation && !conversation.kept) conversation.foreign.add(chunk.signature);
+    },
   };
 }
 

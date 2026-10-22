@@ -257,10 +257,15 @@ export interface ContextChefOptions {
    *   stays.
    *
    * The work happens in each model call's `onConfig` firing (`beforeModel`,
-   * `structuredOutput`); the `init` firing passes the config through. The
-   * engine carries what `onConfig` returned into the next iteration, and the
-   * middleware reads it back as the host's conversation plus what came
-   * since — so no other middleware may rewrite the messages it returned.
+   * `structuredOutput`); the `init` firing passes the config through. Within
+   * a chat() run the engine carries what `onConfig` returned into the next
+   * iteration, and the middleware reads it back as the host's conversation
+   * plus what came since — so no other middleware may rewrite the messages
+   * it returned. The structured-output call, which goes out without tools, is
+   * a one-off: no checkpoint for the conversation. A reply to a request the
+   * ledger did not keep — that call, or a firing that failed and went out as
+   * the engine had it — is signed over a prefix the conversation never had:
+   * its signed thinking is never replayed, and its usage is not counted.
    *
    * Give each conversation its own `threadId` (TanStack AI generates one per
    * run otherwise): conversations sharing one rewrite each other's history on

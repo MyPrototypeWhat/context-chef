@@ -17,6 +17,7 @@ import {
   type ChatMiddlewareContext,
   chat,
   type ModelMessage,
+  type StreamChunk,
   type SystemPrompt,
   type Tool,
 } from '@tanstack/ai';
@@ -850,17 +851,6 @@ describe('appendOnly: checkpoints', () => {
     ]);
   });
 
-  it('reads the structured-output call, which goes out without tools, as a tools checkpoint', async () => {
-    const { send, breaks } = middlewareWith();
-    await send(asked(1, true), { tools: [search] });
-    await send(asked(2, true), { tools: [search] });
-    await send(asked(3, true), { tools: [search], phase: 'structuredOutput' });
-
-    expect(breaks).toEqual([
-      { reason: 'tools', at: 0, signed: false, strippedThinking: 2, sessionId: 'thread_1' },
-    ]);
-  });
-
   it('keeps nothing of a call aborted while it compresses: the next one meets the same checkpoint', async () => {
     let aborting = true;
     // A strategy that takes until the call is aborted, and finds nothing to do once it is not.
@@ -939,6 +929,100 @@ describe('appendOnly: checkpoints', () => {
       sessionId: 'restarted',
     });
     expect(warnings(warn, 'ledger is empty')).toHaveLength(1);
+  });
+});
+
+describe('appendOnly: requests the conversation does not keep', () => {
+  it('sends the structured-output call as a one-off: the conversation keeps its signed thinking', async () => {
+    const { send, breaks } = middlewareWith();
+    await send(asked(1, true), { tools: [search] });
+    await send(asked(2, true), { tools: [search] });
+    const structured = await send(asked(2, true), { tools: [search], phase: 'structuredOutput' });
+    const next = await send(asked(3, true), { tools: [search] });
+
+    // It goes out without tools, so without the thinking signed over them.
+    expect(structured.messages).toEqual([user('q1'), reply('a1'), user('q2')]);
+    expect(next.messages).toEqual(asked(3, true));
+    expect(breaks).toEqual([]);
+  });
+
+  /**
+   * A middleware whose skill store fails on demand, and the two requests the
+   * conversation does not keep: the structured-output call, and a firing that
+   * failed and went out as the engine had it.
+   */
+  function unkept() {
+    let failing = false;
+    const recorded = middlewareWith({
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy: keepLastTurn().strategy },
+      skill: () => {
+        if (failing) throw new Error('skill store down');
+        return null;
+      },
+    });
+    const requests = {
+      'structured output': (messages: ModelMessage[]) =>
+        recorded.send(messages, { phase: 'structuredOutput' }),
+      'a failed firing': async (messages: ModelMessage[]) => {
+        failing = true;
+        const sent = await recorded.send(messages);
+        failing = false;
+        return sent;
+      },
+    };
+    /** A thinking block the model streamed for the request last sent, signed `signature`. */
+    const streamed = (signature: string) => {
+      const chunk = { type: 'STEP_FINISHED', stepName: 'thinking', signature, timestamp: 0 };
+      recorded.middleware.onChunk?.(ctxOf(), chunk as StreamChunk);
+    };
+    return { ...recorded, requests, streamed };
+  }
+
+  it.each([
+    'structured output',
+    'a failed firing',
+  ] as const)('strips the signed thinking of the reply to one (%s), and only that', async (kind) => {
+    const { send, requests, streamed, breaks } = unkept();
+    await send(asked(1, true));
+    await send(asked(2, true));
+    streamed('S_2');
+    await requests[kind](asked(2, true));
+    streamed('S_X');
+    const next = await send([
+      ...asked(2, true),
+      reply('a2', 'S_2'),
+      reply('a2, once more', 'S_X'),
+      user('q3'),
+    ]);
+
+    // Signed over a request the conversation never sent: it cannot be replayed in it.
+    expect(next.messages).toEqual([
+      ...asked(2, true),
+      reply('a2', 'S_2'),
+      reply('a2, once more'),
+      user('q3'),
+    ]);
+    expect(breaks).toEqual([]);
+  });
+
+  it.each([
+    'structured output',
+    'a failed firing',
+  ] as const)('counts no usage of one (%s): it describes no request the ledger kept', async (kind) => {
+    const { send, respond, requests, warn } = unkept();
+    await send(rounds(1));
+    const sent = await requests[kind](rounds(1));
+    respond(95);
+    const next = await send(rounds(2));
+
+    if (kind === 'a failed firing') {
+      expect(sent.messages).toEqual(rounds(1));
+      expect(warnings(warn, 'onConfig transform failed')).toHaveLength(1);
+    }
+    // Counted by its own 5 messages, not 95 + 20: nothing compresses.
+    expect(next.messages).toEqual(rounds(2));
   });
 });
 

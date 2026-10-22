@@ -22,7 +22,7 @@ import {
 import { resolveDebugOption } from '@tanstack/ai/adapter-internals';
 
 import { fromTanStackAI, signedThinking, systemPromptText, toTanStackAI } from './adapter';
-import { appendOnlyTransform, warnAppendOnlyConfig } from './appendOnly';
+import { appendOnlyHooks, warnAppendOnlyConfig } from './appendOnly';
 import { compactMessages } from './compact';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
@@ -135,23 +135,6 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
   const janitorFor = (ctx: { threadId?: string; conversationId?: string }): Janitor | null =>
     janitors ? janitors.get(sessionKey(ctx)) : null;
 
-  /**
-   * Where a response's prompt token count goes: the conversation's Janitor,
-   * and with appendOnly its ledger too, which takes it to describe the call
-   * it last compiled. Null when nothing budgets.
-   */
-  const usageFor = (ctx: {
-    threadId?: string;
-    conversationId?: string;
-  }): ((tokens: number) => void) | null => {
-    if (sessions) {
-      const session = sessions.get(sessionKey(ctx));
-      return session.janitor ? (tokens) => session.reportTokenUsage(tokens) : null;
-    }
-    const janitor = janitorFor(ctx);
-    return janitor ? (tokens) => janitor.feedTokenUsage(tokens) : null;
-  };
-
   const clearsToolResults = !!options.clear?.some(
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
   );
@@ -177,9 +160,9 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     return prompts;
   };
 
-  const appendOnlyConfig =
+  const appendOnly =
     sessions &&
-    appendOnlyTransform(options, logger, sessions, {
+    appendOnlyHooks(options, logger, sessions, {
       prepare: async (messages) => {
         const truncated = options.truncate
           ? await truncateToolResults(messages, options.truncate, logger)
@@ -190,6 +173,17 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       standing: withStanding,
       sessionKey,
     });
+
+  /**
+   * Where a response's prompt token count goes: the conversation's Janitor,
+   * and with appendOnly its ledger too, which takes it to describe the call
+   * it last compiled. Null when nothing budgets.
+   */
+  const usageFor = (ctx: ChatMiddlewareContext): ((tokens: number) => void) | null => {
+    if (appendOnly) return appendOnly.usage(ctx);
+    const janitor = janitorFor(ctx);
+    return janitor ? (tokens) => janitor.feedTokenUsage(tokens) : null;
+  };
 
   const transformConfig = async (
     ctx: ChatMiddlewareContext,
@@ -252,9 +246,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       // A throwing onConfig fails the whole chat() run in TanStack AI —
       // degrade to pass-through instead of breaking the host call.
       try {
-        return await (appendOnlyConfig
-          ? appendOnlyConfig(ctx, config)
-          : transformConfig(ctx, config));
+        return await (appendOnly ? appendOnly.config(ctx, config) : transformConfig(ctx, config));
       } catch (error) {
         logger.warn(
           '[context-chef] onConfig transform failed; passing the request through unchanged. ' +
@@ -286,6 +278,19 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
         );
       }
     },
+
+    ...(appendOnly && {
+      onChunk: (ctx, chunk) => {
+        try {
+          appendOnly.chunk(ctx, chunk);
+        } catch (error) {
+          logger.warn(
+            '[context-chef] onChunk failed; the chunk passes through. ' +
+              `Error: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      },
+    }),
   };
 }
 
