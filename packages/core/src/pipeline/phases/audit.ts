@@ -1,4 +1,5 @@
 import { auditAnthropicCachePlacement } from '../../adapters/anthropicCacheAudit';
+import { openingBlockEnd } from '../../overflow/summary';
 import { isPrefill, isReply, type PrefixLedger } from '../../prefix';
 import type { AnthropicPayload, Message } from '../../types';
 import { checkSentPrefix, type PrefixComparable, type SentPayload } from '../checks';
@@ -63,10 +64,10 @@ async function checkAcrossTurns(ctx: CompileContext, host: PipelineHost): Promis
     const part = ctx.target.adapter.compile(withoutStrippedThinking(ctx, messages.slice(0, count)));
     return sentItems(part as PrefixComparable).length;
   };
-  let leadingSystem = 0;
-  while (leadingSystem < messages.length && messages[leadingSystem].role === 'system') {
-    leadingSystem++;
-  }
+  // What is frozen whether or not anything answered: the system layers, and the compaction
+  // block the window opens with (with the placeholder before it), which no reply follows yet.
+  let frozen = openingBlockEnd(messages);
+  while (frozen < messages.length && messages[frozen].role === 'system') frozen++;
   prefix.sentForCheck = {
     // A copy as on the wire: the host may edit the payload it is handed.
     payload: JSON.parse(
@@ -80,7 +81,7 @@ async function checkAcrossTurns(ctx: CompileContext, host: PipelineHost): Promis
       }),
     ),
     hostLength: prefix.history.length,
-    replied: items(Math.max(pastLastReply(messages), leadingSystem)),
+    replied: items(Math.max(pastLastReply(messages), frozen)),
     asked: items(prefillStart(messages)),
   };
 }

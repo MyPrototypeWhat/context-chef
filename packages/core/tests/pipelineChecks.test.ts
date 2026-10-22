@@ -1,6 +1,7 @@
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { type ChefConfig, type ChefEvents, ContextChef } from '../src/index';
+import { type ChefConfig, type ChefEvents, ContextChef, fromAnthropic } from '../src/index';
 import { checkTailInvariants, tailInsertionIndex } from '../src/pipeline/checks';
 import type { AnthropicPayload, Message } from '../src/types';
 
@@ -207,6 +208,43 @@ describe('pipelineChecks — appendOnly across turns', () => {
       expect.stringContaining('messages[1]'),
       expect.stringContaining('SIG_1'),
     ]);
+  });
+
+  it.each([
+    [
+      'the compaction block a resumed history opens with',
+      (payload: AnthropicPayload) => {
+        const [block] = payload.messages[0].content as Array<{ type: string; content?: string }>;
+        if (block.type === 'compaction') block.content = 'REWRITTEN';
+      },
+      fromAnthropic([
+        {
+          role: 'assistant',
+          content: [{ type: 'compaction', content: 'EARLIER', signature: 'S0' }],
+        },
+      ] as unknown as MessageParam[]).history,
+    ],
+    [
+      'a reply',
+      (payload: AnthropicPayload) => {
+        const [text] = payload.messages[1].content as Array<{ type: string; text?: string }>;
+        text.text = 'REWRITTEN';
+      },
+      [user('q0'), { role: 'assistant' as const, content: 'a0' }],
+    ],
+  ])('reports %s an after-adapt handler rewrote on a retry nothing answered yet', async (_, rewrite, before) => {
+    const { chef, events } = chefWith();
+    let retry = false;
+    chef.use('after-adapt', (payload) => {
+      if (retry) rewrite(payload as AnthropicPayload);
+    });
+    const asked = [...before, user('q1')];
+
+    await chef.setHistory(asked).compile({ target: 'anthropic' });
+    retry = true;
+    await chef.setHistory(asked).compile({ target: 'anthropic' });
+
+    expect(events.map((e) => e.message)).toEqual([expect.stringContaining('no checkpoint')]);
   });
 
   it('stays quiet across turns that only append, events and all', async () => {
