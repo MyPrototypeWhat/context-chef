@@ -381,16 +381,28 @@ export function sendsNothing(message: Message): boolean {
 // ─── Output: IR → Anthropic ───
 
 /**
- * A shallow copy of `block` without `cache_control`. Breakpoints are the
- * chef's to place (`_cache_breakpoint`); markers carried in from the original
- * could push a request past the API's four-breakpoint limit. The copy also
- * keeps edits to the returned payload out of the stored original.
+ * A copy of `value` whose objects and arrays are new, all the way down.
+ * Strings are shared: nothing can edit one, and a block's base64 is the bulk
+ * of it.
+ */
+function copyBlock<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(copyBlock) as T;
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, copyBlock(v)])) as T;
+}
+
+/**
+ * A copy of `block` without `cache_control`. Breakpoints are the chef's to
+ * place (`_cache_breakpoint`); markers carried in from the original could
+ * push a request past the API's four-breakpoint limit. The copy is deep, so
+ * an edit to the returned payload, however nested, stays out of the stored
+ * original.
  */
 function withoutCacheControl(block: SDKContentBlockParam): SDKContentBlockParam {
   const { cache_control: _dropped, ...rest } = block as SDKContentBlockParam & {
     cache_control?: unknown;
   };
-  return rest as SDKContentBlockParam;
+  return copyBlock(rest) as SDKContentBlockParam;
 }
 
 /**

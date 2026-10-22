@@ -1062,6 +1062,27 @@ describe('fromAnthropic → AnthropicAdapter verbatim replay', () => {
     const second = new AnthropicAdapter().compile(history);
     expect(getContentBlocks(second, 2)[0].cache_control).toBeUndefined();
   });
+
+  it('does not let a nested payload edit leak back either', () => {
+    const { history } = fromAnthropic(toolTurn);
+    const first = new AnthropicAdapter().compile(history);
+    const [, call] = first.messages[1].content as Array<{ input?: { city: string } }>;
+    call.input!.city = 'REDACTED';
+    (getFirstBlock(first, 2) as { content: string }).content = 'edited';
+
+    const second = new AnthropicAdapter().compile(history);
+    expect(getContentBlocks(second, 1)[1]).toEqual({
+      type: 'tool_use',
+      id: 'call_1',
+      name: 'weather',
+      input: { city: 'Oslo' },
+    });
+    expect(getContentBlocks(second, 2)[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'call_1',
+      content: '4°C',
+    });
+  });
 });
 
 function getFirstBlock(result: AnthropicPayload, messageIndex: number): unknown {
