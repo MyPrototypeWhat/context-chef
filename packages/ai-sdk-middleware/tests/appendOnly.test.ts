@@ -403,6 +403,81 @@ describe('appendOnly: checkpoints', () => {
     expect(edited).toEqual([sys, user('q1, edited'), user('q2')]);
   });
 
+  it('keeps reasoning no Anthropic-family provider signed, and still reports the checkpoint', async () => {
+    const { send, breaks } = middlewareWith();
+    // As @ai-sdk/openai hands reasoning back: an item id and encrypted content, no signature.
+    const thought = {
+      type: 'reasoning' as const,
+      text: 'Thought.',
+      providerOptions: { openai: { itemId: 'rs_1', reasoningEncryptedContent: 'enc' } },
+    };
+    const answered: LanguageModelV4Message = {
+      role: 'assistant',
+      content: [thought, { type: 'text', text: 'a1' }],
+    };
+    const thoughtOnly: LanguageModelV4Message = { role: 'assistant', content: [thought] };
+    await send([sys, user('q1')]);
+    await send([sys, user('q1'), answered, user('q2'), thoughtOnly, user('q3')]);
+    const changed = await send([
+      sys,
+      user('q1, edited'),
+      answered,
+      user('q2'),
+      thoughtOnly,
+      user('q3'),
+    ]);
+
+    expect(breaks).toEqual([
+      { reason: 'history', at: 0, signed: false, strippedThinking: 0, sessionId: '__default__' },
+    ]);
+    expect(changed).toEqual([
+      sys,
+      user('q1, edited'),
+      answered,
+      user('q2'),
+      thoughtOnly,
+      user('q3'),
+    ]);
+  });
+
+  it('strips the reasoning Bedrock signed, and a redacted block, as it does a signed one', async () => {
+    const { send, breaks } = middlewareWith();
+    const bedrock: LanguageModelV4Message = {
+      role: 'assistant',
+      content: [
+        { type: 'reasoning', text: 'Thought.', providerOptions: { bedrock: { signature: 'B_1' } } },
+        { type: 'text', text: 'a1' },
+      ],
+    };
+    const redacted: LanguageModelV4Message = {
+      role: 'assistant',
+      content: [
+        { type: 'reasoning', text: '', providerOptions: { anthropic: { redactedData: 'R_2' } } },
+        { type: 'text', text: 'a2' },
+      ],
+    };
+    await send([sys, user('q1')]);
+    await send([sys, user('q1'), bedrock, user('q2'), redacted, user('q3')]);
+    const changed = await send([
+      sys,
+      user('q1, edited'),
+      bedrock,
+      user('q2'),
+      redacted,
+      user('q3'),
+    ]);
+
+    expect(breaks.map((b) => b.strippedThinking)).toEqual([2]);
+    expect(changed).toEqual([
+      sys,
+      user('q1, edited'),
+      reply('a1'),
+      user('q2'),
+      reply('a2'),
+      user('q3'),
+    ]);
+  });
+
   it('reports the checkpoint a moving clear cut makes on every call', async () => {
     const { send, breaks } = middlewareWith({ clear: [{ target: 'tool-result', keepRecent: 1 }] });
     await send(rounds(0));

@@ -70,6 +70,18 @@ const keepLast = (turns: number) => (compressionModel: CompressionModel) =>
   summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: turns });
 /** The integration's own thinking removal; here the IR fields are all there is. */
 const stripIR = ({ thinking: _thinking, redacted_thinking: _redacted, ...rest }: Message) => rest;
+/**
+ * The integration's signed thinking: here, IR thinking with a signature. A
+ * reply whose thinking carries none was not signed, and stays as it is.
+ */
+const signedIR = {
+  count: (m: Message) => (m.thinking?.signature ? 1 : 0) + (m.redacted_thinking ? 1 : 0),
+  strip(m: Message): Message | undefined {
+    if (signedIR.count(m) === 0) return m;
+    const rest = stripIR(m);
+    return rest.content || rest.tool_calls?.length ? rest : undefined;
+  },
+};
 
 /** A pool whose compression model answers `SUMMARY 1`, `SUMMARY 2`, … in turn. */
 function poolWith(
@@ -80,7 +92,7 @@ function poolWith(
   const compressionModel = vi.fn(
     async (_messages: Message[]) => `<summary>SUMMARY ${++summaries}</summary>`,
   );
-  const withoutThinking = vi.fn(stripIR);
+  const strip = vi.fn(signedIR.strip);
   const logger = { warn: vi.fn() };
   const pool = createPrefixSessionPool<string[]>({
     contextWindow: 100,
@@ -88,11 +100,11 @@ function poolWith(
     tokenizer,
     overflow: { strategy: strategy(compressionModel) },
     toHostMessages: (messages) => messages.map((m) => m.content),
-    withoutThinking,
+    signedThinking: { count: signedIR.count, strip },
     logger,
     ...overrides,
   });
-  return { pool, session: pool.get('s1'), compressionModel, withoutThinking, logger };
+  return { pool, session: pool.get('s1'), compressionModel, strip, logger };
 }
 
 /** Nothing configured to compress: the session has no Janitor. */
@@ -165,7 +177,7 @@ describe('PrefixSession: dynamic state as events', () => {
 
 describe('PrefixSession: a compression lands once as the head', () => {
   it('replays the head on later calls instead of summarizing again', async () => {
-    const { session, compressionModel, withoutThinking } = poolWith();
+    const { session, compressionModel, strip } = poolWith();
     const calls = [];
     for (const n of [1, 2, 3, 4, 5, 6]) calls.push(await session.compile(callWith(asked(n))));
     const summary: Message = { role: 'user', content: SUMMARY(1) };
@@ -181,7 +193,7 @@ describe('PrefixSession: a compression lands once as the head', () => {
     expect(calls[4].breaks).toEqual([]);
     expect(calls[5].breaks).toEqual([]);
     // a4 and a5 came after the checkpoint: their thinking was signed over the summary.
-    expect(withoutThinking.mock.calls.map(([message]) => message)).not.toContain(a4);
+    expect(strip.mock.calls.map(([message]) => message)).not.toContain(a4);
     expect(calls[5].messages[2]).toBe(a4);
     expect(calls[5].messages[4]).toBe(a5);
     expectAppendOnly(calls.slice(3).map((c) => c.messages));
@@ -206,7 +218,7 @@ describe('PrefixSession: a compression lands once as the head', () => {
   });
 
   it("strips the kept turns' thinking through the integration, and states the state again", async () => {
-    const { session, withoutThinking } = poolWith({}, keepLast(3));
+    const { session, strip } = poolWith({}, keepLast(3));
     const calls = [];
     for (const n of [1, 2, 3, 4]) {
       calls.push(await session.compile(callWith(asked(n), { dynamicState: stateXml(1) })));
@@ -225,7 +237,7 @@ describe('PrefixSession: a compression lands once as the head', () => {
     expect(calls[3].breaks).toEqual([
       { reason: 'compaction', at: 0, signed: false, strippedThinking: 1 },
     ]);
-    expect(withoutThinking).toHaveBeenCalledWith(a3);
+    expect(strip).toHaveBeenCalledWith(a3);
   });
 
   it("reports only the host's messages to onCompress, never the events", async () => {
@@ -270,7 +282,7 @@ describe('PrefixSession: a compression lands once as the head', () => {
 
 describe('PrefixSession: checkpoints', () => {
   it('strips thinking from a changed message on, for good, and reports it', async () => {
-    const { session, withoutThinking } = poolWith(NO_COMPRESSION);
+    const { session, strip } = poolWith(NO_COMPRESSION);
     for (const n of [1, 2, 3]) await session.compile(callWith(asked(n)));
     const edited = reply('a1, edited', 'SIG_1x');
     const [q1, , q2, a2, q3, a3, q4] = asked(4);
@@ -283,7 +295,39 @@ describe('PrefixSession: checkpoints', () => {
     expect(changed.messages).toEqual([q1, stripIR(edited), q2, stripIR(a2), q3]);
     expect(later.breaks).toEqual([]);
     expect(later.messages).toEqual([q1, stripIR(edited), q2, stripIR(a2), q3, a3, q4]);
-    expect(withoutThinking).toHaveBeenCalledWith(edited);
+    expect(strip).toHaveBeenCalledWith(edited);
+  });
+
+  it('reports a checkpoint over thinking nothing signed, and leaves that thinking in place', async () => {
+    const { session } = poolWith(NO_COMPRESSION);
+    const unsigned: Message = { role: 'assistant', content: 'a1', thinking: { thinking: 'Hm.' } };
+    const [q1, , q2] = asked(2);
+    await session.compile(callWith([q1]));
+    await session.compile(callWith([q1, unsigned, q2]));
+    const changed = await session.compile(callWith([user('q1, edited'), unsigned, q2]));
+
+    expect(changed.breaks).toEqual([
+      { reason: 'history', at: 0, signed: false, strippedThinking: 0 },
+    ]);
+    expect(changed.messages).toEqual([user('q1, edited'), unsigned, q2]);
+  });
+
+  it('leaves out a reply its signed thinking was all of', async () => {
+    const { session } = poolWith(NO_COMPRESSION);
+    const thoughtOnly: Message = {
+      role: 'assistant',
+      content: '',
+      thinking: { thinking: 'Hm.', signature: 'SIG_T' },
+    };
+    const [q1, , q2] = asked(2);
+    await session.compile(callWith([q1]));
+    await session.compile(callWith([q1, thoughtOnly, q2]));
+    const changed = await session.compile(callWith([user('q1, edited'), thoughtOnly, q2]));
+
+    expect(changed.breaks).toEqual([
+      { reason: 'history', at: 0, signed: false, strippedThinking: 1 },
+    ]);
+    expect(changed.messages).toEqual([user('q1, edited'), q2]);
   });
 
   it('treats a new system prompt or tool list as a checkpoint that strips every thinking block', async () => {

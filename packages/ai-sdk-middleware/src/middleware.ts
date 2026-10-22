@@ -30,7 +30,7 @@ import {
   pruneMessages,
 } from 'ai';
 
-import { fromAISDK, toAISDK, withoutReasoning } from './adapter';
+import { fromAISDK, signedReasoning, toAISDK } from './adapter';
 import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig, PrefixBreakEvent } from './types';
@@ -73,7 +73,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   // replayed from — dynamic state alone needs one — so the pool holds
   // sessions, each with its Janitor when compression is configured.
   const sessions = options.appendOnly
-    ? createPrefixSessionPool({ ...janitorConfig, withoutThinking: withoutReasoning })
+    ? createPrefixSessionPool({ ...janitorConfig, signedThinking: signedReasoning })
     : null;
   const janitors = options.appendOnly
     ? null
@@ -259,10 +259,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     });
     for (const brk of breaks) reportBreak({ ...brk, sessionId });
 
-    // A reply that held nothing but reasoning has nothing left to send once stripped.
-    let prompt = toAISDK([...ahead, ...messages]).filter(
-      (m) => m.role !== 'assistant' || m.content.length > 0,
-    );
+    let prompt = toAISDK([...ahead, ...messages]);
     if (options.transformContext) {
       prompt = await options.transformContext(prompt);
     }

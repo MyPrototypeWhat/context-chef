@@ -11,6 +11,7 @@ import {
   ensureValidHistory,
   type Message,
   Prompts,
+  type SignedThinking,
   type ToolCall,
 } from '@context-chef/core';
 
@@ -306,21 +307,43 @@ export function toAISDK(messages: Message[]): LanguageModelV4Prompt {
 }
 
 /**
- * `appendOnly`: `message` without its reasoning, in IR and in the AI SDK
- * content it round-trips through — what a checkpoint leaves of a reply whose
- * reasoning was signed over a prefix that changed. A message without
- * reasoning comes back as it is; a reply that held nothing else is left with
- * no content.
+ * Whether `part` is reasoning an Anthropic-family provider signed over
+ * everything before it, which a changed prefix invalidates. Read off the part
+ * itself, whichever model the call goes to: `@ai-sdk/anthropic` (4.0, also
+ * behind Vertex) keeps the signature, or a redacted block's data, under
+ * `providerOptions.anthropic`, and `@ai-sdk/amazon-bedrock` (4.0) under
+ * `providerOptions.bedrock`. Other providers' reasoning carries no signature
+ * the provider checks against the prefix.
  */
-export function withoutReasoning(message: Message): Message {
-  const msg = asAISDK(message);
-  const original = msg._assistantContent;
-  const content = original?.filter((part) => !isReasoningPart(part));
-  const stripped = content !== undefined && content.length !== original?.length;
-  if (!stripped && !msg.thinking && !msg.redacted_thinking) return message;
-  const { thinking: _thinking, redacted_thinking: _redacted, ...rest } = msg;
-  return stripped ? { ...rest, _assistantContent: content } : rest;
+export function isSignedReasoning(part: {
+  type: string;
+  providerOptions?: SharedV4ProviderOptions;
+}): boolean {
+  if (part.type !== 'reasoning') return false;
+  const options = part.providerOptions;
+  return [options?.anthropic, options?.bedrock].some(
+    (signed) => typeof signed?.signature === 'string' || typeof signed?.redactedData === 'string',
+  );
 }
+
+/**
+ * `appendOnly`: the signed reasoning a checkpoint invalidates, in the AI SDK
+ * content a message round-trips through. A reply stripped of it keeps every
+ * other part, its IR without thinking; one that held nothing else is left
+ * out. Reasoning nothing signed stays.
+ */
+export const signedReasoning: SignedThinking = {
+  count: (message) => asAISDK(message)._assistantContent?.filter(isSignedReasoning).length ?? 0,
+  strip(message) {
+    const msg = asAISDK(message);
+    const original = msg._assistantContent;
+    if (!original?.some(isSignedReasoning)) return message;
+    const content = original.filter((part) => !isSignedReasoning(part));
+    if (content.length === 0) return undefined;
+    const { thinking: _thinking, redacted_thinking: _redacted, ...rest } = msg;
+    return { ...rest, _assistantContent: content };
+  },
+};
 
 /** A reasoning part, or a file the model produced while reasoning. */
 export const isReasoningPart = (part: { type: string }): boolean =>

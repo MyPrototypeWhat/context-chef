@@ -14,7 +14,6 @@ import {
   type PrefixSent,
   plainSent,
   sourceEvents,
-  thinkingBlocks,
 } from '../prefix';
 import type { ChefLogger, Message } from '../types';
 import { SessionPool } from '../utils/sessionPool';
@@ -52,16 +51,28 @@ export interface PrefixSessionWindow {
   readonly breaks: readonly PrefixSessionBreak[];
 }
 
+/**
+ * The thinking a provider signed over everything before it, in an
+ * integration's own format: what a checkpoint invalidates. Only a signature
+ * breaks when the prefix changes, so other reasoning is no part of it — on a
+ * provider that signs nothing, a checkpoint is only reported (spec §6.5).
+ * Told by each part's own provenance, not by the model a call goes to.
+ */
+export interface SignedThinking {
+  /** How many signed thinking blocks `message` holds. */
+  count(message: Message): number;
+  /**
+   * `message` without them (as it is when it holds none), or `undefined`
+   * when they were all it held: a reply with nothing left to send.
+   */
+  strip(message: Message): Message | undefined;
+}
+
 /** Configuration for {@link createPrefixSessionPool}. */
 export interface PrefixSessionPoolConfig<THostMessages>
   extends Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'> {
-  /**
-   * A message without its thinking, in the integration's own format as well
-   * as in IR: what a checkpoint leaves of a message whose thinking was signed
-   * over a prefix that is gone. Asked of every such message, so one without
-   * thinking comes back as it is.
-   */
-  withoutThinking: (message: Message) => Message;
+  /** What a checkpoint takes out of the messages it invalidated. */
+  signedThinking: SignedThinking;
 }
 
 /**
@@ -84,8 +95,9 @@ export interface PrefixSessionPoolConfig<THostMessages>
  *   wait because the request would be past the raw context window.
  * - Anything that rewrote what was sent — an edited history, a new system
  *   prompt or tool list, a compaction, a session that lost its ledger — is a
- *   checkpoint: reported, and the thinking it invalidated is never sent
- *   again. The provider is unknown, so thinking is removed whatever it is.
+ *   checkpoint: reported, and the signed thinking it invalidated is never
+ *   sent again ({@link SignedThinking}); a reply that held nothing else is
+ *   left out. Reasoning nothing signed stays where it was.
  *
  * One call at a time: a call that arrives while another is in progress waits
  * for it, since each one reconciles, appends and commits the same ledger.
@@ -100,7 +112,7 @@ export class PrefixSession {
     /** The session's overflow runner; `null` when the integration compresses nothing. */
     readonly janitor: Janitor | null,
     private readonly options: {
-      readonly withoutThinking: (message: Message) => Message;
+      readonly signedThinking: SignedThinking;
       /** Logs `message` once per pool, by `key`. */
       readonly warnOnce: (key: string, message: string) => void;
     },
@@ -126,6 +138,7 @@ export class PrefixSession {
   private async run(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
     const { history, dynamicState, overflow = true, signal } = call;
     const { ledger, janitor } = this;
+    const { signedThinking } = this.options;
     // One copy, compared and committed alike.
     const sent = plainSent(call.sent);
     const fresh = ledger.lastSent === undefined;
@@ -137,7 +150,7 @@ export class PrefixSession {
       if (!brk) return;
       const strippedThinking = invalidatedMessages(history, ledger)
         .filter((message) => !before.has(message))
-        .reduce((n, message) => n + thinkingBlocks(message), 0);
+        .reduce((n, message) => n + signedThinking.count(message), 0);
       breaks.push({ reason: brk.reason, at: brk.at, signed: brk.signed, strippedThinking });
     };
 
@@ -161,9 +174,11 @@ export class PrefixSession {
       // Asked of every message whose thinking is invalid, whatever its IR says:
       // only the integration knows what its own format carries.
       const invalid = new Set(invalidatedMessages(history, ledger));
-      const messages = ledger
-        .window()
-        .map((message) => (invalid.has(message) ? this.options.withoutThinking(message) : message));
+      const messages = ledger.window().flatMap((message) => {
+        if (!invalid.has(message)) return [message];
+        const stripped = signedThinking.strip(message);
+        return stripped ? [stripped] : [];
+      });
       ledger.commit(history, sent);
       return { messages, breaks };
     } catch (error) {
@@ -205,7 +220,7 @@ export function createPrefixSessionPool<THostMessages>(
   return new SessionPool(
     () =>
       new PrefixSession(janitor?.() ?? null, {
-        withoutThinking: config.withoutThinking,
+        signedThinking: config.signedThinking,
         warnOnce,
       }),
     { maxSize: config.maxSessions },

@@ -252,7 +252,10 @@ export interface ContextChefOptions {
    * - Anything that rewrites what was sent — an edited history, a changed
    *   system prompt, skill or tool list, a compression, a session the process
    *   lost — is a checkpoint, reported to {@link onPrefixBreak}. Reasoning
-   *   signed over what changed is removed from the prompt, for good.
+   *   an Anthropic-family provider signed (`@ai-sdk/anthropic`,
+   *   `@ai-sdk/amazon-bedrock`: the signature rides on the reasoning part) is
+   *   removed from what changed on, for good, and a reply that held nothing
+   *   else is left out; other reasoning carries no such signature and stays.
    *
    * Give each conversation its own `sessionId`: conversations sharing one
    * rewrite each other's history on every call. Sessions live in the

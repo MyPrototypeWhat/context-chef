@@ -57,6 +57,7 @@ export {
   type PrefixSessionCall,
   type PrefixSessionPoolConfig,
   type PrefixSessionWindow,
+  type SignedThinking,
 } from './integrations/prefixSession';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
