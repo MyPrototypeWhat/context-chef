@@ -34,9 +34,12 @@ const sentItems = (payload: PrefixComparable): readonly unknown[] =>
  * `appendOnly` with `pipelineChecks`: the cross-turn invariant (spec §8.1).
  * This compile's payload must still send what the last committed one sent —
  * all of it once a reply answered that request, up to its last reply until
- * then — unless it reported a checkpoint. A violation is reported, never
- * enforced: R6, a slot handler can rewrite anything. Then this payload is
- * staged as the one the next compile compares with, kept once committed.
+ * then — unless it reported a checkpoint. Not a same-length retry only:
+ * thinking is signed only over a request that got a reply, and the host may
+ * append a user turn after one that did not (Ruling E), which moves its
+ * events. A violation is reported, never enforced: R6, a slot handler can
+ * rewrite anything. Then this payload is staged as the one the next compile
+ * compares with, kept once committed.
  */
 async function checkAcrossTurns(ctx: CompileContext, host: PipelineHost): Promise<void> {
   const prefix = ctx.prefix;
