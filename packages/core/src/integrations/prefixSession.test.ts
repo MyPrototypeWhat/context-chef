@@ -386,6 +386,40 @@ describe('PrefixSession: checkpoints', () => {
     ]);
   });
 
+  it('compiles a one-off request as a call would be, and keeps nothing of it', async () => {
+    const { session, compressionModel } = poolWith();
+    await session.compile(callWith(asked(1), { dynamicState: stateXml(1) }));
+    await session.compile(callWith(asked(2), { dynamicState: stateXml(1) }));
+    const [q1, a1, q2, a2, q3, a3, q4] = asked(4);
+    // Sent without tools, the state changed, and 7 messages: over the trigger at a boundary.
+    const oneOff = await session.compile(
+      callWith(asked(4), {
+        sent: { ...SENT, tools: [] },
+        dynamicState: stateXml(2),
+        oneOff: true,
+      }),
+    );
+    const next = await session.compile(callWith(asked(3), { dynamicState: stateXml(2) }));
+
+    expect(oneOff.breaks).toEqual([{ reason: 'tools', at: 0, signed: false, strippedThinking: 3 }]);
+    expect(oneOff.messages).toEqual([
+      q1,
+      stateEvent(1, 1),
+      stripIR(a1),
+      q2,
+      stripIR(a2),
+      q3,
+      stripIR(a3),
+      q4,
+      stateEvent(2, 2),
+    ]);
+    // A compression is the conversation's: a one-off lands none.
+    expect(compressionModel).not.toHaveBeenCalled();
+    // The conversation goes on from the last call, its thinking intact.
+    expect(next.breaks).toEqual([]);
+    expect(next.messages).toEqual([q1, stateEvent(1, 1), a1, q2, a2, q3, stateEvent(2, 2)]);
+  });
+
   it('runs one call at a time, so a second call sees the head the first one landed', async () => {
     const { session, compressionModel } = poolWith();
     for (const n of [1, 2, 3]) await session.compile(callWith(asked(n)));

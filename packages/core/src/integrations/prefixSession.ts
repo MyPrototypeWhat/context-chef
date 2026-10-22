@@ -36,6 +36,13 @@ export interface PrefixSessionCall {
   readonly dynamicState?: string;
   /** `false` leaves the window uncompressed this call: the provider manages the context. Default `true`. */
   readonly overflow?: boolean;
+  /**
+   * A request outside the conversation, such as a structured-output call
+   * made with other tools: compiled as a call would be — its own checkpoints
+   * applied to it — and then rolled back, so it is no checkpoint for the
+   * conversation and lands no compression. Default `false`.
+   */
+  readonly oneOff?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -120,7 +127,10 @@ export class PrefixSession {
     },
   ) {}
 
-  /** The window this call sends. A call that fails keeps nothing: the next one starts where the last success left. */
+  /**
+   * The window this call sends. A call that fails keeps nothing, nor does a
+   * one-off: the next one starts where the last kept call left.
+   */
   compile(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
     const turn = this.last.then(() => this.run(call));
     this.last = turn.catch(() => undefined);
@@ -138,7 +148,7 @@ export class PrefixSession {
   }
 
   private async run(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
-    const { history, dynamicState, overflow = true, signal } = call;
+    const { history, dynamicState, overflow = true, oneOff = false, signal } = call;
     const { ledger, janitor } = this;
     const { signedThinking } = this.options;
     // One copy, compared and committed alike.
@@ -165,7 +175,7 @@ export class PrefixSession {
       report(reconciled.break, reconciled.invalidBefore ?? []);
       if (fresh && breaks[0]?.reason === 'ledger') this.warnLostLedger(history);
 
-      if (overflow && janitor) {
+      if (overflow && janitor && !oneOff) {
         const window = ledger.window();
         const { head } = await compactWindow({ ledger, history, window, runner: janitor, signal });
         if (head) checkpointed(() => ledger.checkpoint('compaction', head.cut, head));
@@ -187,7 +197,8 @@ export class PrefixSession {
         const stripped = signedThinking.strip(message);
         return stripped ? [stripped] : [];
       });
-      ledger.commit(history, sent);
+      if (oneOff) ledger.rollback();
+      else ledger.commit(history, sent);
       return { messages, breaks };
     } catch (error) {
       ledger.rollback();
