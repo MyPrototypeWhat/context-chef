@@ -8,6 +8,8 @@ import {
   anthropicCompactionMessage,
   anthropicServerContextManagement,
   fromAnthropic,
+  ON_DEMAND_COMPACTION_BETA,
+  replayedCompactionBetas,
   withoutThinking,
 } from './anthropicAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
@@ -1204,6 +1206,25 @@ describe('anthropicCompactionMessage', () => {
 
     const result = new AnthropicAdapter().compile([message, { role: 'user', content: 'next' }]);
     expect(result.messages[0]).toEqual({ role: 'assistant', content: [block] });
+  });
+
+  it('needs the on-demand beta in every payload that replays a signed block, and only then', () => {
+    const adapter = new AnthropicAdapter();
+    const next: Message = { role: 'user', content: 'next' };
+    // As fromAnthropic resumes it: the placeholder user turn first, which the target skips.
+    const { history: resumed } = fromAnthropic([
+      { role: 'assistant', content: [block] },
+    ] as unknown as MessageParam[]);
+    const unsigned: Message = { role: 'assistant', content: '', _anthropic_compaction: 'Earlier.' };
+
+    expect(
+      replayedCompactionBetas(adapter.compile([anthropicCompactionMessage(block), next])),
+    ).toEqual([ON_DEMAND_COMPACTION_BETA]);
+    expect(replayedCompactionBetas(adapter.compile([...resumed, next]))).toEqual([
+      ON_DEMAND_COMPACTION_BETA,
+    ]);
+    expect(replayedCompactionBetas(adapter.compile([unsigned, next]))).toEqual([]);
+    expect(replayedCompactionBetas(adapter.compile([next]))).toEqual([]);
   });
 
   it('inlines the summary on targets without compaction blocks', () => {

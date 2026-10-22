@@ -508,6 +508,24 @@ const CLEAR_AT_BETA = 'mid-conversation-system-clear-at-2026-08-21';
 /** On-demand compaction, and every request that replays the signed block it returned. */
 export const ON_DEMAND_COMPACTION_BETA = 'compact-2026-09-04';
 
+/**
+ * The betas a compiled payload needs for the compaction block it replays: a
+ * signed block — what on-demand compaction returns, and what `fromAnthropic`
+ * resumes — needs `compact-2026-09-04` in every request that sends it, however
+ * the window came to start with it.
+ */
+export function replayedCompactionBetas(payload: AnthropicPayload): string[] {
+  const signed = payload.messages.some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((block) => {
+        const { type, signature } = block as { type: string; signature?: unknown };
+        return type === 'compaction' && typeof signature === 'string';
+      }),
+  );
+  return signed ? [ON_DEMAND_COMPACTION_BETA] : [];
+}
+
 /** Maps an edits config to the `anthropic-beta` values its edit types require. */
 function computeAnthropicBetas(config: unknown): string[] {
   const betas = new Set<string>();

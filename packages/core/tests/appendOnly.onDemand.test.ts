@@ -432,6 +432,8 @@ describe('appendOnly onDemandCompaction(): pinned messages it summarized', () =>
     expect(requested(compact).payload.messages).toEqual(payloads[2].messages);
     expect(requested(compact).payload.messages[0]).toEqual(compacted(0));
     expect(payloads[3].messages).toEqual([compacted(1), answer(3), text('user', 'q4')]);
+    // Every request replays a signed block, the resumed one first: each one carries its beta.
+    expect(payloads.map((p) => p.betas)).toEqual([[BETA], [BETA], [BETA], [BETA]]);
   });
 
   it('says nothing again of a pinned message the turns it keeps hold', async () => {
@@ -466,11 +468,29 @@ describe('appendOnly onDemandCompaction(): an unsigned compaction after a signed
       text('user', 'q6'),
     ]);
     expect(payloads[1].messages).toEqual([...payloads[0].messages, answer(6), text('user', 'q7')]);
+    // The block is still sent, signed: so is its beta.
+    expect(payloads.map((p) => p.betas)).toEqual([[BETA], [BETA]]);
     expect(breaks.map((b) => [b.reason, b.signed])).toEqual([
       ['compaction', true],
       ['compaction', false],
     ]);
     expect(invariants).toEqual([]);
+  });
+
+  it("keeps the block's beta once its own fallback summarized after it", async () => {
+    const { chef, compact, breaks } = chefWith();
+
+    // Block 1 lands on asked(4); no attempt after it is signed, so past the raw window the
+    // fallback summarizes behind the block.
+    await converse(chef, [1, 2, 3, 4].map(asked));
+    compact.mockImplementation(failing);
+    const payloads = await converse(chef, [5, 6, 7, 8, 9, 10].map(asked));
+
+    expect(breaks.map((b) => [b.reason, b.signed])).toContainEqual(['compaction', false]);
+    for (const payload of payloads) {
+      expect(payload.messages[0]).toEqual(compacted(1));
+      expect(payload.betas).toEqual([BETA]);
+    }
   });
 
   it('keeps the block first, the notice of a chained reset() after it', async () => {

@@ -1,6 +1,6 @@
 import {
   anthropicServerContextManagement,
-  ON_DEMAND_COMPACTION_BETA,
+  replayedCompactionBetas,
 } from '../../adapters/anthropicAdapter';
 import type { AnthropicPayload, TargetPayload } from '../../types';
 import type { Phase } from '../context';
@@ -22,8 +22,8 @@ const withBetas = (betas: string[] | undefined, more: readonly string[]): string
  * Target adapter + tools + server-managed payload fields.
  *
  * Under `appendOnly` on Anthropic, the adapter renders the messages without
- * the thinking unsigned checkpoints stripped, and the betas a replayed
- * signed compaction needs are added.
+ * the thinking unsigned checkpoints stripped, and a payload that replays a
+ * signed compaction block gets the beta it needs.
  */
 export const adaptPhase: Phase = {
   name: 'adapt',
@@ -59,10 +59,12 @@ export const adaptPhase: Phase = {
       anthropicPayload.context_management = context_management;
       anthropicPayload.betas = withBetas(anthropicPayload.betas, betas);
     }
-    // A signed compaction leads the window: the block it replays needs its beta.
-    if (ctx.target.isAnthropicTarget && ctx.prefix?.ledger.head?.signed) {
+    // A signed compaction block leads the window — this compile's, one an unsigned compaction
+    // kept first since, or one a resumed history opens with: replaying it needs its beta.
+    if (ctx.target.isAnthropicTarget && ctx.prefix) {
       const anthropicPayload = payload as AnthropicPayload;
-      anthropicPayload.betas = withBetas(anthropicPayload.betas, [ON_DEMAND_COMPACTION_BETA]);
+      const needed = replayedCompactionBetas(anthropicPayload);
+      if (needed.length > 0) anthropicPayload.betas = withBetas(anthropicPayload.betas, needed);
     }
 
     ctx.payload = payload;

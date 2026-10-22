@@ -113,7 +113,6 @@
     "prefix": {
       "break": { "at": 0, "reason": "compaction", "signed": false, "strippedThinking": 0 },
       "stable": 0
-    },
-    "removed": ["betas"]
+    }
   }
 ]

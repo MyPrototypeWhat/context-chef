@@ -1,6 +1,7 @@
 [
   {
     "payload": {
+      "betas": ["compact-2026-09-04"],
       "messages": [
         {
           "content": [{ "content": "SUMMARY 0", "signature": "SIG_BLOCK_0", "type": "compaction" }],
