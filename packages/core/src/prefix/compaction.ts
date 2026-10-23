@@ -28,8 +28,8 @@ export interface WindowRunner {
   readRequestBudget(history: Message[], appended: Message[] | null): BudgetInfo;
   /** The raw context window. */
   readonly contextWindow: number;
-  /** Drops a reported usage that may predate the last landed compression (E10). */
-  dropStaleUsage(): void;
+  /** The first reading of `history` after a landing: drops a usage that doesn't describe it (E10). */
+  dropStaleUsage(history: readonly Message[]): void;
 }
 
 /** A pass of the runner over the window, and the head it puts in front of the host history when it landed. */
@@ -126,15 +126,16 @@ function compactionTiming(
  * none configured (the default) nothing is read: nothing can be past it.
  *
  * Reading consumes no reported usage, so a compile that waits leaves it for
- * the one that ends the turn — except one that predates the last landing,
- * which the first reading after it drops (E10). A report describes the
+ * the one that ends the turn — except one the first reading after a landing
+ * drops (E10): fed before the landing, or read over a window that no longer
+ * holds what the landing left. A report describes the
  * request it came back for, possibly several compiles ago, so everything the
  * window gained since that request is counted on top of it. Once a message of
  * that request changed, the report counts a payload that no longer exists,
  * and the whole window is counted locally instead.
  */
 function pastLimit(ledger: PrefixLedger, runner: WindowRunner, window: Message[]): boolean {
-  runner.dropStaleUsage();
+  runner.dropStaleUsage(window);
   if (!Number.isFinite(runner.contextWindow)) return false;
   // A usage fed past `reportTokenUsage()` is taken to cover the window last
   // committed; one that describes none of the window is no report at all.

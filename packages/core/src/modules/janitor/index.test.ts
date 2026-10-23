@@ -535,14 +535,44 @@ describe('Janitor — E10 after a compression', () => {
     expect(second.length).toBeLessThan(5);
   });
 
-  it('trusts a usage reported after a compression: it counted the compressed request', async () => {
+  it('trusts a usage reported after a compression while the history holds its summary', async () => {
+    const { compressionModel, janitor } = setup();
+    const [summary] = await janitor.compress(buildHistory(5));
+
+    // The host kept the summary. 2 × 10 tokens is under the 21-token trigger; the report of
+    // the compressed request says otherwise.
+    janitor.feedTokenUsage(999);
+    await janitor.compress([summary, { role: 'user', content: 'next' }]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+  });
+
+  it('carries what the compression left across a snapshot', async () => {
+    const before = setup();
+    const [summary] = await before.janitor.compress(buildHistory(5));
+    // A chef created per request restores the stored snapshot, then gets the report.
+    const after = setup();
+    after.janitor.restoreState(JSON.parse(JSON.stringify(before.janitor.snapshotState())));
+
+    after.janitor.feedTokenUsage(999);
+    await after.janitor.compress(
+      JSON.parse(JSON.stringify([summary, { role: 'user', content: 'next' }])),
+    );
+
+    expect(after.compressionModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a usage reported after a compression once the history no longer holds its summary', async () => {
     const { compressionModel, janitor } = setup();
     await janitor.compress(buildHistory(5));
 
-    // 2 × 10 tokens is under the 21-token trigger; only the report says otherwise.
+    // The report counted the compressed request; this history is another one.
     janitor.feedTokenUsage(999);
     await janitor.compress(buildHistory(2));
+    expect(compressionModel).toHaveBeenCalledTimes(1);
 
+    janitor.feedTokenUsage(999);
+    await janitor.compress(buildHistory(2));
     expect(compressionModel).toHaveBeenCalledTimes(2);
   });
 
@@ -590,12 +620,14 @@ describe('Janitor — E10 after a compression', () => {
       const before = compressionModel.mock.calls.length;
       const compressed = await janitor.compress(history);
       compressions.push(compressionModel.mock.calls.length - before);
-      // The host keeps the compressed history and appends the next turn.
-      history = [
-        ...compressed,
-        { role: 'assistant', content: `r${turn}` },
-        { role: 'user', content: `u${turn}` },
-      ];
+      // The host keeps the compressed history in its own store and appends the next turn.
+      history = JSON.parse(
+        JSON.stringify([
+          ...compressed,
+          { role: 'assistant', content: `r${turn}` },
+          { role: 'user', content: `u${turn}` },
+        ]),
+      );
     }
 
     expect(compressions).toEqual([1, 0, 0, 0]);

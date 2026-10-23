@@ -6,6 +6,7 @@ import {
   buildToolNameMap,
   collectPinnedTurnIndices,
   extractPinnedMessages,
+  messagesEquivalent,
 } from '../../overflow/turns';
 import {
   advanceWindow,
@@ -444,12 +445,19 @@ export type JanitorConfig = JanitorConfigWithTokenizer | JanitorConfigWithoutTok
 export interface JanitorSnapshot {
   externalTokenUsage: number | null;
   /**
-   * True from a successful compression until the next reported usage: the
-   * next budget check ignores a usage fed before the compression landed.
-   * Named for its pre-4.3 meaning (the next check was skipped outright); the
-   * key is kept so stored snapshots still restore.
+   * True from a successful compression until the next budget check, which
+   * reads a usage reported since only while the history still holds
+   * {@link landedSummary}. Named for its pre-4.3 meaning (the next check was
+   * skipped outright); the key is kept so stored snapshots still restore.
    */
   suppressNextCompression: boolean;
+  /**
+   * The message that compression left in place of what it replaced — its
+   * summary, or the compaction block it landed — while
+   * {@link suppressNextCompression} is true. Absent when it left none, and in
+   * snapshots taken before 4.3; a usage reported since is then ignored.
+   */
+  landedSummary?: Message;
   consecutiveFailures: number;
   /**
    * Persistent anchor document ('incremental-anchored' mode). Null when absent.
@@ -470,6 +478,17 @@ export interface JanitorSnapshot {
    * 4.2 — those restore onto a fresh lineage.
    */
   window?: WindowLineage;
+}
+
+/**
+ * Whether `history` still holds `message`, by content: a host may store and
+ * reload its messages, so identity proves nothing.
+ */
+function holdsMessage(history: readonly Message[], message: Message): boolean {
+  return history.some(
+    (m) =>
+      messagesEquivalent(m, message) && m._anthropic_compaction === message._anthropic_compaction,
+  );
 }
 
 /**
@@ -577,12 +596,15 @@ export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
   /**
-   * Set when a compression lands, cleared by the next report (E10): a usage
-   * still held then was fed before the landing, may describe the payload from
-   * before it, and the next budget check ignores it. One fed after the landing
-   * counted the compressed request and is kept.
+   * Set when a compression lands, cleared by the next budget check (E10). A
+   * usage held at the landing was fed before it and is dropped then; one fed
+   * after it counted the compressed request, and that check reads it only
+   * while the history still holds {@link _landedSummary} — a host that passes
+   * its full history again is sending another request.
    */
   private _reportedUsageStale = false;
+  /** What the last landing left in place of what it replaced, until that check. */
+  private _landedSummary: Message | null = null;
   /**
    * Circuit breaker counter — incremented when the strategy rejects a
    * compression, reset when it produces a usable one. At
@@ -695,6 +717,7 @@ export class Janitor {
     const snapshot: JanitorSnapshot = {
       externalTokenUsage: this._externalTokenUsage,
       suppressNextCompression: this._reportedUsageStale,
+      ...(this._landedSummary ? { landedSummary: structuredClone(this._landedSummary) } : {}),
       consecutiveFailures: this._consecutiveFailures,
       anchorDoc: readAnchorDoc(strategy),
       // Copied: the lineage keeps moving after the snapshot is taken, and a
@@ -708,6 +731,7 @@ export class Janitor {
   public restoreState(state: JanitorSnapshot): void {
     this._externalTokenUsage = state.externalTokenUsage;
     this._reportedUsageStale = state.suppressNextCompression;
+    this._landedSummary = state.landedSummary ?? null;
     this._consecutiveFailures = state.consecutiveFailures ?? 0;
     // A snapshot taken before 4.2 has no lineage. Restoring one starts a fresh
     // one rather than keeping this runner's: the restored history is not the
@@ -728,6 +752,7 @@ export class Janitor {
   public reset(): void {
     this._externalTokenUsage = null;
     this._reportedUsageStale = false;
+    this._landedSummary = null;
     this._consecutiveFailures = 0;
     // A cleared history is a new conversation, not a continuation of the old
     // window chain — the lineage starts over with it.
@@ -749,8 +774,6 @@ export class Janitor {
    */
   public feedTokenUsage(tokenCount: number): void {
     this._externalTokenUsage = tokenCount;
-    // Fed after the last landing, it describes the compressed window.
-    this._reportedUsageStale = false;
   }
 
   /**
@@ -825,19 +848,23 @@ export class Janitor {
   }
 
   /**
-   * E10: a usage fed before a compression landed — while it ran — may
-   * describe the payload from before it, and acting on it would compress the
-   * summary again. The first budget check after the landing drops it — the
+   * E10: the first budget check of `history` after a compression landed — the
    * overflow's own, or a caller that reads the budget without running the
    * overflow (`appendOnly`, while a compaction waits for a tool turn to end).
-   * A usage fed after the landing counted the compressed request and stays.
-   * Does nothing at any other time.
+   * A usage fed since counted the compressed request: it stays while
+   * `history` still holds what the compression left, the host having kept the
+   * compressed history, and is dropped otherwise, since this is then another
+   * request and the window is judged by its own count. (A usage fed before
+   * the landing was dropped there.) Does nothing at any other time.
    *
    * @internal
    */
-  public dropStaleUsage(): void {
+  public dropStaleUsage(history: readonly Message[]): void {
     if (!this._reportedUsageStale) return;
     this._reportedUsageStale = false;
+    const landed = this._landedSummary;
+    this._landedSummary = null;
+    if (landed && holdsMessage(history, landed)) return;
     this._externalTokenUsage = null;
   }
 
@@ -1012,15 +1039,22 @@ export class Janitor {
     // host's store never had: a host slicing it by the count must not lose more.
     const span = appendOnly ? archived.span.filter((m) => !m._chef_event) : archived.span;
     const replacement = replacementOf?.(archived);
-    await this._fireOnCompress(
+    const standsFor =
       archived.summary !== undefined
         ? archived.history[summaryIndex(archived.history)]
         : archived.meta.signed
           ? archived.history[0]
-          : { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) },
+          : null;
+    await this._fireOnCompress(
+      standsFor ?? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) },
       span.length,
       { compressedMessages: span, ...(replacement ? { replacement } : {}) },
     );
+    // E10: a usage held now was fed before the landing and may describe the
+    // payload from before it. One fed from now on is read while the history
+    // holds what this landing left (`dropStaleUsage`).
+    this._externalTokenUsage = null;
+    this._landedSummary = standsFor;
     this._reportedUsageStale = true;
     return archived;
   }
@@ -1078,11 +1112,10 @@ export class Janitor {
   private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
     if (history.length === 0) return null;
 
-    // Still check after dropping a usage that predates the last landing: a host
-    // that kept the compressed history is under budget by its own count or a
-    // report of the compressed request, and a host that passes its full history
-    // again gets it compressed again.
-    this.dropStaleUsage();
+    // Still check after a landing: a host that kept the compressed history is
+    // judged by the report of the compressed request (or its own count), and a
+    // host that passes its full history again gets it compressed again.
+    this.dropStaleUsage(history);
     const budget = this.readBudget(history);
     this._externalTokenUsage = null;
     return force || budget.remaining < 0 ? budget : null;

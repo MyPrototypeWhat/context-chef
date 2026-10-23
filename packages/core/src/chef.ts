@@ -1127,8 +1127,8 @@ export class ContextChef {
       get contextWindow() {
         return chef.janitor.contextWindow;
       },
-      dropStaleUsage() {
-        chef.janitor.dropStaleUsage();
+      dropStaleUsage(history) {
+        chef.janitor.dropStaleUsage(history);
       },
       takeForcedOverflow() {
         const forced = chef._forceOverflow;

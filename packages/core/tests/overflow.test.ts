@@ -29,6 +29,7 @@ import type {
   OpenAIPayload,
   TargetPayload,
 } from '../src/types';
+import { estimateObject } from '../src/utils/tokenUtils';
 
 /** Alias conflicts and no-tokenizer paths warn by design; keep the output clean. */
 const silent: ChefLogger = { warn: () => {} };
@@ -835,43 +836,80 @@ describe('overflow — host passes its full history every turn', () => {
       chef.reportTokenUsage(500);
       return compressionModel();
     };
+    let store = longHistory(8);
     const chef = new ContextChef({
       logger: silent,
-      janitor: { ...runnerConfig, compressionModel: reporting },
+      janitor: {
+        ...runnerConfig,
+        compressionModel: reporting,
+        onCompress: (summary, count) => {
+          store = [summary, ...store.slice(count)];
+        },
+      },
     });
     let compressions = 0;
     chef.on('compress:end', ({ compressed }) => {
       if (compressed) compressions++;
     });
 
-    chef.setHistory(longHistory(8));
-    await chef.compile({ target: 'openai' });
+    await chef.setHistory(store).compile({ target: 'openai' });
     expect(compressions).toBe(1);
 
     // The host now holds the compressed history.
-    chef.setHistory(longHistory(2));
-    await chef.compile({ target: 'openai' });
+    await chef.setHistory(store).compile({ target: 'openai' });
     expect(compressions).toBe(1);
   });
 
-  it('acts on a usage report that comes back after the compression', async () => {
+  it('acts on a usage report of the compressed history the host kept', async () => {
+    let store = longHistory(8);
     const chef = new ContextChef({
       logger: silent,
-      janitor: { ...runnerConfig, compressionModel },
+      janitor: {
+        ...runnerConfig,
+        compressionModel,
+        // The host persists each compression in its store.
+        onCompress: (summary, count) => {
+          store = [summary, ...store.slice(count)];
+        },
+      },
     });
     let compressions = 0;
     chef.on('compress:end', ({ compressed }) => {
       if (compressed) compressions++;
     });
 
-    chef.setHistory(longHistory(8));
-    await chef.compile({ target: 'openai' });
+    await chef.setHistory(store).compile({ target: 'openai' });
 
-    // Six messages are 60 by the tokenizer, at the budget; the report of the
-    // compressed request says 500.
-    chef.setHistory(longHistory(6));
+    // It goes on from what it kept. Six messages are 60 by the tokenizer, at
+    // the budget; the report of the compressed request says 500.
+    store = [...store, ...longHistory(6).slice(store.length)];
     chef.reportTokenUsage(500);
-    await chef.compile({ target: 'openai' });
+    await chef.setHistory(store).compile({ target: 'openai' });
     expect(compressions).toBe(2);
+  });
+
+  it('keeps every payload within the budget without a tokenizer, its usage reported back', async () => {
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { contextWindow: 2000, compressionModel },
+    });
+    const full: Message[] = [];
+    const compressed: boolean[] = [];
+
+    for (let i = 1; i <= 8; i++) {
+      full.push(...turn(i));
+      const history: Message[] = [...full, { role: 'user', content: `next ${i}` }];
+      const payload = (await chef
+        .setHistory(history)
+        .compile({ target: 'openai' })) as OpenAIPayload;
+      compressed.push(payload.messages.length < history.length);
+      // What the provider counted for the request it was sent.
+      chef.reportTokenUsage(estimateObject(payload.messages));
+    }
+
+    // Once the window outgrew the budget, every request after it is compressed.
+    const first = compressed.indexOf(true);
+    expect(first).toBeGreaterThan(0);
+    expect(compressed.slice(first).every(Boolean)).toBe(true);
   });
 });

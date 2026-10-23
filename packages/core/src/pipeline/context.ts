@@ -301,10 +301,11 @@ export interface PipelineHost {
   /** The runner's raw context window (`janitor.contextWindow`). */
   readonly contextWindow: number;
   /**
-   * Drops a reported usage that may predate the last landed compression,
-   * once (E10), as the runner's own budget check does.
+   * The first reading of `history` after a landed compression: drops a
+   * reported usage that doesn't describe it, once (E10), as the runner's own
+   * budget check does.
    */
-  dropStaleUsage(): void;
+  dropStaleUsage(history: readonly Message[]): void;
   /**
    * Reads and clears the pending `requestNewContext()` flag. Read-and-clear
    * because the request belongs to exactly one compile, whatever that compile
