@@ -770,6 +770,20 @@ Everything below is unverified because no key was available. Each line is one ex
 - **TanStack**: a reply dropped from the host's conversation and re-added past its end is replayed (the strip lives in the integration, not the ledger; making it sticky needs a ledger range API).
 - **TanStack 1.x bump**: re-check the thinking representation (redacted data in `signature`), signature capture (`REASONING_ENCRYPTED_VALUE` instead of 0.44's `STEP_FINISHED.signature`), `applyMiddlewareConfig` carry semantics and the `onConfig` phases; a structured-output stream with thinking hasn't been exercised end to end.
 - **Token accumulation**: without `clearAt`, every revision of a frequently changing state stays in the window until a compaction absorbs it; consider delta encoding once there is real usage data.
+- **`strippedThinking` count**: a host that edits the text of a reply whose thinking was already stripped has that thinking counted again (what is stripped is right).
+- **Small cleanups**: the ledger's `headLost` field is unused; `sameOnWire` is imported through the `prefix` barrel in one place and from `prefix/wire` in another; past the raw window a compactor that keeps failing logs "failure 4/3, 5/3…".
+- **Tests**: no test drives a structured-output `chat()` run *with* tools through the real TanStack engine (the one-off rests on the engine handing that firing the run's tools).
+- **Integrations DX**: `details.replacement` is typed `LanguageModelV4Prompt`, so a `generateText` host writing it back into a `ModelMessage` store needs a cast.
+
+## Before release (append-only)
+
+- **Aborted compile drops a finished background job (4.x too)**: the swap clears the job before the Janitor's abort check, so the retry summarizes again. Check the signal before the strategy runs.
+- **`onDemandCompaction` abort**: rejects with the client's error instead of `signal.reason`.
+- **`janitor.overflow({ signal })`** now throws `AbortError` when the signal aborts mid-strategy; say so in its JSDoc and the aborted-compile changeset.
+- **`PrefixSession.ledger`** is a public field on an exported type, so the ledger's API is still reachable; mark it internal or private.
+- **A reshaped summary loses the usage report** (decision needed): a host without a tokenizer that stores the summary in another form (as a system message, with a prefix) no longer matches it, so its report is ignored and a history with an attachment is compressed every turn. The AI SDK middleware hands `onCompress` only the summary text and strips system messages. Either document "keep the summary as handed" or match more leniently.
+- **Background job and its compile's signal** (decision needed): a job aborted by the signal of the compile that started it discards a compaction a client that ignores the signal returned anyway.
+- **Wording**: the append-only changeset says a request past the window "is compacted even when the circuit breaker is open" (it gets an attempt); the persistence-warning changeset's "every `chat()` call" means every call over budget; the README `compress.model` row says `LanguageModelV3` (it's `LanguageModelV4`); the `anthropicWire` docs don't say that a wrapper without it also makes `onDemandCompaction` fall back.
 
 ---
 
