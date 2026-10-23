@@ -1,4 +1,4 @@
-# context-chef API Quick Reference (4.2)
+# context-chef API Quick Reference (4.3)
 
 ## Installation
 

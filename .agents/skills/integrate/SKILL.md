@@ -9,7 +9,7 @@ allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 
 Help the developer add [context-chef](https://github.com/MyPrototypeWhat/context-chef) — a context compiler for AI agents — into their existing project. The goal is to produce working, tailored integration code, not generic boilerplate.
 
-The package is **`@context-chef/core`** (the unscoped `context-chef` name is dead). This skill targets **4.2**. Options marked **(deprecated)** below still work in 4.x and are removed in 5.0 — generate the replacement, not the alias. `MIGRATION-5.md` in the repo has the full list.
+The package is **`@context-chef/core`** (the unscoped `context-chef` name is dead). This skill targets **4.3**. Options marked **(deprecated)** below still work in 4.x and are removed in 5.0 — generate the replacement, not the alias. `MIGRATION-5.md` in the repo has the full list.
 
 ## Step 1: Analyze the developer's project
 
