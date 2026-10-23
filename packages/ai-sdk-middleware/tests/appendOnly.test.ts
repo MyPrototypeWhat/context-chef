@@ -19,10 +19,11 @@ import type {
   LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import { type Message, type OverflowStrategy, Prompts, summarize } from '@context-chef/core';
-import type { ModelMessage } from 'ai';
+import { generateText, type ModelMessage } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 import { checkSentPrefix, type SentPayload } from '../../core/src/pipeline/checks';
 import { compactModelMessages, planCompactionModelMessages } from '../src/compaction';
+import { withContextChef } from '../src/index';
 import { createMiddleware } from '../src/middleware';
 import type { ContextChefOptions, PrefixBreakEvent } from '../src/types';
 
@@ -339,6 +340,81 @@ describe('appendOnly: a compression lands once as the head', () => {
     expect(prompts[4]).toEqual([sys, summary(1), user('q5')]);
     expect(prompts[5]).toEqual([...prompts[4], reply('a5', 'S_5'), user('q6')]);
     expect(breaks.map((b) => b.reason)).toEqual(['compaction']);
+  });
+
+  it('takes the replacement in from a generateText store of ModelMessages, end to end', async () => {
+    // Claude through @ai-sdk/anthropic: reply n comes with reasoning signed SIG_n.
+    const prompts: LanguageModelV4Prompt[] = [];
+    const claude: LanguageModelV4 = {
+      ...mockModel(10),
+      provider: 'anthropic.messages',
+      async doGenerate(options) {
+        prompts.push(options.prompt);
+        const n = prompts.length;
+        const result = await mockModel(10).doGenerate(options);
+        return {
+          ...result,
+          content: [
+            {
+              type: 'reasoning',
+              text: `Reasoning ${n}.`,
+              providerMetadata: { anthropic: { signature: `SIG_${n}` } },
+            },
+            { type: 'text', text: `a${n}` },
+          ],
+        };
+      },
+    };
+    const { compressionModel, strategy } = keepLastTurn();
+    const breaks: PrefixBreakEvent[] = [];
+    let store: ModelMessage[] = [{ role: 'user', content: 'q1' }];
+    const model = withContextChef(claude, {
+      appendOnly: true,
+      logger: { warn: vi.fn() },
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy },
+      onPrefixBreak: (event) => {
+        breaks.push(event);
+      },
+      onCompress: (_summary, count, details) => {
+        // The summary is a user text message, which reads the same as a ModelMessage.
+        store = [...((details.replacement ?? []) as ModelMessage[]), ...store.slice(count)];
+      },
+    });
+    for (let n = 1; n <= 7; n++) {
+      const { response } = await generateText({ model, system: 'You are terse.', messages: store });
+      store = [...store, ...response.messages, { role: 'user', content: `q${n + 1}` }];
+    }
+    /** What the model read: each message's role, then its text and the signature of its reasoning. */
+    const read = (prompt: LanguageModelV4Prompt) =>
+      prompt.map((message) =>
+        typeof message.content === 'string'
+          ? [message.role, message.content]
+          : [
+              message.role,
+              ...message.content.map((part) =>
+                part.type === 'reasoning'
+                  ? `reasoning ${part.providerOptions?.anthropic?.signature}`
+                  : part.type === 'text'
+                    ? part.text
+                    : part.type,
+              ),
+            ],
+      );
+    const system = ['system', 'You are terse.'];
+    const head = ['user', Prompts.getCompactSummaryWrapper('SUMMARY 1')];
+    const q = (n: number) => ['user', `q${n}`];
+    const a = (n: number) => ['assistant', `reasoning SIG_${n}`, `a${n}`];
+
+    // 9 messages at the fifth call: over the trigger, so the summary lands there.
+    expect(read(prompts[3])).toEqual([system, q(1), a(1), q(2), a(2), q(3), a(3), q(4)]);
+    expect(read(prompts[4])).toEqual([system, head, q(5)]);
+    // Sent from the store that took it in: nothing to report, and the reasoning after it replayed.
+    expect(read(prompts[5])).toEqual([system, head, q(5), a(5), q(6)]);
+    expect(read(prompts[6])).toEqual([system, head, q(5), a(5), q(6), a(6), q(7)]);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(breaks.map((b) => [b.reason, b.at, b.strippedThinking])).toEqual([['compaction', 0, 0]]);
   });
 
   it('sends every message once the host edits one it kept behind the summary it wrote back', async () => {
