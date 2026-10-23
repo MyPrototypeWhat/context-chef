@@ -265,7 +265,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 
 ### TanStack AI specifics
 
-- The work happens in each model call's `onConfig` firing (`beforeModel`, `structuredOutput`); `init` passes the config through. `getState` and `transformContext` run there only.
+- The work happens in each model call's `onConfig` firing (`beforeModel`, `structuredOutput`); `init` passes the config through. `getState` and `transformContext` run there only, so a `transformContext` gated on `ctx.phase === 'init'` never runs.
 - Within one `chat()` run the engine carries what `onConfig` returned into the next iteration, and the middleware reads it back as your conversation plus what came since. No other middleware may change the messages it returns (copying them is fine). If you call the middleware hooks yourself, pass one context object per run: a new one per firing reads as a new run, and events repeat.
 - Persist the client's conversation, not the engine's messages. The engine's messages hold the chef's events; sent back in a later run, an event goes out twice, and no checkpoint reports it.
 - The structured-output call goes out without tools. In a run with tools that makes it a one-off: no checkpoint for the conversation, and it carries none of the conversation's signed thinking. In a run without tools it is the run's model call like any other: kept, compressed when over budget, its usage counted. The reply to a request the ledger didn't keep (such a one-off, or a firing that failed and went out as the engine had it) was signed over a prefix the conversation never had: its signed thinking is never replayed, and its usage is not counted.

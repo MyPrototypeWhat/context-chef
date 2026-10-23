@@ -264,7 +264,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 
 ### TanStack AI 的细节
 
-- 工作发生在每次模型调用的 `onConfig` 触发里（`beforeModel`、`structuredOutput`）；`init` 原样放行。`getState` 和 `transformContext` 也只在那里运行。
+- 工作发生在每次模型调用的 `onConfig` 触发里（`beforeModel`、`structuredOutput`）；`init` 原样放行。`getState` 和 `transformContext` 也只在那里运行，所以用 `ctx.phase === 'init'` 做闸门的 `transformContext` 永远不会运行。
 - 在一次 `chat()` run 里，引擎会把 `onConfig` 返回的内容带进下一轮迭代，middleware 再把它读回来，当作你的对话加上之后新增的内容。其他 middleware 不能修改它返回的消息（复制没问题）。如果你自己调用 middleware 的 hook，每次 run 只用一个 context 对象：每次触发都新建一个，会被当成新的 run，事件会重复。
 - 持久化客户端的对话，而不是引擎的消息。引擎的消息里有 chef 的事件；在之后的 run 里发回来，同一个事件会发两次，而且没有任何检查点报告它。
 - 结构化输出那次调用不带 tools 发出。在带 tools 的 run 里，它因此是一次性的：不算这个对话的检查点，也不带对话里任何签名过的 thinking。在不带 tools 的 run 里，它就是这次 run 的一次普通模型调用：会被保留，超预算时照常压缩，用量也计入。ledger 没有保留的请求（这样的一次性调用，或者某次触发失败后按引擎原样发出的请求），它的回复是在一个对话从未有过的前缀上签名的：这个回复里签名过的 thinking 永远不会回放，它的用量也不计入。

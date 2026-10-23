@@ -136,7 +136,7 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。打开 `appendOnly` 时，`init` 原样放行，它只在每次模型调用的触发里、在对话被记录之后运行，添加的内容也不会被带入下一次：它添加或改动的内容，每次调用都必须完全一样、位置也一样。每次调用都会变的内容请放进 `dynamicState`。
+`transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。打开 `appendOnly` 时，`init` 原样放行，所以用 `ctx.phase === 'init'` 做闸门的 hook 永远不会运行。它只在每次模型调用的触发里、在对话被记录之后运行，添加的内容也不会被带入下一次：它添加或改动的内容，每次调用都必须完全一样、位置也一样。每次调用都会变的内容请放进 `dynamicState`。
 
 ### Append-only 模式
 

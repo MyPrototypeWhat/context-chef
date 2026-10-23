@@ -434,12 +434,13 @@ export interface ContextChefOptions {
    * gate on `ctx.phase === 'init'`).
    *
    * With {@link appendOnly} it runs on each model call's firing only, over
-   * the conversation's window, after the ledger recorded it. Whatever it adds
-   * or changes must come out byte-identical, at the same position, on every
-   * call: otherwise thinking signed over an earlier call is replayed over a
-   * prefix it was not signed over, and no checkpoint reports it. Put content
-   * that changes from call to call in `dynamicState`, which is appended once,
-   * as an event. Warned when the middleware is created.
+   * the conversation's window, after the ledger recorded it: `init` passes
+   * through, so a hook gated on `ctx.phase === 'init'` never runs. Whatever
+   * it adds or changes must come out byte-identical, at the same position,
+   * on every call: otherwise thinking signed over an earlier call is replayed
+   * over a prefix it was not signed over, and no checkpoint reports it. Put
+   * content that changes from call to call in `dynamicState`, which is
+   * appended once, as an event. Warned when the middleware is created.
    */
   transformContext?: (
     messages: ModelMessage[],

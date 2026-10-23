@@ -230,7 +230,7 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`. With `appendOnly`, `init` passes through and it runs on each model call's firing only, after the conversation is recorded, and what it adds is not carried: whatever it adds or changes must come out identical, in the same place, on every call. Put content that changes per call in `dynamicState`.
+`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`. With `appendOnly`, `init` passes through, so a hook gated on `ctx.phase === 'init'` never runs. It runs on each model call's firing only, after the conversation is recorded, and what it adds is not carried: whatever it adds or changes must come out identical, in the same place, on every call. Put content that changes per call in `dynamicState`.
 
 ### Append-Only Mode
 
