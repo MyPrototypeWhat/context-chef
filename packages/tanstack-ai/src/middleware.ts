@@ -118,10 +118,12 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
         persistenceWarning: (firedCount) =>
           `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
           'configured. In-flight compression only rewrites the outgoing request — the summary is ' +
-          'not persisted, so your message history re-expands on the next chat() call and the ' +
-          'payload grows unbounded (eventually overflowing the context window). For sustained ' +
-          'compression, persist the summary via `onCompress` (replace the compressed slice in ' +
-          'your own store), or use `compactTanStackMessages` for durable compaction.',
+          'not persisted, so your message history re-expands on the next chat() call, and every ' +
+          'chat() call over budget summarizes all of it again: one more model call per run, over ' +
+          'a history that keeps growing (eventually more than the compression model can read). ' +
+          'For sustained compression, persist the summary via `onCompress` (replace the ' +
+          'compressed slice in your own store), or use `compactTanStackMessages` for durable ' +
+          'compaction.',
       });
   warnAppendOnlyConfig(options, logger, { provider: 'adapter', thinking: 'thinking' });
 

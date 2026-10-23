@@ -1140,6 +1140,25 @@ describe('compress persistence warning', () => {
     expect(persistenceWarns[0][0]).toContain('onCompress');
   });
 
+  it('says what the unpersisted summary costs: the whole history summarized again, not a growing payload', async () => {
+    const warn = vi.fn();
+    const mw = contextChefMiddleware({
+      contextWindow: 100,
+      compress: { adapter: createMockAdapter() as never },
+      logger: { warn },
+    });
+
+    await runCycles(mw, 12);
+
+    const [warning] = warn.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((msg) => msg.includes('compress has fired'));
+    expect(warning).toContain(
+      'every chat() call over budget summarizes all of it again: one more model call per run',
+    );
+    expect(warning).not.toContain('grows unbounded');
+  });
+
   it('does not warn when onCompress is configured', async () => {
     const warn = vi.fn();
     const mw = contextChefMiddleware({

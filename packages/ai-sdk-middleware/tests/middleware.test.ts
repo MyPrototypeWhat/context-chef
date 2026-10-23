@@ -1499,6 +1499,28 @@ describe('compress persistence warning', () => {
     expect(persistenceWarns[0][0]).toContain('onCompress');
   });
 
+  it('says what the unpersisted summary costs: the whole history summarized again, not a growing payload', async () => {
+    const logger = { warn: vi.fn() };
+    const model = createMockModel({ inputTokens: 200 });
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      compress: { model: createMockModel() },
+      logger,
+    });
+
+    for (let i = 0; i < 12; i++) {
+      await runCycle(middleware, model, makeConversation(10));
+    }
+
+    const [warning] = logger.warn.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((msg) => msg.includes('compress has fired'));
+    expect(warning).toContain(
+      'every call over budget summarizes all of it again: one more model call per request',
+    );
+    expect(warning).not.toContain('grows unbounded');
+  });
+
   it('does not warn when onCompress is configured', async () => {
     const logger = { warn: vi.fn() };
     const model = createMockModel({ inputTokens: 200 });

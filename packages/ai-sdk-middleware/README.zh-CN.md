@@ -67,7 +67,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 压缩实际上只会隔次触发,payload 还会持续增长。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactModelMessages`](#compactmodelmessagesmessages-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
+> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 每次调用都要把整段历史重新摘要一遍。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactModelMessages`](#compactmodelmessagesmessages-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
 
 ### 溢出策略（Overflow）
 

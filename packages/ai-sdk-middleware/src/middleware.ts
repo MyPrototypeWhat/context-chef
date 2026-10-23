@@ -82,10 +82,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         persistenceWarning: (firedCount) =>
           `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
           'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
-          'not persisted, so your message history re-expands on the next call and the payload grows ' +
-          'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
-          'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
-          '`compactModelMessages` for durable compaction.',
+          'not persisted, so your message history re-expands on the next call, and every call over ' +
+          'budget summarizes all of it again: one more model call per request, over a history that ' +
+          'keeps growing (eventually more than the compression model can read). For sustained ' +
+          'compression, persist the summary via `onCompress` (replace the compressed slice in your ' +
+          'own store), or use `compactModelMessages` for durable compaction.',
       });
   warnAppendOnlyConfig(options, logger, {
     provider: 'model',

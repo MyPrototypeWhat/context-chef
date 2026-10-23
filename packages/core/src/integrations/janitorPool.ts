@@ -167,7 +167,8 @@ export function janitorFactory<THostMessages>(
 /**
  * Surfaces the in-flight-without-persistence footgun: if compression keeps
  * firing but no `onCompress` is configured, the summary is discarded each
- * call and history re-expands, so the payload grows unbounded.
+ * call and history re-expands, so every call over budget summarizes the whole
+ * growing history again.
  *
  * Shared by every pooled Janitor so the fire count is per middleware
  * instance, not per session.
