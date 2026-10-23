@@ -75,9 +75,8 @@ export interface TruncateOptions {
  * outgoing request but does NOT mutate your message store. For a one-off
  * over-budget spike that is enough. But for a *sustained* over-budget
  * conversation (a long chat, or a long multi-step loop), the un-persisted
- * summary is discarded each call and the history re-expands, so the payload
- * grows unbounded and compression effectively fires only every other call
- * (E10 suppression). For sustained use, persist the summary via
+ * summary is discarded each call and the history re-expands, so every call
+ * summarizes all of it again. For sustained use, persist the summary via
  * {@link ContextChefOptions.onCompress} — replace the compressed slice in
  * your own store — or use `compactModelMessages` for durable compaction. The
  * middleware warns once if compression keeps firing without `onCompress`.

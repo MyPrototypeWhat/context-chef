@@ -78,8 +78,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     : createJanitorPool({
         ...janitorConfig,
         // In-flight-without-persistence footgun: the summary is discarded each
-        // call and history re-expands, so the payload grows unbounded (and
-        // compression effectively skips every other call via E10 suppression).
+        // call and history re-expands, so every call summarizes all of it again.
         persistenceWarning: (firedCount) =>
           `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
           'configured. In-flight compression only rewrites each outgoing request — the summary is ' +

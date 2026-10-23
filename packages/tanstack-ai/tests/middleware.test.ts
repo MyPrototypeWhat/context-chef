@@ -1110,8 +1110,8 @@ describe('compress persistence warning', () => {
       logger: { warn },
     });
 
-    // E10 suppression skips every other call, so several cycles are needed to
-    // reach the threshold; the once-flag keeps it to a single warning.
+    // Several cycles are needed to reach the threshold; the once-flag keeps it
+    // to a single warning.
     await runCycles(mw, 12);
 
     const persistenceWarns = warn.mock.calls.filter(
