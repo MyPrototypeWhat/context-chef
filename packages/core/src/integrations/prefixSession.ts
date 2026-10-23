@@ -116,11 +116,11 @@ export interface PrefixSessionPoolConfig<THostMessages>
  *   left out. Reasoning nothing signed stays where it was.
  *
  * One call at a time: a call that arrives while another is in progress waits
- * for it, since each one reconciles, appends and commits the same ledger. A
- * call aborted while it waits leaves the queue at once. So the summarizer
- * must never call back through the same integration on the same session:
- * its call would wait for the very call that is waiting for its summary, and
- * neither would return.
+ * for it, since each one reconciles, appends and commits the same ledger. So
+ * the summarizer must never call back through the same integration on the
+ * same session: its call would wait for the very call that is waiting for its
+ * summary, and neither would return. A call aborted while it waits leaves
+ * the queue at once.
  * The session lives in its pool, which lives in the integration instance: a
  * restart, an eviction from the pool, or an instance created per request
  * loses the ledger, and the next call is a `ledger` checkpoint.
