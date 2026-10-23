@@ -221,7 +221,7 @@ const wrappedModel = withContextChef(model, options);
 |---|---|---|---|
 | `contextWindow` | `number` | 是 | 模型的上下文窗口大小（token 数） |
 | `compress` | `CompressOptions` | 否 | 启用基于 LLM 的压缩 |
-| `compress.model` | `LanguageModelV3` | 是（如启用 compress） | 用于摘要的便宜模型 |
+| `compress.model` | `LanguageModelV3` | 是（如启用 compress） | 用于摘要的便宜模型。传模型本身，不要传套了这个中间件的模型：打开 `appendOnly` 时，它的调用会排在正等着它出摘要的那次调用后面，两边都不会返回 |
 | `compress.preserveRatio` | `number` | 否 | 保留上下文的比例（默认：`0.8`） |
 | `compress.triggerRatio` | `number` | 否 | 触发压缩的 `contextWindow` 比例（0–1]。默认 `0.7`（"pre-rot" — 模型质量在触及硬窗口上限之前就已下降，所以提前压缩）。设为 `1` 可恢复 4.0 之前"到窗口才触发"的行为。配置了 `tokenizer` 时，`preserveRatio` 作用于 `contextWindow * triggerRatio` 这个有效预算，而不是原始窗口。 |
 | `compress.minShrinkRatio` | `number` | 否 | 压缩结果必须把被压缩片段的字符长度至少缩小该比例（0–1，默认 `0.5`）。未达标的摘要按压缩失败处理：历史保持不变，并计入熔断器。设为 `0` 可关闭该检查。 |

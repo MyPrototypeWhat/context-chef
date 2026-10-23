@@ -249,7 +249,7 @@ const contextChef = contextChefMiddleware({
 const stream = chat({ adapter, messages, threadId: conversationId, middleware: [contextChef] });
 ```
 
-- **每个对话一个 session。** AI SDK 传 `providerOptions.contextChef.sessionId`，TanStack AI 传 `threadId`；TanStack AI 不传时每次 run 都会生成一个新的，于是每次 run 都从空白开始。共用一个 session 的多个对话，每次调用都会互相改写对方的 history。同一个 session 里的调用逐个执行：一次调用会等上一次调用的 compile 结束，摘要也算在内，所以卡住的摘要模型会卡住它所在的 session。
+- **每个对话一个 session。** AI SDK 传 `providerOptions.contextChef.sessionId`，TanStack AI 传 `threadId`；TanStack AI 不传时每次 run 都会生成一个新的，于是每次 run 都从空白开始。共用一个 session 的多个对话，每次调用都会互相改写对方的 history。同一个 session 里的调用逐个执行：一次调用会等上一次调用的 compile 结束，摘要也算在内，所以卡住的摘要模型会卡住它所在的 session。在排队时被 abort 的调用会立刻退出队列。千万不要让摘要模型再经过同一个 middleware 和同一个 session（比如把套了中间件的模型当作 AI SDK 的 `compress.model`，或者 `compressionModel` 里调用了套了中间件的模型）：它的调用会排在正等着它出摘要的那次调用后面，两边都不会返回。
 - **session 存在 middleware 实例里。** 只创建一次，之后复用。每个请求新建一个的话，每个 session 都从空白开始，每次调用都是一次 `ledger` 检查点。进程重启、或者超过 `maxSessions`（默认 256）被淘汰，各算一次。每个 session 会保留它最后一次 compile 的 history。
 - **事件都是 user 消息。** middleware 不知道背后是哪个 provider，而 provider SDK 可能把对话中间的 system 消息挪进 system prompt。所以无论哪种 placement，`dynamicState` 都是一条 user 消息，`clearAt` 被忽略（会 warn）。
 - **压缩只落地一次**，时机和 chef 一样。`onCompress` 只在你的存储需要比进程活得久时才需要：把 `details.replacement`（你自己的消息格式）原样写回 `compressedMessages` 的位置，做法和[上面](#持久化对话)一样。

@@ -14,7 +14,7 @@ With `appendOnly: true`, each conversation (`threadId`) keeps a record of what i
 - The work happens in each model call's `onConfig` firing; `init` passes through. Within a `chat()` run the middleware reads back what the engine carried from its previous firing, so no other middleware may change the messages it returns.
 - In a run with tools, the structured-output call, which goes out without them, is a one-off: no checkpoint for the conversation. In a run without tools it is the run's model call like any other. A reply to a request the record didn't keep (such a one-off, or a firing that failed) never has its signed thinking replayed, and its usage isn't counted.
 - `onCompress` details carry `replacement`: what to write back, in place of `compressedMessages`, to persist the compression.
-- Calls in one conversation run one at a time. Conversations live in the middleware instance, so create it once and reuse it.
+- Calls in one conversation run one at a time, and one aborted while it waits leaves the queue. A summarizer of your own must not call back through this middleware on the same `threadId`: its call would wait behind the call waiting for its summary. Conversations live in the middleware instance, so create it once and reuse it.
 - Creating the middleware warns about `compact` / `clear` settings that move with the conversation (`'before-last-…'`, `keepRecent`), about `transformContext`, whose output must be identical on every call, and that `clearAt` is ignored here.
 
 `compactTanStackMessages` and `planCompactionTanStackMessages` take `keptReasoning: 'keep' | 'strip'` (`KeptReasoningOptions`). A summary you write yourself is a checkpoint nobody signed, so thinking kept after it no longer verifies; `'strip'` removes it.

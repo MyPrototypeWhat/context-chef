@@ -271,7 +271,7 @@ const wrappedModel = withContextChef(model, options);
 |---|---|---|---|
 | `contextWindow` | `number` | Yes | Model's context window size in tokens |
 | `compress` | `CompressOptions` | No | Enable LLM-based compression |
-| `compress.model` | `LanguageModelV3` | Yes (if compress) | Cheap model for summarization |
+| `compress.model` | `LanguageModelV3` | Yes (if compress) | Cheap model for summarization. Pass the model itself, not one wrapped with this middleware: with `appendOnly`, its call would wait behind the very call that is waiting for its summary, and neither would return |
 | `compress.preserveRatio` | `number` | No | Ratio of context to preserve (default: `0.8`) |
 | `compress.triggerRatio` | `number` | No | Fraction of `contextWindow` at which compression triggers (0–1]. Default `0.7` ("pre-rot" — model quality degrades well before the hard window limit, so compress early). Set to `1` to restore the pre-4.0 trigger-at-window behavior. With a `tokenizer`, `preserveRatio` applies to `contextWindow * triggerRatio`, not the raw window. |
 | `compress.minShrinkRatio` | `number` | No | A compression result must shrink the compressed span's character length by at least this ratio (0–1, default `0.5`). A failing summary is treated as a failed compression: history left unchanged, counts toward the circuit breaker. Set to `0` to disable the check. |

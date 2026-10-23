@@ -12,7 +12,7 @@ With `appendOnly: true`, each session (`providerOptions.contextChef.sessionId`) 
 - A compression lands once, and its summary stands in for what it covers on every later call. It waits for a user-turn boundary, unless a tool loop would send a request past `contextWindow`.
 - Anything that rewrites what an earlier call sent is a checkpoint, reported to the new `onPrefixBreak(event)` option (`PrefixBreakEvent`: `sessionId`, `reason`, `at`, `signed`, `strippedThinking`). Reasoning signed through `@ai-sdk/anthropic` or `@ai-sdk/amazon-bedrock` is removed from that point on, and a reply that held nothing else is left out; other reasoning stays.
 - `onCompress` details carry `replacement`: what to write back, in place of `compressedMessages`, to persist the compression.
-- Calls in one session run one at a time. Sessions live in the middleware instance, so create it once and reuse it.
+- Calls in one session run one at a time, and one aborted while it waits leaves the queue. Pass `compress.model` as the model itself, never one wrapped with this middleware: its call would wait behind the call waiting for its summary. Sessions live in the middleware instance, so create it once and reuse it.
 - Creating the middleware warns about `compact` / `clear` settings that move with the conversation (`'before-last-…'`, `keepRecent`), about `transformContext`, whose output must be identical on every call, and that `clearAt` is ignored here.
 
 `compactModelMessages` and `planCompactionModelMessages` take `keptReasoning: 'keep' | 'strip'` (`KeptReasoningOptions`). A summary you write yourself is a checkpoint nobody signed, so reasoning kept after it no longer verifies; `'strip'` removes it.

@@ -109,7 +109,11 @@ export interface PrefixSessionPoolConfig<THostMessages>
  *   left out. Reasoning nothing signed stays where it was.
  *
  * One call at a time: a call that arrives while another is in progress waits
- * for it, since each one reconciles, appends and commits the same ledger.
+ * for it, since each one reconciles, appends and commits the same ledger. A
+ * call aborted while it waits leaves the queue at once. So the summarizer
+ * must never call back through the same integration on the same session:
+ * its call would wait for the very call that is waiting for its summary, and
+ * neither would return.
  * The session lives in its pool, which lives in the integration instance: a
  * restart, an eviction from the pool, or an instance created per request
  * loses the ledger, and the next call is a `ledger` checkpoint.
@@ -134,8 +138,10 @@ export class PrefixSession {
    * one-off: the next one starts where the last kept call left.
    */
   compile(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
-    const turn = this.last.then(() => this.run(call));
-    this.last = turn.catch(() => undefined);
+    const ahead = this.last;
+    const turn = turnOf(ahead, call.signal).then(() => this.run(call));
+    // A call that left the queue holds up no one: the next waits for the calls ahead of it.
+    this.last = turn.catch(() => ahead);
     return turn;
   }
 
@@ -249,6 +255,23 @@ export function createPrefixSessionPool<THostMessages>(
       }),
     { maxSize: config.maxSessions },
   );
+}
+
+/**
+ * When a call's turn comes: once the calls `ahead` of it are done, or — with
+ * `signal` aborted, before or while it waits — never, its abort reason thrown
+ * at once instead of waiting for them.
+ */
+function turnOf(ahead: Promise<unknown>, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal?.reason);
+    if (signal?.aborted) return abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    ahead.then(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    });
+  });
 }
 
 /** Logs each key's message once, for the whole pool. */

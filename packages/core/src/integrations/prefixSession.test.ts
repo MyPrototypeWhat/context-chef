@@ -484,6 +484,49 @@ describe('PrefixSession: checkpoints', () => {
     expect(first.messages).toEqual([summary, qa[6]]);
     expect(second.messages).toEqual([summary, ...qa.slice(6, 9)]);
   });
+
+  it('lets a call aborted while it waits its turn leave at once, and the next one wait on', async () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Summarizes as keepLast(1) does, once released.
+    const { session, compressionModel } = poolWith({}, (model) => {
+      const summarizing = keepLast(1)(model);
+      return {
+        name: 'held',
+        apply: async (input) => {
+          await held;
+          return summarizing.apply(input);
+        },
+      };
+    });
+    for (const n of [1, 2, 3]) await session.compile(callWith(asked(n)));
+    // 7 messages: over the trigger, so it summarizes, and is held there.
+    const first = session.compile(callWith(asked(4)));
+    const controller = new AbortController();
+    const waiting = session.compile(callWith(asked(4), { signal: controller.signal }));
+    let outcome = 'waiting';
+    waiting.then(
+      () => {
+        outcome = 'compiled';
+      },
+      (error: Error) => {
+        outcome = error.name;
+      },
+    );
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const next = session.compile(callWith(asked(5)));
+    release();
+    const summary: Message = { role: 'user', content: SUMMARY(1) };
+
+    expect(outcome).toBe('AbortError');
+    expect((await first).messages).toEqual([summary, qa[6]]);
+    // Behind the first call still, it sees the head that call landed.
+    expect((await next).messages).toEqual([summary, ...qa.slice(6, 9)]);
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('PrefixSession: usage reports', () => {

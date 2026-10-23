@@ -82,7 +82,12 @@ export interface TruncateOptions {
  * middleware warns once if compression keeps firing without `onCompress`.
  */
 export interface CompressOptions {
-  /** A cheap model used for summarization (e.g. openai('gpt-4o-mini')). */
+  /**
+   * A cheap model used for summarization (e.g. openai('gpt-4o-mini')). Pass
+   * the model itself, not one wrapped with this middleware: with
+   * {@link ContextChefOptions.appendOnly}, its call would wait behind the very
+   * call that is waiting for its summary, and neither would return.
+   */
   model: LanguageModelV4;
   /** Ratio of context window to preserve for recent messages. Default: 0.8 */
   preserveRatio?: number;
