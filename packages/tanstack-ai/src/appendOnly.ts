@@ -150,9 +150,11 @@ export function appendOnlyHooks(
         ? objectToXml(await options.dynamicState.getState(), 'dynamic_state')
         : undefined;
 
-      // The structured-output call goes out without tools, a request outside
-      // the conversation: its own checkpoints apply to it alone.
-      const oneOff = ctx.phase === 'structuredOutput';
+      // The structured-output call goes out without tools. In a run with
+      // tools that makes it a request outside the conversation, its own
+      // checkpoints applied to it alone; in a run without, it is the run's
+      // model call like any other.
+      const oneOff = ctx.phase === 'structuredOutput' && config.tools.length > 0;
       const { messages: window, breaks } = await session.compile({
         history,
         // What the model reads ahead of the conversation; provider metadata (a

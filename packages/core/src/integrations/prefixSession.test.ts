@@ -382,6 +382,25 @@ describe('PrefixSession: checkpoints', () => {
     expect(lost[0][0]).toContain('3 replies');
   });
 
+  it('leaves the warning to the next call when a fresh session meets a long history in a one-off', async () => {
+    const { session, logger } = poolWith(NO_COMPRESSION);
+    const lost = () =>
+      logger.warn.mock.calls.filter(([m]) => String(m).includes('ledger is empty'));
+    const oneOff = await session.compile(
+      callWith(asked(4), { sent: { ...SENT, tools: [] }, oneOff: true }),
+    );
+    const warnedAfterOneOff = lost().length;
+    const next = await session.compile(callWith(asked(4)));
+
+    // The one-off applies the checkpoint to itself and keeps nothing; the call after it reports it.
+    expect(oneOff.breaks).toEqual([
+      { reason: 'ledger', at: 0, signed: false, strippedThinking: 3 },
+    ]);
+    expect(warnedAfterOneOff).toBe(0);
+    expect(next.breaks).toEqual([{ reason: 'ledger', at: 0, signed: false, strippedThinking: 3 }]);
+    expect(lost()).toHaveLength(1);
+  });
+
   it('does not warn when the replies a fresh session meets carry no reasoning', async () => {
     const { session, logger } = poolWith(NO_COMPRESSION);
     const plain = asked(4).map(({ thinking: _thinking, ...message }) => message);

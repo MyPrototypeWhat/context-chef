@@ -252,7 +252,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - Anything that rewrites what an earlier call sent (an edited history, a new system prompt, skill or tool list, a compression) is a checkpoint, reported to `onPrefixBreak`. Thinking that carries a signature (`@tanstack/ai-anthropic`) is removed from that point on; unsigned thinking stays.
 - Pass a `threadId` per conversation (otherwise every run starts empty) and create the middleware once: conversations live in the middleware instance.
 - The work happens in each model call's `onConfig` firing; `init` passes through. Within a `chat()` run the engine carries what `onConfig` returned into the next iteration, so no other middleware may change those messages. Persist the client's conversation, not the engine's messages, which hold the middleware's events.
-- The structured-output call, which goes out without tools, is a one-off: no checkpoint for the conversation.
+- In a run with tools, the structured-output call, which goes out without them, is a one-off: no checkpoint for the conversation. In a run without tools it is the run's model call like any other.
 - `compact` / `clear` settings that move with the conversation (`'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
 - To persist a compression, write `details.replacement` back in place of `details.compressedMessages` in `onCompress`.
 
@@ -379,7 +379,7 @@ onUsage (after each model iteration)
   11. Feed back to the conversation's Janitor for the next budget check
 ```
 
-**With `appendOnly`** the flow differs. The `init` firing passes the config through, and the work happens in each model call's firing (`beforeModel`, `structuredOutput`). The middleware first reads back what the engine carried from its own previous firing, `clear` runs before compression, and the conversation's ledger replays what earlier calls sent: a compression lands once instead of being recomputed, and dynamic state is appended as a user-message event when it changes, never replaced and never put in `systemPrompts`. Usage isn't counted for a request the ledger didn't keep: the structured-output call, or a request passed through unchanged after the middleware's config step failed. See [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only#tanstack-ai-specifics).
+**With `appendOnly`** the flow differs. The `init` firing passes the config through, and the work happens in each model call's firing (`beforeModel`, `structuredOutput`). The middleware first reads back what the engine carried from its own previous firing, `clear` runs before compression, and the conversation's ledger replays what earlier calls sent: a compression lands once instead of being recomputed, and dynamic state is appended as a user-message event when it changes, never replaced and never put in `systemPrompts`. Usage isn't counted for a request the ledger didn't keep: the structured-output call of a run with tools, or a request passed through unchanged after the middleware's config step failed. See [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only#tanstack-ai-specifics).
 
 The middleware is **stateful** — it tracks token usage per `ctx.threadId` across calls to know when compression is needed. One middleware instance serves many conversations safely.
 

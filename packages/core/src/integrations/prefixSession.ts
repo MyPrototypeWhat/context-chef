@@ -40,7 +40,9 @@ export interface PrefixSessionCall {
    * A request outside the conversation, such as a structured-output call
    * made with other tools: compiled as a call would be — its own checkpoints
    * applied to it — and then rolled back, so it is no checkpoint for the
-   * conversation and lands no compression. Default `false`.
+   * conversation and lands no compression. A session that lost its ledger
+   * leaves its warning to the next call, which meets the same checkpoint.
+   * Default `false`.
    */
   readonly oneOff?: boolean;
   readonly signal?: AbortSignal;
@@ -173,7 +175,8 @@ export class PrefixSession {
     try {
       const reconciled = ledger.reconcile(history);
       report(reconciled.break, reconciled.invalidBefore ?? []);
-      if (fresh && breaks[0]?.reason === 'ledger') this.warnLostLedger(history);
+      // A one-off keeps nothing: the next call meets the same checkpoint, and warns.
+      if (fresh && !oneOff && breaks[0]?.reason === 'ledger') this.warnLostLedger(history);
 
       if (overflow && janitor && !oneOff) {
         const window = ledger.window();

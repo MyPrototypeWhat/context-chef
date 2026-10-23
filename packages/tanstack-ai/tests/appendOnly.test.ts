@@ -131,7 +131,8 @@ interface Call {
   requestId?: string;
 }
 
-function middlewareWith(options: Partial<ContextChefOptions> = {}) {
+/** `defaults` apply to every call `send` makes, under what the call itself gives. */
+function middlewareWith(options: Partial<ContextChefOptions> = {}, defaults: Call = {}) {
   const warn = vi.fn();
   const breaks: PrefixBreakEvent[] = [];
   const middleware = contextChefMiddleware({
@@ -149,10 +150,11 @@ function middlewareWith(options: Partial<ContextChefOptions> = {}) {
   /** One model call's `onConfig` firing, as the engine makes it before the call. */
   const send = async (
     messages: ModelMessage[],
-    call: Call = {},
+    given: Call = {},
   ): Promise<{ messages: ModelMessage[]; systemPrompts: SystemPrompt[] }> => {
     const onConfig = middleware.onConfig;
     if (!onConfig) throw new Error('onConfig is undefined');
+    const call = { ...defaults, ...given };
     const config: ChatMiddlewareConfig = {
       messages,
       systemPrompts: call.systemPrompts ?? [sys],
@@ -1025,20 +1027,23 @@ describe('appendOnly: requests the conversation does not keep', () => {
 
   /**
    * A middleware whose skill store fails on demand, and the two requests the
-   * conversation does not keep: the structured-output call, and a firing that
-   * failed and went out as the engine had it.
+   * conversation does not keep: the structured-output call of a run with
+   * tools, and a firing that failed and went out as the engine had it.
    */
   function unkept() {
     let failing = false;
-    const recorded = middlewareWith({
-      contextWindow: 100,
-      tokenizer,
-      overflow: { strategy: keepLastTurn().strategy },
-      skill: () => {
-        if (failing) throw new Error('skill store down');
-        return null;
+    const recorded = middlewareWith(
+      {
+        contextWindow: 100,
+        tokenizer,
+        overflow: { strategy: keepLastTurn().strategy },
+        skill: () => {
+          if (failing) throw new Error('skill store down');
+          return null;
+        },
       },
-    });
+      { tools: [search] },
+    );
     const requests = {
       'structured output': (messages: ModelMessage[]) =>
         recorded.send(messages, { phase: 'structuredOutput' }),
@@ -1080,7 +1085,7 @@ describe('appendOnly: requests the conversation does not keep', () => {
   });
 
   it("captures the reply to a run's one-off though another run on the thread kept a firing meanwhile", async () => {
-    const { send, streamed, breaks } = middlewareWith();
+    const { send, streamed, breaks } = middlewareWith({}, { tools: [search] });
     await send(asked(1, true));
     await send(asked(2, true));
     await send(asked(2, true), { requestId: 'A', phase: 'structuredOutput' });
@@ -1103,7 +1108,7 @@ describe('appendOnly: requests the conversation does not keep', () => {
   });
 
   it('keeps stripping such a reply for as long as the host sends it', async () => {
-    const { send, streamed } = middlewareWith();
+    const { send, streamed } = middlewareWith({}, { tools: [search] });
     await send(asked(1, true));
     await send(asked(1, true), { phase: 'structuredOutput' });
     streamed('S_X');
@@ -1116,7 +1121,7 @@ describe('appendOnly: requests the conversation does not keep', () => {
   });
 
   it('holds at most 16 signatures whose reply never came, and forgets one whose reply left', async () => {
-    const { send, streamed } = middlewareWith();
+    const { send, streamed } = middlewareWith({}, { tools: [search] });
     await send(asked(1, true));
     // Seventeen structured calls whose replies the host never stored.
     for (let i = 1; i <= 17; i++) {
@@ -1156,6 +1161,106 @@ describe('appendOnly: requests the conversation does not keep', () => {
     }
     // Counted by its own 5 messages, not 95 + 20: nothing compresses.
     expect(next.messages).toEqual(rounds(2));
+  });
+});
+
+describe('appendOnly: a structured chat() run without tools', () => {
+  /**
+   * chat() with an `outputSchema` and no tools makes one model call, the
+   * structured one: the middleware sees `init`, then `structuredOutput`. Each
+   * run's request is recorded; `usage` is the prompt token count the adapter
+   * reports for it, if any.
+   */
+  function structuredRuns(
+    options: Partial<ContextChefOptions>,
+    usage?: (sent: ModelMessage[]) => number,
+  ) {
+    const warn = vi.fn();
+    const breaks: PrefixBreakEvent[] = [];
+    const middleware = contextChefMiddleware({
+      appendOnly: true,
+      logger: { warn },
+      onPrefixBreak: (event) => {
+        breaks.push(event);
+      },
+      ...options,
+    });
+    const requests: ModelMessage[][] = [];
+    const adapter = {
+      kind: 'text' as const,
+      name: 'mock',
+      model: 'mock-model',
+      '~types': {} as Record<string, unknown>,
+      chatStream: () => {
+        throw new Error('a run without tools makes no chat call');
+      },
+      structuredOutput: async ({ chatOptions }: { chatOptions: { messages: ModelMessage[] } }) => {
+        requests.push(chatOptions.messages);
+        const promptTokens = usage?.(chatOptions.messages);
+        return {
+          data: { answer: requests.length },
+          rawText: `{"answer":${requests.length}}`,
+          ...(promptTokens === undefined
+            ? {}
+            : { usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 } }),
+        };
+      },
+    };
+    const run = (messages: ModelMessage[]) =>
+      chat({
+        adapter: adapter as never,
+        messages,
+        threadId: 'conv',
+        outputSchema: {
+          type: 'object',
+          properties: { answer: { type: 'number' } },
+          required: ['answer'],
+        },
+        middleware: [middleware],
+      } as never);
+    return { run, requests, warn, breaks };
+  }
+
+  it("sends its one call as the conversation's: kept, compressed, its signed thinking replayed", async () => {
+    const { compressionModel, strategy } = keepLastTurn();
+    const { run, requests, warn, breaks } = structuredRuns({
+      contextWindow: 100,
+      tokenizer,
+      overflow: { strategy },
+    });
+    for (const n of [1, 3, 5, 7, 9]) await run(asked(n, true));
+
+    expect(requests).toEqual([
+      asked(1, true),
+      asked(3, true),
+      // 9 messages are over the trigger, at a turn boundary: the summary lands.
+      [summary(1), user('q5')],
+      // It stands in from then on, and the thinking after it is replayed.
+      [summary(1), ...asked(7, true).slice(8)],
+      // 10 messages: over the trigger once more.
+      [summary(2), user('q9')],
+    ]);
+    expect(compressionModel).toHaveBeenCalledTimes(2);
+    expect(breaks.map((b) => [b.reason, b.strippedThinking])).toEqual([
+      ['compaction', 0],
+      ['compaction', 0],
+    ]);
+    expect(warnings(warn, 'ledger is empty')).toEqual([]);
+  });
+
+  it('counts the usage its call reports', async () => {
+    const { compressionModel, strategy } = keepLastTurn();
+    const { run, requests } = structuredRuns(
+      { contextWindow: 100, tokenizer, overflow: { strategy } },
+      () => 95,
+    );
+    await run(asked(1, true));
+    await run(asked(2, true));
+
+    // 95 reported for the one message sent, plus 20 for the 2 since: past the
+    // raw window, though the 3 messages count 30.
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+    expect(requests[1]).toEqual([summary(1), user('q2')]);
   });
 });
 
