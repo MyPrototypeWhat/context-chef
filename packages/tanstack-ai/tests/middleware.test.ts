@@ -528,6 +528,25 @@ describe('hook robustness — never break the host chat() run', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('onConfig transform failed'));
   });
 
+  it('onConfig passes an aborted run through without a warning: nothing of it goes out', async () => {
+    const warn = vi.fn();
+    const controller = new AbortController();
+    const mw = contextChefMiddleware({
+      transformContext: () => {
+        controller.abort();
+        throw controller.signal.reason;
+      },
+      logger: { warn },
+    });
+    const result = await mw.onConfig?.(
+      createMockCtx({ signal: controller.signal }),
+      createMockConfig([{ role: 'user', content: 'hi' }]),
+    );
+
+    expect(result).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('onUsage swallows janitor errors', () => {
     const warn = vi.fn();
     const mw = contextChefMiddleware({

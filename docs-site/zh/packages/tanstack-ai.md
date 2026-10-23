@@ -158,7 +158,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 
 ### 永不打断 host run
 
-在 `@tanstack/ai` 0.44 中，middleware 钩子抛异常会让整个 `chat()` run 失败。本 middleware 包裹每个钩子体：遇到意外错误时通过配置的 `logger` 记录，并原样透传请求，而不是打断你的调用。
+在 `@tanstack/ai` 0.44 中，middleware 钩子抛异常会让整个 `chat()` run 失败。本 middleware 包裹每个钩子体：遇到意外错误时通过配置的 `logger` 记录，并原样透传请求，而不是打断你的调用。已经被 abort 的 run 也原样透传，但不记录告警，因为它什么都不会发出去。
 
 ## 持久化压缩
 

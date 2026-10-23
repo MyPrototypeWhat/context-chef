@@ -158,7 +158,7 @@ Pass a `threadId` per conversation (otherwise each run starts empty), and create
 
 ### Never Breaks the Host Run
 
-In `@tanstack/ai` 0.44, a middleware hook that throws fails the whole `chat()` run. This middleware wraps every hook body: on an unexpected error it logs through the configured `logger` and passes the request through unchanged instead of breaking your call.
+In `@tanstack/ai` 0.44, a middleware hook that throws fails the whole `chat()` run. This middleware wraps every hook body: on an unexpected error it logs through the configured `logger` and passes the request through unchanged instead of breaking your call. A run that was already aborted is passed through without the warning, since nothing of it goes out.
 
 ## Durable Compaction
 

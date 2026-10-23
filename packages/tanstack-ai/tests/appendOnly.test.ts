@@ -941,9 +941,10 @@ describe('appendOnly: checkpoints', () => {
     const controller = new AbortController();
     const aborted = send(edited, { signal: controller.signal });
     controller.abort();
-    // onConfig never fails the run: the request goes out as the host sent it.
+    // onConfig never fails the run: it passes the config through, and says
+    // nothing of a run that was aborted, since nothing of it goes out.
     expect((await aborted).messages).toBe(edited);
-    expect(warnings(warn, 'onConfig transform failed')).toHaveLength(1);
+    expect(warnings(warn, 'onConfig transform failed')).toEqual([]);
     expect(breaks).toEqual([]);
 
     aborting = false;

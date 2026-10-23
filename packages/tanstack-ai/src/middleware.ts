@@ -47,7 +47,8 @@ import type { ContextChefOptions, DynamicStateConfig } from './types';
  * Robustness: middleware hooks that throw FAIL the host chat() run in
  * TanStack AI. Every hook body is wrapped — on an unexpected error the
  * middleware logs through the configured logger and passes the request
- * through unchanged instead of breaking the run.
+ * through unchanged instead of breaking the run. A run already aborted is
+ * passed through without the warning: nothing of it goes out.
  *
  * @example
  * ```typescript
@@ -255,6 +256,8 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       try {
         return await (appendOnly ? appendOnly.config(ctx, config) : transformConfig(ctx, config));
       } catch (error) {
+        // An aborted run sends nothing: there is no request to warn about.
+        if (ctx.signal?.aborted) return undefined;
         logger.warn(
           '[context-chef] onConfig transform failed; passing the request through unchanged. ' +
             `Error: ${error instanceof Error ? error.message : String(error)}`,
