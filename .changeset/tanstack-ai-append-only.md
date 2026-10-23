@@ -17,6 +17,6 @@ With `appendOnly: true`, each conversation (`threadId`) keeps a record of what i
 - Calls in one conversation run one at a time, and one aborted while it waits leaves the queue. A summarizer of your own must not call back through this middleware on the same `threadId`: its call would wait behind the call waiting for its summary. Conversations live in the middleware instance, so create it once and reuse it.
 - Creating the middleware warns about `compact` / `clear` settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`), about `transformContext`, whose output must be identical on every call, and that `clearAt` is ignored here.
 
-`compactTanStackMessages` and `planCompactionTanStackMessages` take `keptReasoning: 'keep' | 'strip'` (`KeptReasoningOptions`). A summary you write yourself is a checkpoint nobody signed, so thinking kept after it no longer verifies; `'strip'` removes it.
+`compactTanStackMessages` and `planCompactionTanStackMessages` take `keptReasoning: 'keep' | 'strip'` (`KeptReasoningOptions`). A summary you write yourself is a checkpoint nobody signed, so thinking kept after it no longer verifies; `'strip'` removes the thinking that carries a signature, and unsigned thinking stays.
 
 With `appendOnly` off, nothing changes.

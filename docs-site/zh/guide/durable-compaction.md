@@ -109,7 +109,7 @@ if (toSummarize.length > 0) {
 
 ## 保留轮次的推理
 
-你自己写的摘要，是对之前轮次的一次没有任何 provider 签名的改写。在 Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 上，摘要之后保留下来的轮次，它们的推理签名覆盖了被摘要替换掉的那些消息，所以已经无法通过验证（见 [Claude thinking 前缀校验](/zh/guide/thinking-prefix)）。`compactModelMessages`、`compactTanStackMessages` 和对应的 `planCompaction…` 都接受 `keptReasoning: 'strip'`：它去掉保留消息里的推理，只剩推理的回复整条去掉，结果可以直接发送。默认是 `'keep'`。
+你自己写的摘要，是对之前轮次的一次没有任何 provider 签名的改写。在 Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 上，摘要之后保留下来的轮次，它们的推理签名覆盖了被摘要替换掉的那些消息，所以已经无法通过验证（见 [Claude thinking 前缀校验](/zh/guide/thinking-prefix)）。`compactModelMessages`、`compactTanStackMessages` 和对应的 `planCompaction…` 都接受 `keptReasoning: 'strip'`：它去掉保留消息里这些签名过的推理，只剩推理的回复整条去掉，结果可以直接发送。只去掉 Anthropic 系 provider 签名的推理：经 `@ai-sdk/anthropic` 或 `@ai-sdk/amazon-bedrock` 签名的 reasoning part，以及带签名的 TanStack thinking 块（`@tanstack/ai-anthropic`）。其他 provider 的推理没有这种签名，会保留。默认是 `'keep'`。
 
 ```typescript
 messages = await compactModelMessages(messages, summarizerModel, {

@@ -372,7 +372,7 @@ if (next !== messages) await save(next); // skip persistence on a no-op
 - System messages are preserved verbatim and never summarized.
 - Returns the **same `messages` reference** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — so you can skip persistence on a no-op via `next !== messages`. Safe to call unconditionally; throws only if the model call throws.
 - Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
-- `keptReasoning: 'strip'` removes the reasoning from the kept messages, and drops a reply that held nothing else. A summary you write yourself is a checkpoint nobody signed, so on Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 reasoning kept after it no longer verifies; `'strip'` returns a history you can send as it is. Default `'keep'`. `planCompactionModelMessages` takes it too.
+- `keptReasoning: 'strip'` removes the signed reasoning (`@ai-sdk/anthropic`, `@ai-sdk/amazon-bedrock`) from the kept messages, and drops a reply that held nothing else; other providers' reasoning stays. A summary you write yourself is a checkpoint nobody signed, so on Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 reasoning kept after it no longer verifies; `'strip'` returns a history you can send as it is. Default `'keep'`. `planCompactionModelMessages` takes it too.
 
 > Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
 

@@ -321,7 +321,7 @@ if (next !== messages) await save(next); // no-op 时跳过持久化
 - system 消息逐字保留、永不被摘要。
 - 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回同一个 `messages` 引用** —— 因此可通过 `next !== messages` 在 no-op 时跳过持久化。可无条件调用;仅当模型调用抛错时才抛错。
 - 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
-- `keptReasoning: 'strip'` 去掉保留消息里的推理，只剩推理的回复整条去掉。你自己写的摘要是一个没人签名的检查点，在 Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 上，保留在它后面的推理就无法再通过验证；`'strip'` 返回一个可以直接发送的 history。默认 `'keep'`。`planCompactionModelMessages` 同样接受它。
+- `keptReasoning: 'strip'` 去掉保留消息里签名过的推理（`@ai-sdk/anthropic`、`@ai-sdk/amazon-bedrock`），只剩推理的回复整条去掉；其他 provider 的推理保留。你自己写的摘要是一个没人签名的检查点，在 Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 上，保留在它后面的推理就无法再通过验证；`'strip'` 返回一个可以直接发送的 history。默认 `'keep'`。`planCompactionModelMessages` 同样接受它。
 
 > 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
 

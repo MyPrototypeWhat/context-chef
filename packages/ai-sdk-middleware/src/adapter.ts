@@ -345,10 +345,6 @@ export const signedReasoning: SignedThinking = {
   },
 };
 
-/** A reasoning part, or a file the model produced while reasoning. */
-export const isReasoningPart = (part: { type: string }): boolean =>
-  part.type === 'reasoning' || part.type === 'reasoning-file';
-
 export function stringifyToolOutput(output: LanguageModelV4ToolResultOutput): string {
   switch (output.type) {
     case 'text':

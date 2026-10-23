@@ -109,7 +109,7 @@ if (toSummarize.length > 0) {
 
 ## Kept reasoning
 
-A summary you write yourself is a rewrite of earlier turns that no provider signed. On Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 the reasoning of the turns kept after it was signed over the messages the summary replaced, so it no longer verifies (see [Claude Thinking Prefix Check](/guide/thinking-prefix)). `compactModelMessages`, `compactTanStackMessages` and their `planCompaction…` versions take `keptReasoning: 'strip'`, which removes the reasoning from the kept messages, and drops a reply that held nothing else, so the result can be sent as it is. The default is `'keep'`.
+A summary you write yourself is a rewrite of earlier turns that no provider signed. On Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 the reasoning of the turns kept after it was signed over the messages the summary replaced, so it no longer verifies (see [Claude Thinking Prefix Check](/guide/thinking-prefix)). `compactModelMessages`, `compactTanStackMessages` and their `planCompaction…` versions take `keptReasoning: 'strip'`, which removes that signed reasoning from the kept messages, and drops a reply that held nothing else, so the result can be sent as it is. Only reasoning an Anthropic-family provider signed is removed: reasoning parts signed through `@ai-sdk/anthropic` or `@ai-sdk/amazon-bedrock`, and TanStack thinking blocks that carry a signature (`@tanstack/ai-anthropic`). Other providers' reasoning carries no such signature, and stays. The default is `'keep'`.
 
 ```typescript
 messages = await compactModelMessages(messages, summarizerModel, {

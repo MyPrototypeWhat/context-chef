@@ -15,6 +15,6 @@ With `appendOnly: true`, each session (`providerOptions.contextChef.sessionId`) 
 - Calls in one session run one at a time, and one aborted while it waits leaves the queue. Pass `compress.model` as the model itself, never one wrapped with this middleware: its call would wait behind the call waiting for its summary. Sessions live in the middleware instance, so create it once and reuse it.
 - Creating the middleware warns about `compact` / `clear` settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`), about `transformContext`, whose output must be identical on every call, and that `clearAt` is ignored here.
 
-`compactModelMessages` and `planCompactionModelMessages` take `keptReasoning: 'keep' | 'strip'` (`KeptReasoningOptions`). A summary you write yourself is a checkpoint nobody signed, so reasoning kept after it no longer verifies; `'strip'` removes it.
+`compactModelMessages` and `planCompactionModelMessages` take `keptReasoning: 'keep' | 'strip'` (`KeptReasoningOptions`). A summary you write yourself is a checkpoint nobody signed, so reasoning kept after it no longer verifies; `'strip'` removes the reasoning signed through `@ai-sdk/anthropic` or `@ai-sdk/amazon-bedrock`, and other reasoning stays.
 
 With `appendOnly` off, nothing changes.

@@ -260,7 +260,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **什么算变化。** system prompt 按文本比较，tools 按真正发给模型的内容比较；缓存断点挪到它们身上不算变化。一次调用换了一组工具（`activeTools`、`prepareStep`）就是一次 `tools` 检查点。消息按 ContextChef 自己的消息格式比较（文本、tool call、推理文本、附件的媒体类型）：只改了 provider 元数据、内联的 provider 端执行的工具结果，或者文件的字节，都检测不到。
 - **`onPrefixBreak`** 收到 `{ sessionId, reason, at, signed, strippedThinking }`。`at` 是这次调用消息里的下标，AI SDK 下从 system 消息之后算起。
 - **这里没有签名压缩。** middleware 无法渲染 provider 自己的请求，所以 `onDemandCompaction` 总是运行它的 fallback。
-- **持久化压缩。** `compactModelMessages`、`compactTanStackMessages` 和对应的 `planCompaction…` 都接受 `keptReasoning: 'strip'`。你自己写的摘要是一个没人签名的检查点，保留在它后面的推理就无法再通过验证；`'strip'` 返回一个可以直接发送的 history。
+- **持久化压缩。** `compactModelMessages`、`compactTanStackMessages` 和对应的 `planCompaction…` 都接受 `keptReasoning: 'strip'`。你自己写的摘要是一个没人签名的检查点，保留在它后面的推理就无法再通过验证；`'strip'` 像检查点一样去掉签名过的推理，返回一个可以直接发送的 history。
 
 ### TanStack AI 的细节
 

@@ -1407,4 +1407,25 @@ describe('durable compaction: keptReasoning', () => {
       { role: 'assistant', content: 'a3' },
     ]);
   });
+
+  it("'strip' keeps thinking nothing signed, such as OpenAI's or Gemini's", async () => {
+    const unsigned = [{ content: 'Thought aloud.' }];
+    const mixed: ModelMessage[] = [
+      ...messages.slice(0, 3),
+      { role: 'assistant', content: null, thinking: unsigned },
+      { role: 'user', content: 'q3' },
+      { role: 'assistant', content: 'a3', thinking: [...thinking, ...unsigned] },
+    ];
+    const result = await compactTanStackMessages(mixed, summarizer as never, {
+      keepRecentTurns: 4,
+      keptReasoning: 'strip',
+    });
+
+    expect(result.slice(1)).toEqual([
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: null, thinking: unsigned },
+      { role: 'user', content: 'q3' },
+      { role: 'assistant', content: 'a3', thinking: unsigned },
+    ]);
+  });
 });

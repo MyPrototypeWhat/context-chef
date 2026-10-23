@@ -7,7 +7,7 @@ import {
 } from '@context-chef/core';
 import type { AnyTextAdapter, ModelMessage } from '@tanstack/ai';
 
-import { fromTanStackAI, toTanStackAI } from './adapter';
+import { fromTanStackAI, isSigned, toTanStackAI } from './adapter';
 import { createCompressionAdapter } from './middleware';
 
 export type { PlanCompactionOptions } from '@context-chef/core';
@@ -22,13 +22,15 @@ export type SummarizeMessagesOptions = SummarizeHistoryOptions;
 /** What the durable helpers do with the thinking of the messages they keep. */
 export interface KeptReasoningOptions {
   /**
-   * The `thinking` of the messages kept after the summary:
+   * The signed `thinking` of the messages kept after the summary:
    * - `'keep'` (default): kept as it is.
    * - `'strip'`: removed, and with it a reply that held nothing else. A
    *   summary you write yourself is a checkpoint nobody signed: on a model
    *   that signs its thinking over everything before it (Claude Fable 5.1 /
    *   Opus 5.5 / Sonnet 5.5 / Haiku 5.5), thinking kept behind a new summary
-   *   no longer verifies. `'strip'` returns a history you can send as it is.
+   *   no longer verifies. Only a block that carries a signature
+   *   (`@tanstack/ai-anthropic`) is removed; unsigned thinking stays.
+   *   `'strip'` returns a history you can send as it is.
    */
   keptReasoning?: 'keep' | 'strip';
 }
@@ -46,7 +48,7 @@ export interface CompactionPlanTanStackMessages {
  * {@link fromTanStackAI}, splits on turn boundaries via core's
  * `planCompaction`, and converts each slice back via {@link toTanStackAI}.
  * Summarize `toSummarize`, then persist `[<summary>, ...toKeep]`.
- * With `keptReasoning: 'strip'`, `toKeep` comes without thinking
+ * With `keptReasoning: 'strip'`, `toKeep` comes without signed thinking
  * ({@link KeptReasoningOptions}).
  *
  * Unlike the AI SDK sibling (`planCompactionModelMessages`), the plan has no
@@ -68,7 +70,7 @@ export function planCompactionTanStackMessages(
   const toKeep = toTanStackAI(plan.toKeep);
   return {
     toSummarize: toTanStackAI(plan.toSummarize),
-    toKeep: options.keptReasoning === 'strip' ? withoutThinking(toKeep) : toKeep,
+    toKeep: options.keptReasoning === 'strip' ? withoutSignedThinking(toKeep) : toKeep,
   };
 }
 
@@ -87,8 +89,8 @@ export function planCompactionTanStackMessages(
  * old enough to compact or the summarizer yields no text, so callers can skip
  * persistence on a no-op via `result === messages`. Throws only if the model
  * call throws. With `keptReasoning: 'strip'` the kept messages come without
- * thinking ({@link KeptReasoningOptions}); a no-op keeps it, since nothing was
- * summarized.
+ * signed thinking ({@link KeptReasoningOptions}); a no-op keeps it, since
+ * nothing was summarized.
  *
  * The summary is inserted as a `user` message (Claude Code style) wrapped
  * with the "continued conversation" framing, so when the kept tail also
@@ -112,14 +114,16 @@ export async function compactTanStackMessages(
   if (result === ir) return messages;
   const compacted = toTanStackAI(result);
   // Only the kept turns hold thinking: the summary has none.
-  return options.keptReasoning === 'strip' ? withoutThinking(compacted) : compacted;
+  return options.keptReasoning === 'strip' ? withoutSignedThinking(compacted) : compacted;
 }
 
-/** `messages` without thinking, and without a reply that held nothing else. */
-function withoutThinking(messages: ModelMessage[]): ModelMessage[] {
+/** `messages` without signed thinking, and without a reply that held nothing else. */
+function withoutSignedThinking(messages: ModelMessage[]): ModelMessage[] {
   return messages.flatMap((message): ModelMessage[] => {
-    if (!message.thinking?.length) return [message];
-    const { thinking: _thinking, ...rest } = message;
+    if (!message.thinking?.some(isSigned)) return [message];
+    const { thinking = [], ...rest } = message;
+    const unsigned = thinking.filter((block) => !isSigned(block));
+    if (unsigned.length > 0) return [{ ...rest, thinking: unsigned }];
     return rest.content?.length || rest.toolCalls?.length ? [rest] : [];
   });
 }

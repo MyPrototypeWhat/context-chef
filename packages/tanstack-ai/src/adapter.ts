@@ -220,7 +220,7 @@ type ThinkingBlock = NonNullable<ModelMessage['thinking']>[number];
  * adapters hand thinking back unsigned (Gemini's thought signatures ride on
  * tool calls).
  */
-const isSigned = (block: ThinkingBlock): boolean =>
+export const isSigned = (block: ThinkingBlock): boolean =>
   typeof block.signature === 'string' && block.signature !== '';
 
 /**

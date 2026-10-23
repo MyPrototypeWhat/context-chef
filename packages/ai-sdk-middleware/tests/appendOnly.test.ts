@@ -728,7 +728,12 @@ describe('appendOnly: construction warnings', () => {
 
 describe('durable compaction: keptReasoning', () => {
   const summarizer = mockModel();
-  const thought = { type: 'reasoning' as const, text: 'Thought.' };
+  /** Signed through `@ai-sdk/anthropic`: a new summary in front of it breaks the signature. */
+  const thought = {
+    type: 'reasoning' as const,
+    text: 'Thought.',
+    providerOptions: { anthropic: { signature: 'S' } },
+  };
   const messages: ModelMessage[] = [
     { role: 'system', content: 'You are terse.' },
     { role: 'user', content: 'q1' },
@@ -778,6 +783,31 @@ describe('durable compaction: keptReasoning', () => {
       { role: 'user', content: 'q2' },
       { role: 'user', content: 'q3' },
       { role: 'assistant', content: [{ type: 'text', text: 'a3' }] },
+    ]);
+  });
+
+  it("'strip' keeps reasoning no Anthropic-family provider signed, such as OpenAI's", async () => {
+    const openai = {
+      type: 'reasoning' as const,
+      text: 'Thought.',
+      providerOptions: { openai: { itemId: 'rs_1' } },
+    };
+    const mixed: ModelMessage[] = [
+      ...messages.slice(0, 4),
+      { role: 'assistant', content: [openai] },
+      { role: 'user', content: 'q3' },
+      { role: 'assistant', content: [thought, openai, { type: 'text', text: 'a3' }] },
+    ];
+    const result = await compactModelMessages(mixed, summarizer, {
+      keepRecentTurns: 4,
+      keptReasoning: 'strip',
+    });
+
+    expect(result.slice(2)).toEqual([
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: [openai] },
+      { role: 'user', content: 'q3' },
+      { role: 'assistant', content: [openai, { type: 'text', text: 'a3' }] },
     ]);
   });
 });

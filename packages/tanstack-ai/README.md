@@ -285,7 +285,7 @@ if (compacted !== storedMessages) {
 
 A "turn" is one user/assistant message, or an assistant with its tool-calls plus all their tool results — the split never orphans a tool result. Don't combine durable compaction with middleware `compress` on the same conversation (double compression).
 
-`keptReasoning: 'strip'` (on both `compactTanStackMessages` and `planCompactionTanStackMessages`) removes the thinking from the kept messages, and drops a reply that held nothing else. A summary you write yourself is a checkpoint nobody signed, so on Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 thinking kept after it no longer verifies; `'strip'` returns a history you can send as it is. Default `'keep'`.
+`keptReasoning: 'strip'` (on both `compactTanStackMessages` and `planCompactionTanStackMessages`) removes the signed thinking (`@tanstack/ai-anthropic`) from the kept messages, and drops a reply that held nothing else; unsigned thinking stays. A summary you write yourself is a checkpoint nobody signed, so on Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 thinking kept after it no longer verifies; `'strip'` returns a history you can send as it is. Default `'keep'`.
 
 ## API
 

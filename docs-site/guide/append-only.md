@@ -261,7 +261,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **What counts as a change.** The system prompt is compared by its text, and the tools by what reaches the model; a cache breakpoint moving onto either is no change. A call with a different tool set (`activeTools`, `prepareStep`) is a `tools` checkpoint. Messages are compared through ContextChef's own message format (text, tool calls, reasoning text, attachment media types): a change only to provider metadata, an inline provider-executed tool result, or a file's bytes is not detected.
 - **`onPrefixBreak`** receives `{ sessionId, reason, at, signed, strippedThinking }`. `at` indexes the call's messages, after its system messages with the AI SDK.
 - **No signed compaction here.** The middleware can't render the provider's own request, so `onDemandCompaction` always runs its fallback.
-- **Durable compaction.** `compactModelMessages`, `compactTanStackMessages` and their `planCompaction…` versions take `keptReasoning: 'strip'`. A summary you write yourself is a checkpoint nobody signed, so reasoning kept after it no longer verifies; `'strip'` returns a history you can send as it is.
+- **Durable compaction.** `compactModelMessages`, `compactTanStackMessages` and their `planCompaction…` versions take `keptReasoning: 'strip'`. A summary you write yourself is a checkpoint nobody signed, so reasoning kept after it no longer verifies; `'strip'` removes the signed reasoning, as a checkpoint does, and returns a history you can send as it is.
 
 ### TanStack AI specifics
 
