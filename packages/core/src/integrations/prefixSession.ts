@@ -142,8 +142,11 @@ export class PrefixSession {
   ) {}
 
   /**
-   * The window this call sends. A call that fails keeps nothing, nor does a
-   * one-off: the next one starts where the last kept call left.
+   * The window this call sends. A call that fails, and a one-off, leave the
+   * ledger as the last kept call left it: the next call starts there. Only
+   * the ledger is rolled back. What the session's runner did in a call that
+   * failed stays done: a compression that landed before the failure has
+   * fired `onCompress`, and the runner keeps the state it moved to.
    */
   compile(call: PrefixSessionCall): Promise<PrefixSessionWindow> {
     const ahead = this.last;

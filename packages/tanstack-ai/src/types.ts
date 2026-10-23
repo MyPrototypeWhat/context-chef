@@ -296,7 +296,9 @@ export interface ContextChefOptions {
    * new system prompt or tool list), and `strippedThinking` signed thinking
    * blocks were removed. `reason` is `'compaction'`, `'history'`,
    * `'system'`, `'tools'` or `'ledger'` (the conversation had no record of
-   * the history: a restart, an eviction).
+   * the history: a restart, an eviction). `signed` is always `false` here: it
+   * marks a compaction the provider signed (`ContextChef`'s
+   * `onDemandCompaction`), which the middleware cannot request.
    */
   onPrefixBreak?: (event: PrefixBreakEvent) => void;
   /** Enable tool result truncation. Omit for no truncation. */

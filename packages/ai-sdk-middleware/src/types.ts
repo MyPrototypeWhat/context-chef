@@ -283,7 +283,10 @@ export interface ContextChefOptions {
    * messages; 0 for a compression or a new system prompt or tool list), and
    * `strippedThinking` reasoning blocks were removed. `reason` is
    * `'compaction'`, `'history'`, `'system'`, `'tools'` or `'ledger'` (the
-   * session had no record of the history: a restart, an eviction).
+   * session had no record of the history: a restart, an eviction). `signed`
+   * is always `false` here: it marks a compaction the provider signed
+   * (`ContextChef`'s `onDemandCompaction`), which the middleware cannot
+   * request.
    */
   onPrefixBreak?: (event: PrefixBreakEvent) => void;
   /** Enable tool result truncation. Omit for no truncation. */

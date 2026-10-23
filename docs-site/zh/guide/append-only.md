@@ -258,7 +258,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **`transformContext` 在 session 记录请求之后运行。** 它添加或改动的内容，每次调用都必须完全一样、位置也一样。否则在之前调用上签名的推理，会被放到一个不同的前缀后面回放，而且没有任何报告。每次调用都会变的内容请放进 `dynamicState`。创建 middleware 时会对此 warn。
 - **检查点只剥 Anthropic 系签名的推理**：经 `@ai-sdk/anthropic` 或 `@ai-sdk/amazon-bedrock` 签名的 reasoning part，以及带签名的 TanStack thinking 块（`@tanstack/ai-anthropic`）。只剩推理的回复会整条去掉。其他 provider 的推理保留，检查点只报告。
 - **什么算变化。** system prompt 按文本比较，tools 按真正发给模型的内容比较；缓存断点挪到它们身上不算变化。一次调用换了一组工具（`activeTools`、`prepareStep`）就是一次 `tools` 检查点。消息按 ContextChef 自己的消息格式比较（文本、tool call、推理文本、附件的媒体类型）：只改了 provider 元数据、内联的 provider 端执行的工具结果，或者文件的字节，都检测不到。
-- **`onPrefixBreak`** 收到 `{ sessionId, reason, at, signed, strippedThinking }`。`at` 是这次调用消息里的下标，AI SDK 下从 system 消息之后算起。
+- **`onPrefixBreak`** 收到 `{ sessionId, reason, at, signed, strippedThinking }`。`at` 是这次调用消息里的下标，AI SDK 下从 system 消息之后算起。`signed` 总是 `false`：middleware 没有签名压缩（见下一条）。
 - **这里没有签名压缩。** middleware 无法渲染 provider 自己的请求，所以 `onDemandCompaction` 总是运行它的 fallback。
 - **持久化压缩。** `compactModelMessages`、`compactTanStackMessages` 和对应的 `planCompaction…` 都接受 `keptReasoning: 'strip'`。你自己写的摘要是一个没人签名的检查点，保留在它后面的推理就无法再通过验证；`'strip'` 像检查点一样去掉签名过的推理，返回一个可以直接发送的 history。
 
