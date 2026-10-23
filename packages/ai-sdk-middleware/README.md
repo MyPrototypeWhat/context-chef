@@ -248,7 +248,7 @@ await generateText({ model, messages, providerOptions: { contextChef: { sessionI
 - `dynamicState` becomes its own user message, appended once after the turn it changed in, with either placement. A compression lands once: later calls send its summary in place of what it covers.
 - Anything that rewrites what an earlier call sent (an edited history, a new system prompt or tool list, a compression) is a checkpoint, reported to `onPrefixBreak`. Reasoning an Anthropic-family provider signed (`@ai-sdk/anthropic`, `@ai-sdk/amazon-bedrock`) is removed from that point on; other reasoning stays.
 - Create the wrapped model once and give each conversation its own `sessionId`. Sessions live in the middleware instance: one created per request starts every session empty, and calls in one session run one at a time.
-- `compact` / `clear` settings that move with the conversation (`'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
+- `compact` / `clear` settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
 - To persist a compression, write `details.replacement` back in place of `details.compressedMessages` in `onCompress`.
 
 Full rules: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only#ai-sdk-and-tanstack-ai).

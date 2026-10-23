@@ -163,7 +163,7 @@ const model = withContextChef(baseModel, {
 });
 ```
 
-被包装的模型只创建一次，每个对话传自己的 `sessionId`：session 存在 middleware 实例里，每个请求新建一个的话，每个 session 都从空白开始。`dynamicState` 变成独立的 user 消息，每次变化只追加一次；压缩只落地一次；检查点只剥 Anthropic 系 provider 签名的推理。随对话移动的设置（`'before-last-…'`、`keepRecent`）和 `transformContext` 会 warn。完整规则见 [Append-only 前缀](/zh/guide/append-only#ai-sdk-和-tanstack-ai)。
+被包装的模型只创建一次，每个对话传自己的 `sessionId`：session 存在 middleware 实例里，每个请求新建一个的话，每个 session 都从空白开始。`dynamicState` 变成独立的 user 消息，每次变化只追加一次；压缩只落地一次；检查点只剥 Anthropic 系 provider 签名的推理。随对话移动的设置（`compact.toolCalls: 'before-last-…'`、`keepRecent`）和 `transformContext` 会 warn。完整规则见 [Append-only 前缀](/zh/guide/append-only#ai-sdk-和-tanstack-ai)。
 
 ## Compact（机械裁剪）
 

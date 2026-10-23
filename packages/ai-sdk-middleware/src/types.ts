@@ -267,9 +267,11 @@ export interface ContextChefOptions {
    * scope) and reuse it — one created per request starts every session
    * empty, and every call is then a `ledger` checkpoint. A restart, or an
    * eviction past `maxSessions`, costs one. `compact` and `clear` settings
-   * that move with the conversation (`'before-last-…'`, `keepRecent`) make
-   * nearly every call a checkpoint, and are warned when the middleware is
-   * created; `'all'` and the provider's own context editing do not.
+   * that move with the conversation (`compact.toolCalls: 'before-last-…'`,
+   * `keepRecent`) make nearly every call a checkpoint, and are warned when
+   * the middleware is created; `'all'` and the provider's own context editing
+   * do not, nor does `compact.reasoning: 'before-last-message'`, which spares
+   * only the last message: the new question or tool result.
    * `clearAt` is accepted for `ContextChef` config compatibility and ignored
    * (warned likewise): every event here is a user message. Default: off.
    */

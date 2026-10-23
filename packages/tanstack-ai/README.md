@@ -253,7 +253,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - Pass a `threadId` per conversation (otherwise every run starts empty) and create the middleware once: conversations live in the middleware instance.
 - The work happens in each model call's `onConfig` firing; `init` passes through. Within a `chat()` run the engine carries what `onConfig` returned into the next iteration, so no other middleware may change those messages. Persist the client's conversation, not the engine's messages, which hold the middleware's events.
 - In a run with tools, the structured-output call, which goes out without them, is a one-off: no checkpoint for the conversation. In a run without tools it is the run's model call like any other.
-- `compact` / `clear` settings that move with the conversation (`'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
+- `compact` / `clear` settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
 - To persist a compression, write `details.replacement` back in place of `details.compressedMessages` in `onCompress`.
 
 Full rules: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only#tanstack-ai-specifics).

@@ -198,7 +198,7 @@ await generateText({ model, messages, providerOptions: { contextChef: { sessionI
 - 无论哪种 placement，`dynamicState` 都变成一条独立的 user 消息，在它变化的那一轮之后只追加一次。压缩只落地一次：之后的调用用它的摘要代替被摘要的内容。
 - 任何改写之前调用所发内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，报告给 `onPrefixBreak`。Anthropic 系 provider（`@ai-sdk/anthropic`、`@ai-sdk/amazon-bedrock`）签名的推理从那里开始被去掉；其他推理保留。
 - 被包装的模型只创建一次，每个对话传自己的 `sessionId`。session 存在 middleware 实例里：每个请求新建一个的话，每个 session 都从空白开始；同一个 session 里的调用逐个执行。
-- 随对话移动的 `compact` / `clear` 设置（`'before-last-…'`、`keepRecent`）和 `transformContext` 会在创建 middleware 时 warn。这里忽略 `clearAt`。
+- 随对话移动的 `compact` / `clear` 设置（`compact.toolCalls: 'before-last-…'`、`keepRecent`）和 `transformContext` 会在创建 middleware 时 warn。这里忽略 `clearAt`。
 - 要持久化压缩结果，在 `onCompress` 里把 `details.replacement` 写回 `details.compressedMessages` 的位置。
 
 完整规则见 [Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only#ai-sdk-和-tanstack-ai)。

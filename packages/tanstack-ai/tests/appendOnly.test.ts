@@ -1266,7 +1266,6 @@ describe('appendOnly: a structured chat() run without tools', () => {
 
 describe('appendOnly: construction warnings', () => {
   it.each([
-    [{ compact: { reasoning: 'before-last-message' } }, "compact.reasoning: 'before-last-message'"],
     [
       { compact: { toolCalls: 'before-last-2-messages' } },
       "compact.toolCalls: 'before-last-2-messages'",
@@ -1295,6 +1294,14 @@ describe('appendOnly: construction warnings', () => {
       compact: { reasoning: 'all', toolCalls: 'all' },
       clear: ['tool-result', 'thinking'],
     });
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn for reasoning kept on the last message only, which is never one sent before', () => {
+    // The last message of a request is the new question or tool result: every
+    // reply loses its reasoning before a later call sends it again, as with 'all'.
+    const { warn } = middlewareWith({ compact: { reasoning: 'before-last-message' } });
 
     expect(warn).not.toHaveBeenCalled();
   });

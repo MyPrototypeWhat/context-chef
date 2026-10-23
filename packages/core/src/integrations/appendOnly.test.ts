@@ -22,10 +22,7 @@ describe('warnAppendOnlyConfig', () => {
     warnAppendOnlyConfig(
       {
         appendOnly: true,
-        compact: {
-          reasoning: 'before-last-message',
-          toolCalls: [{ type: 'all' }, { type: 'before-last-3-messages' }],
-        },
+        compact: { toolCalls: [{ type: 'all' }, { type: 'before-last-3-messages' }] },
         clear: ['tool-result', { target: 'tool-result', keepRecent: 2 }],
       },
       { warn },
@@ -34,9 +31,9 @@ describe('warnAppendOnlyConfig', () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toBe(
-      "[context-chef] appendOnly: compact.reasoning: 'before-last-message', compact.toolCalls: " +
-        "'before-last-3-messages', clear: { target: 'tool-result', keepRecent: 2 } move with the " +
-        'conversation, rewriting messages earlier calls sent, so nearly every call is a ' +
+      "[context-chef] appendOnly: compact.toolCalls: 'before-last-3-messages', clear: { target: " +
+        "'tool-result', keepRecent: 2 } move with the conversation, rewriting messages earlier " +
+        'calls sent, so nearly every call is a ' +
         "checkpoint: the provider's prefix cache misses from the rewritten message, and signed " +
         'thinking is stripped from it on. Once a compression has landed, a rewrite that reaches ' +
         'a message it summarized also drops its summary, and the conversation is summarized ' +
@@ -48,22 +45,22 @@ describe('warnAppendOnlyConfig', () => {
   it('says nothing for settings that rewrite each message once, or with appendOnly off', () => {
     const warn = vi.fn();
     warnAppendOnlyConfig(
-      { appendOnly: true, compact: { reasoning: 'all', toolCalls: 'all' }, clear: ['thinking'] },
+      { appendOnly: true, compact: { toolCalls: 'all' }, clear: ['thinking'] },
       { warn },
       wording,
     );
     warnAppendOnlyConfig(
-      { compact: { reasoning: 'before-last-message' }, appendOnly: { clearAt: true } },
+      { compact: { toolCalls: 'before-last-message' }, appendOnly: { clearAt: true } },
       { warn },
       wording,
     );
     warnAppendOnlyConfig(
-      { appendOnly: false, compact: { reasoning: 'before-last-message' } },
+      { appendOnly: false, compact: { toolCalls: 'before-last-message' } },
       { warn },
       wording,
     );
 
-    // The second call is on: only its clearAt and moving reasoning warn.
+    // The second call is on: only its clearAt and moving tool calls warn.
     expect(warn).toHaveBeenCalledTimes(2);
   });
 });

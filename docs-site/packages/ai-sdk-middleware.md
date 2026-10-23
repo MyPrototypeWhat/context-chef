@@ -163,7 +163,7 @@ const model = withContextChef(baseModel, {
 });
 ```
 
-Create the wrapped model once and pass a `sessionId` per conversation: sessions live in the middleware instance, and one created per request starts every session empty. `dynamicState` becomes its own user message, appended once per change; a compression lands once; only reasoning an Anthropic-family provider signed is stripped at a checkpoint. Settings that move with the conversation (`'before-last-…'`, `keepRecent`) and `transformContext` are warned. See [Append-Only Prefix](/guide/append-only#ai-sdk-and-tanstack-ai) for the full rules.
+Create the wrapped model once and pass a `sessionId` per conversation: sessions live in the middleware instance, and one created per request starts every session empty. `dynamicState` becomes its own user message, appended once per change; a compression lands once; only reasoning an Anthropic-family provider signed is stripped at a checkpoint. Settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`) and `transformContext` are warned. See [Append-Only Prefix](/guide/append-only#ai-sdk-and-tanstack-ai) for the full rules.
 
 ## Compact (Mechanical Pruning)
 

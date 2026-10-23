@@ -22,7 +22,6 @@ export interface AppendOnlyWording {
 export interface AppendOnlyOptions {
   readonly appendOnly?: boolean | { readonly clearAt?: boolean };
   readonly compact?: {
-    readonly reasoning?: string;
     readonly toolCalls?: string | ReadonlyArray<{ readonly type: string }>;
   };
   readonly clear?: readonly ClearTarget[];
@@ -78,12 +77,14 @@ export function warnAppendOnlyConfig(
   }
 }
 
-/** The `compact` / `clear` settings whose cut moves with the conversation, as written. */
+/**
+ * The `compact` / `clear` settings whose cut moves with the conversation, as
+ * written. `compact.reasoning: 'before-last-message'` is not one: the last
+ * message of a request is the new user message or tool result, so a reply
+ * loses its reasoning before any call sends it, as with `'all'`.
+ */
 function movingRewrites({ compact, clear }: AppendOnlyOptions): string[] {
   const moving: string[] = [];
-  if (compact?.reasoning === 'before-last-message') {
-    moving.push("compact.reasoning: 'before-last-message'");
-  }
   const toolCalls = compact?.toolCalls;
   const types =
     typeof toolCalls === 'string' ? [toolCalls] : (toolCalls ?? []).map((entry) => entry.type);

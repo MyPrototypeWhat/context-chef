@@ -253,7 +253,7 @@ const stream = chat({ adapter, messages, threadId: conversationId, middleware: [
 - **session 存在 middleware 实例里。** 只创建一次，之后复用。每个请求新建一个的话，每个 session 都从空白开始，每次调用都是一次 `ledger` 检查点。进程重启、或者超过 `maxSessions`（默认 256）被淘汰，各算一次。每个 session 会保留它最后一次 compile 的 history。
 - **事件都是 user 消息。** middleware 不知道背后是哪个 provider，而 provider SDK 可能把对话中间的 system 消息挪进 system prompt。所以无论哪种 placement，`dynamicState` 都是一条 user 消息，`clearAt` 被忽略（会 warn）。
 - **压缩只落地一次**，时机和 chef 一样。`onCompress` 只在你的存储需要比进程活得久时才需要：把 `details.replacement`（你自己的消息格式）原样写回 `compressedMessages` 的位置，做法和[上面](#持久化对话)一样。
-- **随对话移动的设置**（`compact.reasoning: 'before-last-message'`、`'before-last-…'` 形式的 `compact.toolCalls`、带 `keepRecent` 的 `clear`）会改写之前调用发过的消息，几乎每次调用都是检查点。压缩落地之后，这类改写一旦碰到被摘要的消息，还会让摘要失效，于是每次调用都要重新摘要一遍。创建 middleware 时会对它们 warn。改用 `'all'`，它在每条消息第一次发出之前就改写好；或者用 provider 自己的 context editing。
+- **随对话移动的设置**（`'before-last-…'` 形式的 `compact.toolCalls`、带 `keepRecent` 的 `clear`）会改写之前调用发过的消息，几乎每次调用都是检查点。压缩落地之后，这类改写一旦碰到被摘要的消息，还会让摘要失效，于是每次调用都要重新摘要一遍。创建 middleware 时会对它们 warn。改用 `'all'`，它在每条消息第一次发出之前就改写好；或者用 provider 自己的 context editing。`compact.reasoning: 'before-last-message'` 不会移动：一次请求的最后一条消息是新问题或工具结果，所以每条回复在发出之前就已经去掉了推理，和 `'all'` 一样。
 - `clear` 在压缩之前运行，所以摘要模型看到的是占位符。
 - **`transformContext` 在 session 记录请求之后运行。** 它添加或改动的内容，每次调用都必须完全一样、位置也一样。否则在之前调用上签名的推理，会被放到一个不同的前缀后面回放，而且没有任何报告。每次调用都会变的内容请放进 `dynamicState`。创建 middleware 时会对此 warn。
 - **检查点只剥 Anthropic 系签名的推理**：经 `@ai-sdk/anthropic` 或 `@ai-sdk/amazon-bedrock` 签名的 reasoning part，以及带签名的 TanStack thinking 块（`@tanstack/ai-anthropic`）。只剩推理的回复会整条去掉。其他 provider 的推理保留，检查点只报告。
