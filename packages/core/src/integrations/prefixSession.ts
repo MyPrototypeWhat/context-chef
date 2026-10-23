@@ -82,6 +82,13 @@ export interface PrefixSessionPoolConfig<THostMessages>
   extends Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'> {
   /** What a checkpoint takes out of the messages it invalidated. */
   signedThinking: SignedThinking;
+  /**
+   * A sentence that opens the advice of the warning logged when a session
+   * meets a history it never sent: how the integration keys a conversation,
+   * when leaving the key out is the usual way to lose one. TanStack AI, for
+   * one, makes up a new `threadId` for every run that passes none.
+   */
+  sessionKeyAdvice?: string;
 }
 
 /**
@@ -130,6 +137,7 @@ export class PrefixSession {
       readonly signedThinking: SignedThinking;
       /** Logs `message` once per pool, by `key`. */
       readonly warnOnce: (key: string, message: string) => void;
+      readonly sessionKeyAdvice?: string;
     },
   ) {}
 
@@ -218,11 +226,14 @@ export class PrefixSession {
   private warnLostLedger(history: readonly Message[]): void {
     const replies = reasonedReplies(history);
     if (replies <= FRESH_LEDGER_REPLIES) return;
+    const { sessionKeyAdvice } = this.options;
     this.options.warnOnce(
       'lost-ledger',
       `[context-chef] appendOnly: a session's prefix ledger is empty, but its history already ` +
         `holds ${replies} replies with reasoning, sent by a session that is gone — so their ` +
-        'signed thinking was invalidated (a `ledger` checkpoint). Sessions live in the ' +
+        'signed thinking was invalidated (a `ledger` checkpoint). ' +
+        (sessionKeyAdvice ? `${sessionKeyAdvice} ` : '') +
+        'Sessions live in the ' +
         'integration instance (the middleware): one created per request starts every session ' +
         'empty, and every call is then a checkpoint, so create it once and reuse it. A restart, ' +
         'a serverless instance or a session the pool evicted (`maxSessions`) costs one. Each ' +
@@ -252,6 +263,7 @@ export function createPrefixSessionPool<THostMessages>(
       new PrefixSession(janitor?.() ?? null, {
         signedThinking: config.signedThinking,
         warnOnce,
+        sessionKeyAdvice: config.sessionKeyAdvice,
       }),
     { maxSize: config.maxSessions },
   );

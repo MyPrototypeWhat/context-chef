@@ -1009,6 +1009,39 @@ describe('appendOnly: checkpoints', () => {
     });
     expect(warnings(warn, 'ledger is empty')).toHaveLength(1);
   });
+
+  it('tells a host whose chat() runs pass no threadId that each run is a new conversation', async () => {
+    const warn = vi.fn();
+    const middleware = contextChefMiddleware({ appendOnly: true, logger: { warn } });
+    const now = Date.now();
+    const adapter = {
+      kind: 'text' as const,
+      name: 'mock',
+      model: 'mock-model',
+      '~types': {} as Record<string, unknown>,
+      chatStream: () =>
+        (async function* () {
+          yield { type: 'TEXT_MESSAGE_START', messageId: 'm', role: 'assistant', timestamp: now };
+          yield { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm', delta: 'ok', timestamp: now };
+          yield { type: 'TEXT_MESSAGE_END', messageId: 'm', timestamp: now };
+          yield { type: 'RUN_FINISHED', runId: 'r', finishReason: 'stop', timestamp: now };
+        })(),
+      structuredOutput: vi.fn(),
+    };
+    for (const n of [1, 4]) {
+      const stream = chat({
+        adapter: adapter as never,
+        messages: asked(n, true),
+        middleware: [middleware],
+      } as never) as AsyncIterable<unknown>;
+      for await (const _chunk of stream) {
+      }
+    }
+
+    // The second run met a history of 3 replies with thinking under a threadId of its own.
+    const [lost] = warnings(warn, 'ledger is empty');
+    expect(lost?.[0]).toContain('TanStack AI makes up a new `threadId`');
+  });
 });
 
 describe('appendOnly: requests the conversation does not keep', () => {

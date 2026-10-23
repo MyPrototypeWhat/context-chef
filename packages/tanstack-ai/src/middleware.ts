@@ -100,7 +100,13 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
   // are replayed from — dynamic state alone needs one — so the pool holds
   // sessions, each with its Janitor when compression is configured.
   const sessions = options.appendOnly
-    ? createPrefixSessionPool({ ...janitorConfig, signedThinking })
+    ? createPrefixSessionPool({
+        ...janitorConfig,
+        signedThinking,
+        sessionKeyAdvice:
+          'TanStack AI makes up a new `threadId` for every chat() run that passes none, so each ' +
+          "such run starts a new session: pass the conversation's own `threadId` to every run.",
+      })
     : null;
   const janitors = options.appendOnly
     ? null

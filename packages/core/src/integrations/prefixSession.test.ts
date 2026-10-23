@@ -382,6 +382,19 @@ describe('PrefixSession: checkpoints', () => {
     expect(lost[0][0]).toContain('3 replies');
   });
 
+  it("opens the warning's advice with how the integration keys a conversation", async () => {
+    const { session, logger } = poolWith({
+      ...NO_COMPRESSION,
+      sessionKeyAdvice: 'Pass the same key with every call.',
+    });
+    await session.compile(callWith(asked(4)));
+
+    const lost = logger.warn.mock.calls.filter(([m]) => String(m).includes('ledger is empty'));
+    expect(lost[0][0]).toContain(
+      '(a `ledger` checkpoint). Pass the same key with every call. Sessions live in the',
+    );
+  });
+
   it('leaves the warning to the next call when a fresh session meets a long history in a one-off', async () => {
     const { session, logger } = poolWith(NO_COMPRESSION);
     const lost = () =>
