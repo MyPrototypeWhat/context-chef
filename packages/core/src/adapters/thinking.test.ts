@@ -120,7 +120,6 @@ describe('AnthropicAdapter — thinking field', () => {
     expect(getAnthropicContent(result, 0)).toEqual([{ type: 'text', text: 'Done.' }]);
     expect(getAnthropicContent(result, 1).map((b) => b.type)).toEqual([
       'redacted_thinking',
-      'text',
       'tool_use',
     ]);
   });
@@ -157,9 +156,7 @@ describe('AnthropicAdapter — thinking field', () => {
     ];
     const result = anthropic.compile(messages);
     const content = getAnthropicContent(result);
-    expect(content[0].type).toBe('thinking');
-    expect(content[1].type).toBe('text');
-    expect(content[2].type).toBe('tool_use');
+    expect(content.map((b) => b.type)).toEqual(['thinking', 'tool_use']);
   });
 
   it('does not add thinking block when thinking is absent', () => {

@@ -476,6 +476,18 @@ function thinkingBlocks(msg: Message): SDKContentBlockParam[] {
   return blocks;
 }
 
+/**
+ * Whether a message rebuilt from IR leaves its text block out: when the text
+ * is empty and the message has other blocks to send. An empty text block says
+ * nothing, and the API is reported to reject one; a reply the model sent as
+ * thinking and tool calls only has none either. A message with nothing else
+ * keeps it, so it still has content. Whitespace is text the model sent, and
+ * leaving it out would edit the turn.
+ */
+function leavesOutText(text: string, otherBlocks: number): boolean {
+  return text === '' && otherBlocks > 0;
+}
+
 /** Converts IR attachments to Anthropic image/document content blocks. */
 function attachmentsToBlocks(attachments: Attachment[]): SDKContentBlockParam[] {
   const blocks: SDKContentBlockParam[] = [];
@@ -670,12 +682,8 @@ export class AnthropicAdapter implements ITargetAdapter {
         } else if (msg.tool_calls) {
           // Prepend thinking blocks before tool_use blocks (Anthropic requirement)
           content.push(...thinkingBlocks(msg));
-          const textBlock: SDKTextBlockParam = { type: 'text', text: msg.content || '' };
-          content.push(textBlock);
           // Attachments after text, before tool_use blocks
-          if (msg.attachments?.length) {
-            content.push(...attachmentsToBlocks(msg.attachments));
-          }
+          const after = attachmentsToBlocks(msg.attachments ?? []);
           for (const tc of msg.tool_calls) {
             const block: SDKToolUseBlockParam = {
               type: 'tool_use',
@@ -683,19 +691,27 @@ export class AnthropicAdapter implements ITargetAdapter {
               name: tc.function.name,
               input: JSON.parse(tc.function.arguments),
             };
-            content.push(block);
+            after.push(block);
           }
+          const text = msg.content || '';
+          if (!leavesOutText(text, content.length + after.length)) {
+            content.push({ type: 'text', text });
+          }
+          content.push(...after);
         } else {
           // Prepend thinking blocks before text block
           content.push(...thinkingBlocks(msg));
-          const block: SDKTextBlockParam = { type: 'text', text: msg.content };
-          if (msg._cache_breakpoint) {
-            block.cache_control = { type: 'ephemeral' };
-          }
-          content.push(block);
           // Attachments after text block
-          if (msg.attachments?.length) {
-            content.push(...attachmentsToBlocks(msg.attachments));
+          const attachments = attachmentsToBlocks(msg.attachments ?? []);
+          if (leavesOutText(msg.content, content.length + attachments.length)) {
+            content.push(...attachments);
+            if (msg._cache_breakpoint) cacheLastBlock(content);
+          } else {
+            const block: SDKTextBlockParam = { type: 'text', text: msg.content };
+            if (msg._cache_breakpoint) {
+              block.cache_control = { type: 'ephemeral' };
+            }
+            content.push(block, ...attachments);
           }
         }
 

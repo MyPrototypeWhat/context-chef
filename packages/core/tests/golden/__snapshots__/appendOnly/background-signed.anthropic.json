@@ -12,7 +12,6 @@
       {
         "content": [
           { "signature": "SIG_CALL_1", "thinking": "Look up 1.", "type": "thinking" },
-          { "text": "", "type": "text" },
           { "id": "call_1", "input": { "q": "topic 1" }, "name": "search", "type": "tool_use" }
         ],
         "role": "assistant"
@@ -44,7 +43,6 @@
       {
         "content": [
           { "signature": "SIG_CALL_2", "thinking": "Look up 2.", "type": "thinking" },
-          { "text": "", "type": "text" },
           { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
         ],
         "role": "assistant"
@@ -67,7 +65,6 @@
       {
         "content": [
           { "signature": "SIG_CALL_2", "thinking": "Look up 2.", "type": "thinking" },
-          { "text": "", "type": "text" },
           { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
         ],
         "role": "assistant"
@@ -96,7 +93,6 @@
       {
         "content": [
           { "signature": "SIG_CALL_3", "thinking": "Look up 3.", "type": "thinking" },
-          { "text": "", "type": "text" },
           { "id": "call_3", "input": { "q": "topic 3" }, "name": "search", "type": "tool_use" }
         ],
         "role": "assistant"
@@ -118,7 +114,6 @@
       {
         "content": [
           { "signature": "SIG_CALL_3", "thinking": "Look up 3.", "type": "thinking" },
-          { "text": "", "type": "text" },
           { "id": "call_3", "input": { "q": "topic 3" }, "name": "search", "type": "tool_use" }
         ],
         "role": "assistant"

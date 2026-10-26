@@ -76,7 +76,6 @@ const CALL_1 = {
   role: 'assistant',
   content: [
     { type: 'thinking', thinking: 'Search first.', signature: 'SIG_1' },
-    { type: 'text', text: '' },
     { type: 'tool_use', id: 't1', name: 'search', input: { q: 'x' } },
   ],
 };

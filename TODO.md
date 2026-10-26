@@ -740,7 +740,6 @@ Everything below is unverified because no key was available. Each line is one ex
 - [ ] A compaction request whose prefix ends in a `clear_at` reminder; and a signed block landing in the same compile as a system-prompt change (the request uses the last sent system prompt, the next request reports a `system` checkpoint).
 - [ ] `cache_control` on the last block of an on-demand compaction request: does it hit the cache entry the previous request wrote?
 - [ ] A server-side (`context_management`) compaction block resumed under `appendOnly` also gets `compact-2026-09-04`: confirm the extra beta is harmless.
-- [ ] Empty text blocks (4.x too): an IR-built tool-call turn with empty content sends `{ type: 'text', text: '' }` before its `tool_use`, and an IR-built thinking reply with empty text sends `[thinking, { type: 'text', text: '' }]`. Accepted or rejected?
 - [ ] OpenAI / Gemini: `cached_tokens` over a long loop with `appendOnly` on vs off.
 - [ ] AI SDK: how `@ai-sdk/anthropic`, `@ai-sdk/google` and `@ai-sdk/openai` send a user event that follows tool results or a user turn (`[…, tool, user]`, `[…, user, user]`), and that it is byte-stable across calls.
 - [ ] AI SDK: Anthropic accepts a history whose earlier replies lost their reasoning parts while a later signed reply keeps its own, and one where a reasoning-only reply was dropped.

@@ -273,7 +273,6 @@ describe('appendOnly onDemandCompaction(): a signed checkpoint strips nothing', 
         role: 'assistant',
         content: [
           { type: 'thinking', thinking: 'Search first.', signature: 'SIG_C1' },
-          { type: 'text', text: '' },
           { type: 'tool_use', id: 't1', name: 'search', input: {} },
         ],
       },

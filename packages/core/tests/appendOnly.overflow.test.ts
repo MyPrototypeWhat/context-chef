@@ -946,10 +946,7 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
     // The call was signed over what the summary replaced: it goes without its thinking.
     const unsigned = {
       role: 'assistant',
-      content: [
-        { type: 'text', text: '' },
-        { type: 'tool_use', id: 't1', name: 'search', input: {} },
-      ],
+      content: [{ type: 'tool_use', id: 't1', name: 'search', input: {} }],
     };
     expect(summarized(compressionModel, 1)).toEqual(asked(2));
     expect(collapsed.messages).toEqual([text('user', SUMMARY(1)), unsigned]);
@@ -988,10 +985,7 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
       text('user', resets ? RESET(before.meta?.windowId) : SUMMARY(1)),
       {
         role: 'assistant',
-        content: [
-          { type: 'text', text: '' },
-          { type: 'tool_use', id: 't1', name: 'search', input: {} },
-        ],
+        content: [{ type: 'tool_use', id: 't1', name: 'search', input: {} }],
       },
     ]);
     expect(next.messages).toEqual([
@@ -1057,10 +1051,7 @@ describe('appendOnly overflow: in the middle of a tool turn it waits for the bou
         text('user', RESET(before.meta?.windowId)),
         {
           role: 'assistant',
-          content: [
-            { type: 'text', text: '' },
-            { type: 'tool_use', id: 't1', name: 'search', input: {} },
-          ],
+          content: [{ type: 'tool_use', id: 't1', name: 'search', input: {} }],
         },
       ]);
     });

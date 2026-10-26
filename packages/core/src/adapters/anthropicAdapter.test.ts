@@ -121,14 +121,9 @@ describe('AnthropicAdapter', () => {
     const result = adapter.compile([...messages]);
     const content = getContentBlocks(result);
 
-    expect(content).toHaveLength(2); // text + tool_use
-    expect(content[0]).toMatchObject({ type: 'text', text: '' });
-    expect(content[1]).toMatchObject({
-      type: 'tool_use',
-      id: 'call_1',
-      name: 'get_weather',
-      input: { city: 'London' },
-    });
+    expect(content).toEqual([
+      { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'London' } },
+    ]);
   });
 
   it('handles multiple parallel tool_calls', () => {
@@ -524,6 +519,125 @@ describe('AnthropicAdapter — attachments output', () => {
 
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({ type: 'text', text: 'Plain text' });
+  });
+});
+
+// A message rebuilt from IR with no text sends no text block when it has
+// anything else to send: an empty text block says nothing, and the API is
+// reported to reject one.
+describe('AnthropicAdapter — no empty text block', () => {
+  const thinking = { type: 'thinking', thinking: '', signature: 'SIG_A' };
+  const signed = { thinking: { thinking: '', signature: 'SIG_A' } };
+  const call = {
+    id: 'call_1',
+    type: 'function' as const,
+    function: { name: 'weather', arguments: '{}' },
+  };
+  const toolUse = { type: 'tool_use', id: 'call_1', name: 'weather', input: {} };
+  const png = (data: string) => ({ mediaType: 'image/png', data });
+  const image = (data: string) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/png', data },
+  });
+
+  it('sends a tool-call turn without text as its thinking and tool calls', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', ...signed, tool_calls: [call] },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([thinking, toolUse]);
+  });
+
+  it('puts the attachments of a tool-call turn without text ahead of its tool calls', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', attachments: [png('AAAA')], tool_calls: [call] },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([image('AAAA'), toolUse]);
+  });
+
+  it('sends a reply with thinking and no text as its thinking', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', ...signed },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([thinking]);
+  });
+
+  it('sends a user message with attachments and no text as its attachments', () => {
+    const result = adapter.compile([
+      { role: 'user', content: '', attachments: [png('AAAA'), png('BBBB')] },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([image('AAAA'), image('BBBB')]);
+  });
+
+  it('sends a compaction message rebuilt from IR as the block alone', () => {
+    const result = adapter.compile([
+      { role: 'assistant', content: '', _anthropic_compaction: 'Summary.' },
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([{ type: 'compaction', content: 'Summary.' }]);
+  });
+
+  it('moves the breakpoint of the text it leaves out to the last block', () => {
+    const result = adapter.compile([
+      {
+        role: 'user',
+        content: '',
+        attachments: [png('AAAA'), png('BBBB')],
+        _cache_breakpoint: true,
+      },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([
+      image('AAAA'),
+      { ...image('BBBB'), cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('has no block to put the breakpoint of a reply that is only thinking on', () => {
+    // Thinking blocks can't carry one, as in a verbatim replay of such a reply.
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', ...signed, _cache_breakpoint: true },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([thinking]);
+  });
+
+  it('keeps the empty text block of a message with nothing else to send', () => {
+    const nothingElse: Message[] = [
+      { role: 'user', content: '' },
+      { role: 'assistant', content: '' },
+      { role: 'assistant', content: '', tool_calls: [] },
+      // Thinking without a signature is not sent at all.
+      { role: 'assistant', content: '', thinking: { thinking: 'Hm.' } },
+    ];
+
+    for (const message of nothingElse) {
+      expect(getContentBlocks(adapter.compile([message]))).toEqual([{ type: 'text', text: '' }]);
+    }
+    expect(
+      getContentBlocks(adapter.compile([{ role: 'user', content: '', _cache_breakpoint: true }])),
+    ).toEqual([{ type: 'text', text: '', cache_control: { type: 'ephemeral' } }]);
+  });
+
+  it('keeps whitespace text, which the model sent: leaving it out would edit the turn', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '\n\n', ...signed, tool_calls: [call] },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      thinking,
+      { type: 'text', text: '\n\n' },
+      toolUse,
+    ]);
   });
 });
 
