@@ -183,9 +183,9 @@ const model = withContextChef(openai('gpt-4o'), {
 
 | Export | What it does |
 |---|---|
-| `withContextChef(model, options)` | Wraps an AI SDK model; returns a `LanguageModelV3` usable anywhere the original was |
+| `withContextChef(model, options)` | Wraps an AI SDK model; returns a `LanguageModelV4` usable anywhere the original was |
 | `createMiddleware(options)` | Raw `LanguageModelMiddleware` for `wrapLanguageModel` |
-| `fromAISDK(prompt)` / `toAISDK(messages)` | Converters between `LanguageModelV3Prompt` and ContextChef IR |
+| `fromAISDK(prompt)` / `toAISDK(messages)` | Converters between `LanguageModelV4Prompt` and ContextChef IR |
 | `summarizeMessages(prompt, model, opts?)` | Summarize an AI-SDK prompt slice (role-flattening included) |
 | `compactModelMessages(messages, model, opts)` | Durable compaction in one call at the `ModelMessage` altitude |
 | `planCompactionModelMessages(messages, opts)` | The synchronous turn-safe split behind it |

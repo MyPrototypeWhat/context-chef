@@ -773,7 +773,6 @@ Everything below is unverified because no key was available. Each line is one ex
 - **`strippedThinking` count**: a host that edits the text of a reply whose thinking was already stripped has that thinking counted again (what is stripped is right).
 - **Failure count in the log**: past the raw window a compactor that keeps failing logs "failure 4/3, 5/3…".
 - **Integrations DX**: `details.replacement` is typed `LanguageModelV4Prompt`, so a `generateText` host writing it back into a `ModelMessage` store needs a cast.
-- **AI SDK middleware docs** (from before 4.3): the READMEs (en/zh) and the docs-site package page still name `LanguageModelV3` / `LanguageModelV3Prompt` for what `withContextChef`, `onCompress` and the converters take and return; the code uses V4 throughout.
 
 ## Before release (append-only)
 

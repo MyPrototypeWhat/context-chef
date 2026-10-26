@@ -287,7 +287,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. |
 | `compact` | `CompactConfig` | No | Mechanical message pruning (reasoning, tool calls). Delegates to AI SDK's `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
-| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the AI-SDK-format (`LanguageModelV3Prompt`) slice the summary replaced — use it to persist the summary boundary in your store. |
+| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the AI-SDK-format (`LanguageModelV4Prompt`) slice the summary replaced — use it to persist the summary boundary in your store. |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings (storage write failures, missing usage data, misconfiguration); defaults to `console`. Forwarded to the underlying Janitor and Offloader. |
 | `appendOnly` | `boolean \| { clearAt?: boolean }` | No | Keep what was sent: each call's prompt repeats the session's previous one and only appends. See [Append-Only Mode](#append-only-mode). `clearAt` is ignored here. |
 | `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | No | `appendOnly`: called for each checkpoint a call applies — `{ sessionId, reason, at, signed, strippedThinking }`. |
@@ -296,7 +296,7 @@ const wrappedModel = withContextChef(model, options);
 | `overflow.archive` | `CompressionArchiveConfig` | No | `{ store: (serialized, { messageCount }) => uri }` — keeps the evicted span retrievable behind the URI the summary cites. The `'vfs'` shorthand is core-only. |
 | `clear` | `ClearTarget[]` | No | Placeholder-style **tool-result** clearing. Cleared tool results become `'[Old tool result content cleared]'` — message structure stays intact, unlike `compact` which deletes. Runs AFTER compression. When tool results are targeted, an explainer system message is auto-injected. Only `'tool-result'` targets take effect; a `'thinking'` target is a no-op (logs a warning) — use `compact: { reasoning: ... }` to drop reasoning. `ClearTarget` is exported from `@context-chef/core`. |
 
-**Returns:** `LanguageModelV3` — a wrapped model that can be used anywhere the original model was used.
+**Returns:** `LanguageModelV4` — a wrapped model that can be used anywhere the original model was used.
 
 ### `createMiddleware(options)`
 
@@ -312,7 +312,7 @@ const model = wrapLanguageModel({ model: openai('gpt-4o'), middleware });
 
 ### `fromAISDK(prompt)` / `toAISDK(messages)`
 
-Low-level converters between AI SDK `LanguageModelV3Prompt` and context-chef `Message[]` IR. Useful if you want to use context-chef modules directly with AI SDK message formats.
+Low-level converters between AI SDK `LanguageModelV4Prompt` and context-chef `Message[]` IR. Useful if you want to use context-chef modules directly with AI SDK message formats.
 
 ```typescript
 import { fromAISDK, toAISDK } from '@context-chef/ai-sdk-middleware';
@@ -367,7 +367,7 @@ const next = await compactModelMessages(messages, summarizerModel, {
 if (next !== messages) await save(next); // skip persistence on a no-op
 ```
 
-- `model` is `ai`'s `LanguageModel` (`string id | V3 | V2`) — exactly what `prepareStep` / `generateText` give you.
+- `model` is `ai`'s `LanguageModel` (`string id | V4 | V3 | V2`) — exactly what `prepareStep` / `generateText` give you.
 - The cut lands only on **turn boundaries** (an assistant + its tool results stay together), so it never orphans a tool result or splits a multi-block assistant message.
 - System messages are preserved verbatim and never summarized.
 - Returns the **same `messages` reference** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — so you can skip persistence on a no-op via `next !== messages`. Safe to call unconditionally; throws only if the model call throws.

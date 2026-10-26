@@ -183,9 +183,9 @@ const model = withContextChef(openai('gpt-4o'), {
 
 | 导出 | 作用 |
 |---|---|
-| `withContextChef(model, options)` | 包装 AI SDK model；返回可在任何原 model 位置使用的 `LanguageModelV3` |
+| `withContextChef(model, options)` | 包装 AI SDK model；返回可在任何原 model 位置使用的 `LanguageModelV4` |
 | `createMiddleware(options)` | 原始 `LanguageModelMiddleware`，配合 `wrapLanguageModel` 使用 |
-| `fromAISDK(prompt)` / `toAISDK(messages)` | `LanguageModelV3Prompt` 与 ContextChef IR 的互转 |
+| `fromAISDK(prompt)` / `toAISDK(messages)` | `LanguageModelV4Prompt` 与 ContextChef IR 的互转 |
 | `summarizeMessages(prompt, model, opts?)` | 摘要一段 AI-SDK prompt 切片（已含角色扁平化） |
 | `compactModelMessages(messages, model, opts)` | `ModelMessage` 层一步到位的持久化压缩 |
 | `planCompactionModelMessages(messages, opts)` | 其背后的同步轮次安全切分 |

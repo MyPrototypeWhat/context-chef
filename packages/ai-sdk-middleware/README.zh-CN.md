@@ -236,7 +236,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | 否 | 按工具覆写。字符串 = 保留（同时跳过存储）；对象 = 为该工具覆写参数。重复名称时后者胜出。 |
 | `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
-| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV3Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
+| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV4Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
 | `logger` | `ChefLogger` | 否 | 降级警告的输出目标（存储写入失败、缺少 usage 数据、配置异常等），默认 `console`。转发给底层 Janitor 和 Offloader。 |
 | `appendOnly` | `boolean \| { clearAt?: boolean }` | 否 | 保留已发送的内容：每次调用的 prompt 都重复这个 session 上一次的内容，只在末尾追加。见 [Append-only 模式](#append-only-模式)。这里忽略 `clearAt`。 |
 | `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | 否 | `appendOnly`：每次调用应用一个检查点时调用 —— `{ sessionId, reason, at, signed, strippedThinking }`。 |
@@ -245,7 +245,7 @@ const wrappedModel = withContextChef(model, options);
 | `overflow.archive` | `CompressionArchiveConfig` | 否 | `{ store: (serialized, { messageCount }) => uri }` —— 让被驱逐的片段仍可通过摘要引用的 URI 取回。`'vfs'` 简写仅 core 支持。 |
 | `clear` | `ClearTarget[]` | 否 | 占位符式的 **tool-result** 清除。被清除的工具结果变为 `'[Old tool result content cleared]'`——消息结构保持完整，与删除内容的 `compact` 不同。在压缩之后执行。当工具结果被清除时，自动注入一条系统消息以避免模型将占位符读作错误。仅 `'tool-result'` 目标生效；`'thinking'` 目标为空操作（会记录一条警告）——请用 `compact: { reasoning: ... }` 删除 reasoning。`ClearTarget` 从 `@context-chef/core` 导出。 |
 
-**返回值：** `LanguageModelV3` — 包装后的模型，可在任何使用原模型的地方直接替换。
+**返回值：** `LanguageModelV4` — 包装后的模型，可在任何使用原模型的地方直接替换。
 
 ### `createMiddleware(options)`
 
@@ -261,7 +261,7 @@ const model = wrapLanguageModel({ model: openai('gpt-4o'), middleware });
 
 ### `fromAISDK(prompt)` / `toAISDK(messages)`
 
-AI SDK `LanguageModelV3Prompt` 与 context-chef `Message[]` IR 之间的底层转换器。适用于直接使用 context-chef 模块处理 AI SDK 消息格式的场景。
+AI SDK `LanguageModelV4Prompt` 与 context-chef `Message[]` IR 之间的底层转换器。适用于直接使用 context-chef 模块处理 AI SDK 消息格式的场景。
 
 ```typescript
 import { fromAISDK, toAISDK } from '@context-chef/ai-sdk-middleware';
@@ -316,7 +316,7 @@ const next = await compactModelMessages(messages, summarizerModel, {
 if (next !== messages) await save(next); // no-op 时跳过持久化
 ```
 
-- `model` 是 `ai` 的 `LanguageModel`(`string id | V3 | V2`)—— 正是 `prepareStep` / `generateText` 交给你的类型。
+- `model` 是 `ai` 的 `LanguageModel`(`string id | V4 | V3 | V2`)—— 正是 `prepareStep` / `generateText` 交给你的类型。
 - 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
 - system 消息逐字保留、永不被摘要。
 - 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回同一个 `messages` 引用** —— 因此可通过 `next !== messages` 在 no-op 时跳过持久化。可无条件调用;仅当模型调用抛错时才抛错。
@@ -373,53 +373,6 @@ if (toSummarize.length > 0) {
 ### `summarizeModelMessages(messages, model, options?)`
 
 [`summarizeMessages`](#summarizemessagesprompt-model-options) 的 ModelMessage 层级兄弟函数:用同一流水线(角色扁平化 + core `summarizeHistory`)把一段 `ModelMessage[]` 切片摘要为单个字符串。system 消息会被丢弃。空切片不调用模型直接返回 `''`,模型调用失败时抛出异常。当你想自行驱动摘要、而非用一站式的 `compactModelMessages` 时,配合 `planCompactionModelMessages` 使用。
-
-### `compactHistory(prompt, model, options)`
-
-> **已废弃。** `compactHistory` / `planCompaction` 收发的是
-> `LanguageModelV3Prompt` —— provider 协议层级,没人会持久化这个类型。请改用
-> [`compactModelMessages`](#compactmodelmessagesmessages-model-options)
-> / `planCompactionModelMessages`。仍然导出且可用;下个大版本移除。
-
-`compactModelMessages` 的 V3-prompt 变体。它在 turn 边界切分历史、对旧切片摘要,返回一份可直接持久化的新 prompt —— `[...system, <摘要>, ...最近若干轮]`：
-
-```typescript
-import { compactHistory } from '@context-chef/ai-sdk-middleware';
-
-// 在模型调用之间,当你持有 `messages` 时:
-messages = await compactHistory(messages, summarizerModel, {
-  keepRecentTurns: 4,           // 逐字保留最近 4 个原子轮次
-  toolResultStubThreshold: 5000,
-});
-// 持久化结果 —— 历史真正变小并保持精简。
-```
-
-- 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
-- system 消息逐字保留、永不被摘要。
-- 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回** prompt —— 可无条件调用。仅当模型调用抛错时才抛错。
-- 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
-
-### `planCompaction(prompt, options)`
-
-> **已废弃。** 请改用 [`planCompactionModelMessages`](#plancompactionmodelmessagesmessages-options)。
-> 这个 V3-prompt 变体是 provider 协议层级 —— 一个你永远不会持久化的类型。仍然导出且可用;下个大版本移除。
-
-`compactHistory` 背后的同步切分函数,适用于只要边界、不想立刻摘要的场景(持久化你自己的标记,或用别的摘要器)。返回 `{ system, toSummarize, toKeep }`(均为 `LanguageModelV3Prompt`),按 turn 边界切分:
-
-```typescript
-import { planCompaction, summarizeMessages } from '@context-chef/ai-sdk-middleware';
-import { Prompts } from '@context-chef/core';
-
-const { system, toSummarize, toKeep } = planCompaction(messages, { keepRecentTurns: 4 });
-if (toSummarize.length > 0) {
-  const summary = await summarizeMessages(toSummarize, model);
-  messages = [
-    ...system,
-    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
-    ...toKeep,
-  ];
-}
-```
 
 ## 工作原理
 
