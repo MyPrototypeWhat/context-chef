@@ -1198,63 +1198,80 @@ describe('appendOnly: requests the conversation does not keep', () => {
   });
 });
 
-describe('appendOnly: a structured chat() run without tools', () => {
-  /**
-   * chat() with an `outputSchema` and no tools makes one model call, the
-   * structured one: the middleware sees `init`, then `structuredOutput`. Each
-   * run's request is recorded; `usage` is the prompt token count the adapter
-   * reports for it, if any.
-   */
-  function structuredRuns(
-    options: Partial<ContextChefOptions>,
-    usage?: (sent: ModelMessage[]) => number,
-  ) {
-    const warn = vi.fn();
-    const breaks: PrefixBreakEvent[] = [];
-    const middleware = contextChefMiddleware({
-      appendOnly: true,
-      logger: { warn },
-      onPrefixBreak: (event) => {
-        breaks.push(event);
+/**
+ * chat() runs with an `outputSchema`, through the real engine. Without tools a
+ * run makes one model call, the structured one: the middleware sees `init`,
+ * then `structuredOutput`. With `tools` the agent loop calls the model first
+ * (`beforeModel`), a plain reply ends the loop, and the structured call
+ * follows. Each run's structured request is recorded; `usage` is the prompt
+ * token count the adapter reports for it, if any. `firings` records each
+ * firing's phase and the number of tools its config holds.
+ */
+function structuredRuns(
+  options: Partial<ContextChefOptions>,
+  { usage, tools }: { usage?: (sent: ModelMessage[]) => number; tools?: Tool[] } = {},
+) {
+  const warn = vi.fn();
+  const breaks: PrefixBreakEvent[] = [];
+  const middleware = contextChefMiddleware({
+    appendOnly: true,
+    logger: { warn },
+    onPrefixBreak: (event) => {
+      breaks.push(event);
+    },
+    ...options,
+  });
+  const firings: Array<[ChatMiddlewareContext['phase'], number]> = [];
+  const spy = {
+    name: 'spy',
+    onConfig: (ctx: ChatMiddlewareContext, config: ChatMiddlewareConfig) => {
+      firings.push([ctx.phase, config.tools.length]);
+    },
+  };
+  const requests: ModelMessage[][] = [];
+  const adapter = {
+    kind: 'text' as const,
+    name: 'mock',
+    model: 'mock-model',
+    '~types': {} as Record<string, unknown>,
+    chatStream: () => {
+      if (!tools) throw new Error('a run without tools makes no chat call');
+      return (async function* () {
+        yield { type: 'TEXT_MESSAGE_START', messageId: 'm', role: 'assistant', timestamp: 0 };
+        yield { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm', delta: 'ok', timestamp: 0 };
+        yield { type: 'TEXT_MESSAGE_END', messageId: 'm', timestamp: 0 };
+        yield { type: 'RUN_FINISHED', runId: 'r', finishReason: 'stop', timestamp: 0 };
+      })();
+    },
+    structuredOutput: async ({ chatOptions }: { chatOptions: { messages: ModelMessage[] } }) => {
+      requests.push(chatOptions.messages);
+      const promptTokens = usage?.(chatOptions.messages);
+      return {
+        data: { answer: requests.length },
+        rawText: `{"answer":${requests.length}}`,
+        ...(promptTokens === undefined
+          ? {}
+          : { usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 } }),
+      };
+    },
+  };
+  const run = (messages: ModelMessage[]) =>
+    chat({
+      adapter: adapter as never,
+      messages,
+      threadId: 'conv',
+      ...(tools ? { tools } : {}),
+      outputSchema: {
+        type: 'object',
+        properties: { answer: { type: 'number' } },
+        required: ['answer'],
       },
-      ...options,
-    });
-    const requests: ModelMessage[][] = [];
-    const adapter = {
-      kind: 'text' as const,
-      name: 'mock',
-      model: 'mock-model',
-      '~types': {} as Record<string, unknown>,
-      chatStream: () => {
-        throw new Error('a run without tools makes no chat call');
-      },
-      structuredOutput: async ({ chatOptions }: { chatOptions: { messages: ModelMessage[] } }) => {
-        requests.push(chatOptions.messages);
-        const promptTokens = usage?.(chatOptions.messages);
-        return {
-          data: { answer: requests.length },
-          rawText: `{"answer":${requests.length}}`,
-          ...(promptTokens === undefined
-            ? {}
-            : { usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 } }),
-        };
-      },
-    };
-    const run = (messages: ModelMessage[]) =>
-      chat({
-        adapter: adapter as never,
-        messages,
-        threadId: 'conv',
-        outputSchema: {
-          type: 'object',
-          properties: { answer: { type: 'number' } },
-          required: ['answer'],
-        },
-        middleware: [middleware],
-      } as never);
-    return { run, requests, warn, breaks };
-  }
+      middleware: [spy, middleware],
+    } as never);
+  return { run, requests, firings, warn, breaks };
+}
 
+describe('appendOnly: a structured chat() run without tools', () => {
   it("sends its one call as the conversation's: kept, compressed, its signed thinking replayed", async () => {
     const { compressionModel, strategy } = keepLastTurn();
     const { run, requests, warn, breaks } = structuredRuns({
@@ -1286,7 +1303,7 @@ describe('appendOnly: a structured chat() run without tools', () => {
     const { compressionModel, strategy } = keepLastTurn();
     const { run, requests } = structuredRuns(
       { contextWindow: 100, tokenizer, overflow: { strategy } },
-      () => 95,
+      { usage: () => 95 },
     );
     await run(asked(1, true));
     await run(asked(2, true));
@@ -1295,6 +1312,30 @@ describe('appendOnly: a structured chat() run without tools', () => {
     // raw window, though the 3 messages count 30.
     expect(compressionModel).toHaveBeenCalledTimes(1);
     expect(requests[1]).toEqual([summary(1), user('q2')]);
+  });
+});
+
+describe('appendOnly: a structured chat() run with tools', () => {
+  it.each([
+    ['with tools, sends the structured call as a one-off: its usage is not counted', [search], 0],
+    ['without tools, sends it as an ordinary call: its usage is counted', undefined, 1],
+  ])('%s', async (_, tools, compressions) => {
+    const { compressionModel, strategy } = keepLastTurn();
+    const { run, firings } = structuredRuns(
+      { contextWindow: 100, tokenizer, overflow: { strategy } },
+      { usage: () => 95, tools },
+    );
+    await run(asked(1, true));
+    await run(asked(2, true));
+
+    // The one-off rests on this: the engine hands the structured call the run's tools.
+    expect(firings.filter(([phase]) => phase === 'structuredOutput')).toEqual([
+      ['structuredOutput', tools?.length ?? 0],
+      ['structuredOutput', tools?.length ?? 0],
+    ]);
+    // 95 reported for the first run, plus 20 for the 2 messages since, is past the raw
+    // window; the 3 messages alone count 30.
+    expect(compressionModel).toHaveBeenCalledTimes(compressions);
   });
 });
 
