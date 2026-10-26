@@ -916,13 +916,14 @@ export class Janitor {
    *   compressed messages, for `onCompress` (`CompressionDetails.replacement`);
    *   under `appendOnly` the events are left out of what `onCompress` is told
    *   was compressed.
-   *   `signal` goes to the strategy too. Once it is aborted, before the
-   *   strategy runs or while it runs, the call throws the signal's reason (an
-   *   `AbortError` unless it was aborted with a reason of its own) and lands
-   *   nothing: no `onCompress`, no archive, the circuit breaker is not cleared
-   *   and the window lineage does not move. Aborted before the strategy runs,
-   *   the strategy is not called, so a finished `background()` job is still
-   *   waiting.
+   *   `signal` goes to the strategy too. A call that would run the strategy
+   *   throws the signal's reason once it is aborted, before the strategy runs
+   *   or while it runs (an `AbortError` unless it was aborted with a reason of
+   *   its own), and lands nothing: no `onCompress`, no archive, the circuit
+   *   breaker is not cleared and the window lineage does not move. Aborted
+   *   before the strategy runs, the strategy is not called, so a finished
+   *   `background()` job is still waiting. A call that never reaches the
+   *   strategy (within budget, or held by an open breaker) resolves as usual.
    */
   public async overflow(
     history: Message[],

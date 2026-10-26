@@ -397,11 +397,13 @@ export interface CompileOptions {
    *   aborting after step 4 leaves `Memory.turnCount` advanced even though no
    *   payload was produced. Subsequent compiles continue from the advanced
    *   turn — TTL-based entries may expire one turn earlier than expected.
-   * - **Cancellation is coarse-grained.** Long-running phases (`Janitor.compress`,
-   *   user-supplied `onBeforeCompile` / `transformContext`) run to completion;
-   *   abort is only honored at the next phase boundary. A compression that
-   *   finishes after the abort doesn't land: `onCompress` and the `compress`
-   *   event don't fire, and the compile throws before `compress:end`.
+   * - **Cancellation is coarse-grained.** User-supplied `onBeforeCompile` /
+   *   `transformContext` run to completion; abort is honored at the next
+   *   phase boundary. The overflow phase also checks before its strategy runs
+   *   and between `chain()` steps; a strategy already running gets the signal
+   *   and may or may not stop. A compression that finishes after the abort
+   *   doesn't land: `onCompress` and the `compress` event don't fire, and the
+   *   compile throws before `compress:end`.
    */
   signal?: AbortSignal;
 }
