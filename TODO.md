@@ -730,6 +730,8 @@ Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign every thinking block o
 
 Everything below is unverified because no key was available. Each line is one experiment.
 
+Run `examples/verify-thinking-prefix.ts` for the Anthropic lines (its header says how); the SDK lines need the SDK packages, and the OpenAI / Gemini line those providers' keys.
+
 - [ ] Diagnostic mode: on an account created before 2026-08-31, send the `thinking-binding-controls-2026-08-01` beta without setting `block_binding`, run an `appendOnly` agent loop (dynamic state, announcements, memory changes, one compaction) and confirm `input_transformations` stays empty; the same loop with `appendOnly` off should list `thinking_mismatch_allowed` entries.
 - [ ] Thinking stripped mid tool loop: an unsigned checkpoint while tool results are pending strips the last assistant turn's thinking; is that request rejected (400) or accepted? Decides whether waiting for a user-turn boundary is a hard requirement or a quality choice.
 - [ ] A user event sent as its own message right after a tool_result user message (and tool results split across two consecutive user messages): the API merges them, and replaying them unchanged keeps later thinking valid, also next to `fromAnthropic` verbatim replay.
