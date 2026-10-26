@@ -774,6 +774,7 @@ Run `examples/verify-thinking-prefix.ts` for the Anthropic lines (its header say
 - **`strippedThinking` count**: a host that edits the text of a reply whose thinking was already stripped has that thinking counted again (what is stripped is right).
 - **Failure count in the log**: past the raw window a compactor that keeps failing logs "failure 4/3, 5/3…".
 - **Integrations DX**: `details.replacement` is typed `LanguageModelV4Prompt`, so a `generateText` host writing it back into a `ModelMessage` store needs a cast.
+- **Anthropic breakpoints**: a `_cache_breakpoint` on a tool-call turn or a tool result emits no `cache_control` on the Anthropic wire (pre-existing in 4.x); fixing it changes 4.x output.
 
 ## Before release (append-only)
 
