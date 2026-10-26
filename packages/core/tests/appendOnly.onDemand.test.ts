@@ -427,6 +427,24 @@ describe('appendOnly onDemandCompaction(): a compile aborted while it asks', () 
     expect(onCompress).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects with the signal's reason, not the error the client threw", async () => {
+    const { chef, compact } = chefWith();
+    const controller = new AbortController();
+    // An SDK client throws its own error class when its request is aborted.
+    compact.mockImplementationOnce(async () => {
+      controller.abort(new Error('the user pressed stop'));
+      throw new Error('Request was aborted.');
+    });
+    await converse(chef, [1, 2, 3].map(asked));
+
+    const rejected = await chef
+      .setHistory(asked(6))
+      .compile({ target: 'anthropic', signal: controller.signal })
+      .catch((error: unknown) => error);
+
+    expect(rejected).toBe(controller.signal.reason);
+  });
+
   it('lands nothing the compactor returned after the abort', async () => {
     const onCompress = vi.fn();
     const { chef, compact } = chefWith({ janitor: { ...JANITOR, onCompress } });

@@ -284,8 +284,9 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
         response = await compact(request, input.signal);
       } catch (error) {
         // An aborted compile is no failed compression: nothing is counted, and
-        // nothing runs in its place.
-        if (input.signal?.aborted) throw error;
+        // nothing runs in its place. It rejects as every other aborted compile
+        // does, with the signal's reason, not with the error the client threw.
+        input.signal?.throwIfAborted();
         return failed('on-demand compaction request failed', error);
       }
       input.signal?.throwIfAborted();
