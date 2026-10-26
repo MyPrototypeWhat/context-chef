@@ -522,10 +522,10 @@ describe('AnthropicAdapter — attachments output', () => {
   });
 });
 
-// A message rebuilt from IR with no text sends no text block when it has
-// anything else to send: an empty text block says nothing, and the API is
-// reported to reject one.
-describe('AnthropicAdapter — no empty text block', () => {
+// A message rebuilt from IR whose text is empty or only whitespace sends no
+// text block when it has anything else to send. Such a block carries nothing
+// the model wrote, and the thinking check ignores it.
+describe('AnthropicAdapter — no empty or whitespace-only text block', () => {
   const thinking = { type: 'thinking', thinking: '', signature: 'SIG_A' };
   const signed = { thinking: { thinking: '', signature: 'SIG_A' } };
   const call = {
@@ -600,6 +600,41 @@ describe('AnthropicAdapter — no empty text block', () => {
     ]);
   });
 
+  it('moves it after the thinking and attachments of a message to its last attachment', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        ...signed,
+        attachments: [png('AAAA'), png('BBBB')],
+        _cache_breakpoint: true,
+      },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      thinking,
+      image('AAAA'),
+      { ...image('BBBB'), cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('moves it to the block of a compaction message rebuilt from IR', () => {
+    const result = adapter.compile([
+      {
+        role: 'assistant',
+        content: '',
+        _anthropic_compaction: 'Summary.',
+        _cache_breakpoint: true,
+      },
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([
+      { type: 'compaction', content: 'Summary.', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
   it('has no block to put the breakpoint of a reply that is only thinking on', () => {
     // Thinking blocks can't carry one, as in a verbatim replay of such a reply.
     const result = adapter.compile([
@@ -610,7 +645,7 @@ describe('AnthropicAdapter — no empty text block', () => {
     expect(getContentBlocks(result, 1)).toEqual([thinking]);
   });
 
-  it('keeps the empty text block of a message with nothing else to send', () => {
+  it('keeps the text block of a message with nothing else to send, as it is', () => {
     const nothingElse: Message[] = [
       { role: 'user', content: '' },
       { role: 'assistant', content: '' },
@@ -622,20 +657,36 @@ describe('AnthropicAdapter — no empty text block', () => {
     for (const message of nothingElse) {
       expect(getContentBlocks(adapter.compile([message]))).toEqual([{ type: 'text', text: '' }]);
     }
+    expect(getContentBlocks(adapter.compile([{ role: 'assistant', content: ' \n' }]))).toEqual([
+      { type: 'text', text: ' \n' },
+    ]);
     expect(
       getContentBlocks(adapter.compile([{ role: 'user', content: '', _cache_breakpoint: true }])),
     ).toEqual([{ type: 'text', text: '', cache_control: { type: 'ephemeral' } }]);
   });
 
-  it('keeps whitespace text, which the model sent: leaving it out would edit the turn', () => {
+  it('leaves out whitespace-only text next to other blocks, which the thinking check ignores', () => {
+    const result = adapter.compile([
+      { role: 'user', content: ' ', attachments: [png('AAAA')] },
+      { role: 'assistant', content: '\n\n', ...signed, tool_calls: [call] },
+      { role: 'tool', content: '4°C', tool_call_id: 'call_1' },
+      { role: 'assistant', content: ' \t', ...signed },
+    ]);
+
+    expect(getContentBlocks(result, 0)).toEqual([image('AAAA')]);
+    expect(getContentBlocks(result, 1)).toEqual([thinking, toolUse]);
+    expect(getContentBlocks(result, 3)).toEqual([thinking]);
+  });
+
+  it('keeps text with whitespace around it as it is', () => {
     const result = adapter.compile([
       { role: 'user', content: 'q' },
-      { role: 'assistant', content: '\n\n', ...signed, tool_calls: [call] },
+      { role: 'assistant', content: '\nChecking.\n', ...signed, tool_calls: [call] },
     ]);
 
     expect(getContentBlocks(result, 1)).toEqual([
       thinking,
-      { type: 'text', text: '\n\n' },
+      { type: 'text', text: '\nChecking.\n' },
       toolUse,
     ]);
   });

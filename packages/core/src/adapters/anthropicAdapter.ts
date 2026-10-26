@@ -478,14 +478,14 @@ function thinkingBlocks(msg: Message): SDKContentBlockParam[] {
 
 /**
  * Whether a message rebuilt from IR leaves its text block out: when the text
- * is empty and the message has other blocks to send. An empty text block says
- * nothing, and the API is reported to reject one; a reply the model sent as
- * thinking and tool calls only has none either. A message with nothing else
- * keeps it, so it still has content. Whitespace is text the model sent, and
- * leaving it out would edit the turn.
+ * is empty or only whitespace and the message has other blocks to send. Such
+ * a block carries nothing the model wrote, and the thinking check ignores
+ * empty and whitespace-only text blocks, so leaving one out changes nothing
+ * a signature covers. A message with nothing else keeps it, so it still has
+ * content.
  */
 function leavesOutText(text: string, otherBlocks: number): boolean {
-  return text === '' && otherBlocks > 0;
+  return text.trim() === '' && otherBlocks > 0;
 }
 
 /** Converts IR attachments to Anthropic image/document content blocks. */
