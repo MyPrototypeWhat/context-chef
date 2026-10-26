@@ -126,4 +126,4 @@ adapterRegistry.unregisterBySource("my-plugin");
 
 如果 adapter 不能让请求以 assistant 消息结尾、会把 prefill 转成指令，应通过 `nativePrefill: false` 说明这一点（包装其他 adapter 时，沿用被包装 adapter 的值）。在 [`appendOnly`](/zh/guide/append-only) 下，chef 会把 guardrail prefill 作为指令只发一次，而不是让 adapter 每轮把它并进不同的 user 消息。
 
-包装 Anthropic adapter 的 adapter（用来记日志，或者给请求加字段）也要把它的 `anthropicWire` 传下去：`anthropicWire = inner.anthropicWire`。chef 只凭 `'anthropic'` 这个名字或这个标记认定目标是 Anthropic。没有它，服务端上下文管理会被跳过；在 [`appendOnly`](/zh/guide/append-only) 下，检查点已经作废的 thinking 也照样会发出去，API 会拒绝这样的请求。
+包装 Anthropic adapter 的 adapter（用来记日志，或者给请求加字段）也要把它的 `anthropicWire` 传下去：`anthropicWire = inner.anthropicWire`。chef 只凭 `'anthropic'` 这个名字或这个标记认定目标是 Anthropic。没有它，服务端上下文管理会被跳过。在 [`appendOnly`](/zh/guide/append-only) 下，检查点已经作废的 thinking 也照样会发出去，API 会拒绝这样的请求；[`onDemandCompaction()`](/zh/guide/append-only#签名压缩-ondemandcompaction) 也不会请求压缩，而是运行它的 `fallback`。

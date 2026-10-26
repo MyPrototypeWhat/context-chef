@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  AnthropicAdapter,
   anthropicCompactionMessage,
   background,
   type ChefConfig,
@@ -20,6 +21,7 @@ import {
   ContextChef,
   chain,
   checkPrefixContinuity,
+  type ITargetAdapter,
   type OnDemandCompactionRequest,
   type OnDemandCompactor,
   type OverflowStrategy,
@@ -651,6 +653,23 @@ describe('appendOnly onDemandCompaction(): where nothing can be signed', () => {
       SUMMARY(1),
       'q4',
     ]);
+  });
+
+  it.each([
+    ['asks for one through an adapter that wraps the Anthropic one and passes it on', true],
+    ["runs its fallback through one that doesn't", false],
+  ])('%s', async (_, passesOn) => {
+    const inner = new AnthropicAdapter();
+    const wrapper: ITargetAdapter = {
+      ...(passesOn ? { anthropicWire: inner.anthropicWire } : {}),
+      compile: (messages) => inner.compile(messages),
+    };
+    const { chef, compact, compressionModel } = chefWith();
+
+    for (const n of [1, 2, 3, 4]) await chef.setHistory(asked(n)).compile({ target: wrapper });
+
+    expect(compact).toHaveBeenCalledTimes(passesOn ? 1 : 0);
+    expect(compressionModel).toHaveBeenCalledTimes(passesOn ? 0 : 1);
   });
 
   it('runs its fallback before the first request, and compacts signed from then on', async () => {

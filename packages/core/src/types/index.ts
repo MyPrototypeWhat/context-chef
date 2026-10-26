@@ -340,7 +340,10 @@ export interface ITargetAdapter {
    * it does the `'anthropic'` name: server-side context management, the
    * system channel for announcements, and under `ChefConfig.appendOnly` the
    * thinking a checkpoint invalidated left out, `clearAt` and their betas. A
-   * wrapper should pass on the value of the adapter it wraps.
+   * wrapper should pass on the value of the adapter it wraps. One that
+   * doesn't is treated as another provider: under `appendOnly` that thinking
+   * is sent anyway, which the API rejects, and `onDemandCompaction()` runs its
+   * `fallback` instead of asking for a compaction.
    */
   readonly anthropicWire?: boolean;
 }
