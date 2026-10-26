@@ -126,7 +126,7 @@ export interface PrefixSessionPoolConfig<THostMessages>
  * loses the ledger, and the next call is a `ledger` checkpoint.
  */
 export class PrefixSession {
-  readonly ledger = new PrefixLedger();
+  private readonly ledger = new PrefixLedger();
   // Built by createPrefixSessionPool(); the package exports the type alone.
   private last: Promise<unknown> = Promise.resolve();
 

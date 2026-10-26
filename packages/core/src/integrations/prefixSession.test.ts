@@ -547,7 +547,6 @@ describe('PrefixSession: usage reports', () => {
     const { session, compressionModel } = poolWith();
     await session.compile(callWith(rounds(1)));
     session.reportTokenUsage(95);
-    expect(session.ledger.reported).toBe(3);
     const next = await session.compile(callWith(rounds(2)));
 
     // 95 reported for the 3 messages sent, plus 20 for the 2 since: past the

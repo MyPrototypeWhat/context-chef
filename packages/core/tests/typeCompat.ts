@@ -114,6 +114,16 @@ const _jc6: JanitorConfig = {
   usagePreference: 'tokenizerFirst',
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. PREFIX SESSION — The integrations' session type is exported, its prefix
+//    ledger is not: the ledger's API is no part of the package.
+// ═══════════════════════════════════════════════════════════════════════════
+import type { PrefixSession } from '../src';
+
+declare const session: PrefixSession;
+// @ts-expect-error — the ledger is private to the session
+const _ps1 = session.ledger;
+
 // Prevent "unused" warnings
 export type TypeCompatChecks = {
   _g1: _G1;
@@ -133,4 +143,5 @@ export type TypeCompatChecks = {
   _jc4: typeof _jc4;
   _jc5: typeof _jc5;
   _jc6: typeof _jc6;
+  _ps1: typeof _ps1;
 };
