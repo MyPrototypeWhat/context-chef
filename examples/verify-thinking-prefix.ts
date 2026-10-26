@@ -44,8 +44,9 @@
  *                   sends nothing and needs no key
  *   --list
  *
- * A full run sends about 50 requests. All are small but the first one of
- * `server-block-beta`, which carries ~60k input tokens to trigger server-side
+ * A full run sends about 50 requests, most of them a few thousand input
+ * tokens. The four of `clear-at-reminder` carry a ~5k-token reminder, and the
+ * first one of `server-block-beta` ~60k tokens to trigger server-side
  * compaction.
  */
 
@@ -360,7 +361,10 @@ function report(label: string, result: Result, detail?: (reply: Reply) => string
   }
 }
 
-const note = (line: string) => console.log(`${indent}→ ${line}`);
+/** A verdict or what a result means: one note, its lines under one arrow. */
+function note(...lines: string[]): void {
+  for (const [i, line] of lines.entries()) console.log(`${indent}${i === 0 ? '→' : ' '} ${line}`);
+}
 
 const thinkingBlocks = (count: number) => `${count} thinking block${count === 1 ? '' : 's'}`;
 
@@ -526,7 +530,7 @@ async function clearAtReminder(): Promise<void> {
   // Long enough that clearing it shows in the token counts.
   const reminder = [
     'Before you answer, also call get_weather for London.',
-    ...Array.from({ length: 120 }, (_, i) => `Reminder note ${i + 1}: no action needed.`),
+    ...Array.from({ length: 600 }, (_, i) => `Reminder note ${i + 1}: no action needed.`),
   ].join('\n');
   // Input tokens of the request after the tool result, turn-scoped and not.
   const after = new Map<boolean, number>();
@@ -685,21 +689,25 @@ async function serverBlockBeta(): Promise<void> {
   );
   const triggered = await post(
     request([user(`${filler.join('\n')}\n\nReply with OK.`)], {
+      max_tokens: REPLY_MAX_TOKENS,
       context_management: contextManagement,
     }),
     [SERVER_COMPACTION_BETA],
   );
   report('a request past the server-side compaction trigger', triggered, tokens);
-  const block = triggered.ok ? compactionBlock(triggered.reply) : undefined;
-  if (!block) throw new Skipped('no compaction block came back');
+  const reply = triggered.ok ? triggered.reply : undefined;
+  const block = reply && compactionBlock(reply);
+  if (!reply || !block) throw new Skipped('no compaction block came back');
   note(
     typeof block.signature === 'string'
       ? 'the block is signed, so appendOnly adds compact-2026-09-04 when it replays it'
       : 'the block has no signature, so appendOnly adds no beta for it',
   );
 
-  // Resumed as `fromAnthropic` parses it: the history opens with the block.
-  const resumed = [assistant([block]), user('Reply with OK again.')];
+  // Resumed as `fromAnthropic` replays the reply that carried the block: all
+  // of its content as it came back, then the next question. The messages
+  // before the reply are left out; the API drops everything before the block.
+  const resumed = [assistant(reply.content), user('Reply with OK again.')];
   const server = { context_management: contextManagement };
   report(
     'control: resumed with context_management and compact-2026-01-12',
@@ -879,7 +887,15 @@ async function agentLoop(): Promise<void> {
   indent = '  ';
 }
 
-const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[] = [
+interface Experiment {
+  name: string;
+  question: string;
+  /** The expected outcome, and the library decision each result drives. */
+  means?: string[];
+  run: () => Promise<void>;
+}
+
+const EXPERIMENTS: Experiment[] = [
   {
     name: 'check-enforced',
     question: 'Is the thinking check running? An edited first question must be rejected.',
@@ -890,6 +906,11 @@ const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[
     question:
       'Thinking stripped mid tool loop: is a tool turn sent back without its thinking, its ' +
       'results still to come, rejected?',
+    means: [
+      'expected: the control ACCEPTED; the question is the first request.',
+      'REJECTED → waiting for a user-turn boundary before an unsigned compaction is a hard requirement, as appendOnly does it now.',
+      "ACCEPTED → it is a quality choice: a compaction mid tool turn could strip that turn's thinking instead of waiting.",
+    ],
     run: stripMidToolLoop,
   },
   {
@@ -897,22 +918,43 @@ const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[
     question:
       'A user event as its own message after the tool results: accepted, and does the thinking ' +
       'after it verify, sent back as sent and merged?',
+    means: [
+      'expected: all three ACCEPTED.',
+      "the first REJECTED → an event can't follow tool results as its own user message; appendOnly would have to put it in the tool-result message.",
+      'sent back as sent REJECTED → such an event breaks the thinking after it: a release blocker for appendOnly.',
+      "merged ACCEPTED → the API checks the merged form, so the chef's separate event and fromAnthropic's one-message replay are interchangeable; REJECTED → a history must go back in the form it was sent.",
+    ],
     run: userAfterToolResult,
   },
   {
     name: 'split-tool-results',
     question: 'Tool results split across two user messages: the same questions.',
+    means: [
+      'expected: all three ACCEPTED.',
+      'sent back as sent REJECTED → tool results split across user messages break the thinking after them; the adapter would have to merge them before sending.',
+      'merged ACCEPTED → merging them between requests is harmless; REJECTED → they must never be re-shaped once sent.',
+    ],
     run: splitToolResults,
   },
   {
     name: 'clear-at-reminder',
     question: 'clearAt: is a reminder cleared once a tool-result-only user message follows?',
+    means: [
+      'expected: all ACCEPTED, and the reminder cleared.',
+      "the turn-scoped request after the tool result REJECTED → a cleared reminder left in place breaks the thinking after it, and clearAt can't be used with thinking.",
+      "cleared → as the guide says, tool results end a turn-scoped reminder; NOT cleared → only a real user message does, and the guide's clearAt section must say so.",
+    ],
     run: clearAtReminder,
   },
   {
     name: 'system-after-tool-result',
     question:
       'Does the model follow a system message right after a tool result? (Sonnet 5.5, Haiku 5.5)',
+    means: [
+      "FOLLOWED → a 'system' event that lands mid tool loop reaches this model.",
+      "IGNORED → on this model mid-loop events belong on the user channel ('last_user' state, 'user_tail' announcements), and the guide should say so.",
+      'Run it with --model claude-haiku-5-5 as well.',
+    ],
     run: systemAfterToolResult,
   },
   {
@@ -920,6 +962,10 @@ const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[
     question:
       'onDemandCompaction over a chef-rendered window: does the kept reply right after the block ' +
       'keep its thinking?',
+    means: [
+      'expected ACCEPTED: the reply kept after the block keeps its thinking, as onDemandCompaction promises.',
+      "REJECTED → the kept turns lose their thinking as after an unsigned compaction, or a reply can't follow the block directly (the message says which); onDemandCompaction must then strip them or keep no turn.",
+    ],
     run: onDemandKeptTurn,
   },
   {
@@ -927,16 +973,30 @@ const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[
     question:
       'keepRecentTurns: 0 or a collapse: does the API go on from a request that ends on the ' +
       'block, and take the reply after it?',
+    means: [
+      'expected: all ACCEPTED.',
+      'the block alone REJECTED → after keepRecentTurns: 0 or a collapse the chef must not send a request that ends on the block; it has to state the pending question again after it.',
+      'the last request REJECTED → a reply may not follow the block directly.',
+    ],
     run: onDemandKeepNone,
   },
   {
     name: 'compaction-after-clear-at',
     question: 'A compaction request whose window ends in a clear_at reminder.',
+    means: [
+      'expected: ACCEPTED, stop_reason compaction.',
+      'REJECTED, or another stop_reason → onDemandCompaction must cut before a trailing clear_at reminder, or not combine with clearAt.',
+    ],
     run: compactionAfterClearAt,
   },
   {
     name: 'block-with-system-change',
     question: 'A signed block landing in the same compile as a system prompt change.',
+    means: [
+      'expected: the first ACCEPTED, the control REJECTED.',
+      "the first REJECTED → a signed block doesn't survive a system prompt change: a compaction landing with one must fall back to an unsigned summary.",
+      "the control ACCEPTED → the kept reply's thinking survived the change, and the system checkpoint strips more than it has to.",
+    ],
     run: blockWithSystemChange,
   },
   {
@@ -944,18 +1004,32 @@ const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[
     question:
       'cache_control on the last block of a compaction request: does it read what the request ' +
       'before it wrote?',
+    means: [
+      "a hit → the guide's advice holds: add cache_control to the last block of payload.messages in compact.",
+      'no hit → drop that advice from the guide, unless the request before wrote nothing (0 written: too short to cache, and this says nothing).',
+    ],
     run: compactionCacheHit,
   },
   {
     name: 'server-block-beta',
     question: 'A resumed server-side compaction block with compact-2026-09-04 added: harmless?',
+    means: [
+      'expected: all ACCEPTED.',
+      'the second REJECTED while the control is ACCEPTED → appendOnly must add compact-2026-09-04 only for an on-demand block, not for a server-side one.',
+      'the last REJECTED → resuming a server-side block needs compact-2026-01-12 as well, even without server().',
+    ],
     run: serverBlockBeta,
   },
   {
     name: 'empty-text',
     question:
-      'Empty text blocks: rejected? (the adapter has stopped sending them; this confirms it ' +
-      'was needed, and checks whitespace)',
+      'Empty and whitespace-only text blocks next to other blocks: rejected? (the adapter no ' +
+      'longer sends them)',
+    means: [
+      'expected: the forms the adapter sends now ACCEPTED.',
+      'the 4.2 forms REJECTED → leaving that text out was a fix, not only a cleanup; ACCEPTED → it changed nothing either way.',
+      'whatever the whitespace line says, the adapter needs no change: it leaves whitespace-only text out too.',
+    ],
     run: emptyText,
   },
   {
@@ -963,6 +1037,12 @@ const EXPERIMENTS: { name: string; question: string; run: () => Promise<void> }[
     question:
       'An agent loop leaves input_transformations empty with appendOnly on, not with it off ' +
       '(the diagnostic-mode run with --diagnostic, on an account created before 2026-08-31).',
+    means: [
+      'expected: no entries with appendOnly on, some with it off.',
+      'an entry with appendOnly on → the ledger let a sent turn change: a release blocker; its path names the block.',
+      'no entry with it off → nothing in this loop changed a signed prefix, and the run proves little.',
+      'With --diagnostic on an account created on or after 2026-08-31, the off run stops at its first mismatch instead.',
+    ],
     run: agentLoop,
   },
 ];
@@ -1001,7 +1081,9 @@ async function main(): Promise<void> {
     } catch (error) {
       if (!(error instanceof Skipped)) throw error;
       console.log(`  SKIPPED: ${error.message}`);
+      continue;
     }
+    if (experiment.means) note(...experiment.means);
   }
 }
 
