@@ -988,6 +988,10 @@ export class Janitor {
     // open breaker, which nothing new may get through.
     const pendingOnly = pendingSwap && (breakerOpen || prepared.budget === null);
 
+    // Aborted before the strategy runs (in a `compress:start` handler, say): a
+    // finished background job is taken by the strategy that lands it, so it
+    // must not run for a compile that sends nothing.
+    signal?.throwIfAborted();
     const result = await this._strategy.apply({
       history: prepared.history,
       budget,

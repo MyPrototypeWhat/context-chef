@@ -386,6 +386,74 @@ describe('overflow runner', () => {
     expect(events).toEqual([]);
     expect(chef.snapshot().modules.janitor.window).toEqual(before);
   });
+
+  it('keeps a finished background job for the next compile when one is aborted before it lands', async () => {
+    const summarizer = vi.fn(compressionModel);
+    const onCompress = vi.fn();
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: background(summarize({ compressionModel: summarizer, preserveRatio: 0.3 })),
+      },
+    });
+    // Starts the job, which finishes off-turn.
+    await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+    await flush();
+
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    chef.on('compress:start', abort);
+    await expect(
+      chef.setHistory(longHistory(9)).compile({ target: 'openai', signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    chef.off('compress:start', abort);
+    const payload = await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+
+    expect(summarizer).toHaveBeenCalledTimes(1);
+    expect(onCompress).toHaveBeenCalledTimes(1);
+    expect(String(payload.messages[0].content)).toContain('ALIAS EQUIVALENCE');
+  });
+
+  it('keeps a finished background job in a chain aborted during an earlier step', async () => {
+    const summarizer = vi.fn(compressionModel);
+    let abortWith: AbortController | null = null;
+    // Declines every time, and aborts the compile when told to.
+    const declines: OverflowStrategy = {
+      name: 'declines',
+      async apply(input) {
+        abortWith?.abort();
+        return {
+          history: input.history,
+          evicted: [],
+          span: [],
+          meta: { strategy: 'declines', windowId: input.window.current, changed: false },
+        };
+      },
+    };
+    const chef = new ContextChef({
+      logger: silent,
+      janitor: runnerConfig,
+      overflow: {
+        strategy: chain(
+          declines,
+          background(summarize({ compressionModel: summarizer, preserveRatio: 0.3 })),
+        ),
+      },
+    });
+    await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+    await flush();
+
+    abortWith = new AbortController();
+    await expect(
+      chef.setHistory(longHistory(9)).compile({ target: 'openai', signal: abortWith.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    abortWith = null;
+    const payload = await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+
+    expect(summarizer).toHaveBeenCalledTimes(1);
+    expect(String(payload.messages[0].content)).toContain('ALIAS EQUIVALENCE');
+  });
 });
 
 /**

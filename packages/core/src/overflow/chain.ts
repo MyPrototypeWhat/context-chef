@@ -49,6 +49,9 @@ export function chain(...strategies: OverflowStrategy[]): OverflowStrategy {
         : strategies;
 
       for (const strategy of runnable) {
+        // A compile aborted during an earlier step sends nothing: a later step
+        // must not take a finished background job only for it to be thrown away.
+        input.signal?.throwIfAborted();
         const result = await strategy.apply({ ...input, history, pinned });
         if (!result.meta.changed) {
           reason = result.meta.reason;
