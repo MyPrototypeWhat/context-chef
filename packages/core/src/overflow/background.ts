@@ -2,7 +2,7 @@
  * `background()` — summarize off-turn and swap the result in later.
  */
 
-import { sameOnWire, wireDigest } from '../prefix/wire';
+import { sameOnWire, wireDigest } from '../prefix';
 import type { Message } from '../types';
 import { extractPinnedMessages, messagesEquivalent } from './turns';
 import {

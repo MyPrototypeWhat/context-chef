@@ -8,7 +8,7 @@ import {
   anthropicCompactionMessage,
   ON_DEMAND_COMPACTION_BETA,
 } from '../adapters/anthropicAdapter';
-import { isPrefill } from '../prefix/events';
+import { isPrefill } from '../prefix';
 import type { AnthropicPayload, Message } from '../types';
 import { isServerStrategy } from './server';
 import { openingBlockEnd } from './summary';

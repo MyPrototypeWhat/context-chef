@@ -11,7 +11,7 @@ import type {
   ToolUseBlockParam as SDKToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import { Assembler } from '../modules/assembler';
-import { isThinkingBlock } from '../prefix/thinking';
+import { isThinkingBlock } from '../prefix';
 import type {
   AnthropicPayload,
   Attachment,
