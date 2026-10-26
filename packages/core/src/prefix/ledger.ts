@@ -252,9 +252,7 @@ export class PrefixLedger {
     this.pending ??= { committed: this.capture(), at: Number.POSITIVE_INFINITY };
     this.digests.clear();
     this.history = [...history];
-    const found = this.restarted
-      ? { reason: 'ledger' as const, hostIndex: 0, headLost: false }
-      : this.findBreak();
+    const found = this.restarted ? { reason: 'ledger' as const, hostIndex: 0 } : this.findBreak();
     this.restarted = false;
     if (!found) return { window: this.window() };
     const invalidBefore = this.invalidLeft();
@@ -628,16 +626,11 @@ export class PrefixLedger {
     this.summarized = undefined;
   }
 
-  /**
-   * The first place the ledger stops matching the history being compiled;
-   * `headLost` when the head no longer applies to it.
-   */
-  private findBreak():
-    | { reason: PrefixBreakReason; hostIndex: number; headLost: boolean }
-    | undefined {
+  /** The first place the ledger stops matching the history being compiled. */
+  private findBreak(): { reason: PrefixBreakReason; hostIndex: number } | undefined {
     if (this._head) {
       const lost = this.placeHead(this._head);
-      if (lost !== undefined) return { reason: 'history', hostIndex: lost, headLost: true };
+      if (lost !== undefined) return { reason: 'history', hostIndex: lost };
     }
     const history = this.history;
     const cut = this.cut;
@@ -647,17 +640,17 @@ export class PrefixLedger {
     // nor does the compaction block a resumed history opens with: it stands
     // for what came before it, and a reply after it is still one.
     if (this.blank && answeredReplies(history) > 0) {
-      return { reason: 'ledger', hostIndex: 0, headLost: false };
+      return { reason: 'ledger', hostIndex: 0 };
     }
     // A history break drops any entry anchored past the end along with the rest.
     for (let k = 0; k < this.seen.length; k++) {
       const i = cut + k;
       if (i >= history.length || this.digestOf(history[i]) !== this.seen[k]) {
-        return { reason: 'history', hostIndex: i, headLost: false };
+        return { reason: 'history', hostIndex: i };
       }
     }
     if (this.entries.some((e) => e.anchor > history.length)) {
-      return { reason: 'ledger', hostIndex: history.length, headLost: false };
+      return { reason: 'ledger', hostIndex: history.length };
     }
     return undefined;
   }
