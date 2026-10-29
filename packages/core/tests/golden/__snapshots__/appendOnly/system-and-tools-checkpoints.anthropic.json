@@ -1,0 +1,90 @@
+[
+  {
+    "payload": {
+      "messages": [{ "content": [{ "text": "question 1", "type": "text" }], "role": "user" }],
+      "system": [{ "text": "You are a careful agent.", "type": "text" }],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": { "q": { "type": "string" } },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "changed": { "system": [{ "text": "You are a careful agent. Be brief.", "type": "text" }] },
+    "from": 1,
+    "messages": [
+      {
+        "content": [
+          { "id": "call_1", "input": { "q": "topic 1" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 1", "tool_use_id": "call_1", "type": "tool_result" }],
+        "role": "user"
+      }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "system", "signed": false, "strippedThinking": 1 },
+      "stable": 0
+    }
+  },
+  {
+    "changed": {
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": { "q": { "type": "string" } },
+            "required": ["q"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch a document by id.",
+          "name": "fetch",
+          "parameters": {
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "from": 3,
+    "messages": [
+      { "content": [{ "text": "answer 1", "type": "text" }], "role": "assistant" },
+      { "content": [{ "text": "question 2", "type": "text" }], "role": "user" }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "tools", "signed": false, "strippedThinking": 1 },
+      "stable": 0
+    }
+  },
+  {
+    "from": 5,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_2", "thinking": "Look up 2.", "type": "thinking" },
+          { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 2", "tool_use_id": "call_2", "type": "tool_result" }],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 5 }
+  }
+]

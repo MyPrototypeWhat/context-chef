@@ -67,8 +67,7 @@ describe('createJanitorPool', () => {
     const persistenceWarns = () =>
       logger.warn.mock.calls.filter(([m]) => String(m).includes('without onCompress'));
 
-    // One fire per session — a Janitor suppresses its own next compression.
-    // The count is per pool, so it spans sessions.
+    // One compression per session; the count is per pool, so it spans sessions.
     await compressOnce(pool.get('s1'));
     await compressOnce(pool.get('s2'));
     expect(persistenceWarns()).toEqual([]);

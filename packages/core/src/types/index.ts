@@ -9,6 +9,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import type { Content as GeminiContent, TextPart as GeminiTextPart } from '@google/generative-ai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions';
+import type { PrefixMeta } from '../prefix/types';
 
 /**
  * Minimal logging hook for degradation warnings (storage write failures,
@@ -95,6 +96,29 @@ export interface Attachment {
   filename?: string;
 }
 
+/**
+ * The Anthropic wire message an IR message was parsed from. One wire message
+ * can become several IR messages — each `tool_result` block turns into its own
+ * `tool` message — so every IR message of the group records its place in it,
+ * and the first also carries the original content blocks. The Anthropic
+ * target replays those blocks only when the whole group is still present, in
+ * order, and every part still hashes the same; a cleared tool result,
+ * stripped thinking or a dropped part falls back to rebuilding from IR fields.
+ */
+export interface AnthropicOrigin {
+  /**
+   * Original content blocks; present on part 0 only. A copy, so an image or
+   * document's base64 is held here as well as in `attachments`.
+   */
+  blocks?: unknown[];
+  /** This message's index within the group. */
+  part: number;
+  /** Number of IR messages parsed from the wire message. */
+  parts: number;
+  /** Hash of this message's IR fields at parse time. */
+  hash: string;
+}
+
 export interface Message {
   role: Role;
   content: string;
@@ -169,9 +193,34 @@ export interface Message {
    * entries rather than parsing them into history — they are volatile
    * channel content (announcements are re-rendered every compile until
    * retracted), and baking them into durable history would put the text in
-   * the cached prefix and defeat retraction.
+   * the cached prefix and defeat retraction. `fromAnthropic` keeps the ones
+   * your own code wrote with `keepPositionalSystem`.
    */
   _positional?: boolean;
+  /**
+   * Turn-scoped system message: only meaningful on a `role: 'system'`,
+   * `_positional` message, and only the Anthropic adapter reads it. It sends
+   * `clear_at: 'next_user_message'` (beta
+   * `mid-conversation-system-clear-at-2026-08-21`, added to `payload.betas`):
+   * the model sees the text until a user message follows it — tool results
+   * count — and after that it stays in place, cleared, costing no tokens.
+   * Re-send it unchanged on every later request. It carries no
+   * `cache_control`: a `_cache_breakpoint` on it goes on the message before
+   * it. Other targets send the text as a plain positional system message.
+   */
+  _clear_at?: 'next_user_message';
+  /**
+   * Set by the chef, never by host code: under `appendOnly` this message is
+   * one of the chef's events (state, announcements, memory, skills …) that
+   * the prefix ledger rendered into the window, not a host message. Overflow
+   * cuts on it: `groupIntoTurns` puts an event in the turn it follows, so a
+   * strategy never keeps an event without the turn it belongs to. No adapter
+   * sends it, but what overflow hands back to the host carries it
+   * (`onCompress`'s `compressedMessages`, an archived span, what a
+   * `compressionModel` is given): strip it from a stored span before loading
+   * that span back into a history, or its messages are grouped as events.
+   */
+  _chef_event?: true;
   /**
    * Anthropic server-side compaction block (`compact_20260112`), carried
    * verbatim. `fromAnthropic` lifts it off the message that owns it and marks
@@ -198,6 +247,16 @@ export interface Message {
    * only consumer.
    */
   _openai_reasoning?: unknown[];
+  /**
+   * Where this message came from when `fromAnthropic` parsed it, so the
+   * Anthropic target can replay the original message byte-for-byte while
+   * nothing has changed it. Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5
+   * sign every thinking block over everything before it, and rebuilding an
+   * earlier turn from IR fields (one thinking block per message, text blocks
+   * joined, unmodeled blocks dropped) fails that check. See
+   * {@link AnthropicOrigin}; other adapters ignore it.
+   */
+  _anthropic_origin?: AnthropicOrigin;
   /** Allow provider-specific or user-defined fields to pass through without loss */
   [key: string]: unknown;
 }
@@ -266,6 +325,27 @@ export type TargetProvider = BuiltinTargetProvider | (string & {});
  */
 export interface ITargetAdapter {
   compile(messages: Message[]): TargetPayload;
+  /**
+   * Whether the provider continues a trailing assistant message (a prefill).
+   * `false` when `compile()` turns one into an instruction instead, as the
+   * built-in OpenAI and Gemini adapters do; with `ChefConfig.appendOnly` the
+   * chef then asks for a guardrail prefill with the guardrail's other
+   * instructions. Unset means it does. A wrapper should pass on the value of
+   * the adapter it wraps.
+   */
+  readonly nativePrefill?: boolean;
+  /**
+   * Whether `compile()` returns an Anthropic Messages request, as the built-in
+   * Anthropic adapter does. The chef then treats the target as Anthropic, as
+   * it does the `'anthropic'` name: server-side context management, the
+   * system channel for announcements, and under `ChefConfig.appendOnly` the
+   * thinking a checkpoint invalidated left out, `clearAt` and their betas. A
+   * wrapper should pass on the value of the adapter it wraps. One that
+   * doesn't is treated as another provider: under `appendOnly` that thinking
+   * is sent anyway, which the API rejects, and `onDemandCompaction()` runs its
+   * `fallback` instead of asking for a compaction.
+   */
+  readonly anthropicWire?: boolean;
 }
 
 // ─── Input adapter types ───
@@ -317,9 +397,15 @@ export interface CompileOptions {
    *   aborting after step 4 leaves `Memory.turnCount` advanced even though no
    *   payload was produced. Subsequent compiles continue from the advanced
    *   turn — TTL-based entries may expire one turn earlier than expected.
-   * - **Cancellation is coarse-grained.** Long-running phases (`Janitor.compress`,
-   *   user-supplied `onBeforeCompile` / `transformContext`) run to completion;
-   *   abort is only honored at the next phase boundary.
+   * - **Cancellation is coarse-grained.** User-supplied `onBeforeCompile` /
+   *   `transformContext` run to completion; abort is honored at the next
+   *   phase boundary. The overflow phase also checks before its strategy runs
+   *   and between `chain()` steps; a strategy already running gets the signal
+   *   and may or may not stop. A compression that finishes after the abort
+   *   doesn't land: `onCompress` and the `compress` event don't fire, and the
+   *   compile throws before `compress:end`. A `background()` job is not part
+   *   of the compile and doesn't get the signal: it keeps running and lands
+   *   on a later compile.
    */
   signal?: AbortSignal;
 }
@@ -328,7 +414,15 @@ export interface CompileOptions {
 
 /** Metadata returned by compile() for observability. */
 export interface CompileMeta {
-  /** Memory keys that were injected into the system prompt this turn. */
+  /**
+   * Memory keys that were injected into the system prompt this turn.
+   *
+   * With `ChefConfig.appendOnly`, where memory is stated as events, the keys
+   * the snapshot or delta this compile appended speaks for — a removed key
+   * included — and empty when it appended none: the window already holds the
+   * rest. An explicit `memoryPlacement: 'after_system'` reports the keys the
+   * system prompt carries, as without `appendOnly`.
+   */
   injectedMemoryKeys: string[];
   /** Memory keys that expired and were removed this turn. */
   memoryExpiredKeys: string[];
@@ -341,6 +435,11 @@ export interface CompileMeta {
    * history behind the model was rewritten.
    */
   windowId?: string;
+  /**
+   * `ChefConfig.appendOnly` only: how much of the previous payload's window
+   * this one repeats, and the checkpoint this compile applied, if any.
+   */
+  prefix?: PrefixMeta;
 }
 
 // ─── Per-provider payload types ───
@@ -363,9 +462,12 @@ export interface AnthropicPayload {
    */
   context_management?: unknown;
   /**
-   * Beta headers the emitted `context_management` edits require
-   * (e.g. 'compact-2026-01-12', 'context-management-2025-06-27'). Pass as the
-   * `anthropic-beta` header / SDK `betas` option.
+   * Beta headers the payload needs: the ones the emitted `context_management`
+   * edits require (e.g. 'compact-2026-01-12', 'context-management-2025-06-27'),
+   * 'mid-conversation-system-clear-at-2026-08-21' when a message is
+   * turn-scoped (`clear_at`), and 'compact-2026-09-04' when `appendOnly`
+   * replays a signed on-demand compaction block. Pass as the `anthropic-beta`
+   * header / SDK `betas` option.
    */
   betas?: string[];
 }

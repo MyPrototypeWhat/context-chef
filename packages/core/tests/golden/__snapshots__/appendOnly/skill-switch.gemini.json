@@ -1,0 +1,70 @@
+[
+  {
+    "payload": {
+      "messages": [
+        {
+          "parts": [
+            { "text": "question 1" },
+            {
+              "text": "<skill_instructions rev=\"1\" skill=\"research\">\nCite every source you use.\n</skill_instructions>"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "systemInstruction": { "parts": [{ "text": "You are a careful agent." }] }
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "from": 1,
+    "messages": [
+      {
+        "parts": [{ "functionCall": { "args": { "q": "topic 1" }, "name": "search" } }],
+        "role": "model"
+      },
+      {
+        "parts": [
+          { "functionResponse": { "name": "call_1", "response": { "result": "found 1" } } },
+          {
+            "text": "<skill_instructions rev=\"2\" skill=\"writing\">\nThese skill instructions replace any given earlier in this conversation.\n\nWrite short paragraphs.\n</skill_instructions>"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 2 }
+  },
+  {
+    "from": 3,
+    "messages": [
+      { "parts": [{ "text": "answer 1" }], "role": "model" },
+      {
+        "parts": [
+          { "text": "question 2" },
+          {
+            "text": "<skill_instructions rev=\"3\" withdrawn=\"true\">No skill is active any more: the skill instructions given earlier no longer apply.</skill_instructions>"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 5 }
+  },
+  {
+    "from": 5,
+    "messages": [
+      {
+        "parts": [{ "functionCall": { "args": { "q": "topic 2" }, "name": "search" } }],
+        "role": "model"
+      },
+      {
+        "parts": [
+          { "functionResponse": { "name": "call_2", "response": { "result": "found 2" } } }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 8 }
+  }
+]

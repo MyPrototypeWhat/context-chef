@@ -206,6 +206,11 @@ chef.announce("tools:added", "Tools newly available: grep", { channel: "user_tai
 
 Mechanism, not policy — chef will not guess your model for you.
 
+**Newer Claude models.** Two more caveats, taken from Anthropic's docs and not yet verified against the API:
+
+- Sonnet 5.5 and Haiku 5.5 may treat a system message placed right after a tool result as untrusted and ignore it. Mid-agent-loop, that is exactly where the `'system'` channel lands. If those models don't act on your announcements, pass `channel: 'user_tail'`.
+- Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it. Either channel re-renders the announcement at the new tail on every compile, so the turn it sat in last time changes, and replaying that turn's thinking fails the check (a 400 on accounts created on or after 2026-08-31).
+
 The `'system'` channel rides `Message._positional`: a `role: 'system'` message flagged positional stays *at its position* in the stream instead of being hoisted into the provider's top-level system parameter. Per adapter: Anthropic emits a mid-conversation system message (falling back to hoisting, with a one-time warning, if it would precede every user/tool message); OpenAI Chat Completions keeps system messages inline anyway, so the flag is a no-op; the Responses adapter emits an inline `message` item instead of folding the text into `instructions`; Gemini has no system role in `contents` and degrades it to a `user` entry verbatim.
 
 **Wording matters.** State facts, do not command. "Tools newly available: read_file, grep" and "web_search has been withdrawn; calls to it will be rejected" read as system state. "You must now use read_file" reads as an instruction competing with your system prompt — and the model will weigh it against everything else you told it.

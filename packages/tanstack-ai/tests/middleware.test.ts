@@ -528,6 +528,25 @@ describe('hook robustness — never break the host chat() run', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('onConfig transform failed'));
   });
 
+  it('onConfig passes an aborted run through without a warning: nothing of it goes out', async () => {
+    const warn = vi.fn();
+    const controller = new AbortController();
+    const mw = contextChefMiddleware({
+      transformContext: () => {
+        controller.abort();
+        throw controller.signal.reason;
+      },
+      logger: { warn },
+    });
+    const result = await mw.onConfig?.(
+      createMockCtx({ signal: controller.signal }),
+      createMockConfig([{ role: 'user', content: 'hi' }]),
+    );
+
+    expect(result).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('onUsage swallows janitor errors', () => {
     const warn = vi.fn();
     const mw = contextChefMiddleware({
@@ -1110,8 +1129,8 @@ describe('compress persistence warning', () => {
       logger: { warn },
     });
 
-    // E10 suppression skips every other call, so several cycles are needed to
-    // reach the threshold; the once-flag keeps it to a single warning.
+    // Several cycles are needed to reach the threshold; the once-flag keeps it
+    // to a single warning.
     await runCycles(mw, 12);
 
     const persistenceWarns = warn.mock.calls.filter(
@@ -1119,6 +1138,25 @@ describe('compress persistence warning', () => {
     );
     expect(persistenceWarns).toHaveLength(1);
     expect(persistenceWarns[0][0]).toContain('onCompress');
+  });
+
+  it('says what the unpersisted summary costs: the whole history summarized again, not a growing payload', async () => {
+    const warn = vi.fn();
+    const mw = contextChefMiddleware({
+      contextWindow: 100,
+      compress: { adapter: createMockAdapter() as never },
+      logger: { warn },
+    });
+
+    await runCycles(mw, 12);
+
+    const [warning] = warn.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((msg) => msg.includes('compress has fired'));
+    expect(warning).toContain(
+      'every chat() call over budget summarizes all of it again: one more model call per run',
+    );
+    expect(warning).not.toContain('grows unbounded');
   });
 
   it('does not warn when onCompress is configured', async () => {

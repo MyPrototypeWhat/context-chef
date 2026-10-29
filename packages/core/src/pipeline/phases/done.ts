@@ -1,9 +1,13 @@
 import type { Phase } from '../context';
+import { keepSentForCheck } from './audit';
+import { commitPrefix } from './prefix';
 
-/** Final observation event. */
+/** The append-only ledger's commit, then the final observation event. */
 export const donePhase: Phase = {
   name: 'done',
   async run(ctx, host) {
+    commitPrefix(ctx);
+    keepSentForCheck(ctx);
     await host.emit('compile:done', { payload: ctx.requirePayload() }, ctx.signal);
   },
 };

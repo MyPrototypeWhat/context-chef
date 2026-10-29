@@ -206,6 +206,8 @@ export interface OpenAIAdapterOptions {
 }
 
 export class OpenAIAdapter implements ITargetAdapter {
+  /** A trailing assistant message becomes an instruction on the last user turn. */
+  readonly nativePrefill = false;
   private readonly textifyThinking: ThinkingTextifier;
 
   constructor(private readonly options: OpenAIAdapterOptions = {}) {
@@ -222,11 +224,15 @@ export class OpenAIAdapter implements ITargetAdapter {
         // Chat Completions keeps system messages inline, so positional is the
         // only behavior here — the flag itself must not reach the wire.
         _positional,
+        // Turn-scoped messages are an Anthropic feature: here the text simply stays.
+        _clear_at,
+        _chef_event,
         thinking,
         redacted_thinking,
         attachments,
         pinned: _pinned,
         _anthropic_compaction,
+        _anthropic_origin,
         _gemini_thought_signature,
         _openai_reasoning,
         ...cleanMsg

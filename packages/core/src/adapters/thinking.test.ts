@@ -96,18 +96,32 @@ describe('AnthropicAdapter — thinking field', () => {
     expect(content[1].text).toBe('The answer is 42.');
   });
 
-  it('uses empty string signature when signature is omitted', () => {
+  // The API rejects a thinking block whose signature is empty or missing.
+  it.each([
+    ['omitted', undefined],
+    ['empty', ''],
+  ])('sends no thinking block when the signature is %s', (_name, signature) => {
     const messages: Message[] = [
       {
         role: 'assistant',
         content: 'Done.',
-        thinking: { thinking: 'Thinking without sig' },
+        thinking: { thinking: 'Thinking without sig', signature },
+      },
+      {
+        role: 'assistant',
+        content: '',
+        thinking: { thinking: 'Calling without sig', signature },
+        redacted_thinking: { data: 'blob' },
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }],
       },
     ];
     const result = anthropic.compile(messages);
-    const content = getAnthropicContent(result);
-    expect(content[0].type).toBe('thinking');
-    expect(content[0].signature).toBe('');
+
+    expect(getAnthropicContent(result, 0)).toEqual([{ type: 'text', text: 'Done.' }]);
+    expect(getAnthropicContent(result, 1).map((b) => b.type)).toEqual([
+      'redacted_thinking',
+      'tool_use',
+    ]);
   });
 
   it('maps redacted_thinking to RedactedThinkingBlockParam before text block', () => {
@@ -142,9 +156,7 @@ describe('AnthropicAdapter — thinking field', () => {
     ];
     const result = anthropic.compile(messages);
     const content = getAnthropicContent(result);
-    expect(content[0].type).toBe('thinking');
-    expect(content[1].type).toBe('text');
-    expect(content[2].type).toBe('tool_use');
+    expect(content.map((b) => b.type)).toEqual(['thinking', 'tool_use']);
   });
 
   it('does not add thinking block when thinking is absent', () => {

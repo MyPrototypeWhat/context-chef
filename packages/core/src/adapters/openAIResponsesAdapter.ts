@@ -373,6 +373,9 @@ function readReasoningPassthrough(msg: Message): OpenAIResponsesReasoningItem[] 
  * cast to {@link OpenAIResponsesPayload} until the typed overload lands.
  */
 export class OpenAIResponsesAdapter {
+  /** A trailing assistant message becomes an instruction on the last user item. */
+  readonly nativePrefill = false;
+
   compile(messages: Message[]): OpenAIResponsesPayload {
     const instructionParts: string[] = [];
     const input: OpenAIResponsesInputItem[] = [];

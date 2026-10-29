@@ -139,6 +139,17 @@ function fixMissingToolResults(messages: Message[]): Message[] {
 }
 
 /**
+ * Whether `msg` is the user turn {@link ensureValidHistory} prepends when a
+ * history does not open with one. A target whose API has its own rule for the
+ * opening message (Anthropic: a compaction block must come first) can drop it.
+ */
+export function isOpeningPlaceholder(msg: Message): boolean {
+  return (
+    msg.role === 'user' && msg.content === PLACEHOLDER_ORPHAN_REMOVED && !msg.attachments?.length
+  );
+}
+
+/**
  * Ensure the first non-system message is role: 'user'.
  */
 function ensureFirstMessageIsUser(messages: Message[]): Message[] {

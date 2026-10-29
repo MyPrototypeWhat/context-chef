@@ -2,7 +2,8 @@
  * `reset()` — drop the window and start over.
  */
 
-import { renderSummaryMessage } from './summary';
+import { openingPlaceholder, renderSummaryMessage, summaryHead } from './summary';
+import { waitingCallStart } from './turns';
 import {
   type OverflowInput,
   type OverflowResult,
@@ -12,7 +13,8 @@ import {
 } from './types';
 
 /**
- * The stub that stands in for the evicted conversation.
+ * The stub that stands in for the evicted conversation. `summarize()` leaves
+ * the same one when it collapses a window with no compression model.
  *
  * The ids name the window that was just reset and the one before it — the
  * runner opens the next window only once this result lands, so at the moment
@@ -25,7 +27,7 @@ import {
  * runner appends its citation to this notice — that line carries the archive
  * fact, and the address to go with it.
  */
-function defaultNotice(window: WindowLineage): string {
+export function resetNotice(window: WindowLineage): string {
   const lineage = window.previous
     ? `window ${window.current}; previous ${window.previous}`
     : `window ${window.current}`;
@@ -44,7 +46,9 @@ export interface ResetOptions {
 
 /**
  * Keeps the pinned messages and evicts everything else — no model call, no
- * summary of the content, just a notice that the window was reset.
+ * summary of the content, just a notice that the window was reset. A window
+ * collapsed under `appendOnly` also keeps a tool call still waiting for its
+ * result, after the pinned messages.
  *
  * The cheapest possible overflow, and lossy unless `overflow.archive` is
  * configured: with an archive the evicted span stays retrievable through the
@@ -58,16 +62,22 @@ export function reset(options: ResetOptions = {}): OverflowStrategy {
   return {
     name: 'reset',
     async apply(input: OverflowInput): Promise<OverflowResult> {
-      const pinnedSet = new Set(input.pinned);
-      const evicted = input.history.filter((m) => !pinnedSet.has(m));
+      const { history } = input;
+      // A collapse (`appendOnly`) keeps a tool call still waiting for its
+      // result: the result arrives next, and it needs its call before it.
+      const end = input.collapse ? waitingCallStart(history) : history.length;
+      // The opening placeholder before a compaction block stays with the block.
+      const opening = openingPlaceholder(history);
+      const pinnedSet = new Set(opening ? [opening, ...input.pinned] : input.pinned);
+      const evicted = history.slice(0, end).filter((m) => !pinnedSet.has(m));
       if (evicted.length === 0) {
         return unchanged(input, 'reset', 'history holds nothing but pinned messages');
       }
-      const notice = options.notice ?? defaultNotice(input.window);
+      const notice = options.notice ?? resetNotice(input.window);
       // input.pinned is already turn-scoped and in original order.
-      const kept = input.pinned.filter((m) => input.history.includes(m));
+      const kept = history.slice(0, end).filter((m) => pinnedSet.has(m));
       return {
-        history: [renderSummaryMessage(notice), ...kept],
+        history: [...summaryHead(renderSummaryMessage(notice), kept), ...history.slice(end)],
         evicted,
         // Nothing was compressed around the pinned messages — the notice
         // stands for exactly what left.

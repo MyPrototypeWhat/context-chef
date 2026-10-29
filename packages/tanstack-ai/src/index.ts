@@ -3,6 +3,7 @@ export { fromTanStackAI, type TanStackAIMessage, toTanStackAI } from './adapter'
 export {
   type CompactionPlanTanStackMessages,
   compactTanStackMessages,
+  type KeptReasoningOptions,
   type PlanCompactionOptions,
   planCompactionTanStackMessages,
   type SummarizeMessagesOptions,
@@ -14,5 +15,6 @@ export type {
   CompressOptions,
   ContextChefOptions,
   DynamicStateConfig,
+  PrefixBreakEvent,
   TruncateOptions,
 } from './types';

@@ -9,8 +9,15 @@
 
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
-import { renderSummaryMessage, summarizeHistory } from './summary';
-import { groupIntoTurns, type Turn } from './turns';
+import { resetNotice } from './reset';
+import {
+  openingBlockEnd,
+  openingPlaceholder,
+  renderSummaryMessage,
+  summarizeHistory,
+  summaryHead,
+} from './summary';
+import { groupIntoTurns, type Turn, waitingCallStart } from './turns';
 import {
   detachedRunner,
   type OverflowInput,
@@ -54,7 +61,8 @@ export interface SummarizeOptions {
   /**
    * Async hook to call a low-cost LLM (e.g. gpt-4o-mini) to summarize the
    * evicted span. Without one the span is dropped: the messages leave the
-   * window and only the runner's `onCompress` sees a placeholder summary.
+   * window and only the runner's `onCompress` sees a placeholder summary. A
+   * window collapsed under `appendOnly` keeps the `reset()` notice instead.
    *
    * Contract: may reject. A rejection counts toward the runner's circuit
    * breaker and leaves history unchanged.
@@ -254,23 +262,35 @@ export class SummarizingStrategy implements OverflowStrategy {
 
   async apply(input: OverflowInput): Promise<OverflowResult> {
     const { history } = input;
-    const splitIndex = input.forced ? forcedSplit(history) : this.splitIndex(input);
-    if (splitIndex === null || splitIndex <= 0) {
+    // A collapse summarizes every turn, the one in progress included — but a
+    // tool call still waiting for its result, which stays as the first kept turn.
+    const splitIndex = input.collapse
+      ? waitingCallStart(history)
+      : input.forced
+        ? forcedSplit(history)
+        : this.splitIndex(input);
+    // Nothing before the end of the block the window opens with is anything to compress.
+    if (splitIndex === null || splitIndex <= openingBlockEnd(history)) {
       return unchanged(
         input,
         this.name,
-        input.forced
-          ? 'a forced overflow needs a turn to compress and a turn to answer in — the window holds one'
-          : 'no turn boundary above the preserved tail',
+        input.collapse
+          ? 'nothing to collapse ahead of the tool call waiting for its result'
+          : input.forced
+            ? 'a forced overflow needs a turn to compress and a turn to answer in — the window holds one'
+            : 'no turn boundary above the preserved tail',
       );
     }
 
     const toCompress = history.slice(0, splitIndex);
     const toKeep = history.slice(splitIndex);
 
-    // Pinned (turn-scoped) messages survive verbatim in all outcomes below.
-    // The split lands on a turn boundary, so a turn is never half-pinned.
-    const pinnedSet = new Set(input.pinned);
+    // Pinned (turn-scoped) messages survive verbatim in all outcomes below,
+    // after the summary — a compaction block among them ahead of it, with the
+    // opening placeholder before it. The split lands on a turn boundary, so a
+    // turn is never half-pinned.
+    const opening = openingPlaceholder(toCompress);
+    const pinnedSet = new Set(opening ? [opening, ...input.pinned] : input.pinned);
     const pinnedInSpan = toCompress.filter((m) => pinnedSet.has(m));
     const evicted =
       pinnedInSpan.length === 0 ? toCompress : toCompress.filter((m) => !pinnedSet.has(m));
@@ -278,18 +298,34 @@ export class SummarizingStrategy implements OverflowStrategy {
 
     // No compression model: drop the span, keeping pinned messages. The
     // runner reports the boundary through `onCompress` with a placeholder
-    // summary — nothing is inserted into history.
+    // summary — nothing is inserted into history. A collapsed window would be
+    // left with no turn at all, so the reset notice stands in for it.
     if (!this.options.compressionModel) {
-      return { history: [...pinnedInSpan, ...toKeep], evicted, span: toCompress, meta };
+      if (!input.collapse) {
+        return { history: [...pinnedInSpan, ...toKeep], evicted, span: toCompress, meta };
+      }
+      const notice = resetNotice(input.window);
+      return {
+        history: [...summaryHead(renderSummaryMessage(notice), pinnedInSpan), ...toKeep],
+        evicted,
+        span: toCompress,
+        summary: notice,
+        meta,
+      };
     }
 
-    const summary = await this.summarizeSpan(toCompress, toKeep, input.window.current);
+    const summary = await this.summarizeSpan(
+      toCompress,
+      toKeep,
+      input.window.current,
+      input.signal,
+    );
     if (summary === null) {
       return unchanged(input, this.name, 'compression rejected — history left unchanged');
     }
 
     const result: OverflowResult = {
-      history: [renderSummaryMessage(summary), ...pinnedInSpan, ...toKeep],
+      history: [...summaryHead(renderSummaryMessage(summary), pinnedInSpan), ...toKeep],
       evicted,
       span: toCompress,
       summary,
@@ -375,11 +411,16 @@ export class SummarizingStrategy implements OverflowStrategy {
    * UNCHANGED (never a lossy placeholder truncation — the pre-4.0 behavior of
    * dropping the span with a bare notice applied only to the model-throw path
    * and made a bad situation worse).
+   *
+   * A call whose `signal` is aborted by the time the model call or
+   * `validateCompression` ends is no failed compression: it rejects with the
+   * signal's reason, as an aborted compile does, and reports nothing.
    */
   private async summarizeSpan(
     toCompress: Message[],
     toKeep: Message[],
     windowId: string,
+    signal: AbortSignal | undefined,
   ): Promise<string | null> {
     const compressionModel = this.options.compressionModel;
     if (!compressionModel) return null;
@@ -395,9 +436,11 @@ export class SummarizingStrategy implements OverflowStrategy {
         baseInstruction: this.anchor ? Prompts.getAnchoredCompactionInstruction(anchor) : undefined,
       });
     } catch (error) {
+      signal?.throwIfAborted();
       this.runner.fail('compression model failed', error);
       return null;
     }
+    signal?.throwIfAborted();
 
     // ── Shrink guard: a summary that doesn't shrink the span is a failure.
     //    Only applied to spans >= MIN_SHRINK_GUARD_SPAN_CHARS — tiny spans
@@ -441,12 +484,14 @@ export class SummarizingStrategy implements OverflowStrategy {
           kept: toKeep,
         });
       } catch (error) {
+        signal?.throwIfAborted();
         this.runner.logger.warn(
           '[context-chef] validateCompression threw — treating the summary as rejected',
           error,
         );
         valid = false;
       }
+      signal?.throwIfAborted();
       if (!valid) {
         this.runner.fail('compression summary rejected by validateCompression');
         return null;

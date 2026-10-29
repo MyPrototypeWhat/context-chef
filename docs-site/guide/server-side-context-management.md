@@ -38,3 +38,7 @@ const model = withContextChef(anthropic('claude-sonnet-4-6'), {
 ```
 
 See the [ai-sdk-middleware package page](/packages/ai-sdk-middleware#anthropic-server-side-context-management) for details.
+
+## With `appendOnly` <Badge type="tip" text="4.3" />
+
+Claude's thinking check compares what you send, so compaction and context editing done by the server rewrite nothing on your side: `server()` works under [`appendOnly`](/guide/append-only) as it is. It doesn't combine with `onDemandCompaction()`, the client-asked compaction Anthropic signs: a request carrying `context_management` can't ask for one, and a request that replays its block can't be compacted by the server. Configuring both logs a warning once, at construction.

@@ -59,6 +59,8 @@ const response = await anthropic.messages.create(payload);
 |---|---|
 | 五条轴、编译管道、slot | [架构](/zh/guide/architecture) |
 | 溢出策略、Janitor runner、`compact()`、`ensureValidHistory` | [溢出](/zh/guide/history-compression) |
+| `checkPrefixContinuity`、Claude 的 thinking 签名校验、`drop_block` | [Claude thinking 前缀校验](/zh/guide/thinking-prefix) |
+| `appendOnly`、`onDemandCompaction`、`prefix:break`、`meta.prefix` | [Append-only 前缀](/zh/guide/append-only) |
 | `planCompaction` / `compactHistory` / `summarizeHistory` | [持久化压缩](/zh/guide/durable-compaction) |
 | `server()` 策略、`contextManagement: { strategy: 'server' }` | [服务端上下文管理](/zh/guide/server-side-context-management) |
 | `StorageBackend` / `Store`、`context` 工具、`tools` 模式 | [上下文存储](/zh/guide/context-store) |

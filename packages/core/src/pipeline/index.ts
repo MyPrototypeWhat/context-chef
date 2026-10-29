@@ -11,6 +11,7 @@ export {
   type Phase,
   type PhaseName,
   type PipelineHost,
+  type PrefixCompile,
   type ResolvedTarget,
 } from './context';
 export { adaptPhase } from './phases/adapt';
@@ -21,6 +22,7 @@ export { HANDOFF_ANNOUNCEMENT_ID, handoffPhase } from './phases/handoff';
 export { injectPhase } from './phases/inject';
 export { memoryPhase } from './phases/memory';
 export { overflowPhase } from './phases/overflow';
+export { prefixPhase } from './phases/prefix';
 export { skillPhase } from './phases/skill';
 export { startPhase } from './phases/start';
 export { tailPhase } from './phases/tail';
@@ -43,6 +45,7 @@ import { handoffPhase } from './phases/handoff';
 import { injectPhase } from './phases/inject';
 import { memoryPhase } from './phases/memory';
 import { overflowPhase } from './phases/overflow';
+import { prefixPhase } from './phases/prefix';
 import { skillPhase } from './phases/skill';
 import { startPhase } from './phases/start';
 import { tailPhase } from './phases/tail';
@@ -52,6 +55,7 @@ import { transformToolResultsPhase } from './phases/transformToolResults';
 export const COMPILE_PHASES: readonly Phase[] = [
   startPhase,
   transformToolResultsPhase,
+  prefixPhase,
   handoffPhase,
   overflowPhase,
   injectPhase,
@@ -71,6 +75,7 @@ export const COMPILE_PHASES: readonly Phase[] = [
  * store, user hooks). `start` and `transform-tool-results` check inside the
  * phase instead, where the original code did; `handoff` awaits nothing at all
  * (a budget reading and a string), with `overflow`'s check right behind it.
+ * `prefix` awaits only `prefix:break` handlers, and the same check covers it.
  */
 export const ABORT_AFTER_PHASE: ReadonlySet<PhaseName> = new Set<PhaseName>([
   'overflow',

@@ -136,3 +136,7 @@ The split keeps the stable usage instruction at the top of the sandwich where it
 When dynamic state is also injected at the tail (`dynamicStatePlacement: 'last_user'`), the order inside the last user message is: original content → `<memory>` → `<dynamic_state>` → `<implicit_context>` → announcements → anchor line. When dynamic state goes to its own system message (`dynamicStatePlacement: 'system'`), memory still injects at the user tail with no anchor.
 
 This is axis ② of the [five-axis architecture](/guide/architecture): the instruction is prefix, the data is tail.
+
+::: tip Under `appendOnly` <Badge type="tip" text="4.3" />
+With [`appendOnly`](/guide/append-only#memory), an unset `memoryPlacement` means `'before_history_tail'`, and the data block becomes events: one snapshot when the window starts, then a delta only for the changes the model doesn't know about (your own `set()` / `delete()`, TTL expiry). Writes the model made through `chef.handleTool` aren't pushed back. An explicit `'after_system'` is honored, and every memory change is then a `system` checkpoint. `injectedMemoryKeys` lists the keys the snapshot or delta covered in that compile.
+:::

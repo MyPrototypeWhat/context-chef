@@ -15,6 +15,7 @@
 | [`skills.ts`](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/skills.ts) | Skill 对象与 `SKILL.md` 加载、`registerSkills` + `activateSkill`、`renderSkill` 占位符替换、`formatSkillListing`、`meta.activeSkillName`。完全离线。 |
 | [`snapshot-restore.ts`](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/snapshot-restore.ts) | `chef.snapshot(label)` / `chef.restore(snap)` 回滚、`guardrailOptions` 完整往返、快照里的 Janitor 状态（含 anchored 模式的 anchor 文档）。完全离线。 |
 | [`tool-pruning.ts`](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/tool-pruning.ts) | 扁平模式按任务的 tag 裁剪，以及双层架构：稳定 namespace + 按需 toolkit。完全离线。 |
+| [`verify-thinking-prefix.ts`](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/verify-thinking-prefix.ts) | 用你自己的 key 对 Anthropic API 跑 `appendOnly` 背后的 [thinking 前缀](/zh/guide/thinking-prefix)实验，逐个请求打印接受还是拒绝。需要 `ANTHROPIC_API_KEY`；`--dry-run` 不需要 key。 |
 | [`vfs-lifecycle.ts`](https://github.com/MyPrototypeWhat/context-chef/blob/main/examples/vfs-lifecycle.ts) | `offloadAsync` 首尾标记 + URI、`offload:created` 事件、`getRecallToolDefinition` + `chef.resolveRecall` 往返、带 `maxFiles` / `maxBytes` LRU 驱逐的 `cleanupAsync`。完全离线。 |
 
 ## Middleware

@@ -100,6 +100,7 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `pipeline:invariant` <Badge type="tip" text="4.2" /> | `{ phase, message }` | A `pipelineChecks` invariant was violated. Reported only — `compile()` continues |
 | `memory:changed` | `{ type, key, value, oldValue }` | Emitted after any memory mutation (set, delete, expire) |
 | `memory:expired` | `MemoryEntry` | Emitted when a memory entry expires during `compile()` |
+| `prefix:break` <Badge type="tip" text="4.3" /> | `{ reason, at, signed, strippedThinking, windowId? }` | `appendOnly` only: this compile rewrote what was already sent (a checkpoint). See [Append-Only Prefix](/guide/append-only#turning-it-on) |
 
 Events are **observation-only** — they don't affect control flow. Use a slot when you need to change something.
 
@@ -121,6 +122,7 @@ chef.on('pipeline:invariant', ({ phase, message }) => {
 
 - Once after the whole `after-assemble` chain: pinned messages still present, tool call/result pairs still paired. The comparison is the list the chain started from against the list it produced, so a violation names the chain rather than the handler that caused it.
 - After the `tail` phase: nothing ahead of the tail insertion point changed, compared byte for byte against a pre-`tail` snapshot.
+- With [`appendOnly`](/guide/append-only#checking-it-pipelinechecks) <Badge type="tip" text="4.3" />, after the payload is built: it repeats the payload the chef sent before it, unless the compile reported a checkpoint. A slot handler that rewrites earlier messages is caught here.
 
 Violations are **reported, never enforced** — mechanism, not policy. Each goes to `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event; `compile()` never throws because of a check. It costs a snapshot plus a serialization pass per compile, so keep it off in production. Default `false`.
 
@@ -153,6 +155,8 @@ Two effects:
 1. **Forwarded to handlers** — `chef.on(event, (payload, signal?) => ...)` receives the signal as the second argument. Handler can pass it to `fetch`, DB clients, or any cooperative API.
 2. **Checked at phase boundaries** — after `overflow`, `inject`, `memory`, `assemble` and `adapt`. Every one of them follows an await that can take arbitrarily long (compression model, memory store, your own handlers). Aborts throw via `signal.throwIfAborted()`.
 
+A compression that finishes after the abort doesn't land: `onCompress` and the `compress` event don't fire, nothing is archived, and the compile throws before `compress:end`. `onDemandCompaction()` hands the signal to its `compact` function, and an abort there counts no failure and runs no fallback. Nor do `summarize()` and `anchored()` count a failure once the signal is aborted, whether their model call or `validateCompression` ends after it. A `background()` job is not part of the compile that started it and doesn't get its signal: aborting that compile (a user stopping the reply, say) leaves the job running, and it lands on a later compile.
+
 `compile:start` fires before the first abort check, so observers may receive a `compile:start` for a compile that ultimately throws without firing `compile:done`. Memory events fired from external `memory().set()` / `delete()` calls (outside `compile()`) get `signal: undefined`.
 
 ## Concurrency model
@@ -170,5 +174,7 @@ app.post('/agent', async (req, res) => {
 ```
 
 If memory needs to span requests, lift the store out (a shared `FileSystemBackend`, your own Redis-backed `StorageBackend`) and pass it to per-request chefs — store-level concurrency is the store's responsibility, not the chef's. See [Context store](/guide/context-store).
+
+With [`appendOnly`](/guide/append-only#persisting-a-conversation), a per-request chef also needs its conversation's ledger: save `chef.snapshot()` after each compile and again after the request's tool calls, and restore it on the next request without its memory part (restoring memory would roll the shared store back): `{ ...saved, modules: { ...saved.modules, memory: null } }`. Then set the system prompt, tools and state: `restore()` replaces them with the saved ones.
 
 **Concurrent `compile()` calls on one instance queue (v4).** They are serialized (snapshot + serialize) instead of interleaving and corrupting shared state (turn counter, circuit breaker, signal stash). Inputs are snapshotted at call time — `setHistory()` between two queued calls means the first compile sees the old history, the second sees the new. A rejected compile does not poison the queue. The canonical pattern is still one chef per concurrent caller; the queue exists to make accidental sharing safe, not fast.

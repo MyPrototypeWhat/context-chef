@@ -206,6 +206,11 @@ chef.announce("tools:added", "Tools newly available: grep", { channel: "user_tai
 
 机制而非策略 —— chef 不会替你猜模型。
 
+**较新的 Claude 模型。** 还有两个坑，出自 Anthropic 的文档，尚未对照 API 验证：
+
+- Sonnet 5.5 和 Haiku 5.5 可能把紧跟在 tool result 之后的 system message 当作不可信内容而忽略。agent 循环进行到一半时，`'system'` channel 恰好落在这个位置。如果这两个模型对你的 announcement 没有反应，传 `channel: 'user_tail'`。
+- Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking block 连同它之前的全部内容做签名。两个 channel 都会在每次 compile 时把 announcement 重新渲染到新的尾部，于是它上一次所在的那一轮就变了，回放那一轮的 thinking 会过不了校验（在 2026-08-31 及之后创建的账号上返回 400）。
+
 `'system'` channel 依托 `Message._positional`：被标记为 positional 的 `role: 'system'` 消息会*留在它所在的位置*，而不是被提升进 provider 的顶层 system 参数。各适配器的行为：Anthropic 发出一条对话中途的 system message（若它会排在所有 user/tool 消息之前，则降级为提升到顶层，并只警告一次）；OpenAI Chat Completions 本来就把 system 消息留在原地，该标记是 no-op；Responses 适配器把它作为内联 `message` item 发出，而不是折进 `instructions`；Gemini 的 `contents` 没有 system role，会原样降级成一条 `user` entry。
 
 **措辞很重要。** 陈述事实，不要下命令。"Tools newly available: read_file, grep" 和 "web_search has been withdrawn; calls to it will be rejected" 读起来是系统状态；"You must now use read_file" 读起来是一条和你的 system prompt 抢话语权的指令 —— 模型会拿它去和你说过的所有话做权衡。

@@ -100,6 +100,7 @@ chef.on('memory:changed', ({ type, key, value }) => {
 | `pipeline:invariant` <Badge type="tip" text="4.2" /> | `{ phase, message }` | 一条 `pipelineChecks` 不变量被违反。仅上报 —— `compile()` 继续 |
 | `memory:changed` | `{ type, key, value, oldValue }` | 任何记忆变更（set、delete、expire）之后发出 |
 | `memory:expired` | `MemoryEntry` | `compile()` 期间某条记忆过期时发出 |
+| `prefix:break` <Badge type="tip" text="4.3" /> | `{ reason, at, signed, strippedThinking, windowId? }` | 仅 `appendOnly`：这次编译改写了已经发送的内容（一次检查点）。见 [Append-only 前缀](/zh/guide/append-only#打开它) |
 
 事件是**只观察**的 —— 它们不影响控制流。需要改点什么时，用 slot。
 
@@ -121,6 +122,7 @@ chef.on('pipeline:invariant', ({ phase, message }) => {
 
 - 整条 `after-assemble` 链跑完之后检查一次：固定消息仍在，tool call / result 仍然配对。比对的是链的输入和链的输出，所以违规报的是整条链，而不是造成它的那个处理器。
 - `tail` 阶段之后：tail 插入点之前的内容一字未变，与 `tail` 之前的快照逐字节比对。
+- 打开 [`appendOnly`](/zh/guide/append-only#检查它-pipelinechecks) 时 <Badge type="tip" text="4.3" />，payload 生成之后：除非这次编译报告了检查点，否则它必须重复 chef 上一次发出的 payload。改写之前消息的 slot handler 会在这里被发现。
 
 违反只被**上报，绝不阻断** —— 机制，而非策略。每一条都会送到 `ChefConfig.logger`（或 `console`）以及 `pipeline:invariant` 事件；`compile()` 绝不会因为一次检查而抛异常。它的代价是每次编译一次快照加一次序列化，所以生产环境请关掉。默认 `false`。
 
@@ -153,6 +155,8 @@ try {
 1. **转发给处理器** —— `chef.on(event, (payload, signal?) => ...)` 会在第二个参数收到该 signal。处理器可以把它传给 `fetch`、数据库客户端或任何协作式 API。
 2. **在阶段边界检查** —— 在 `overflow`、`inject`、`memory`、`assemble` 和 `adapt` 之后。每一个都跟在可能任意久的 await 后面（压缩模型、记忆存储、你自己的处理器）。中断通过 `signal.throwIfAborted()` 抛出。
 
+中断之后才完成的压缩不会落地：`onCompress` 和 `compress` 事件都不触发，也不归档，编译在 `compress:end` 之前就抛出。`onDemandCompaction()` 会把 signal 交给它的 `compact` 函数，在那里中断不计失败，也不运行 fallback。`summarize()` 和 `anchored()` 也一样：signal 一旦中断，无论之后结束的是模型调用还是 `validateCompression`，都不计失败。`background()` 的任务不属于启动它的那次编译，也拿不到那次编译的 signal：中断那次编译（比如用户停掉了回复）不会让任务停下，它会在之后的某次编译落地。
+
 `compile:start` 在第一次中断检查之前触发，因此观察者可能收到一次 `compile:start`，而该次编译最终抛异常、从不触发 `compile:done`。从外部 `memory().set()` / `delete()` 调用（在 `compile()` 之外）触发的记忆事件拿到的 `signal` 是 `undefined`。
 
 ## 并发模型
@@ -170,5 +174,7 @@ app.post('/agent', async (req, res) => {
 ```
 
 如果记忆需要跨请求存活，把 store 提出去（一个共享的 `FileSystemBackend`、或你自己基于 Redis 的 `StorageBackend`），再传给按请求创建的 chef —— store 层面的并发是 store 的责任，不是 chef 的。见[上下文存储](/zh/guide/context-store)。
+
+打开 [`appendOnly`](/zh/guide/append-only#持久化对话) 时，按请求创建的 chef 还需要它所在对话的 ledger：每次 compile 之后保存 `chef.snapshot()`，请求的 tool call 执行完后再保存一次；下一个请求恢复它时跳过 memory 部分（恢复 memory 会把共享存储回滚）：`{ ...saved, modules: { ...saved.modules, memory: null } }`。之后再设置 system prompt、tools 和状态，因为 `restore()` 会用保存的值替换它们。
 
 **同一实例上的并发 `compile()` 会排队（v4）。** 它们被串行化（快照 + 串行执行），而不是交错执行并破坏共享状态（轮次计数、熔断器、signal 暂存）。输入在调用时被快照 —— 两次排队调用之间的 `setHistory()` 意味着第一次编译看到旧历史、第二次看到新历史。被 reject 的编译不会毒化队列。标准做法仍然是每个并发调用方一个 chef；队列的存在是为了让意外共享变得安全，而不是为了让它变快。

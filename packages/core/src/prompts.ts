@@ -499,6 +499,19 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
   },
 
   /**
+   * `appendOnly`: the line a memory delta opens with. The snapshot the window
+   * started with stays where it was sent, so the delta says its entries take
+   * the place of the ones recalled there; a removed entry is
+   * `<entry key="…" removed="true"/>`.
+   */
+  MEMORY_DELTA_HEADER:
+    'Your memory changed. These entries replace what you recalled under the same keys:',
+
+  /** The `tools: 'unified'` counterpart of {@link Prompts.MEMORY_DELTA_HEADER}. */
+  CONTEXT_MEMORY_DELTA_HEADER:
+    'Memory (context://memory/*) changed. These entries replace the earlier ones under the same keys:',
+
+  /**
    * System-level instruction explaining cleared tool results.
    * Prevents the model from interpreting placeholders as errors.
    * Auto-injected by the middleware when tool-result compaction is active.
@@ -509,4 +522,89 @@ The new_context tool, where it is available, starts a fresh window; earlier cont
     'Messages showing "[Old tool result content cleared]" indicate the tool executed successfully — ' +
     'the output was removed to save space, not due to any error. ' +
     'Focus on the recent tool results which are preserved in full.',
+
+  // ─── System state at the tail ───
+  // By default the state blocks (dynamic state, implicit context,
+  // announcements) are rendered again at the tail on every compile, so the
+  // model only ever sees the current ones. Under `appendOnly` each block is
+  // an event: appended once, when it changes, and left where it was sent, so
+  // earlier versions stay in the window and the wording says which counts.
+
+  /** The line after the state blocks of the tail stitch. */
+  STATE_ANCHOR: 'Above is the current system state. Use it to guide your next action.',
+
+  /** `appendOnly`: the line after the state blocks one compile appends. */
+  EVENT_STATE_ANCHOR:
+    'Above is the current system state. Each block supersedes any earlier block of its kind ' +
+    '(same tag and id). Use it to guide your next action.',
+
+  /**
+   * `appendOnly`: a state block (`<tag …>…</tag>`) as an event, its revision
+   * the first attribute: the version of that block before it in the window
+   * carries `rev - 1`.
+   */
+  getEventBlock: (xml: string, rev: number): string =>
+    xml.replace(/^<([\w-]+)/, `<$1 rev="${rev}"`),
+
+  /**
+   * `appendOnly`: the tombstone of a state block whose source went quiet.
+   * `id` is the block's id attribute, already escaped.
+   */
+  getWithdrawnBlock: (tag: string, rev: number, note: string, id?: string): string =>
+    `<${tag} rev="${rev}"${id === undefined ? '' : ` id="${id}"`} withdrawn="true">${note}</${tag}>`,
+
+  /**
+   * `appendOnly`: the last_user guardrail as an event. Its instructions do
+   * not say which ones count, so from the second revision on it says so.
+   */
+  getOutputFormatEvent: (instructions: string, rev: number): string =>
+    Prompts.getEventBlock(
+      `<output_format>\n${rev > 1 ? `${Prompts.GUARDRAIL_RESTATED}\n\n` : ''}${instructions}\n</output_format>`,
+      rev,
+    ),
+
+  GUARDRAIL_RESTATED:
+    'These output format instructions replace any given earlier in this conversation.',
+
+  /**
+   * `appendOnly`: the active skill's instructions as an event. `name` is
+   * already escaped. A switch leaves the earlier skill's block in place, so
+   * from the second revision on it says which one counts.
+   */
+  getSkillEvent: (name: string, instructions: string, rev: number): string =>
+    Prompts.getEventBlock(
+      `<skill_instructions skill="${name}">\n${rev > 1 ? `${Prompts.SKILL_RESTATED}\n\n` : ''}` +
+        `${instructions}\n</skill_instructions>`,
+      rev,
+    ),
+
+  SKILL_RESTATED: 'These skill instructions replace any given earlier in this conversation.',
+
+  /**
+   * `appendOnly`: pinned messages a compaction stands for without putting
+   * them back — nothing may come between an on-demand compaction's block and
+   * the turns it keeps — said again at the end of the window, all of them.
+   * `messagesXml` is one `<message>` per pinned message.
+   */
+  getPinnedEvent: (messagesXml: string, rev: number): string =>
+    Prompts.getEventBlock(
+      `<pinned_messages>\n${Prompts.PINNED_RESTATED}\n\n${messagesXml}\n</pinned_messages>`,
+      rev,
+    ),
+
+  PINNED_RESTATED:
+    'These messages were pinned earlier in this conversation. The part of it that held them ' +
+    'was compacted, so they are restated here, and replace any pinned messages restated before.',
+
+  /** `appendOnly`: what a tombstone says, per source. */
+  DYNAMIC_STATE_WITHDRAWN: 'The task state was cleared.',
+  IMPLICIT_CONTEXT_WITHDRAWN: 'No implicit context is attached any more.',
+  ANNOUNCEMENT_WITHDRAWN: 'This announcement was withdrawn and no longer applies.',
+  GUARDRAIL_WITHDRAWN: 'The output format instructions given earlier no longer apply.',
+  SKILL_WITHDRAWN:
+    'No skill is active any more: the skill instructions given earlier no longer apply.',
+  PINNED_WITHDRAWN: 'The messages restated earlier as pinned are no longer pinned.',
+  /** The guardrail left the user channel for the end of the system prompt. */
+  GUARDRAIL_MOVED:
+    'The output format instructions given earlier are replaced by the ones in the system prompt.',
 };

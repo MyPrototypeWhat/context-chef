@@ -7,7 +7,7 @@
  * reserved for programmer errors — a tool name that was never ours.
  */
 
-import type { Memory } from '../modules/memory';
+import type { Memory, MemoryEntry } from '../modules/memory';
 import type { Offloader } from '../modules/offloader';
 import { renderRecalledContent } from '../modules/offloader/recallTool';
 import type { NamespaceView, Store } from '../store/store';
@@ -68,6 +68,16 @@ export interface ContextToolHost {
   readonly policy: ContextToolPolicy;
   /** Backs the `new_context` tool. */
   requestNewContext(): void;
+  /**
+   * Told of each memory write a call made, once it succeeded: the entry it
+   * left, or `null` for a delete. The model reads the result of that call,
+   * so it knows what the write did; writes made anywhere else to another key
+   * are not reported. The entry is read back after the write's change
+   * notification, so a write to the same key that lands in between — a
+   * `memory:changed` listener, a memory hook, a concurrent write — is
+   * reported as part of the call's write.
+   */
+  memoryWritten?(key: string, entry: MemoryEntry | null): void;
 }
 
 const URI_PREFIX = 'context://';
@@ -226,18 +236,19 @@ async function memoryCommand(
       );
     case 'str_replace': {
       const value = await requireMemoryValue(memory, target);
-      await writeMemory(memory, key, applyStrReplace(value, args, uriOf(target)));
+      await writeMemory(host, memory, key, applyStrReplace(value, args, uriOf(target)));
       return `Edited ${uriOf(target)}.`;
     }
     case 'insert': {
       const value = await requireMemoryValue(memory, target);
-      await writeMemory(memory, key, applyInsert(value, args, uriOf(target)));
+      await writeMemory(host, memory, key, applyInsert(value, args, uriOf(target)));
       return `Inserted into ${uriOf(target)}.`;
     }
     case 'delete': {
       requireAllowedKey(memory, key);
       if (!(await memory.getEntry(key))) fail(notFound(target));
       if (!(await memory.deleteMemory(key))) fail(rejected(uriOf(target)));
+      host.memoryWritten?.(key, null);
       return `Deleted ${uriOf(target)}.`;
     }
     default:
@@ -252,9 +263,15 @@ async function requireMemoryValue(memory: Memory, target: Target): Promise<strin
   return entry.value;
 }
 
-async function writeMemory(memory: Memory, key: string, value: string): Promise<void> {
+async function writeMemory(
+  host: ContextToolHost,
+  memory: Memory,
+  key: string,
+  value: string,
+): Promise<void> {
   const updated = await memory.updateMemory(key, value);
   if (!updated) fail(rejected(uriOf({ ns: MEMORY_NAMESPACE, path: key })));
+  host.memoryWritten?.(key, updated);
 }
 
 async function createMemoryEntry(
@@ -272,7 +289,9 @@ async function createMemoryEntry(
   if (await memory.getEntry(key)) {
     fail(`${uriOf(target)} already exists. Use str_replace to edit it, or delete it first.`);
   }
-  if (!(await memory.createMemory(key, value, description))) fail(rejected(uriOf(target)));
+  const created = await memory.createMemory(key, value, description);
+  if (!created) fail(rejected(uriOf(target)));
+  host.memoryWritten?.(key, created);
   return `Created ${uriOf(target)}.`;
 }
 
@@ -289,6 +308,7 @@ async function modifyMemoryEntry(host: ContextToolHost, args: Args): Promise<str
 
   if (action === 'delete') {
     if (!(await memory.deleteMemory(key))) fail(rejected(uriOf(target)));
+    host.memoryWritten?.(key, null);
     return `Deleted ${uriOf(target)}.`;
   }
   if (action !== 'update') fail(`action must be "update" or "delete", got "${action}".`);
@@ -296,6 +316,7 @@ async function modifyMemoryEntry(host: ContextToolHost, args: Args): Promise<str
   const value = requireString(args, 'value');
   const updated = await memory.updateMemory(key, value, optionalString(args, 'description'));
   if (!updated) fail(rejected(uriOf(target)));
+  host.memoryWritten?.(key, updated);
   return `Updated ${uriOf(target)}.`;
 }
 
@@ -318,12 +339,13 @@ async function renameMemory(
   if (!entry) fail(notFound(target));
   if (await memory.getEntry(dest.path)) fail(`${uriOf(dest)} already exists.`);
 
-  if (!(await memory.createMemory(dest.path, entry.value, entry.description))) {
-    fail(rejected(uriOf(dest)));
-  }
+  const copy = await memory.createMemory(dest.path, entry.value, entry.description);
+  if (!copy) fail(rejected(uriOf(dest)));
+  host.memoryWritten?.(dest.path, copy);
   if (!(await memory.deleteMemory(target.path))) {
     return `Copied ${uriOf(target)} to ${uriOf(dest)}, but the original could not be removed.`;
   }
+  host.memoryWritten?.(target.path, null);
   return `Renamed ${uriOf(target)} to ${uriOf(dest)}.`;
 }
 

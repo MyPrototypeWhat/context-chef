@@ -67,7 +67,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 压缩实际上只会隔次触发,payload 还会持续增长。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactModelMessages`](#compactmodelmessagesmessages-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
+> **In-flight 与 durable 的区别。** 中间件的 `compress` 是 *in-flight* 的：它只重写每次发出去的请求，**不会**改动你的消息存储。所以对于**持续超预算**的对话（长聊天，或长的多步 loop），摘要每次调用后即被丢弃、历史随即回胀 —— 每次调用都要把整段历史重新摘要一遍。一次性尖峰无所谓;若是持续场景,请通过 `onCompress` **持久化**摘要,或用 [`compactModelMessages`](#compactmodelmessagesmessages-model-options) 压缩你自己的存储(推荐)。若 `compress` 反复触发却没配 `onCompress`,中间件会打印一次告警。
 
 ### 溢出策略（Overflow）
 
@@ -178,6 +178,31 @@ compact: {
 }
 ```
 
+### Append-only 模式
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 的推理签名覆盖它前面的全部内容，之前的消息变了还回放这段推理，请求就会被拒；所有 provider 的提示缓存也会从第一条被改动的消息开始失效。默认情况下，middleware 会改写之前的消息：dynamic state 跟着最后一条 user 消息移动，超出预算时每次调用都重新计算压缩摘要。打开 `appendOnly: true` 后，每次调用的 prompt 都重复这个 session 上一次发出的内容，只在末尾追加：
+
+```typescript
+const model = withContextChef(baseModel, {
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { model: summarizerModel },
+  onPrefixBreak: ({ sessionId, reason, at, strippedThinking }) => {
+    console.info(`[${sessionId}] checkpoint (${reason}) at message ${at}`, { strippedThinking });
+  },
+});
+
+await generateText({ model, messages, providerOptions: { contextChef: { sessionId: conversationId } } });
+```
+
+- 无论哪种 placement，`dynamicState` 都变成一条独立的 user 消息，在它变化的那一轮之后只追加一次。压缩只落地一次：之后的调用用它的摘要代替被摘要的内容。
+- 任何改写之前调用所发内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，报告给 `onPrefixBreak`。Anthropic 系 provider（`@ai-sdk/anthropic`、`@ai-sdk/amazon-bedrock`）签名的推理从那里开始被去掉；其他推理保留。
+- 被包装的模型只创建一次，每个对话传自己的 `sessionId`。session 存在 middleware 实例里：每个请求新建一个的话，每个 session 都从空白开始；同一个 session 里的调用逐个执行。
+- 随对话移动的 `compact` / `clear` 设置（`compact.toolCalls: 'before-last-…'`、`keepRecent`）和 `transformContext` 会在创建 middleware 时 warn。这里忽略 `clearAt`。
+- 要持久化压缩结果，在 `onCompress` 里把 `details.replacement` 写回 `details.compressedMessages` 的位置。
+
+完整规则见 [Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only#ai-sdk-和-tanstack-ai)。
+
 ## API
 
 ### `withContextChef(model, options)`
@@ -196,7 +221,7 @@ const wrappedModel = withContextChef(model, options);
 |---|---|---|---|
 | `contextWindow` | `number` | 是 | 模型的上下文窗口大小（token 数） |
 | `compress` | `CompressOptions` | 否 | 启用基于 LLM 的压缩 |
-| `compress.model` | `LanguageModelV3` | 是（如启用 compress） | 用于摘要的便宜模型 |
+| `compress.model` | `LanguageModelV4` | 是（如启用 compress） | 用于摘要的便宜模型。传模型本身，不要传套了这个中间件的模型：打开 `appendOnly` 时，它的调用会排在正等着它出摘要的那次调用后面，两边都不会返回 |
 | `compress.preserveRatio` | `number` | 否 | 保留上下文的比例（默认：`0.8`） |
 | `compress.triggerRatio` | `number` | 否 | 触发压缩的 `contextWindow` 比例（0–1]。默认 `0.7`（"pre-rot" — 模型质量在触及硬窗口上限之前就已下降，所以提前压缩）。设为 `1` 可恢复 4.0 之前"到窗口才触发"的行为。配置了 `tokenizer` 时，`preserveRatio` 作用于 `contextWindow * triggerRatio` 这个有效预算，而不是原始窗口。 |
 | `compress.minShrinkRatio` | `number` | 否 | 压缩结果必须把被压缩片段的字符长度至少缩小该比例（0–1，默认 `0.5`）。未达标的摘要按压缩失败处理：历史保持不变，并计入熔断器。设为 `0` 可关闭该检查。 |
@@ -211,14 +236,16 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | 否 | 按工具覆写。字符串 = 保留（同时跳过存储）；对象 = 为该工具覆写参数。重复名称时后者胜出。 |
 | `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
-| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV3Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
+| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV4Prompt`）切片，可用于在自有存储中持久化摘要边界。摘要要存成一条 user 消息，文本与 `summary` 完全一致：压缩之后，只有你的历史里还有这条消息时，provider 上报的用量才会被采信；换一种方式保存（存成 system 消息、加上你自己的前缀），这份用量就被忽略，窗口按它自己的计数来判断，不传 `tokenizer` 时这个计数只是估算。 |
 | `logger` | `ChefLogger` | 否 | 降级警告的输出目标（存储写入失败、缺少 usage 数据、配置异常等），默认 `console`。转发给底层 Janitor 和 Offloader。 |
+| `appendOnly` | `boolean \| { clearAt?: boolean }` | 否 | 保留已发送的内容：每次调用的 prompt 都重复这个 session 上一次的内容，只在末尾追加。见 [Append-only 模式](#append-only-模式)。这里忽略 `clearAt`。 |
+| `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | 否 | `appendOnly`：每次调用应用一个检查点时调用 —— `{ sessionId, reason, at, signed, strippedThinking }`。 |
 | `overflow` | `{ strategy?, archive? }` | 否 | 溢出轴 —— 见[溢出策略（Overflow）](#溢出策略overflow)。 |
 | `overflow.strategy` | `OverflowStrategy` | 否 | 来自 `@context-chef/core` 的 `summarize()` / `anchored()` / `reset()` / `chain()` / `background()`，或自定义实现。会覆盖 `compress` 的调参项（含 `compress.model`）；runner 侧配置继续生效。配置后 `contextWindow` 变为必填。 |
 | `overflow.archive` | `CompressionArchiveConfig` | 否 | `{ store: (serialized, { messageCount }) => uri }` —— 让被驱逐的片段仍可通过摘要引用的 URI 取回。`'vfs'` 简写仅 core 支持。 |
 | `clear` | `ClearTarget[]` | 否 | 占位符式的 **tool-result** 清除。被清除的工具结果变为 `'[Old tool result content cleared]'`——消息结构保持完整，与删除内容的 `compact` 不同。在压缩之后执行。当工具结果被清除时，自动注入一条系统消息以避免模型将占位符读作错误。仅 `'tool-result'` 目标生效；`'thinking'` 目标为空操作（会记录一条警告）——请用 `compact: { reasoning: ... }` 删除 reasoning。`ClearTarget` 从 `@context-chef/core` 导出。 |
 
-**返回值：** `LanguageModelV3` — 包装后的模型，可在任何使用原模型的地方直接替换。
+**返回值：** `LanguageModelV4` — 包装后的模型，可在任何使用原模型的地方直接替换。
 
 ### `createMiddleware(options)`
 
@@ -234,7 +261,7 @@ const model = wrapLanguageModel({ model: openai('gpt-4o'), middleware });
 
 ### `fromAISDK(prompt)` / `toAISDK(messages)`
 
-AI SDK `LanguageModelV3Prompt` 与 context-chef `Message[]` IR 之间的底层转换器。适用于直接使用 context-chef 模块处理 AI SDK 消息格式的场景。
+AI SDK `LanguageModelV4Prompt` 与 context-chef `Message[]` IR 之间的底层转换器。适用于直接使用 context-chef 模块处理 AI SDK 消息格式的场景。
 
 ```typescript
 import { fromAISDK, toAISDK } from '@context-chef/ai-sdk-middleware';
@@ -289,11 +316,12 @@ const next = await compactModelMessages(messages, summarizerModel, {
 if (next !== messages) await save(next); // no-op 时跳过持久化
 ```
 
-- `model` 是 `ai` 的 `LanguageModel`(`string id | V3 | V2`)—— 正是 `prepareStep` / `generateText` 交给你的类型。
+- `model` 是 `ai` 的 `LanguageModel`(`string id | V4 | V3 | V2`)—— 正是 `prepareStep` / `generateText` 交给你的类型。
 - 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
 - system 消息逐字保留、永不被摘要。
 - 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回同一个 `messages` 引用** —— 因此可通过 `next !== messages` 在 no-op 时跳过持久化。可无条件调用;仅当模型调用抛错时才抛错。
 - 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
+- `keptReasoning: 'strip'` 去掉保留消息里签名过的推理（`@ai-sdk/anthropic`、`@ai-sdk/amazon-bedrock`），只剩推理的回复整条去掉；其他 provider 的推理保留。你自己写的摘要是一个没人签名的检查点，在 Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 上，保留在它后面的推理就无法再通过验证；`'strip'` 返回一个可以直接发送的 history。默认 `'keep'`。`planCompactionModelMessages` 同样接受它。
 
 > 对同一对话用这个**或** in-flight `compress`,二选一(同时用会重复压缩)。
 
@@ -345,53 +373,6 @@ if (toSummarize.length > 0) {
 ### `summarizeModelMessages(messages, model, options?)`
 
 [`summarizeMessages`](#summarizemessagesprompt-model-options) 的 ModelMessage 层级兄弟函数:用同一流水线(角色扁平化 + core `summarizeHistory`)把一段 `ModelMessage[]` 切片摘要为单个字符串。system 消息会被丢弃。空切片不调用模型直接返回 `''`,模型调用失败时抛出异常。当你想自行驱动摘要、而非用一站式的 `compactModelMessages` 时,配合 `planCompactionModelMessages` 使用。
-
-### `compactHistory(prompt, model, options)`
-
-> **已废弃。** `compactHistory` / `planCompaction` 收发的是
-> `LanguageModelV3Prompt` —— provider 协议层级,没人会持久化这个类型。请改用
-> [`compactModelMessages`](#compactmodelmessagesmessages-model-options)
-> / `planCompactionModelMessages`。仍然导出且可用;下个大版本移除。
-
-`compactModelMessages` 的 V3-prompt 变体。它在 turn 边界切分历史、对旧切片摘要,返回一份可直接持久化的新 prompt —— `[...system, <摘要>, ...最近若干轮]`：
-
-```typescript
-import { compactHistory } from '@context-chef/ai-sdk-middleware';
-
-// 在模型调用之间,当你持有 `messages` 时:
-messages = await compactHistory(messages, summarizerModel, {
-  keepRecentTurns: 4,           // 逐字保留最近 4 个原子轮次
-  toolResultStubThreshold: 5000,
-});
-// 持久化结果 —— 历史真正变小并保持精简。
-```
-
-- 切点只落在 **turn 边界**(assistant 及其 tool 结果作为整体),所以不会 orphan tool 结果、也不会切进多 block 的 assistant 消息。
-- system 消息逐字保留、永不被摘要。
-- 当没有足够旧的内容可压(轮数不超过 `keepRecentTurns`)、或摘要器无输出时,**原样返回** prompt —— 可无条件调用。仅当模型调用抛错时才抛错。
-- 接受与 `summarizeMessages` 相同的 `SummarizeMessagesOptions`(`customCompressionInstructions`、`toolResultStubThreshold`)。
-
-### `planCompaction(prompt, options)`
-
-> **已废弃。** 请改用 [`planCompactionModelMessages`](#plancompactionmodelmessagesmessages-options)。
-> 这个 V3-prompt 变体是 provider 协议层级 —— 一个你永远不会持久化的类型。仍然导出且可用;下个大版本移除。
-
-`compactHistory` 背后的同步切分函数,适用于只要边界、不想立刻摘要的场景(持久化你自己的标记,或用别的摘要器)。返回 `{ system, toSummarize, toKeep }`(均为 `LanguageModelV3Prompt`),按 turn 边界切分:
-
-```typescript
-import { planCompaction, summarizeMessages } from '@context-chef/ai-sdk-middleware';
-import { Prompts } from '@context-chef/core';
-
-const { system, toSummarize, toKeep } = planCompaction(messages, { keepRecentTurns: 4 });
-if (toSummarize.length > 0) {
-  const summary = await summarizeMessages(toSummarize, model);
-  messages = [
-    ...system,
-    { role: 'user', content: [{ type: 'text', text: Prompts.getCompactSummaryWrapper(summary) }] },
-    ...toKeep,
-  ];
-}
-```
 
 ## 工作原理
 

@@ -9,6 +9,7 @@ export { type AISDKMessage, fromAISDK, toAISDK } from './adapter';
 export {
   type CompactionPlanModelMessages,
   compactModelMessages,
+  type KeptReasoningOptions,
   type PlanCompactionOptions,
   planCompactionModelMessages,
 } from './compaction';
@@ -24,6 +25,7 @@ export type {
   CompressOptions,
   ContextChefOptions,
   DynamicStateConfig,
+  PrefixBreakEvent,
   TruncateOptions,
 } from './types';
 

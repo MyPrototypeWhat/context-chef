@@ -182,7 +182,9 @@ export interface MemoryConfig {
    * Defaults to `'after_system'` (current behavior). Set to
    * `'before_history_tail'` to keep memory text out of the top-level system
    * parameter so provider-level cache breakpoints on history survive memory
-   * mutations.
+   * mutations. `ContextChef` passes `'before_history_tail'` when this is
+   * unset and `ChefConfig.appendOnly` is on: the data then becomes events in
+   * the conversation.
    *
    * See {@link MemoryPlacement} for the full rationale.
    */
@@ -348,6 +350,8 @@ export class Memory {
   async compileArtifacts(): Promise<{
     /** Keys swept this call (onMemoryExpired / onMemoryChanged already fired). */
     expiredKeys: string[];
+    /** Post-sweep entries, before the selector. */
+    live: MemoryEntry[];
     /** Post-sweep entries with the selector applied exactly once. */
     selected: MemoryEntry[];
     /** `<memory>` XML for the selected entries, or '' when none. */
@@ -368,9 +372,11 @@ export class Memory {
       }
     }
 
-    const selected = this.selector ? this.selector(live) : live;
+    // A copy: a selector may sort or trim its argument in place.
+    const selected = this.selector ? this.selector([...live]) : live;
     return {
       expiredKeys,
+      live,
       selected,
       dataXml: this._renderXml(selected),
       toolDefinitions: [...this._toolDefinitions],
@@ -417,22 +423,7 @@ export class Memory {
 
   private _renderXml(entries: MemoryEntry[]): string {
     if (entries.length === 0) return '';
-    const inner = entries
-      .map((e) => {
-        const parts: string[] = [`<entry key="${e.key}">`];
-        if (e.description) {
-          parts.push(`<description>\n${e.description}\n</description>`);
-        }
-        const updated = new Date(e.updatedAt).toISOString();
-        parts.push(
-          `<metadata>\n- updated_at=${updated}\n- update_count=${e.updateCount}\n</metadata>`,
-        );
-        parts.push(`<value>\n${e.value}\n</value>`);
-        parts.push('</entry>');
-        return parts.join('\n');
-      })
-      .join('\n\n');
-    return `<memory>\n${inner}\n</memory>`;
+    return `<memory>\n${entries.map(renderMemoryEntry).join('\n\n')}\n</memory>`;
   }
 
   // ─── Validated methods (for LLM-driven operations) ──────────────────────
@@ -625,6 +616,19 @@ export class Memory {
     }
     return { expiresAtTurn: this._turnCount + ttl.turns };
   }
+}
+
+/** One entry as the `<memory>` block lists it: `<entry key="…">…</entry>`. */
+export function renderMemoryEntry(e: MemoryEntry): string {
+  const parts: string[] = [`<entry key="${e.key}">`];
+  if (e.description) {
+    parts.push(`<description>\n${e.description}\n</description>`);
+  }
+  const updated = new Date(e.updatedAt).toISOString();
+  parts.push(`<metadata>\n- updated_at=${updated}\n- update_count=${e.updateCount}\n</metadata>`);
+  parts.push(`<value>\n${e.value}\n</value>`);
+  parts.push('</entry>');
+  return parts.join('\n');
 }
 
 /** Snapshot of Memory state for save/restore. */

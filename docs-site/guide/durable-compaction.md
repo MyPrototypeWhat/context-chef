@@ -6,6 +6,8 @@ These helpers are deliberately outside the overflow axis: they are stateless fun
 
 All three helpers split on atomic turn boundaries (an assistant message and its tool results never separate), summarize the old slice, and return `[...system, <summary>, ...recent turns]`; on a no-op the input reference is returned unchanged, so you can skip persistence via `result === input`.
 
+**A history that opens with an Anthropic compaction block** (a session resumed with `fromAnthropic`) keeps the block first, since the API rejects a request with anything ahead of it (`compaction_block_misplaced`). `compactHistory()` returns `[...system, placeholder, block, <summary>, ...rest]`: the placeholder user turn `fromAnthropic` puts before the block stays with it, so OpenAI and Gemini still get a user turn first. If you persist a `planCompaction()` plan yourself, do the same: when `toKeep` starts with the compaction message, it goes before the summary, and the placeholder that opens `toSummarize` goes before it.
+
 ## Core — provider-agnostic, operates on IR `Message[]`
 
 ```typescript
@@ -105,6 +107,17 @@ if (toSummarize.length > 0) {
 }
 ```
 
+## Kept reasoning
+
+A summary you write yourself is a rewrite of earlier turns that no provider signed. On Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 the reasoning of the turns kept after it was signed over the messages the summary replaced, so it no longer verifies (see [Claude Thinking Prefix Check](/guide/thinking-prefix)). `compactModelMessages`, `compactTanStackMessages` and their `planCompaction…` versions take `keptReasoning: 'strip'`, which removes that signed reasoning from the kept messages, and drops a reply that held nothing else, so the result can be sent as it is. Only reasoning an Anthropic-family provider signed is removed: reasoning parts signed through `@ai-sdk/anthropic` or `@ai-sdk/amazon-bedrock`, and TanStack thinking blocks that carry a signature (`@tanstack/ai-anthropic`). Other providers' reasoning carries no such signature, and stays. The default is `'keep'`.
+
+```typescript
+messages = await compactModelMessages(messages, summarizerModel, {
+  keepRecentTurns: 4,
+  keptReasoning: 'strip',
+});
+```
+
 ## Don't double-compress
 
-Don't combine durable compaction with in-flight overflow ([the Janitor runner and its strategy](/guide/history-compression), or middleware `compress`) on the same conversation — that compresses the same history twice. Pick one strategy per conversation. See the [core](/packages/core), [ai-sdk-middleware](/packages/ai-sdk-middleware), and [tanstack-ai](/packages/tanstack-ai) package pages for the full contracts.
+Don't combine durable compaction with in-flight overflow ([the Janitor runner and its strategy](/guide/history-compression), or middleware `compress`) on the same conversation — that compresses the same history twice. Pick one strategy per conversation. With [`appendOnly`](/guide/append-only#persisting-a-conversation), in-flight compaction already lands once, and writing its result back is the persisting path: write back `details.replacement`, not a summary of your own, which would be a `history` checkpoint. See the [core](/packages/core), [ai-sdk-middleware](/packages/ai-sdk-middleware), and [tanstack-ai](/packages/tanstack-ai) package pages for the full contracts.

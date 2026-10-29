@@ -4,6 +4,7 @@ import type {
   ClearTarget,
   IntegrationOverflowOptions,
   Message,
+  PrefixSessionBreak,
   Skill,
   StorageBackend,
   Store,
@@ -74,15 +75,19 @@ export interface TruncateOptions {
  * outgoing request but does NOT mutate your message store. For a one-off
  * over-budget spike that is enough. But for a *sustained* over-budget
  * conversation (a long chat, or a long multi-step loop), the un-persisted
- * summary is discarded each call and the history re-expands, so the payload
- * grows unbounded and compression effectively fires only every other call
- * (E10 suppression). For sustained use, persist the summary via
+ * summary is discarded each call and the history re-expands, so every call
+ * summarizes all of it again. For sustained use, persist the summary via
  * {@link ContextChefOptions.onCompress} — replace the compressed slice in
  * your own store — or use `compactModelMessages` for durable compaction. The
  * middleware warns once if compression keeps firing without `onCompress`.
  */
 export interface CompressOptions {
-  /** A cheap model used for summarization (e.g. openai('gpt-4o-mini')). */
+  /**
+   * A cheap model used for summarization (e.g. openai('gpt-4o-mini')). Pass
+   * the model itself, not one wrapped with this middleware: with
+   * {@link ContextChefOptions.appendOnly}, its call would wait behind the very
+   * call that is waiting for its summary, and neither would return.
+   */
   model: LanguageModelV4;
   /** Ratio of context window to preserve for recent messages. Default: 0.8 */
   preserveRatio?: number;
@@ -186,8 +191,17 @@ export interface DynamicStateConfig {
    * - `'last_user'` (default): Appends to the last user message. Leverages Recency Bias
    *   for maximum attention, preventing "Lost in the Middle" drift in long conversations.
    * - `'system'`: Adds as a standalone system message at the end.
+   *
+   * With {@link ContextChefOptions.appendOnly}, both append the state as its
+   * own user message, once, after the turn it changed in.
    */
   placement?: 'system' | 'last_user';
+}
+
+/** A checkpoint one call applied under {@link ContextChefOptions.appendOnly}. */
+export interface PrefixBreakEvent extends PrefixSessionBreak {
+  /** The session the call belongs to (`providerOptions.contextChef.sessionId`, or the default one). */
+  readonly sessionId: string;
 }
 
 export interface ContextChefOptions {
@@ -221,6 +235,60 @@ export interface ContextChefOptions {
    * threshold on purpose.
    */
   allowDoubleCompression?: boolean;
+  /**
+   * Keep what was sent: each call's prompt repeats the one the session sent
+   * before and only appends to it, so the provider's prefix cache keeps
+   * hitting and a model that signs its reasoning over everything before it
+   * (Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5) can replay it.
+   *
+   * Each session (`providerOptions.contextChef.sessionId`) keeps a ledger of
+   * what its calls sent:
+   * - `dynamicState` is appended as its own user message after the turn it
+   *   changed in, once, and stays there; a change is a new message
+   *   (`<dynamic_state rev="2">`), never an edit of an earlier one. Both
+   *   placements append it this way: the provider is unknown, and one may
+   *   move a mid-conversation system message into the system prompt.
+   * - A compression lands once: on every later call its summary stands in
+   *   for the messages it covers, instead of the history being summarized
+   *   again. It waits for a user-turn boundary, unless a tool loop would send
+   *   a request past `contextWindow`; then the whole loop collapses into the
+   *   summary. `onCompress` is only needed to outlive the process.
+   * - Anything that rewrites what was sent — an edited history, a changed
+   *   system prompt, skill or tool list, a compression, a session the process
+   *   lost — is a checkpoint, reported to {@link onPrefixBreak}. Reasoning
+   *   an Anthropic-family provider signed (`@ai-sdk/anthropic`,
+   *   `@ai-sdk/amazon-bedrock`: the signature rides on the reasoning part) is
+   *   removed from what changed on, for good, and a reply that held nothing
+   *   else is left out; other reasoning carries no such signature and stays.
+   *
+   * Give each conversation its own `sessionId`: conversations sharing one
+   * rewrite each other's history on every call. Sessions live in the
+   * middleware instance: create it once (`withContextChef(...)` at module
+   * scope) and reuse it — one created per request starts every session
+   * empty, and every call is then a `ledger` checkpoint. A restart, or an
+   * eviction past `maxSessions`, costs one. `compact` and `clear` settings
+   * that move with the conversation (`compact.toolCalls: 'before-last-…'`,
+   * `keepRecent`) make nearly every call a checkpoint, and are warned when
+   * the middleware is created; `'all'` and the provider's own context editing
+   * do not, nor does `compact.reasoning: 'before-last-message'`, which spares
+   * only the last message: the new question or tool result.
+   * `clearAt` is accepted for `ContextChef` config compatibility and ignored
+   * (warned likewise): every event here is a user message. Default: off.
+   */
+  appendOnly?: boolean | { clearAt?: boolean };
+  /**
+   * `appendOnly`: called for each checkpoint a call applies — something
+   * rewrote what an earlier call sent, so the provider's prefix cache misses
+   * from `at` on (an index into the call's conversation, after its system
+   * messages; 0 for a compression or a new system prompt or tool list), and
+   * `strippedThinking` reasoning blocks were removed. `reason` is
+   * `'compaction'`, `'history'`, `'system'`, `'tools'` or `'ledger'` (the
+   * session had no record of the history: a restart, an eviction). `signed`
+   * is always `false` here: it marks a compaction the provider signed
+   * (`ContextChef`'s `onDemandCompaction`), which the middleware cannot
+   * request.
+   */
+  onPrefixBreak?: (event: PrefixBreakEvent) => void;
   /** Enable tool result truncation. Omit for no truncation. */
   truncate?: TruncateOptions;
   /**
@@ -229,8 +297,10 @@ export interface ContextChefOptions {
    * deleted — message structure and tool-call pairing stay intact, unlike
    * `compact` (AI SDK pruneMessages), which removes content outright.
    *
-   * Runs AFTER compression, so the summarizer still sees full tool output.
-   * When tool results are targeted, a system message explaining the
+   * Runs AFTER compression, so the summarizer still sees full tool output —
+   * except with {@link appendOnly}, where it runs before: a cleared result
+   * must be one before it is first sent, so the summarizer sees the
+   * placeholders. When tool results are targeted, a system message explaining the
    * placeholder is auto-injected so the model doesn't read it as an error.
    *
    * Note: with `{ target: 'tool-result', keepRecent: N }`, the clearing
@@ -283,11 +353,30 @@ export interface ContextChefOptions {
    * messages (after truncate/compact): match tool messages back to your
    * records by `toolCallId`; user/assistant text is not modified by those
    * steps.
+   *
+   * Store the summary as a user message with exactly the `summary` text (when
+   * the compressed messages were only dropped, as they are by default without
+   * `compress.model`, `summary` is a placeholder notice and there is nothing to
+   * keep): after a compression, the usage the provider reports is trusted only
+   * while your history still holds that message. Stored any other way (as a
+   * system message, behind a prefix of your own), the usage is ignored and the
+   * window is judged by its own count, an estimate unless you pass a
+   * `tokenizer`.
+   *
+   * With {@link appendOnly}, `details.replacement` is what to write back,
+   * exactly and in order, where `compressedMessages` were, to persist the
+   * compaction (the summary, as a user message): the next call reads your
+   * history as one that took it in, with nothing to report. From then on it
+   * is your message, sent with any signed reasoning in it stripped.
+   * `compressedMessages` and the count hold only your messages, never the
+   * events the session appended among them — with one exception: a summary
+   * you did not write back is summarized again by a later compression, and
+   * shows up in that one's `compressedMessages`.
    */
   onCompress?: (
     summary: string,
     truncatedCount: number,
-    details: { compressedMessages: LanguageModelV4Prompt },
+    details: { compressedMessages: LanguageModelV4Prompt; replacement?: LanguageModelV4Prompt },
   ) => void;
   /**
    * Called when token budget is exceeded, before LLM compression.
@@ -301,6 +390,14 @@ export interface ContextChefOptions {
   /**
    * Transform the AI SDK prompt after compression, before sending to the model.
    * Use for custom prompt manipulation, RAG injection, etc.
+   *
+   * With {@link appendOnly} it runs on every call after the session recorded
+   * the prompt. Whatever it adds or changes must come out byte-identical, at
+   * the same position, on every call: otherwise reasoning signed over an
+   * earlier call is replayed over a prefix it was not signed over, and no
+   * checkpoint reports it. Put content that changes from call to call in
+   * `dynamicState`, which is appended once, as an event. Warned when the
+   * middleware is created.
    */
   transformContext?: (
     prompt: LanguageModelV4Prompt,

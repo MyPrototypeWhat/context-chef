@@ -50,14 +50,11 @@ describe('window lineage', () => {
     const chef = chefWith();
     const start = lineage(chef);
 
+    // The same over-budget history every time: each compile overflows again.
     const first = await chef.compile({ target: 'openai' });
-    // The compile right after a compression is suppressed by design (E10), so
-    // it stays in the window the first one opened.
-    const quiet = await chef.compile({ target: 'openai' });
     const second = await chef.compile({ target: 'openai' });
 
     expect(first.meta?.windowId).not.toBe(start?.current);
-    expect(quiet.meta?.windowId).toBe(first.meta?.windowId);
     expect(second.meta?.windowId).not.toBe(first.meta?.windowId);
 
     const now = lineage(chef);
@@ -113,10 +110,10 @@ describe('window lineage', () => {
 
     const restored = chefWith().restore(snap);
     expect(lineage(restored)).toEqual(captured);
-    // The restored snapshot also carries the post-compression suppression, so
-    // this compile reports the restored window rather than opening a new one.
+    // The next overflow continues the restored chain.
     const payload = await restored.compile({ target: 'openai' });
-    expect(payload.meta?.windowId).toBe(captured?.current);
+    expect(lineage(restored)?.previous).toBe(captured?.current);
+    expect(payload.meta?.windowId).toBe(lineage(restored)?.current);
   });
 
   it('starts a fresh lineage on clearHistory()', async () => {
@@ -161,7 +158,6 @@ describe('window lineage', () => {
     const snap = chef.snapshot();
 
     const restored = chefWith(config).restore(snap);
-    await restored.compile({ target: 'openai' }); // suppressed after the restore
     await restored.compile({ target: 'openai' });
 
     expect(instructions[0]).toContain('No anchor document exists yet');

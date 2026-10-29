@@ -1,5 +1,9 @@
-import type { OverflowResult } from '../../overflow/types';
-import type { Phase } from '../context';
+import { Assembler } from '../../modules/assembler';
+import type { OverflowResult, OverflowWire } from '../../overflow/types';
+import { compactWindow, invalidatedThinking } from '../../prefix';
+import type { ToolDefinition } from '../../types';
+import type { CompileContext, Phase, PipelineHost, PrefixCompile } from '../context';
+import { reportPrefixBreak, withoutStrippedThinking } from './prefix';
 
 /**
  * Budget check + the installed overflow strategy.
@@ -22,6 +26,16 @@ import type { Phase } from '../context';
  * whether it is full. It is consumed either way, and the drop is REPORTED:
  * the model was told a new window was starting, and something has to say that
  * it did not.
+ *
+ * Under `appendOnly` the runner reads the window, and a result that lands is a
+ * `compaction` checkpoint: its head replaces the host messages it summarized
+ * in every later window, so nothing is summarized again until the window is
+ * over budget once more. Nothing else of the run reaches the window — a
+ * result that did not land leaves it as the ledger rendered it, whatever an
+ * `onBeforeCompress` hook handed the strategy. In the middle of a tool turn a
+ * compaction waits for the turn to end, unless it cannot wait; then the whole
+ * window collapses into the summary. One the provider signs
+ * (`onDemandCompaction`) waits for nothing and strips nothing.
  */
 export const overflowPhase: Phase = {
   name: 'overflow',
@@ -61,8 +75,10 @@ export const overflowPhase: Phase = {
     }
 
     let result: OverflowResult | null = null;
-    if (!skipped) {
-      result = await host.overflow(before, ctx.signal, forced);
+    if (!skipped && ctx.prefix) {
+      result = await overflowWindow(ctx, host, ctx.prefix, forced);
+    } else if (!skipped) {
+      result = await host.overflow(before, { signal: ctx.signal, force: forced });
       ctx.history = result.history;
     }
     // Read after the runner ran: a landed overflow closed the window this
@@ -75,3 +91,62 @@ export const overflowPhase: Phase = {
     }
   },
 };
+
+/**
+ * `appendOnly`: one overflow pass over the window, or `null` while a
+ * compaction waits for a tool turn to end. A result that lands is a
+ * `compaction` checkpoint; the window is then rendered from the ledger again,
+ * so what the payload sends is what the ledger records.
+ */
+async function overflowWindow(
+  ctx: CompileContext,
+  host: PipelineHost,
+  prefix: PrefixCompile,
+  forced: boolean,
+): Promise<OverflowResult | null> {
+  const { result, head } = await compactWindow({
+    ledger: prefix.ledger,
+    history: prefix.history,
+    window: ctx.history,
+    runner: host,
+    signal: ctx.signal,
+    forced,
+    wire: wireOf(ctx, prefix),
+  });
+  if (!head) return result;
+
+  const before = invalidatedThinking(prefix.history, prefix.ledger);
+  const brk = prefix.ledger.checkpoint('compaction', head.cut, head);
+  ctx.history = prefix.ledger.window();
+  await reportPrefixBreak(ctx, host, brk, before);
+  return result;
+}
+
+/**
+ * `appendOnly` on Anthropic, once a payload was sent: the window as it went
+ * over the wire, for a strategy the provider signs a compaction for. The
+ * messages render as the `tail` and `adapt` phases render them; the system
+ * prompt and tools are the ones the ledger last committed.
+ */
+function wireOf(ctx: CompileContext, prefix: PrefixCompile): OverflowWire | undefined {
+  const sent = prefix.ledger.lastSent;
+  if (!ctx.target.isAnthropicTarget || !sent) return undefined;
+  const window = ctx.history;
+  return {
+    target: 'anthropic',
+    history: window,
+    renderPrefix(end) {
+      const messages = window.slice(0, end).map((m) => Assembler.orderKeysDeterministically(m));
+      const {
+        system: _system,
+        tools: _tools,
+        ...payload
+      } = ctx.target.adapter.compile(withoutStrippedThinking(ctx, messages));
+      return {
+        ...payload,
+        ...(sent.system === undefined ? {} : { system: sent.system }),
+        ...(sent.tools === undefined ? {} : { tools: sent.tools as ToolDefinition[] }),
+      };
+    },
+  };
+}

@@ -1,4 +1,7 @@
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
+import { AnthropicAdapter, fromAnthropic } from '../../adapters/anthropicAdapter';
+import { OpenAIAdapter } from '../../adapters/openAIAdapter';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { compactHistory, planCompaction } from './durableCompaction';
@@ -151,6 +154,34 @@ describe('compactHistory', () => {
 
     expect(result).toBe(history);
     expect(compress).not.toHaveBeenCalled();
+  });
+
+  it('keeps the compaction block a resumed Anthropic history opens with ahead of the summary', async () => {
+    const { history } = fromAnthropic([
+      { role: 'assistant', content: [{ type: 'compaction', content: 'EARLIER' }] },
+      { role: 'user', content: 'u1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'u2' },
+      { role: 'assistant', content: 'a2' },
+    ] as MessageParam[]);
+    const block = history.find((m) => m._anthropic_compaction !== undefined);
+    const summarized = vi.fn(async (_messages: Message[]) => 'SUM');
+
+    const result = await compactHistory(history, summarized, { keepRecentTurns: 1 });
+
+    // The opening user turn fromAnthropic put before the block stays with it.
+    expect(result[0]).toBe(history[0]);
+    expect(result[1]).toBe(block);
+    expect(result[2].content).toBe(Prompts.getCompactSummaryWrapper('SUM'));
+    expect(contents(result.slice(3))).toEqual(['a2']);
+    expect(JSON.stringify(summarized.mock.calls[0][0])).not.toContain('[Conversation continues]');
+    // What the Anthropic target sends: the block first, as the API requires.
+    expect(new AnthropicAdapter().compile(result).messages[0]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'compaction', content: 'EARLIER' }],
+    });
+    // What a text target sends: still a user turn first.
+    expect(new OpenAIAdapter().compile(result).messages[0].role).toBe('user');
   });
 
   it('puts the summary first when there is no system message', async () => {

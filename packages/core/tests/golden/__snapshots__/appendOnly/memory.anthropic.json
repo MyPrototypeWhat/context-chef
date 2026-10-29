@@ -1,0 +1,143 @@
+[
+  {
+    "payload": {
+      "messages": [
+        { "content": [{ "text": "question 1", "type": "text" }], "role": "user" },
+        {
+          "content": [
+            {
+              "text": "You recall the following from previous conversations:\n<memory>\n<entry key=\"language\">\n<metadata>\n- updated_at=2026-03-01T12:00:00.000Z\n- update_count=1\n</metadata>\n<value>\nTypeScript\n</value>\n</entry>\n\n<entry key=\"session\">\n<metadata>\n- updated_at=2026-03-01T12:00:00.000Z\n- update_count=1\n</metadata>\n<value>\nabc123\n</value>\n</entry>\n</memory>\n\nExisting memory keys: language, session. Prefer updating these keys over creating new ones to maintain consistency.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "system": [
+        { "text": "You are a careful agent.", "type": "text" },
+        {
+          "text": "You have access to memory tools that let you remember and forget facts across conversations.\nUse them to store important information like user preferences, project conventions, and key decisions.\nOnly remember things genuinely worth persisting.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Remember a new fact across conversations. Use this to store important information like user preferences, project conventions, and key decisions.",
+          "name": "create_memory",
+          "parameters": {
+            "properties": {
+              "description": {
+                "description": "A brief description of what this memory entry is for and when it should be referenced.",
+                "type": "string"
+              },
+              "key": {
+                "description": "A clear, descriptive key name for the memory (e.g. \"project_language\", \"user_preference_style\").",
+                "type": "string"
+              },
+              "value": {
+                "description": "The value to remember. Keep it concise but informative.",
+                "type": "string"
+              }
+            },
+            "required": ["key", "value"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Update or delete an existing memory entry. Use \"update\" to change a remembered value, or \"delete\" to forget it.",
+          "name": "modify_memory",
+          "parameters": {
+            "properties": {
+              "action": {
+                "description": "The operation to perform on the memory entry.",
+                "enum": ["update", "delete"],
+                "type": "string"
+              },
+              "description": {
+                "description": "Update the description of this memory entry. Optional.",
+                "type": "string"
+              },
+              "key": {
+                "description": "The key of the existing memory entry to modify. The memory block in context lists the visible keys when entries exist. Modifying an unknown key is safely rejected.",
+                "type": "string"
+              },
+              "value": {
+                "description": "The new value for the memory entry. Required for \"update\", ignored for \"delete\".",
+                "type": "string"
+              }
+            },
+            "required": ["action", "key"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "from": 2,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_1", "thinking": "Look up 1.", "type": "thinking" },
+          { "id": "call_1", "input": { "q": "topic 1" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 1", "tool_use_id": "call_1", "type": "tool_result" }],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Your memory changed. These entries replace what you recalled under the same keys:\n<memory>\n<entry key=\"editor\">\n<metadata>\n- updated_at=2026-03-01T12:00:00.000Z\n- update_count=1\n</metadata>\n<value>\nNeovim\n</value>\n</entry>\n</memory>",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 2 }
+  },
+  {
+    "from": 5,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_1", "thinking": "Answer 1 from what was found.", "type": "thinking" },
+          { "text": "answer 1", "type": "text" }
+        ],
+        "role": "assistant"
+      },
+      { "content": [{ "text": "question 2", "type": "text" }], "role": "user" }
+    ],
+    "prefix": { "stable": 5 }
+  },
+  {
+    "from": 7,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_2", "thinking": "Look up 2.", "type": "thinking" },
+          { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 2", "tool_use_id": "call_2", "type": "tool_result" }],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Your memory changed. These entries replace what you recalled under the same keys:\n<memory>\n<entry key=\"session\" removed=\"true\"/>\n</memory>",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 7 }
+  }
+]

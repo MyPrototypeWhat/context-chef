@@ -47,7 +47,7 @@ ContextChef 把无界的信息编译进有界的窗口。这个库现有的每�
 `compile()` 会跑一串固定顺序的阶段。每个阶段有明确的契约，slot 在阶段之间的边界上触发。
 
 ```
-start → transform-tool-results → handoff → overflow → inject
+start → transform-tool-results → prefix → handoff → overflow → inject
       → memory → skill → assemble → tail → adapt → audit → done
 ```
 
@@ -55,6 +55,7 @@ start → transform-tool-results → handoff → overflow → inject
 |---|---|
 | `start` | `compile:start` 事件、中断检查、目标解析 |
 | `transform-tool-results` | 对每条 `role: 'tool'` 消息跑 `transformToolResult` —— 在 overflow 之前，所以摘要模型看到的是转换后的内容 |
+| `prefix` | 仅 `appendOnly`：在 history 上重放 ledger，报告检查点（[Append-only 前缀](/zh/guide/append-only)） |
 | `handoff` | 当剩余额度落进 handoff 带宽时，每个窗口渲染一次通知 |
 | `overflow` | 预算检查，然后是装配好的策略；被驱逐的内容随后归档 |
 | `inject` | `before-assemble` 处理器 → `<implicit_context>` |
@@ -63,7 +64,7 @@ start → transform-tool-results → handoff → overflow → inject
 | `assemble` | 三明治装配 —— 系统层、历史、护栏、各种 placement |
 | `tail` | tail 缝合：skill、记忆数据、动态状态、隐式上下文、announcements、锚点行 |
 | `adapt` | 目标适配器、工具、服务端托管的 payload 字段 |
-| `audit` | Anthropic 目标上的 `cacheAudit`，以及可选的 `pipelineChecks` 不变量 |
+| `audit` | Anthropic 目标上的 `cacheAudit`，以及可选的 `pipelineChecks` 不变量（打开 `appendOnly` 时还会和上一次的 payload 比较） |
 | `done` | `compile:done` 事件 |
 
 中断检查（`compile({ signal })`）位于 `overflow`、`inject`、`memory`、`assemble`、`adapt` 之后 —— 每一个跟在「可能任意久的 await」后面的边界。

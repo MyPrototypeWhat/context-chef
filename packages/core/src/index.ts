@@ -12,13 +12,17 @@ export {
 export {
   AnthropicAdapter,
   type AnthropicAdapterOptions,
+  type AnthropicCompactionBlock,
   type AnthropicServerContextManagement,
+  anthropicCompactionMessage,
   anthropicServerContextManagement,
+  type FromAnthropicOptions,
   fromAnthropic,
 } from './adapters/anthropicAdapter';
 export {
   auditAnthropicCachePlacement,
   type CacheAuditIssue,
+  type CacheAuditOptions,
 } from './adapters/anthropicCacheAudit';
 export { fromGemini, GeminiAdapter, type GeminiAdapterOptions } from './adapters/geminiAdapter';
 export { fromOpenAI, OpenAIAdapter, type OpenAIAdapterOptions } from './adapters/openAIAdapter';
@@ -40,12 +44,22 @@ export {
   type ToolCallCheckResult,
   type ToolsMode,
 } from './chef';
+export { prefixBreakReporter, warnAppendOnlyConfig } from './integrations/appendOnly';
 export {
   createJanitorPool,
   type IntegrationCompressOptions,
   type IntegrationOverflowOptions,
   type JanitorPoolConfig,
 } from './integrations/janitorPool';
+export {
+  createPrefixSessionPool,
+  type PrefixSession,
+  type PrefixSessionBreak,
+  type PrefixSessionCall,
+  type PrefixSessionPoolConfig,
+  type PrefixSessionWindow,
+  type SignedThinking,
+} from './integrations/prefixSession';
 export { Assembler } from './modules/assembler';
 export { Guardrail } from './modules/guardrail';
 export {
@@ -132,11 +146,16 @@ export {
   HANDOFF_REMAINING_PLACEHOLDER,
   type HandoffConfig,
   isServerStrategy,
+  type OnDemandCompactionOptions,
+  type OnDemandCompactionRequest,
+  type OnDemandCompactor,
   type OverflowAliasConfig,
   type OverflowInput,
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
+  type OverflowWire,
+  onDemandCompaction,
   type ResetOptions,
   renderHandoffNotice,
   renderSummaryMessage,
@@ -160,6 +179,21 @@ export type {
   SlotHandlers,
   SlotName,
 } from './pipeline';
+export {
+  checkPrefixContinuity,
+  type PrefixComparable,
+  type PrefixContinuity,
+} from './pipeline/checks';
+export type {
+  AppendOnlyConfig,
+  InjectionSource,
+  PrefixBreakReason,
+  PrefixEntry,
+  PrefixHead,
+  PrefixLedgerSnapshot,
+  PrefixMeta,
+  PrefixSent,
+} from './prefix';
 export * from './prompts';
 export * from './store';
 export * from './tools';

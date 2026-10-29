@@ -1,3 +1,4 @@
+import { openingPlaceholder, summaryHead } from '../../overflow/summary';
 import { Prompts } from '../../prompts';
 import type { Message } from '../../types';
 import { ensureValidHistory } from '../../utils/ensureValidHistory';
@@ -29,7 +30,11 @@ export interface CompactionPlan {
    * `summarizeHistory`. Empty when there is nothing old enough to compact.
    */
   toSummarize: Message[];
-  /** The recent conversation turns to keep verbatim. */
+  /**
+   * The conversation to keep verbatim: the pinned turns of the old slice,
+   * then the recent turns. A compaction block it starts with goes before the
+   * summary (see {@link planCompaction}).
+   */
   toKeep: Message[];
 }
 
@@ -40,7 +45,14 @@ export interface CompactionPlan {
  * This is the provider-agnostic engine behind the AI SDK middleware's
  * `planCompaction`. Run it against your own message store, summarize
  * `toSummarize`, then persist `[...system, <summary>, ...toKeep]` so the history
- * actually shrinks. See {@link compactHistory} for the one-shot version.
+ * actually shrinks — except when `toKeep` starts with a compaction message
+ * (`_anthropic_compaction`, the block an Anthropic compaction returned): that
+ * message goes before the summary, `[...system, block, <summary>, ...rest]`,
+ * since the API rejects a request with anything ahead of the block. The
+ * placeholder user turn `fromAnthropic` puts before such a block opens
+ * `toSummarize`; keep it ahead of the block, so text targets still open with
+ * a user turn. See {@link compactHistory} for the one-shot version, which
+ * does both for you.
  *
  * **Input contract:** `history` is a flat `Message[]` with any system messages
  * **inline** (`role: 'system'`). This matches `fromAISDK` output. The direct
@@ -82,7 +94,13 @@ export function planCompaction(history: Message[], options: PlanCompactionOption
 
 /**
  * One-shot durable compaction: plan a turn-safe split, summarize the old slice,
- * and return a new history ready to persist — `[...system, <summary>, ...toKeep]`.
+ * and return a new history ready to persist — `[...system, <summary>, ...toKeep]`,
+ * with a compaction block `toKeep` starts with ahead of the summary, and the
+ * placeholder user turn ahead of the block (`ensureValidHistory` opens such a
+ * history with one, and a text target needs it first): `[...system,
+ * placeholder, block, <summary>, ...rest]`. A history that opens with a block
+ * and no placeholder gains one. A split that leaves nothing but the
+ * placeholder to summarize compacts nothing.
  *
  * The recommended way to keep a long conversation lean when you own the message
  * store. Run it between model calls and replace your stored messages with the
@@ -107,11 +125,14 @@ export async function compactHistory(
 ): Promise<Message[]> {
   const { keepRecentTurns, ...summarizeOptions } = options;
   const plan = planCompaction(history, { keepRecentTurns });
+  // The opening placeholder before a compaction block toKeep starts with stays with it.
+  const opening = openingPlaceholder([...plan.toSummarize.slice(0, 1), ...plan.toKeep.slice(0, 1)]);
+  const toSummarize = opening ? plan.toSummarize.slice(1) : plan.toSummarize;
 
   // Nothing old enough to compact — return the original reference untouched.
-  if (plan.toSummarize.length === 0) return history;
+  if (toSummarize.length === 0) return history;
 
-  const summary = await summarizeHistory(plan.toSummarize, compress, summarizeOptions);
+  const summary = await summarizeHistory(toSummarize, compress, summarizeOptions);
   // Summarizer produced nothing usable — leave history intact rather than
   // dropping the old turns behind an empty marker.
   if (!summary.trim()) return history;
@@ -121,5 +142,8 @@ export async function compactHistory(
     content: Prompts.getCompactSummaryWrapper(summary),
   };
 
-  return [...plan.system, summaryMessage, ...plan.toKeep];
+  return [
+    ...plan.system,
+    ...summaryHead(summaryMessage, opening ? [opening, ...plan.toKeep] : plan.toKeep),
+  ];
 }

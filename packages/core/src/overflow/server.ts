@@ -50,6 +50,9 @@ export function server(
     name: fallback ? `server(fallback: ${fallback.name})` : 'server',
     config,
     fallback,
+    // Wherever apply() is reached, the fallback is what runs.
+    ...(fallback?.signed ? { signed: true as const } : {}),
+    parts: fallback ? [fallback] : [],
     async apply(input: OverflowInput): Promise<OverflowResult> {
       // Reaching apply() means the target is NOT server-managed: the pipeline
       // skips the overflow phase entirely when it is.
@@ -64,6 +67,7 @@ export function server(
     },
     commit: (result) => fallback?.commit?.(result),
     pending: () => fallback?.pending?.() === true,
+    discard: () => fallback?.discard?.(),
     snapshot: () => fallback?.snapshot?.(),
     restore: (state) => fallback?.restore?.(state),
     attach: (runner) => fallback?.attach?.(runner),

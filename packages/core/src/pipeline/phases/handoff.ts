@@ -1,4 +1,5 @@
 import { renderHandoffNotice } from '../../overflow/handoff';
+import { awaitsToolResults } from '../../prefix';
 import type { Phase } from '../context';
 
 /**
@@ -16,7 +17,9 @@ export const HANDOFF_ANNOUNCEMENT_ID = '__handoff__';
  * on. Delivery goes through the announcement channel — the notice is a
  * statement of current system state, and that channel already knows where such
  * a statement belongs per target — but the announcement lives on the compile
- * context, so it is gone the moment the payload is built.
+ * context, so it is gone the moment the payload is built. Under `appendOnly`
+ * the notice is an event instead: appended once, and sent where it was from
+ * then on.
  *
  * Once per window, tracked by window id rather than by a counter: the point of
  * the notice is "the window you are in is about to end", and it stops being
@@ -32,6 +35,9 @@ export const handoffPhase: Phase = {
 
     const windowId = ctx.window.current;
     if (host.handoffNoticedWindow() === windowId) return;
+    // appendOnly: no event goes between tool calls and their results, the notice included.
+    const prefix = ctx.prefix;
+    if (prefix && awaitsToolResults(prefix.history, prefix.ledger.head)) return;
 
     const budget = host.readBudget(ctx.history);
     if (budget.remaining > handoff.budgetTokens) return;

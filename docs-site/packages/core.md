@@ -59,6 +59,8 @@ The full API is documented across the guide, one page per concern:
 |---|---|
 | The five axes, the compile pipeline, the slots | [Architecture](/guide/architecture) |
 | Overflow strategies, Janitor runner, `compact()`, `ensureValidHistory` | [Overflow](/guide/history-compression) |
+| `checkPrefixContinuity`, Claude's thinking signature check, `drop_block` | [Claude Thinking Prefix Check](/guide/thinking-prefix) |
+| `appendOnly`, `onDemandCompaction`, `prefix:break`, `meta.prefix` | [Append-Only Prefix](/guide/append-only) |
 | `planCompaction` / `compactHistory` / `summarizeHistory` | [Durable Compaction](/guide/durable-compaction) |
 | `server()` strategy, `contextManagement: { strategy: 'server' }` | [Server-Side Context Management](/guide/server-side-context-management) |
 | `StorageBackend` / `Store`, the `context` tool, `tools` mode | [Context Store](/guide/context-store) |

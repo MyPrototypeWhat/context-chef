@@ -71,7 +71,7 @@ The per-tool lookup key is the tool's name — read from `ModelMessage.name` whe
 
 ### Conversation Isolation
 
-Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per `ctx.threadId`, so one middleware instance safely serves many conversations. Pass a `threadId` to `chat()` (`conversationId` is a deprecated alias); calls without one get an auto-generated per-run id — isolated within the run, but with no cross-call continuity. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted).
+Compression state (fed token usage, the post-compression flag, the failure circuit breaker) is tracked per `ctx.threadId`, so one middleware instance safely serves many conversations. Pass a `threadId` to `chat()` (`conversationId` is a deprecated alias); calls without one get an auto-generated per-run id — isolated within the run, but with no cross-call continuity. Up to `maxSessions` conversations are tracked concurrently (default 256, LRU-evicted).
 
 ### Compact (Mechanical Pruning)
 
@@ -115,7 +115,7 @@ contextChefMiddleware({
 })
 ```
 
-State is serialized to XML and injected into the last user message (leveraging recency bias) or as a system prompt. `getState` is called at init and at every agent iteration; the previously injected block is **replaced**, never duplicated.
+State is serialized to XML and injected into the last user message (leveraging recency bias) or as a system prompt. `getState` is called at init and at every agent iteration; the previously injected block is **replaced**, never duplicated. With `appendOnly`, `getState` runs on each model call's firing only, not at init, and nothing is replaced: a changed state is appended as a new user message, and earlier ones stay where they were sent.
 
 ### Skill Injection
 
@@ -136,11 +136,29 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`.
+`transformContext` runs on every `onConfig` firing (init + each agent iteration) and its output carries into the next firing — make it idempotent, or gate on `ctx.phase === 'init'`. With `appendOnly`, `init` passes through, so a hook gated on `ctx.phase === 'init'` never runs. It runs on each model call's firing only, after the conversation is recorded, and what it adds is not carried: whatever it adds or changes must come out identical, in the same place, on every call. Put content that changes per call in `dynamicState`.
+
+### Append-Only Mode
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 reject a request that replays thinking after anything before it changed, and every provider's prompt cache misses from the first changed message. By default the middleware replaces its dynamic-state block on every iteration and recomputes a compression summary on every call over budget. With `appendOnly: true`, each model call's request repeats the one the conversation sent before and only appends; anything that still rewrites it is a checkpoint, reported to `onPrefixBreak`.
+
+```typescript
+// Create once, reuse for every chat() call
+const contextChef = contextChefMiddleware({
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { adapter: summarizerAdapter },
+  onPrefixBreak: (event) => console.info(event),
+});
+
+const stream = chat({ adapter, messages, threadId: conversationId, middleware: [contextChef] });
+```
+
+Pass a `threadId` per conversation (otherwise each run starts empty), and create the middleware once. `dynamicState` becomes its own user message, appended once per change; a compression lands once; only thinking that carries a signature is stripped at a checkpoint. No other middleware may change the messages this one returns, and you should persist the client's conversation rather than the engine's messages. See [Append-Only Prefix](/guide/append-only#tanstack-ai-specifics) for the full rules.
 
 ### Never Breaks the Host Run
 
-In `@tanstack/ai` 0.44, a middleware hook that throws fails the whole `chat()` run. This middleware wraps every hook body: on an unexpected error it logs through the configured `logger` and passes the request through unchanged instead of breaking your call.
+In `@tanstack/ai` 0.44, a middleware hook that throws fails the whole `chat()` run. This middleware wraps every hook body: on an unexpected error it logs through the configured `logger` and passes the request through unchanged instead of breaking your call. A run that was already aborted is passed through without the warning, since nothing of it goes out.
 
 ## Durable Compaction
 
@@ -174,7 +192,7 @@ Don't combine durable compaction with middleware `compress` on the same conversa
 | `createCompressionAdapter(adapter)` | Adapts any TanStack text adapter into the `(messages) => Promise<string>` callback core expects |
 | `compactTanStackMessages` / `planCompactionTanStackMessages` / `summarizeTanStackMessages` | Durable compaction helpers |
 
-Key `contextChefMiddleware` options: `contextWindow` (required only with compression), `compress` (`adapter`, `preserveRatio`, `toolResultStubThreshold`, `usagePreference`), `truncate`, `compact`, `clear`, `dynamicState`, `skill`, `tokenizer`, `maxSessions`, `onCompress`, `onBeforeCompress`, `transformContext`, `logger`. See the [full README on GitHub](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai) for the complete option tables.
+Key `contextChefMiddleware` options: `contextWindow` (required only with compression), `compress` (`adapter`, `preserveRatio`, `toolResultStubThreshold`, `usagePreference`), `truncate`, `compact`, `clear`, `dynamicState`, `skill`, `tokenizer`, `maxSessions`, `onCompress`, `onBeforeCompress`, `transformContext`, `logger`, `appendOnly`, `onPrefixBreak`. `compactTanStackMessages` / `planCompactionTanStackMessages` also take `keptReasoning: 'strip'` ([why](/guide/durable-compaction#kept-reasoning)). See the [full README on GitHub](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai) for the complete option tables.
 
 ## How It Works
 
@@ -202,6 +220,8 @@ onUsage (after each model iteration)
   10. Extract promptTokens from usage
   11. Feed back to the conversation's Janitor for the next budget check
 ```
+
+**With `appendOnly`** the flow differs. The `init` firing passes the config through, and the work happens in each model call's firing (`beforeModel`, `structuredOutput`). The middleware first reads back what the engine carried from its own previous firing, `clear` runs before compression, and the conversation's ledger replays what earlier calls sent: a compression lands once instead of being recomputed, and dynamic state is appended as a user-message event when it changes, never replaced and never put in `systemPrompts`. Usage isn't counted for a request the ledger didn't keep: the structured-output call of a run with tools, or a request passed through unchanged after the middleware's config step failed. See [Append-Only Prefix](/guide/append-only#tanstack-ai-specifics).
 
 ## Need more control?
 

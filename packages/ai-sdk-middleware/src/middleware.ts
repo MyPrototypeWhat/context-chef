@@ -7,6 +7,7 @@ import type {
 import {
   compactMessages,
   createJanitorPool,
+  createPrefixSessionPool,
   DEFAULT_SESSION_KEY,
   flattenForCompression,
   type Janitor,
@@ -16,6 +17,7 @@ import {
   Prompts,
   type SummarizeHistoryOptions,
   summarizeHistory,
+  warnAppendOnlyConfig,
 } from '@context-chef/core';
 import {
   generateText,
@@ -25,7 +27,8 @@ import {
   pruneMessages,
 } from 'ai';
 
-import { fromAISDK, toAISDK } from './adapter';
+import { fromAISDK, signedReasoning, toAISDK } from './adapter';
+import { appendOnlyTransform } from './appendOnly';
 import { fromModelMessages } from './modelMessageAdapter';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
@@ -50,7 +53,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
   // Null for truncate/compact/skill/dynamicState-only configurations: no
   // budget checks, no token-usage capture, and none of the Janitor's
   // missing-tokenizer warnings.
-  const janitors = createJanitorPool({
+  const janitorConfig = {
     contextWindow: options.contextWindow,
     compress: options.compress,
     compressionModel: options.compress?.model
@@ -61,18 +64,34 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     onBeforeCompress: options.onBeforeCompress,
     overflow: options.overflow,
     toHostMessages: toAISDK,
-    // In-flight-without-persistence footgun: the summary is discarded each
-    // call and history re-expands, so the payload grows unbounded (and
-    // compression effectively skips every other call via E10 suppression).
-    persistenceWarning: (firedCount) =>
-      `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
-      'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
-      'not persisted, so your message history re-expands on the next call and the payload grows ' +
-      'unbounded (eventually overflowing the context window). For sustained compression, persist ' +
-      'the summary via `onCompress` (replace the compressed slice in your own store), or use ' +
-      '`compactModelMessages` for durable compaction.',
     logger,
     maxSessions: options.maxSessions,
+  };
+  // With appendOnly every session also keeps the prefix ledger its calls are
+  // replayed from — dynamic state alone needs one — so the pool holds
+  // sessions, each with its Janitor when compression is configured.
+  const sessions = options.appendOnly
+    ? createPrefixSessionPool({ ...janitorConfig, signedThinking: signedReasoning })
+    : null;
+  const janitors = options.appendOnly
+    ? null
+    : createJanitorPool({
+        ...janitorConfig,
+        // In-flight-without-persistence footgun: the summary is discarded each
+        // call and history re-expands, so every call summarizes all of it again.
+        persistenceWarning: (firedCount) =>
+          `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
+          'configured. In-flight compression only rewrites each outgoing request — the summary is ' +
+          'not persisted, so your message history re-expands on the next call, and every call over ' +
+          'budget summarizes all of it again: one more model call per request, over a history that ' +
+          'keeps growing (eventually more than the compression model can read). For sustained ' +
+          'compression, persist the summary via `onCompress` (replace the compressed slice in your ' +
+          'own store), or use `compactModelMessages` for durable compaction.',
+      });
+  warnAppendOnlyConfig(options, logger, {
+    provider: 'model',
+    thinking: 'reasoning',
+    contextEditing: 'providerOptions.anthropic.contextManagement',
   });
 
   let invalidSessionKeyWarned = false;
@@ -85,16 +104,34 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   };
 
-  const janitorFor = (params: { providerOptions?: Record<string, unknown> }): Janitor | null => {
-    if (!janitors) return null;
+  const sessionKey = (params: { providerOptions?: Record<string, unknown> }): string => {
     const ns = params.providerOptions?.contextChef;
     if (ns != null && typeof ns !== 'object') {
       // Malformed namespace (e.g. contextChef: 'abc') — never a session key.
       flagInvalidSessionKey(ns);
-      return janitors.get(DEFAULT_SESSION_KEY);
+      return DEFAULT_SESSION_KEY;
     }
     const raw = ns ? (ns as Record<string, unknown>).sessionId : undefined;
-    return janitors.get(normalizeSessionKey(raw, flagInvalidSessionKey));
+    return normalizeSessionKey(raw, flagInvalidSessionKey);
+  };
+
+  const janitorFor = (params: { providerOptions?: Record<string, unknown> }): Janitor | null =>
+    janitors ? janitors.get(sessionKey(params)) : null;
+
+  /**
+   * Where a response's input token count goes: the session's Janitor, and
+   * with appendOnly the session's ledger too, which takes it to describe the
+   * call it last compiled. Null when nothing budgets.
+   */
+  const usageFor = (params: {
+    providerOptions?: Record<string, unknown>;
+  }): ((tokens: number) => void) | null => {
+    if (sessions) {
+      const session = sessions.get(sessionKey(params));
+      return session.janitor ? (tokens) => session.reportTokenUsage(tokens) : null;
+    }
+    const janitor = janitorFor(params);
+    return janitor ? (tokens) => janitor.feedTokenUsage(tokens) : null;
   };
 
   // Anti-double-compression guard: when a call opts into Anthropic
@@ -107,6 +144,14 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     if (doubleCompressionWarned) return;
     doubleCompressionWarned = true;
     logger.warn(warning);
+  };
+  /** Whether this call leaves compression to the server (see above). */
+  const yieldsToServer = (params: { providerOptions?: Record<string, unknown> }): boolean => {
+    const warning = options.allowDoubleCompression
+      ? null
+      : serverContextManagementWarning(params.providerOptions);
+    if (warning) warnServerManagedOnce(warning);
+    return warning !== null;
   };
 
   const clearsToolResults = !!options.clear?.some(
@@ -125,43 +170,68 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     );
   }
 
+  /**
+   * Steps 1–3, in both modes: truncate large tool results, compact
+   * mechanically, and split the IR into the standing instructions and the
+   * conversation.
+   */
+  const prepare = async (
+    sent: LanguageModelV4Prompt,
+  ): Promise<{ systemMessages: Message[]; conversation: Message[] }> => {
+    let prompt = sent;
+
+    // 1. Truncate large tool results
+    if (options.truncate) {
+      prompt = await truncateToolResults(prompt, options.truncate, logger);
+    }
+
+    // 2. Compact (mechanical, zero LLM cost) via pruneMessages
+    if (options.compact) {
+      prompt = compactPrompt(prompt, options.compact);
+    }
+
+    // 3. Convert to IR and separate system messages from conversation.
+    // System messages are standing instructions — they must not be
+    // compressed away. Only conversation history goes through compact/compress.
+    const allIR = fromAISDK(prompt);
+    return {
+      systemMessages: allIR.filter((m) => m.role === 'system'),
+      conversation: allIR.filter((m) => m.role !== 'system'),
+    };
+  };
+
+  // The clear explainer is placed after skill messages, just before the
+  // conversation, so the model sees the explanation immediately ahead of the
+  // placeholders it describes.
+  const clearNotice: Message[] = clearsToolResults
+    ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
+    : [];
+
+  const appendOnlyParams =
+    sessions &&
+    appendOnlyTransform(options, logger, sessions, {
+      prepare,
+      standing: async () => [...(await resolveSkillMessages(options.skill)), ...clearNotice],
+      sessionKey,
+      yieldsToServer,
+    });
+
   return {
     specificationVersion: 'v4',
 
     transformParams: async ({ params }) => {
+      if (appendOnlyParams) return appendOnlyParams(params);
+
       const janitor = janitorFor(params);
-      let { prompt } = params;
-
-      // 1. Truncate large tool results
-      if (options.truncate) {
-        prompt = await truncateToolResults(prompt, options.truncate, logger);
-      }
-
-      // 2. Compact (mechanical, zero LLM cost) via pruneMessages
-      if (options.compact) {
-        prompt = compactPrompt(prompt, options.compact);
-      }
-
-      // 3. Convert to IR and separate system messages from conversation.
-      // System messages are standing instructions — they must not be
-      // compressed away. Only conversation history goes through compact/compress.
-      const allIR = fromAISDK(prompt);
-      const systemMessages = allIR.filter((m) => m.role === 'system');
-      let conversation = allIR.filter((m) => m.role !== 'system');
+      const { systemMessages, conversation: prepared } = await prepare(params.prompt);
+      let conversation = prepared;
 
       // 4. Compress conversation history if over token budget (budgeting
       //    only). Yields to Anthropic server-side context management when
       //    the call declares it (see warnServerManagedOnce above) — every
       //    other step still runs; only this one is skipped.
-      if (janitor) {
-        const serverManagedWarning = options.allowDoubleCompression
-          ? null
-          : serverContextManagementWarning(params.providerOptions);
-        if (serverManagedWarning) {
-          warnServerManagedOnce(serverManagedWarning);
-        } else {
-          conversation = await janitor.compress(conversation);
-        }
+      if (janitor && !yieldsToServer(params)) {
+        conversation = await janitor.compress(conversation);
       }
 
       // 4.5 Placeholder-style clearing (core semantics) — after compress so
@@ -176,16 +246,10 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
       //    and BEFORE the conversation history. Empty instructions are
       //    skipped to avoid emitting an empty system message.
       const skillMessages = await resolveSkillMessages(options.skill);
-      // The clear explainer is placed after skill messages, just before the
-      // conversation, so the model sees the explanation immediately ahead of
-      // the placeholders it describes.
-      const clearNotice: Message[] = clearsToolResults
-        ? [{ role: 'system', content: Prompts.TOOL_RESULT_CLEARED_INSTRUCTION }]
-        : [];
       const irMessages = [...systemMessages, ...skillMessages, ...clearNotice, ...conversation];
 
       // 6. Convert back to AI SDK format
-      prompt = toAISDK(irMessages);
+      let prompt = toAISDK(irMessages);
 
       // 7. Dynamic state injection
       if (options.dynamicState) {
@@ -203,11 +267,11 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     wrapGenerate: async ({ doGenerate, params }) => {
       const result = await doGenerate();
 
-      const janitor = janitorFor(params);
-      if (!janitor) return result;
+      const report = usageFor(params);
+      if (!report) return result;
 
       if (result.usage?.inputTokens?.total != null) {
-        janitor.feedTokenUsage(result.usage.inputTokens.total);
+        report(result.usage.inputTokens.total);
       } else if (!usageWarned && !options.tokenizer) {
         usageWarned = true;
         logger.warn(
@@ -221,8 +285,8 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
     },
 
     wrapStream: async ({ doStream, params }) => {
-      const janitor = janitorFor(params);
-      if (!janitor) return doStream();
+      const report = usageFor(params);
+      if (!report) return doStream();
 
       const { stream, ...rest } = await doStream();
 
@@ -230,7 +294,7 @@ export function createMiddleware(options: ContextChefOptions): LanguageModelMidd
         transform(chunk, controller) {
           if (chunk.type === 'finish') {
             if (chunk.usage?.inputTokens?.total != null) {
-              janitor.feedTokenUsage(chunk.usage.inputTokens.total);
+              report(chunk.usage.inputTokens.total);
             } else if (!usageWarned && !options.tokenizer) {
               usageWarned = true;
               logger.warn(
@@ -362,7 +426,7 @@ async function injectDynamicState(
 
   // last_user: inject into the last user message
   const result = [...prompt];
-  const stateBlock = `\n\n${xml}\nAbove is the current system state. Use it to guide your next action.`;
+  const stateBlock = `\n\n${xml}\n${Prompts.STATE_ANCHOR}`;
 
   for (let i = result.length - 1; i >= 0; i--) {
     const msg = result[i];

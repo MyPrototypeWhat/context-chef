@@ -2,12 +2,14 @@ import {
   type ChefLogger,
   compactMessages as clearMessages,
   createJanitorPool,
+  createPrefixSessionPool,
   flattenForCompression,
   type Janitor,
   type Message,
   normalizeSessionKey,
   objectToXml,
   Prompts,
+  warnAppendOnlyConfig,
 } from '@context-chef/core';
 import {
   type AnyTextAdapter,
@@ -20,7 +22,8 @@ import {
 } from '@tanstack/ai';
 import { resolveDebugOption } from '@tanstack/ai/adapter-internals';
 
-import { fromTanStackAI, toTanStackAI } from './adapter';
+import { fromTanStackAI, signedThinking, systemPromptText, toTanStackAI } from './adapter';
+import { appendOnlyHooks } from './appendOnly';
 import { compactMessages } from './compact';
 import { truncateToolResults } from './truncator';
 import type { ContextChefOptions, DynamicStateConfig } from './types';
@@ -37,12 +40,15 @@ import type { ContextChefOptions, DynamicStateConfig } from './types';
  * iteration (`phase: 'beforeModel'`), and the engine carries the transformed
  * config into the next firing — every transform here is therefore
  * idempotent: injections (skill, clear explainer, dynamic state) check for /
- * replace their previous output instead of appending again.
+ * replace their previous output instead of appending again. With
+ * `appendOnly`, a carried config is read back as the host's conversation
+ * instead, and each conversation's ledger decides what is sent.
  *
  * Robustness: middleware hooks that throw FAIL the host chat() run in
  * TanStack AI. Every hook body is wrapped — on an unexpected error the
  * middleware logs through the configured logger and passes the request
- * through unchanged instead of breaking the run.
+ * through unchanged instead of breaking the run. A run already aborted is
+ * passed through without the warning: nothing of it goes out.
  *
  * @example
  * ```typescript
@@ -77,7 +83,7 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
   // Null for truncate/compact/clear/skill/dynamicState-only configurations:
   // no budget checks, no token-usage capture, and none of the Janitor's
   // missing-tokenizer warnings.
-  const janitors = createJanitorPool({
+  const janitorConfig = {
     contextWindow: options.contextWindow,
     compress: options.compress,
     compressionModel: options.compress?.adapter
@@ -88,18 +94,38 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     onBeforeCompress: options.onBeforeCompress,
     overflow: options.overflow,
     toHostMessages: toTanStackAI,
-    // In-flight-without-persistence footgun: the summary is discarded when
-    // the run ends and the caller's history re-expands on the next chat().
-    persistenceWarning: (firedCount) =>
-      `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
-      'configured. In-flight compression only rewrites the outgoing request — the summary is ' +
-      'not persisted, so your message history re-expands on the next chat() call and the ' +
-      'payload grows unbounded (eventually overflowing the context window). For sustained ' +
-      'compression, persist the summary via `onCompress` (replace the compressed slice in ' +
-      'your own store), or use `compactTanStackMessages` for durable compaction.',
     logger,
     maxSessions: options.maxSessions,
-  });
+  };
+  // With appendOnly every conversation also keeps the prefix ledger its calls
+  // are replayed from — dynamic state alone needs one — so the pool holds
+  // sessions, each with its Janitor when compression is configured.
+  const sessions = options.appendOnly
+    ? createPrefixSessionPool({
+        ...janitorConfig,
+        signedThinking,
+        sessionKeyAdvice:
+          'TanStack AI makes up a new `threadId` for every chat() run that passes none, so each ' +
+          "such run starts a new session: pass the conversation's own `threadId` to every run.",
+      })
+    : null;
+  const janitors = options.appendOnly
+    ? null
+    : createJanitorPool({
+        ...janitorConfig,
+        // In-flight-without-persistence footgun: the summary is discarded when
+        // the run ends and the caller's history re-expands on the next chat().
+        persistenceWarning: (firedCount) =>
+          `[context-chef] compress has fired ${firedCount}× but no \`onCompress\` is ` +
+          'configured. In-flight compression only rewrites the outgoing request — the summary is ' +
+          'not persisted, so your message history re-expands on the next chat() call, and every ' +
+          'chat() call over budget summarizes all of it again: one more model call per run, over ' +
+          'a history that keeps growing (eventually more than the compression model can read). ' +
+          'For sustained compression, persist the summary via `onCompress` (replace the ' +
+          'compressed slice in your own store), or use `compactTanStackMessages` for durable ' +
+          'compaction.',
+      });
+  warnAppendOnlyConfig(options, logger, { provider: 'adapter', thinking: 'thinking' });
 
   let invalidThreadIdWarned = false;
   const flagInvalidThreadId = (raw: unknown) => {
@@ -111,18 +137,63 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
     );
   };
 
-  const janitorFor = (ctx: { threadId?: string; conversationId?: string }): Janitor | null => {
-    if (!janitors) return null;
-    // conversationId is a deprecated alias of threadId — fall back to it for
-    // contexts constructed by pre-rename hosts or hand-rolled test doubles.
-    return janitors.get(
-      normalizeSessionKey(ctx.threadId ?? ctx.conversationId, flagInvalidThreadId),
-    );
-  };
+  // conversationId is a deprecated alias of threadId — fall back to it for
+  // contexts constructed by pre-rename hosts or hand-rolled test doubles.
+  const sessionKey = (ctx: { threadId?: string; conversationId?: string }): string =>
+    normalizeSessionKey(ctx.threadId ?? ctx.conversationId, flagInvalidThreadId);
+
+  const janitorFor = (ctx: { threadId?: string; conversationId?: string }): Janitor | null =>
+    janitors ? janitors.get(sessionKey(ctx)) : null;
 
   const clearsToolResults = !!options.clear?.some(
     (t) => t === 'tool-result' || (typeof t === 'object' && t.target === 'tool-result'),
   );
+
+  /**
+   * `systemPrompts` with the skill's instructions (after the user system
+   * prompts, before dynamicState — matches @context-chef/core compile()
+   * ordering) and the tool-result clearing explainer, so the model doesn't
+   * misread placeholders as an error. Idempotent: each is skipped when
+   * already present.
+   */
+  const withStanding = async (systemPrompts: SystemPrompt[]): Promise<SystemPrompt[]> => {
+    let prompts = systemPrompts;
+    if (options.skill) {
+      const instructions = await resolveSkillInstructions(options.skill);
+      if (instructions && !hasSystemPrompt(prompts, instructions)) {
+        prompts = [...prompts, instructions];
+      }
+    }
+    if (clearsToolResults && !hasSystemPrompt(prompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION)) {
+      prompts = [...prompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION];
+    }
+    return prompts;
+  };
+
+  const appendOnly =
+    sessions &&
+    appendOnlyHooks(options, logger, sessions, {
+      prepare: async (messages) => {
+        const truncated = options.truncate
+          ? await truncateToolResults(messages, options.truncate, logger)
+          : messages;
+        const irMessages = fromTanStackAI(truncated);
+        return options.compact ? compactMessages(irMessages, options.compact) : irMessages;
+      },
+      standing: withStanding,
+      sessionKey,
+    });
+
+  /**
+   * Where a response's prompt token count goes: the conversation's Janitor,
+   * and with appendOnly its ledger too, which takes it to describe the call
+   * it last compiled. Null when nothing budgets.
+   */
+  const usageFor = (ctx: ChatMiddlewareContext): ((tokens: number) => void) | null => {
+    if (appendOnly) return appendOnly.usage(ctx);
+    const janitor = janitorFor(ctx);
+    return janitor ? (tokens) => janitor.feedTokenUsage(tokens) : null;
+  };
 
   const transformConfig = async (
     ctx: ChatMiddlewareContext,
@@ -130,7 +201,6 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
   ): Promise<Partial<ChatMiddlewareConfig>> => {
     const janitor = janitorFor(ctx);
     let { messages } = config;
-    let systemPrompts = [...config.systemPrompts];
 
     // 1. Truncate large tool results
     if (options.truncate) {
@@ -159,24 +229,8 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       messages = toTanStackAI(irMessages);
     }
 
-    // 6. Skill instructions injection (appended after user system prompts,
-    //    before dynamicState — matches @context-chef/core compile() ordering).
-    //    Idempotent: skipped when the instructions are already present.
-    if (options.skill) {
-      const instructions = await resolveSkillInstructions(options.skill);
-      if (instructions && !hasSystemPrompt(systemPrompts, instructions)) {
-        systemPrompts = [...systemPrompts, instructions];
-      }
-    }
-
-    // Append tool-result clearing explainer when tool results are targeted,
-    // so the model doesn't misread placeholders as an error. Idempotent.
-    if (
-      clearsToolResults &&
-      !hasSystemPrompt(systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION)
-    ) {
-      systemPrompts = [...systemPrompts, Prompts.TOOL_RESULT_CLEARED_INSTRUCTION];
-    }
+    // 6. Skill instructions and the clear explainer
+    let systemPrompts = await withStanding([...config.systemPrompts]);
 
     // 7. Dynamic state injection (replaces the previous iteration's block)
     if (options.dynamicState) {
@@ -202,8 +256,10 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
       // A throwing onConfig fails the whole chat() run in TanStack AI —
       // degrade to pass-through instead of breaking the host call.
       try {
-        return await transformConfig(ctx, config);
+        return await (appendOnly ? appendOnly.config(ctx, config) : transformConfig(ctx, config));
       } catch (error) {
+        // An aborted run sends nothing: there is no request to warn about.
+        if (ctx.signal?.aborted) return undefined;
         logger.warn(
           '[context-chef] onConfig transform failed; passing the request through unchanged. ' +
             `Error: ${error instanceof Error ? error.message : String(error)}`,
@@ -214,11 +270,11 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
 
     onUsage: (ctx, usage) => {
       try {
-        const janitor = janitorFor(ctx);
-        if (!janitor) return;
+        const report = usageFor(ctx);
+        if (!report) return;
 
         if (usage.promptTokens != null) {
-          janitor.feedTokenUsage(usage.promptTokens);
+          report(usage.promptTokens);
         } else if (!usageWarned && !options.tokenizer) {
           usageWarned = true;
           logger.warn(
@@ -234,6 +290,19 @@ export function contextChefMiddleware(options: ContextChefOptions): ChatMiddlewa
         );
       }
     },
+
+    ...(appendOnly && {
+      onChunk: (ctx, chunk) => {
+        try {
+          appendOnly.chunk(ctx, chunk);
+        } catch (error) {
+          logger.warn(
+            '[context-chef] onChunk failed; the chunk passes through. ' +
+              `Error: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      },
+    }),
   };
 }
 
@@ -280,22 +349,18 @@ export function createCompressionAdapter(
   };
 }
 
-/** Extracts the comparable text of a SystemPrompt entry. */
-function systemPromptText(prompt: SystemPrompt): string {
-  return typeof prompt === 'string' ? prompt : prompt.content;
-}
-
 /** Whether `systemPrompts` already contains an entry with this exact content. */
 function hasSystemPrompt(systemPrompts: SystemPrompt[], content: string): boolean {
   return systemPrompts.some((p) => systemPromptText(p) === content);
 }
 
 const DYNAMIC_STATE_SYSTEM_PREFIX = 'CURRENT TASK STATE:\n<dynamic_state>';
-const DYNAMIC_STATE_USER_SUFFIX =
-  'Above is the current system state. Use it to guide your next action.';
+const DYNAMIC_STATE_USER_SUFFIX = Prompts.STATE_ANCHOR;
 /** Matches a previously injected last_user dynamic-state block (any state). */
-const DYNAMIC_STATE_BLOCK_RE =
-  /\n*<dynamic_state>[\s\S]*?<\/dynamic_state>\nAbove is the current system state\. Use it to guide your next action\./g;
+const DYNAMIC_STATE_BLOCK_RE = new RegExp(
+  `\\n*<dynamic_state>[\\s\\S]*?<\\/dynamic_state>\\n${DYNAMIC_STATE_USER_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+  'g',
+);
 
 /**
  * Injects dynamic state XML into the TanStack AI messages/system prompts.

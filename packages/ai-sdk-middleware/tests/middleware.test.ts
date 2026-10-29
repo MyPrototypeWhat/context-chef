@@ -1486,8 +1486,8 @@ describe('compress persistence warning', () => {
     });
 
     const overBudget = makeConversation(10);
-    // E10 suppression skips every other call, so several cycles are needed to
-    // reach the threshold; the once-flag keeps it to a single warning.
+    // Several cycles are needed to reach the threshold; the once-flag keeps it
+    // to a single warning.
     for (let i = 0; i < 12; i++) {
       await runCycle(middleware, model, overBudget);
     }
@@ -1497,6 +1497,28 @@ describe('compress persistence warning', () => {
     );
     expect(persistenceWarns).toHaveLength(1);
     expect(persistenceWarns[0][0]).toContain('onCompress');
+  });
+
+  it('says what the unpersisted summary costs: the whole history summarized again, not a growing payload', async () => {
+    const logger = { warn: vi.fn() };
+    const model = createMockModel({ inputTokens: 200 });
+    const middleware = createMiddleware({
+      contextWindow: 100,
+      compress: { model: createMockModel() },
+      logger,
+    });
+
+    for (let i = 0; i < 12; i++) {
+      await runCycle(middleware, model, makeConversation(10));
+    }
+
+    const [warning] = logger.warn.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((msg) => msg.includes('compress has fired'));
+    expect(warning).toContain(
+      'every call over budget summarizes all of it again: one more model call per request',
+    );
+    expect(warning).not.toContain('grows unbounded');
   });
 
   it('does not warn when onCompress is configured', async () => {
@@ -1518,6 +1540,62 @@ describe('compress persistence warning', () => {
       ([msg]) => typeof msg === 'string' && msg.includes('compress has fired'),
     );
     expect(persistenceWarns).toHaveLength(0);
+  });
+});
+
+describe('in-flight compress with the usage it is fed', () => {
+  it('never sends the whole conversation on the call after a compression', async () => {
+    // A provider that counts what it was sent: a token per four characters.
+    const base = createMockModel();
+    const provider: LanguageModelV4 = {
+      ...base,
+      async doGenerate(opts) {
+        const result = await base.doGenerate(opts);
+        const total = Math.ceil(JSON.stringify(opts.prompt).length / 4);
+        return {
+          ...result,
+          usage: { ...result.usage, inputTokens: { ...result.usage.inputTokens, total } },
+        };
+      },
+    };
+    // No tokenizer: the middleware's default setup.
+    const middleware = createMiddleware({
+      contextWindow: 4000,
+      compress: { model: createMockModel({ outputText: 'Summary.' }) },
+      logger: { warn: () => {} },
+    });
+    const transform = assertDefined(middleware.transformParams, 'transformParams');
+    const wrap = assertDefined(middleware.wrapGenerate, 'wrapGenerate');
+
+    // The caller passes its whole conversation on every call, as AI SDK callers do.
+    const conversation: LanguageModelV4Prompt = [{ role: 'system', content: 'You are helpful.' }];
+    const compressed: boolean[] = [];
+    for (let i = 0; i < 8; i++) {
+      conversation.push(
+        { role: 'user', content: [{ type: 'text', text: `Question ${i}: ${'x'.repeat(1200)}` }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: `Answer ${i}: ${'y'.repeat(1200)}` }],
+        },
+      );
+      const prompt: LanguageModelV4Prompt = [
+        ...conversation,
+        { role: 'user', content: [{ type: 'text', text: `Next ${i}` }] },
+      ];
+      const params = await transform({ params: { prompt }, type: 'generate', model: provider });
+      await wrap({
+        doGenerate: () => provider.doGenerate(params),
+        doStream: () => provider.doStream(params),
+        params,
+        model: provider,
+      });
+      compressed.push(params.prompt.length < prompt.length);
+    }
+
+    // Once the conversation outgrew the budget, every call after it is compressed.
+    const first = compressed.indexOf(true);
+    expect(first).toBeGreaterThan(0);
+    expect(compressed.slice(first).every(Boolean)).toBe(true);
   });
 });
 

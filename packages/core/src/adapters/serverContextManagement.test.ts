@@ -3,7 +3,7 @@ import type { Content as SDKContent } from '@google/generative-ai';
 import { describe, expect, it, vi } from 'vitest';
 import { ContextChef } from '../index';
 import { Janitor } from '../modules/janitor';
-import type { AnthropicPayload, Message } from '../types';
+import type { AnthropicPayload, ITargetAdapter, Message } from '../types';
 import { AnthropicAdapter, fromAnthropic } from './anthropicAdapter';
 import { fromGemini, GeminiAdapter } from './geminiAdapter';
 import { OpenAIAdapter } from './openAIAdapter';
@@ -174,6 +174,20 @@ describe("contextManagement strategy 'server'", () => {
     chef.setHistory([{ role: 'user', content: 'a' }]);
 
     const payload = (await chef.compile({ target: new AnthropicAdapter() })) as AnthropicPayload;
+
+    expect(payload.context_management).toBeDefined();
+  });
+
+  it('attaches context_management through a wrapper that passes on anthropicWire', async () => {
+    const chef = new ContextChef({ contextManagement: { strategy: 'server' } });
+    chef.setHistory([{ role: 'user', content: 'a' }]);
+    const inner = new AnthropicAdapter();
+    const wrapper: ITargetAdapter = {
+      anthropicWire: inner.anthropicWire,
+      compile: (messages) => inner.compile(messages),
+    };
+
+    const payload = (await chef.compile({ target: wrapper })) as AnthropicPayload;
 
     expect(payload.context_management).toBeDefined();
   });

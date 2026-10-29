@@ -28,6 +28,7 @@ import {
 import type { Skill } from './modules/skill';
 import {
   type CompressionArchiveConfig,
+  combinesServerAndOnDemand,
   getNewContextToolDefinition,
   type HandoffConfig,
   isServerStrategy,
@@ -46,7 +47,13 @@ import {
   type SlotName,
   SlotRegistry,
 } from './pipeline';
-import { escapeXmlAttribute } from './pipeline/xml';
+import { announcementChannel, renderAnnouncement } from './pipeline/announcements';
+import {
+  type AppendOnlyConfig,
+  PrefixLedger,
+  type PrefixLedgerSnapshot,
+  type PrefixMeta,
+} from './prefix';
 import { Store } from './store/store';
 import type { StorageBackend } from './store/types';
 import { getContextToolDefinition } from './tools/contextTool';
@@ -74,6 +81,7 @@ import type {
   ToolDefinition,
 } from './types';
 import { type EventHandler, TypedEventEmitter } from './utils/eventEmitter';
+import { estimateMessages } from './utils/tokenUtils';
 import { objectToXml } from './utils/xmlGenerator';
 import { resolveVocabulary, type Vocabulary } from './vocabulary';
 
@@ -106,6 +114,9 @@ export interface Announcement {
  *   never touched — the right trade for agents that switch modes frequently —
  *   at the cost of re-sending the instruction tokens in the uncacheable tail
  *   on every single request.
+ *
+ * With `ChefConfig.appendOnly`, `'tail'` is the default and the instructions
+ * are an event, sent once per activation or switch (see {@link ContextChef.activateSkill}).
  */
 export type SkillPlacement = 'after_system' | 'tail';
 
@@ -170,6 +181,25 @@ export interface ChefSnapshot {
    * noticed with the flag cleared, and repeats the notice every turn.
    */
   readonly handoffNoticedWindow?: string;
+  /**
+   * The append-only prefix ledger, present when `appendOnly` is on. Restored
+   * together with the history: a chef created per request saves its snapshot
+   * after each compile and again after the request's tool calls, and restores
+   * it on the next request, or every request starts a new ledger. With memory
+   * in a shared store, restore it with `modules.memory` set to `null`, so the
+   * store is not rolled back. Either way, set the system prompt, tools and
+   * state after `restore()`, which replaces them with the saved ones. A
+   * snapshot without it restores as an empty ledger.
+   */
+  readonly prefixLedger?: PrefixLedgerSnapshot;
+  /**
+   * `appendOnly`: the memory writes the model made through `handleTool`, by
+   * key, each as it left the entry (`null`: deleted). The history holds the
+   * results that told the model of them, so memory events leave them out —
+   * a chef created per request restores this to do the same. Present when
+   * `appendOnly` is on; a snapshot without it restores with none recorded.
+   */
+  readonly modelMemoryWrites?: Readonly<Record<string, MemoryEntry | null>>;
   readonly label?: string;
   readonly createdAt: number;
 }
@@ -198,6 +228,10 @@ export type ToolsMode = 'legacy' | 'unified';
 /**
  * {@link MemoryConfig} with `store` optional: at the chef level a shared
  * {@link ChefConfig.store} can supply it instead.
+ *
+ * With {@link ChefConfig.appendOnly}, an unset `memoryPlacement` is
+ * `'before_history_tail'`: memory is stated as events in the conversation
+ * rather than in the system prompt (see `appendOnly`).
  */
 export type ChefMemoryConfig = Omit<MemoryConfig, 'store'> & { store?: MemoryConfig['store'] };
 
@@ -243,7 +277,8 @@ export interface ChefConfig {
   contextTool?: ContextToolPolicyConfig;
   /**
    * Where the active skill's instructions land. Defaults to `'after_system'`,
-   * which is bit-for-bit compatible with pre-hot-plug behavior.
+   * which is bit-for-bit compatible with pre-hot-plug behavior — and to
+   * `'tail'` with `appendOnly`, where the instructions are an event.
    *
    * `'after_system'` puts the instructions in the cacheable prefix — cheap to
    * re-send, but each activation or mode switch invalidates the whole cached
@@ -334,21 +369,82 @@ export interface ChefConfig {
    * dynamic state, guardrail instructions) sitting inside the cached prefix
    * silently invalidates prompt caching on every change. Anthropic-only:
    * it is the one provider with explicit breakpoints to audit against.
-   * Zero cost on other targets. Default false.
+   * With `appendOnly`, only the system prompt is audited: what the chef put
+   * in the messages stays where it was sent. Zero cost on other targets.
+   * Default false.
    */
   cacheAudit?: boolean;
   /**
    * Dev-mode pipeline invariants. When true, `compile()` verifies after every
    * `after-assemble` handler that pinned messages survived and tool
    * call/result pairs are still paired, and after the tail phase that nothing
-   * ahead of the tail insertion point changed.
+   * ahead of the tail insertion point changed. With {@link appendOnly}, each
+   * payload is also checked against the one the chef sent before it: unless
+   * the compile reported a checkpoint, it must repeat that payload — up to its
+   * last reply while nothing answered it, all but a trailing prefill once a
+   * reply did — and send every thinking signature it sent.
    *
    * Violations are REPORTED, never enforced: each one goes to
    * `ChefConfig.logger` (or `console`) and to the `pipeline:invariant` event.
    * `compile()` never throws because of a check. Costs a snapshot + a
-   * serialization pass per compile, so keep it off in production. Default false.
+   * serialization pass per compile — with `appendOnly`, also a JSON copy of
+   * the payload and up to two adapter renders of a leading part of it — so
+   * keep it off in production. Default false.
    */
   pipelineChecks?: boolean;
+  /**
+   * Keeps what was already sent as the prefix of the next payload. Fable 5.1 /
+   * Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign every thinking block over
+   * everything before it, and OpenAI / Gemini prefix caches key on the same
+   * bytes. The chef keeps a ledger and rebuilds each window from (history,
+   * ledger); anything that rewrites what was sent — an edited history, a new
+   * system prompt or tool list, a cleared history — is a checkpoint, reported
+   * through `prefix:break` and `CompileMeta.prefix`.
+   *
+   * What the chef adds is appended once, as an event, where it became true:
+   * dynamic state, implicit context, announcements, the guardrail, skill
+   * instructions. Memory is pulled first: the window starts with one snapshot
+   * of what the memory `selector` picks, and after that only what the model
+   * was not told is appended, as a delta — your own `getMemory().set()` /
+   * `delete()` and TTL expiry, never what the model wrote through
+   * {@link ContextChef.handleTool}, whose tool result already says so. A
+   * checkpoint forgets which writes were the model's, so one may be stated
+   * once more after it, even while its turn is still in view. An entry the
+   * selector does not pick is not pushed when it changes, but its removal
+   * is, once the model has seen the entry or written it — even under a
+   * selector that picks nothing. With such a selector and `tools: 'unified'`,
+   * the model reads `context://memory/*` itself.
+   *
+   * It changes defaults, never explicit choices: an unset `skillPlacement` is
+   * `'tail'` and an unset `memoryPlacement` `'before_history_tail'`, both
+   * events. An explicit `'after_system'` keeps them in the system prompt,
+   * where each change is a `system` checkpoint. A guardrail `prefill` with
+   * no `prefillMode` is asked for as an instruction on targets without native
+   * prefill (OpenAI, Gemini), along with the guardrail's other instructions.
+   *
+   * On Anthropic, the thinking an unsigned checkpoint invalidated is not sent
+   * again; with `clearAt` (see {@link AppendOnlyConfig}) the system-channel
+   * sources become turn-scoped reminders.
+   *
+   * Overflow reads the window, and a compaction that lands is a checkpoint
+   * too: its summary (with the pinned messages it put back) replaces the
+   * messages it summarized in every later window, and the window is not
+   * summarized again until it is over budget once more. While a tool turn is
+   * in progress it waits for the turn to end, unless the window outgrew the
+   * raw `contextWindow` or a new one was asked for ({@link requestNewContext});
+   * then the whole window, the turn in progress included, becomes one summary.
+   * On Anthropic, `onDemandCompaction()` replaces what it summarizes with a
+   * block the provider signs: nothing is stripped, it waits for nothing, and
+   * pinned messages it summarized are said again at the end of the window.
+   *
+   * `true` is `{}`. Off by default, and off it changes nothing. A chef that
+   * does not outlive a request saves its snapshot after each compile and again
+   * after the request's tool calls, and restores it on the next request, with
+   * `modules.memory` set to `null` when memory lives in a shared store, so the
+   * store is not rolled back. Either way, it sets the system prompt, tools and
+   * state after `restore()`, which replaces them with the saved ones.
+   */
+  appendOnly?: boolean | AppendOnlyConfig;
   /**
    * Where history compression happens:
    *
@@ -432,6 +528,7 @@ export type { CompiledTools, DynamicStatePlacement, GuardrailOptions, ResolvedTo
  * - `compress`       — emitted after Janitor compresses history
  * - `memory:changed` — emitted after any memory mutation (set, delete, expire)
  * - `memory:expired` — emitted when a memory entry expires during compile()
+ * - `prefix:break`   — emitted when an `appendOnly` compile applies a checkpoint
  *
  * Intercept hooks (can modify data / veto operations) remain as config callbacks:
  * - `onBeforeCompress` in JanitorConfig
@@ -472,11 +569,12 @@ export interface ChefEvents {
   /**
    * A pipeline invariant was violated: a `ChefConfig.pipelineChecks` finding
    * (a slot handler dropped a pinned message, split a tool pair, or rewrote
-   * content ahead of the tail insertion point), or a request the pipeline
-   * could not honour — a `requestNewContext()` dropped because the target is
-   * server-managed or a `before-overflow` handler vetoed the compile, which is
-   * reported whatever `pipelineChecks` says. Reported only; compile()
-   * continues.
+   * content ahead of the tail insertion point; with `appendOnly`, a payload
+   * that stopped repeating the one sent before it with no checkpoint
+   * reported), or a request the pipeline could not honour — a
+   * `requestNewContext()` dropped because the target is server-managed or a
+   * `before-overflow` handler vetoed the compile, which is reported whatever
+   * `pipelineChecks` says. Reported only; compile() continues.
    */
   'pipeline:invariant': {
     phase: PhaseName;
@@ -484,6 +582,26 @@ export interface ChefEvents {
   };
   'memory:changed': MemoryChangeEvent;
   'memory:expired': MemoryEntry;
+  /**
+   * `appendOnly`: something rewrote what was already sent, and this compile
+   * applied it as a checkpoint. `at` is the window index of the first message
+   * it changed — `0` when the system prompt or tools did, or a compaction;
+   * unless `signed`, the thinking from there on is invalid, and
+   * `strippedThinking` counts the blocks dropped for it (Anthropic only).
+   *
+   * A compile that fails after reporting one rolls the ledger back, so the
+   * next compile meets a `history`, `ledger`, `system` or `tools` checkpoint
+   * again and reports it again. A compaction is not undone that way: the
+   * overflow runner's state — the window lineage, the strategy's state, the
+   * archive, `onCompress` — stays as the failed compile left it, and the next
+   * compile runs the overflow afresh.
+   *
+   * `windowId` is the window the checkpoint applied to. A compaction opens a
+   * new one and carries its id, the payload's `CompileMeta.windowId`; a
+   * `history` or `ledger` checkpoint found before it in the same compile
+   * carries the id of the window that compile started in.
+   */
+  'prefix:break': NonNullable<PrefixMeta['break']> & { windowId?: string };
 }
 
 /**
@@ -550,6 +668,17 @@ export class ContextChef {
   private _handoffNoticedWindow?: string;
   /** A pending {@link requestNewContext}, consumed by the next compile. */
   private _forceOverflow = false;
+  /** What was appended to the window and what was sent; only when `appendOnly` is on. */
+  private _prefixLedger?: PrefixLedger;
+  /** `appendOnly: { clearAt: true }`: system-channel sources are turn-scoped reminders on Anthropic. */
+  private readonly _clearAt: boolean;
+  /**
+   * `appendOnly`, memory as events: the entries the model wrote through
+   * {@link handleTool}, as its last write left each one (`null`: it deleted
+   * the key), reported by the dispatcher. The tool result told the model, so
+   * the `memory` phase does not push them back.
+   */
+  private _modelMemoryWrites = new Map<string, MemoryEntry | null>();
   /** The shared context store from `ChefConfig.store`, if one was passed. */
   private readonly _store?: Store;
   private readonly _toolsMode: ToolsMode;
@@ -639,7 +768,12 @@ export class ContextChef {
     this.logger = config.logger;
     this.cacheAudit = config.cacheAudit ?? false;
     this.pipelineChecks = config.pipelineChecks ?? false;
-    this.skillPlacement = config.skillPlacement ?? 'after_system';
+    // appendOnly changes defaults, never explicit choices: unset, skill
+    // instructions and memory data are events; an explicit 'after_system'
+    // keeps them in the system prompt.
+    this.skillPlacement = config.skillPlacement ?? (config.appendOnly ? 'tail' : 'after_system');
+    if (config.appendOnly) this._prefixLedger = new PrefixLedger();
+    this._clearAt = typeof config.appendOnly === 'object' && config.appendOnly.clearAt === true;
     this._contextToolPolicy = resolveContextToolPolicy(config.contextTool);
     // Before anything is wired: a handoff budget that cannot work is a config
     // error, and it should surface at the line that wrote it. An unset prompt
@@ -679,6 +813,17 @@ export class ContextChef {
     const userOnCompress = janitorConfig.onCompress;
     const userOnBeforeCompress = janitorConfig.onBeforeCompress;
     const strategy = this._resolveOverflowStrategy(config, janitorConfig);
+    if (combinesServerAndOnDemand(strategy)) {
+      this._warnOnce(
+        'server-on-demand-compaction',
+        '[context-chef] server() and onDemandCompaction() are configured together, and they never ' +
+          'both run: a request carrying server-side context_management cannot ask for an ' +
+          'on-demand compaction, and one that replays a signed compaction block cannot be ' +
+          'compacted by the server. On Anthropic a top-level server() owns the window and ' +
+          'onDemandCompaction() never runs there; anywhere else server() only runs its fallback. ' +
+          'Keep one of the two.',
+      );
+    }
     // `server()` as the overflow strategy says the same thing to the pipeline
     // as `contextManagement: { strategy: 'server' }`: the start phase resolves
     // the server-managed target from it, the adapt phase reads the edits
@@ -722,6 +867,8 @@ export class ContextChef {
       logger: config.logger,
       ...janitorConfig,
       vocabulary: this._vocabulary,
+      // appendOnly counts each attachment at a flat cost in every budget reading, not by its base64.
+      ...(config.appendOnly ? { estimate: estimateMessages } : {}),
       archive,
       strategy,
       onCompress: async (summary, truncatedCount, details) => {
@@ -760,6 +907,8 @@ export class ContextChef {
       this.memory = new Memory({
         ...config.memory,
         store: memoryStore,
+        memoryPlacement:
+          config.memory.memoryPlacement ?? (config.appendOnly ? 'before_history_tail' : undefined),
         onMemoryChanged: async (event) => {
           if (userOnChanged) await userOnChanged(event);
           await this.emitter.emit('memory:changed', event, this._currentSignal);
@@ -844,6 +993,9 @@ export class ContextChef {
    */
   private _createContextToolHost(): ContextToolHost {
     const chef = this;
+    // appendOnly's memory events leave out what the model wrote itself.
+    const eventModel =
+      this._prefixLedger !== undefined && this.memory?.placement === 'before_history_tail';
     return {
       get memory() {
         return chef.memory;
@@ -860,6 +1012,13 @@ export class ContextChef {
       requestNewContext() {
         chef.requestNewContext();
       },
+      ...(eventModel
+        ? {
+            memoryWritten(key: string, entry: MemoryEntry | null) {
+              chef._modelMemoryWrites.set(key, entry);
+            },
+          }
+        : {}),
     };
   }
 
@@ -906,6 +1065,12 @@ export class ContextChef {
       get pipelineChecks() {
         return chef.pipelineChecks;
       },
+      get ledger() {
+        return chef._prefixLedger;
+      },
+      get clearAt() {
+        return chef._clearAt;
+      },
       get slots() {
         return chef._slots;
       },
@@ -921,12 +1086,22 @@ export class ContextChef {
       get memory() {
         return chef.memory;
       },
+      get modelMemoryWrites() {
+        return chef._modelMemoryWrites;
+      },
+      forgetModelMemoryWrites(keys) {
+        if (!keys) chef._modelMemoryWrites.clear();
+        else for (const key of keys) chef._modelMemoryWrites.delete(key);
+      },
       get skill() {
         return {
           name: chef._activeSkill?.name,
           instructions: chef._skillInstructions,
           placement: chef.skillPlacement,
         };
+      },
+      get vocabulary() {
+        return chef._vocabulary;
       },
       emit(event, payload, signal) {
         return chef.emitter.emit(event, payload, signal);
@@ -937,11 +1112,23 @@ export class ContextChef {
       get handoff() {
         return chef._handoff;
       },
-      overflow(history, signal, force) {
-        return chef.janitor.overflow(history, { signal, force });
+      overflow(history, options) {
+        return chef.janitor.overflow(history, options);
+      },
+      get signedOverflow() {
+        return chef.janitor.signedOverflow;
       },
       readBudget(history) {
         return chef.janitor.readBudget(history);
+      },
+      readRequestBudget(history, appended) {
+        return chef.janitor.readRequestBudget(history, appended);
+      },
+      get contextWindow() {
+        return chef.janitor.contextWindow;
+      },
+      dropStaleUsage(history) {
+        chef.janitor.dropStaleUsage(history);
       },
       takeForcedOverflow() {
         const forced = chef._forceOverflow;
@@ -956,6 +1143,9 @@ export class ContextChef {
       },
       shapeMemoryParts(dataXml, injectedMemoryKeys) {
         return chef._shapeMemorySandwichParts(dataXml, injectedMemoryKeys);
+      },
+      get announcements() {
+        return [...chef._announcements.values()];
       },
       resolveAnnouncementChannels(isAnthropicTarget, extra) {
         return chef._resolveAnnouncementChannels(isAnthropicTarget, extra);
@@ -1082,6 +1272,12 @@ export class ContextChef {
    *     preventing "Lost in the Middle" state drift in long conversations.
    *   - `'system'`: Injects as a standalone system message at the bottom of the sandwich.
    *     Suitable for short conversations or global configuration that doesn't need recency boost.
+   *
+   * With `appendOnly`, the state is appended once after the turn it was set in
+   * (`'last_user'`: its own user message; `'system'`: a positional system
+   * message, never the top-level system prompt) and only again when it
+   * changes, as the next revision (`<dynamic_state rev="2">`). With `clearAt`
+   * on Anthropic, `'system'` state is said in every request, turn-scoped.
    */
   public setDynamicState<T>(
     schema: z.ZodType<T>,
@@ -1108,6 +1304,8 @@ export class ContextChef {
   /**
    * Sets the Guardrail rules for subsequent compile() calls.
    * If a specific `target` is provided during `compile()`, it will elegantly degrade prefill.
+   * Claude models that reject a native prefill (Sonnet 4.6, Sonnet 5, Sonnet 5.5,
+   * Haiku 5.5) need `prefillMode: 'instruction'`; the chef cannot tell models apart.
    *
    * Replace semantics: each call REPLACES the previous options (no
    * accumulation); pass `null` to clear. Application is deferred to
@@ -1154,12 +1352,19 @@ export class ContextChef {
    * Call this after each LLM response with the token usage reported by the API.
    * On the next compile(), if this value exceeds contextWindow, compression is triggered.
    *
+   * With `appendOnly` the report is taken to describe the request last
+   * compiled; until the next one, what the window gained since is counted on
+   * top of it — and once a message of that request changes (an edit, a
+   * checkpoint), the report describes no window any more and the whole window
+   * is counted locally.
+   *
    * @example
    * const response = await openai.chat.completions.create({ ... });
    * chef.reportTokenUsage(response.usage.prompt_tokens);
    */
   public reportTokenUsage(tokenCount: number): this {
     this.janitor.feedTokenUsage(tokenCount);
+    this._prefixLedger?.markReported();
     return this;
   }
 
@@ -1258,6 +1463,14 @@ export class ContextChef {
    * write to a read-only namespace and a veto from `onMemoryUpdate` all come
    * back as `Error: …` text the model can read and correct. Only a tool name
    * this chef does not own throws — guard with {@link ownsTool}.
+   *
+   * With `appendOnly`, the memory writes this call makes are the model's
+   * own: its result tells the model, so they are not pushed back as a memory
+   * delta. A write anything else makes to another key — your code, a
+   * `memory:changed` listener, a memory hook, even one this call set off — is
+   * the host's, and is pushed. One that rewrites the key this call just wrote,
+   * before the call reads the entry back, is recorded as part of the model's
+   * write: that change is not pushed until the key changes again.
    */
   public handleTool(call: ContextToolCall): Promise<string> {
     if (!this.ownsTool(call?.name)) {
@@ -1306,6 +1519,12 @@ export class ContextChef {
    * sandwich on the next `compile()` as a dedicated `{ role: 'system' }`
    * message — or, under `ChefConfig.skillPlacement: 'tail'`, at the head of
    * the tail stitch instead. Pruner state is NOT touched (Skill ⊥ Pruner).
+   *
+   * With `appendOnly` (and `skillPlacement` unset or `'tail'`), the next
+   * compile appends the instructions once, as a positional system message
+   * after the latest turn (`<skill_instructions rev="1" skill="NAME">`). A
+   * switch appends the next revision, which says it replaces the earlier
+   * one; `null` appends a tombstone. Both stay where they were sent.
    */
   public activateSkill(skill: Skill | string | null): this {
     if (skill === null) {
@@ -1354,6 +1573,13 @@ export class ContextChef {
    * subsequent payloads instead of lingering as an obsolete turn the model
    * keeps re-reading.
    *
+   * With `appendOnly` it is an event instead: appended once, after the turn it
+   * was announced in, and sent there from then on. Re-announcing it with new
+   * content or a new channel appends the next revision
+   * (`<announcement rev="2" id="…">`) and leaves the earlier one in place;
+   * re-announcing it unchanged appends nothing. With `clearAt` on Anthropic,
+   * a system-channel announcement is said again in every request, turn-scoped.
+   *
    * Upsert by `id`: re-announcing the same id replaces the content and channel
    * while keeping the original insertion position, so the rendered block stays
    * stable as announcements are updated.
@@ -1362,6 +1588,18 @@ export class ContextChef {
    * grep" and "web_search has been withdrawn; calls to it will be rejected"
    * read as system state; "You must now use read_file" reads as an instruction
    * competing with the system prompt.
+   *
+   * Newer Claude models (from Anthropic's docs as of 2026-10; neither point is
+   * verified against the API yet):
+   * - Sonnet 5.5 and Haiku 5.5 may treat a system message placed right after
+   *   a tool result as untrusted and ignore it. Mid-agent-loop, that is where
+   *   the `'system'` channel lands; pass `channel: 'user_tail'` if those
+   *   models don't act on an announcement.
+   * - Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block
+   *   over everything before it. Either channel re-renders the announcement
+   *   at the new tail on every compile, so the turn it sat in last time
+   *   changes, and replaying that turn's thinking fails the check (a 400 on
+   *   accounts created on or after 2026-08-31). `appendOnly` avoids that.
    *
    * Detecting the delta is userland policy, not chef mechanism:
    *
@@ -1382,7 +1620,15 @@ export class ContextChef {
 
   /**
    * Removes a standing announcement. Returns true when one was removed.
-   * The next compile() carries no trace of it.
+   *
+   * By default the next compile() carries no trace of it. With `appendOnly`
+   * the earlier statement stays where it was sent — the window only grows —
+   * and the next compile appends a tombstone after it saying it was withdrawn
+   * (`<announcement rev="…" id="…" withdrawn="true">`). With
+   * `appendOnly: { clearAt: true }` on Anthropic, a system-channel
+   * announcement is a turn-scoped reminder instead, and retracting it stops
+   * the reminders; a tombstone is still appended when a retried request shows
+   * its reminder, or when it was stated earlier as an ordinary event.
    */
   public retractAnnouncement(id: string): boolean {
     return this._announcements.delete(id);
@@ -1399,21 +1645,12 @@ export class ContextChef {
    */
   private _renderAnnouncements(list: Announcement[]): string {
     if (list.length === 0) return '';
-    const items = list.map(
-      (a) => `<announcement id="${escapeXmlAttribute(a.id)}">\n${a.content}\n</announcement>`,
-    );
-    return `<announcements>\n${items.join('\n\n')}\n</announcements>`;
+    return `<announcements>\n${list.map(renderAnnouncement).join('\n\n')}\n</announcements>`;
   }
 
   /**
-   * Splits standing announcements by their effective channel for one compile.
-   *
-   * `'auto'` routes by TARGET only — chef does not know the model id. The
-   * Anthropic target gets `'system'` because mid-conversation system messages
-   * leave the cached prefix intact and carry operator precedence; every other
-   * target gets `'user_tail'`. Anthropic models WITHOUT mid-conversation system
-   * support (Sonnet 5) must therefore pass `channel: 'user_tail'` explicitly —
-   * mechanism, not policy.
+   * Splits standing announcements by their effective channel for one compile
+   * (see {@link announcementChannel} for how `'auto'` resolves).
    */
   private _resolveAnnouncementChannels(
     isAnthropicTarget: boolean,
@@ -1425,10 +1662,7 @@ export class ContextChef {
     // `extra` is this compile's own (the handoff notice) — rendered last, and
     // never part of the standing set.
     const all = [...this._announcements.values(), ...extra];
-    const autoChannel: Exclude<AnnouncementChannel, 'auto'> = isAnthropicTarget
-      ? 'system'
-      : 'user_tail';
-    const resolved = all.map((a) => (a.channel === 'auto' ? autoChannel : a.channel));
+    const resolved = all.map((a) => announcementChannel(a.channel, isAnthropicTarget));
     return {
       systemXml: this._renderAnnouncements(all.filter((_, i) => resolved[i] === 'system')),
       tailXml: this._renderAnnouncements(all.filter((_, i) => resolved[i] === 'user_tail')),
@@ -1601,6 +1835,10 @@ export class ContextChef {
    * The request is consumed by one compile, whether or not the window actually
    * changed (a strategy may decline; the circuit breaker may be open). Call it
    * again if it must be retried.
+   *
+   * With `appendOnly`, a request made in the middle of a tool turn — the
+   * history the next compile sees ends in tool results — collapses the whole
+   * window, that turn included, into one summary.
    */
   public requestNewContext(): this {
     this._forceOverflow = true;
@@ -1616,10 +1854,14 @@ export class ContextChef {
    * Announcements survive: they describe the CURRENT capability set, which a
    * fresh conversation still needs. Retract them explicitly via
    * {@link retractAnnouncement} when the capability change no longer holds.
+   *
+   * With `appendOnly`, the ledger starts over too, and the next compile
+   * reports a `ledger` checkpoint: what was sent before is not repeated.
    */
   public clearHistory(): this {
     this.history = [];
     this.janitor.reset();
+    this._prefixLedger?.reset();
     return this;
   }
 
@@ -1654,6 +1896,12 @@ export class ContextChef {
         : undefined,
       announcements: [...this._announcements.values()].map((a) => ({ ...a })),
       handoffNoticedWindow: this._handoffNoticedWindow,
+      ...(this._prefixLedger
+        ? {
+            prefixLedger: this._prefixLedger.snapshot(),
+            modelMemoryWrites: structuredClone(Object.fromEntries(this._modelMemoryWrites)),
+          }
+        : {}),
       label,
       createdAt: Date.now(),
     };
@@ -1670,6 +1918,14 @@ export class ContextChef {
    * empty (e.g., a fresh chef restoring an old snapshot).
    */
   public restore(snapshot: ChefSnapshot): this {
+    // First, since reading it can throw: a snapshot it cannot read changes
+    // nothing. Together with the history it was committed against, it is no
+    // checkpoint; without one, the ledger meets that history knowing nothing.
+    const ledger =
+      this._prefixLedger &&
+      (snapshot.prefixLedger
+        ? PrefixLedger.fromSnapshot(snapshot.prefixLedger)
+        : new PrefixLedger());
     this.systemPrompt = structuredClone(snapshot.systemPrompt);
     this.history = structuredClone(snapshot.history);
     this.dynamicState = structuredClone(snapshot.dynamicState);
@@ -1689,6 +1945,11 @@ export class ContextChef {
     // Restored together with the lineage the flag is compared against: a
     // snapshot from before this field simply had not noticed anything yet.
     this._handoffNoticedWindow = snapshot.handoffNoticedWindow;
+    this._prefixLedger = ledger;
+    // Recorded against the history restored with it.
+    this._modelMemoryWrites = new Map(
+      ledger ? Object.entries(structuredClone(snapshot.modelMemoryWrites ?? {})) : [],
+    );
     this.janitor.restoreState(snapshot.modules.janitor);
     if (snapshot.modules.memory && this.memory) {
       this.memory.restore(snapshot.modules.memory);
@@ -1801,6 +2062,7 @@ export class ContextChef {
       const ctx = new CompileContext({
         options: options ?? {},
         signal,
+        nested: !isOutermostCompile,
         history: this.history,
         // The runner's lineage, by reference: an overflow inside this compile
         // moves it, and the phases after `overflow` must see where it moved to.
@@ -1815,6 +2077,12 @@ export class ContextChef {
         if (ABORT_AFTER_PHASE.has(phase.name)) signal?.throwIfAborted();
       }
       return ctx.requirePayload();
+    } catch (error) {
+      // Nothing of a failed compile was sent: the next one must meet the same
+      // checkpoints, against the window that was. A nested compile never
+      // touched the ledger, and must not undo the one it runs inside.
+      if (isOutermostCompile) this._prefixLedger?.rollback();
+      throw error;
     } finally {
       this._currentSignal = prevSignal;
       if (isOutermostCompile) this._compiling = false;

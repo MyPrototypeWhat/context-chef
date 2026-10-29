@@ -48,6 +48,10 @@ The trade-off is real in both directions: `'tail'` re-sends the full instruction
 
 Placement changes delivery only — `meta.activeSkillName`, `getActiveSkill()`, and snapshot/restore behave identically. In the tail, the skill block leads the fixed stitch order (`<skill_instructions>` → `<memory>` → `<dynamic_state>` → `<implicit_context>` → `<announcements>` → anchor) so the model reads "who you are right now" before the state it applies to, and it does **not** trigger the anchor line on its own — it is self-describing inside its own tag. If `cacheAudit` catches a `<skill_instructions` block at or before your last `cache_control` breakpoint, the breakpoint is too late, not the placement.
 
+::: tip Under `appendOnly` <Badge type="tip" text="4.3" />
+With [`appendOnly`](/guide/append-only), an unset `skillPlacement` means `'tail'`, and the trade-off above goes away: the instructions are an event, sent once per activation or switch as a system message after the latest turn (`<skill_instructions rev="1" skill="NAME">`) and left where they were sent. A switch appends the next revision, which says it replaces the earlier one; `activateSkill(null)` appends a tombstone. An explicit `'after_system'` is honored, and every change is then a `system` checkpoint.
+:::
+
 ## Loading from `SKILL.md`
 
 ```typescript

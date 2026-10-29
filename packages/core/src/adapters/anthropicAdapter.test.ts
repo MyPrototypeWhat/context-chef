@@ -1,11 +1,19 @@
 import type { MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { describe, expect, it, vi } from 'vitest';
 import type { AnthropicPayload, Message } from '../types';
+import { estimateObject } from '../utils/tokenUtils';
 import {
   AnthropicAdapter,
+  type AnthropicCompactionBlock,
+  anthropicCompactionMessage,
   anthropicServerContextManagement,
   fromAnthropic,
+  ON_DEMAND_COMPACTION_BETA,
+  replayedCompactionBetas,
+  sendsNothing,
+  withoutThinking,
 } from './anthropicAdapter';
+import { OpenAIAdapter } from './openAIAdapter';
 
 interface AnthropicBlock {
   type: string;
@@ -113,14 +121,9 @@ describe('AnthropicAdapter', () => {
     const result = adapter.compile([...messages]);
     const content = getContentBlocks(result);
 
-    expect(content).toHaveLength(2); // text + tool_use
-    expect(content[0]).toMatchObject({ type: 'text', text: '' });
-    expect(content[1]).toMatchObject({
-      type: 'tool_use',
-      id: 'call_1',
-      name: 'get_weather',
-      input: { city: 'London' },
-    });
+    expect(content).toEqual([
+      { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'London' } },
+    ]);
   });
 
   it('handles multiple parallel tool_calls', () => {
@@ -519,6 +522,176 @@ describe('AnthropicAdapter — attachments output', () => {
   });
 });
 
+// A message rebuilt from IR whose text is empty or only whitespace sends no
+// text block when it has anything else to send. Such a block carries nothing
+// the model wrote, and the thinking check ignores it.
+describe('AnthropicAdapter — no empty or whitespace-only text block', () => {
+  const thinking = { type: 'thinking', thinking: '', signature: 'SIG_A' };
+  const signed = { thinking: { thinking: '', signature: 'SIG_A' } };
+  const call = {
+    id: 'call_1',
+    type: 'function' as const,
+    function: { name: 'weather', arguments: '{}' },
+  };
+  const toolUse = { type: 'tool_use', id: 'call_1', name: 'weather', input: {} };
+  const png = (data: string) => ({ mediaType: 'image/png', data });
+  const image = (data: string) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/png', data },
+  });
+
+  it('sends a tool-call turn without text as its thinking and tool calls', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', ...signed, tool_calls: [call] },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([thinking, toolUse]);
+  });
+
+  it('puts the attachments of a tool-call turn without text ahead of its tool calls', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', attachments: [png('AAAA')], tool_calls: [call] },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([image('AAAA'), toolUse]);
+  });
+
+  it('sends a reply with thinking and no text as its thinking', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', ...signed },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([thinking]);
+  });
+
+  it('sends a user message with attachments and no text as its attachments', () => {
+    const result = adapter.compile([
+      { role: 'user', content: '', attachments: [png('AAAA'), png('BBBB')] },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([image('AAAA'), image('BBBB')]);
+  });
+
+  it('sends a compaction message rebuilt from IR as the block alone', () => {
+    const result = adapter.compile([
+      { role: 'assistant', content: '', _anthropic_compaction: 'Summary.' },
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([{ type: 'compaction', content: 'Summary.' }]);
+  });
+
+  it('moves the breakpoint of the text it leaves out to the last block', () => {
+    const result = adapter.compile([
+      {
+        role: 'user',
+        content: '',
+        attachments: [png('AAAA'), png('BBBB')],
+        _cache_breakpoint: true,
+      },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([
+      image('AAAA'),
+      { ...image('BBBB'), cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('moves it after the thinking and attachments of a message to its last attachment', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        ...signed,
+        attachments: [png('AAAA'), png('BBBB')],
+        _cache_breakpoint: true,
+      },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      thinking,
+      image('AAAA'),
+      { ...image('BBBB'), cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('moves it to the block of a compaction message rebuilt from IR', () => {
+    const result = adapter.compile([
+      {
+        role: 'assistant',
+        content: '',
+        _anthropic_compaction: 'Summary.',
+        _cache_breakpoint: true,
+      },
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(getContentBlocks(result)).toEqual([
+      { type: 'compaction', content: 'Summary.', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('has no block to put the breakpoint of a reply that is only thinking on', () => {
+    // Thinking blocks can't carry one, as in a verbatim replay of such a reply.
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', ...signed, _cache_breakpoint: true },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([thinking]);
+  });
+
+  it('keeps the text block of a message with nothing else to send, as it is', () => {
+    const nothingElse: Message[] = [
+      { role: 'user', content: '' },
+      { role: 'assistant', content: '' },
+      { role: 'assistant', content: '', tool_calls: [] },
+      // Thinking without a signature is not sent at all.
+      { role: 'assistant', content: '', thinking: { thinking: 'Hm.' } },
+    ];
+
+    for (const message of nothingElse) {
+      expect(getContentBlocks(adapter.compile([message]))).toEqual([{ type: 'text', text: '' }]);
+    }
+    expect(getContentBlocks(adapter.compile([{ role: 'assistant', content: ' \n' }]))).toEqual([
+      { type: 'text', text: ' \n' },
+    ]);
+    expect(
+      getContentBlocks(adapter.compile([{ role: 'user', content: '', _cache_breakpoint: true }])),
+    ).toEqual([{ type: 'text', text: '', cache_control: { type: 'ephemeral' } }]);
+  });
+
+  it('leaves out whitespace-only text next to other blocks, which the thinking check ignores', () => {
+    const result = adapter.compile([
+      { role: 'user', content: ' ', attachments: [png('AAAA')] },
+      { role: 'assistant', content: '\n\n', ...signed, tool_calls: [call] },
+      { role: 'tool', content: '4°C', tool_call_id: 'call_1' },
+      { role: 'assistant', content: ' \t', ...signed },
+    ]);
+
+    expect(getContentBlocks(result, 0)).toEqual([image('AAAA')]);
+    expect(getContentBlocks(result, 1)).toEqual([thinking, toolUse]);
+    expect(getContentBlocks(result, 3)).toEqual([thinking]);
+  });
+
+  it('keeps text with whitespace around it as it is', () => {
+    const result = adapter.compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '\nChecking.\n', ...signed, tool_calls: [call] },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      thinking,
+      { type: 'text', text: '\nChecking.\n' },
+      toolUse,
+    ]);
+  });
+});
+
 // ═══════════════════════════════════════════════════════
 // AnthropicAdapter.compile — positional system messages
 // ═══════════════════════════════════════════════════════
@@ -736,5 +909,577 @@ describe('anthropicServerContextManagement', () => {
 
   it('yields no betas for a config without edits', () => {
     expect(anthropicServerContextManagement({}).betas).toEqual([]);
+  });
+});
+
+// Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 sign each thinking block over
+// everything before it; any byte the round-trip changes in an earlier turn
+// fails that check. An unmodified parsed message must replay as it came in.
+describe('fromAnthropic → AnthropicAdapter verbatim replay', () => {
+  function roundTrip(messages: MessageParam[], edit?: (history: Message[]) => Message[]) {
+    const { history } = fromAnthropic(messages);
+    return new AnthropicAdapter().compile(edit ? edit(history) : history);
+  }
+
+  const toolTurn: MessageParam[] = [
+    { role: 'user', content: 'Compare both cities.' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '', signature: 'SIG_A' },
+        { type: 'tool_use', id: 'call_1', name: 'weather', input: { city: 'Oslo' } },
+        { type: 'tool_use', id: 'call_2', name: 'weather', input: { city: 'Rome' } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'call_1', content: '4°C' },
+        { type: 'tool_result', tool_use_id: 'call_2', content: '19°C' },
+        { type: 'text', text: 'Also mention humidity.' },
+      ],
+    },
+  ];
+
+  it('keeps every thinking block of an assistant turn', () => {
+    const result = roundTrip([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_A' },
+          { type: 'thinking', thinking: '', signature: 'SIG_B' },
+          { type: 'text', text: 'Answer.' },
+        ],
+      },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'thinking', thinking: '', signature: 'SIG_B' },
+      { type: 'text', text: 'Answer.' },
+    ]);
+  });
+
+  it('keeps separate text blocks separate', () => {
+    const result = roundTrip([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Part one.' },
+          { type: 'text', text: 'Part two.' },
+        ],
+      },
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'text', text: 'Part one.' },
+      { type: 'text', text: 'Part two.' },
+    ]);
+  });
+
+  it('does not add an empty text block to a tool-only assistant turn', () => {
+    const result = roundTrip(toolTurn);
+
+    expect(getContentBlocks(result, 1).map((b) => b.type)).toEqual([
+      'thinking',
+      'tool_use',
+      'tool_use',
+    ]);
+  });
+
+  it('replays parallel tool results and the user text after them as one user message', () => {
+    const result = roundTrip(toolTurn);
+
+    expect(result.messages).toHaveLength(3);
+    expect(getContentBlocks(result, 2)).toEqual([
+      { type: 'tool_result', tool_use_id: 'call_1', content: '4°C' },
+      { type: 'tool_result', tool_use_id: 'call_2', content: '19°C' },
+      { type: 'text', text: 'Also mention humidity.' },
+    ]);
+  });
+
+  it('replays block types the IR does not model', () => {
+    const serverToolTurn = [
+      { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'x' } },
+      { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [] },
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'text', text: 'Found it.' },
+    ];
+    const result = roundTrip([
+      { role: 'user', content: 'search' },
+      { role: 'assistant', content: serverToolTurn } as unknown as MessageParam,
+    ]);
+
+    expect(getContentBlocks(result, 1)).toEqual(serverToolTurn);
+  });
+
+  it('keeps the signature of a compaction block', () => {
+    const compaction = { type: 'compaction', content: 'Summary so far.', signature: 'SIG_C' };
+    const result = roundTrip([
+      { role: 'assistant', content: [compaction] } as unknown as MessageParam,
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(JSON.stringify(result.messages)).toContain('"signature":"SIG_C"');
+  });
+
+  // On-demand compaction (compact-2026-09-04): the block replaces everything it
+  // summarized and must lead `messages`, or the API rejects the request.
+  const leadingCompaction = [
+    {
+      role: 'assistant',
+      content: [{ type: 'compaction', content: 'Summary so far.', signature: 'SIG_C' }],
+    },
+    { role: 'user', content: 'Now do the same for Ingredient.' },
+  ] as unknown as MessageParam[];
+
+  it('lets a compaction block that opens the history stay first', () => {
+    const result = roundTrip(leadingCompaction);
+
+    expect(result.messages[0].role).toBe('assistant');
+    expect(getContentBlocks(result, 0)[0].type).toBe('compaction');
+  });
+
+  it('still opens with a user turn on targets without compaction blocks', async () => {
+    const { history } = fromAnthropic(leadingCompaction);
+    const payload = new OpenAIAdapter().compile(history);
+
+    expect(payload.messages[0].role).toBe('user');
+  });
+
+  it('rebuilds a tool result whose IR content was changed', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.map((m) => (m.tool_call_id === 'call_1' ? { ...m, content: '[cleared]' } : m)),
+    );
+
+    const blocks = JSON.stringify(result.messages);
+    expect(blocks).toContain('[cleared]');
+    expect(blocks).not.toContain('4°C');
+  });
+
+  it('drops replayed thinking once the IR thinking was stripped', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.map((m) => {
+        if (m.role !== 'assistant') return m;
+        const { thinking: _stripped, ...rest } = m;
+        return rest;
+      }),
+    );
+
+    expect(JSON.stringify(result.messages)).not.toContain('SIG_A');
+  });
+
+  it('replays every other block of the original once withoutThinking took the thinking out', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.map((m) => (m.role === 'assistant' ? withoutThinking(m) : m)),
+    );
+
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'tool_use', id: 'call_1', name: 'weather', input: { city: 'Oslo' } },
+      { type: 'tool_use', id: 'call_2', name: 'weather', input: { city: 'Rome' } },
+    ]);
+    expect(getContentBlocks(result, 2)).toHaveLength(3);
+  });
+
+  it('never replays an original that held nothing but thinking as an empty message', () => {
+    const result = roundTrip(
+      [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }] },
+      ],
+      (history) => history.map((m) => (m.role === 'assistant' ? withoutThinking(m) : m)),
+    );
+
+    expect(getContentBlocks(result, 1)).not.toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('SIG_A');
+  });
+
+  it('has nothing to send of a reply that held only thinking, once withoutThinking took it out', () => {
+    const { history } = fromAnthropic([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'SIG_A' }] },
+    ]);
+    const parsed = history[1];
+    const built: Message = {
+      role: 'assistant',
+      content: '',
+      thinking: { thinking: 'Hm.', signature: 'SIG_B' },
+    };
+
+    expect(sendsNothing(withoutThinking(parsed))).toBe(true);
+    expect(sendsNothing(withoutThinking(built))).toBe(true);
+    // Rendered, it would be a lone empty text block, which the API rejects.
+    expect(getContentBlocks(new AnthropicAdapter().compile([withoutThinking(built)]))).toEqual([
+      { type: 'text', text: '' },
+    ]);
+    // Before the strip there is the thinking to send.
+    expect(sendsNothing(parsed)).toBe(false);
+    expect(sendsNothing(built)).toBe(false);
+  });
+
+  it('has something to send of a stripped reply with anything besides its thinking', () => {
+    const signed = { thinking: { thinking: 'Hm.', signature: 'SIG_B' } };
+    const { history } = fromAnthropic([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_A' },
+          { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'x' } },
+          { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [] },
+        ],
+      } as unknown as MessageParam,
+    ]);
+    const others: Message[] = [
+      { role: 'assistant', content: 'Answer.', ...signed },
+      {
+        role: 'assistant',
+        content: '',
+        ...signed,
+        tool_calls: [{ id: 't1', type: 'function', function: { name: 'f', arguments: '{}' } }],
+      },
+      {
+        role: 'assistant',
+        content: '',
+        ...signed,
+        attachments: [{ mediaType: 'image/png', data: 'AAAA' }],
+      },
+      { role: 'assistant', content: '', _anthropic_compaction: 'Summary.' },
+      { role: 'user', content: '' },
+    ];
+
+    // The server tool blocks still replay from the original.
+    expect(sendsNothing(withoutThinking(history[1]))).toBe(false);
+    for (const message of others) expect(sendsNothing(withoutThinking(message))).toBe(false);
+  });
+
+  it('leaves a message its original no longer matches to the IR rebuild, without its thinking', () => {
+    const result = roundTrip(
+      [
+        { role: 'user', content: 'q' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: '', signature: 'SIG_A' },
+            { type: 'text', text: 'Answer.' },
+          ],
+        },
+      ],
+      (history) =>
+        history.map((m) =>
+          m.role === 'assistant' ? withoutThinking({ ...m, content: 'Edited.' }) : m,
+        ),
+    );
+
+    expect(getContentBlocks(result, 1)).toEqual([{ type: 'text', text: 'Edited.' }]);
+  });
+
+  it('rebuilds the rest of a user message when one of its parts was removed', () => {
+    const result = roundTrip(toolTurn, (history) =>
+      history.filter((m) => m.tool_call_id !== 'call_2'),
+    );
+
+    const blocks = JSON.stringify(result.messages);
+    expect(blocks).toContain('4°C');
+    expect(blocks).not.toContain('19°C');
+  });
+
+  it("replaces the original's cache breakpoints with the chef's", () => {
+    const messages: MessageParam[] = [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'q', cache_control: { type: 'ephemeral' } }],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'SIG_A' },
+          { type: 'text', text: 'a' },
+        ],
+      },
+    ];
+
+    const result = roundTrip(messages, (history) =>
+      history.map((m) => (m.role === 'assistant' ? { ...m, _cache_breakpoint: true } : m)),
+    );
+
+    expect(getContentBlocks(result, 0)[0].cache_control).toBeUndefined();
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'text', text: 'a', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('does not count the stored original toward the token estimate', () => {
+    const { history } = fromAnthropic(toolTurn);
+    const withoutOrigin = history.map(({ _anthropic_origin: _origin, ...msg }) => msg);
+
+    expect(estimateObject(history)).toBe(estimateObject(withoutOrigin));
+  });
+
+  it('does not let payload edits leak back into the parsed history', () => {
+    const { history } = fromAnthropic(toolTurn);
+    const first = new AnthropicAdapter().compile(history);
+    (getFirstBlock(first, 2) as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+
+    const second = new AnthropicAdapter().compile(history);
+    expect(getContentBlocks(second, 2)[0].cache_control).toBeUndefined();
+  });
+
+  it('does not let a nested payload edit leak back either', () => {
+    const { history } = fromAnthropic(toolTurn);
+    const first = new AnthropicAdapter().compile(history);
+    const [, call] = first.messages[1].content as Array<{ input: { city: string } }>;
+    call.input.city = 'REDACTED';
+    (getFirstBlock(first, 2) as { content: string }).content = 'edited';
+
+    const second = new AnthropicAdapter().compile(history);
+    expect(getContentBlocks(second, 1)[1]).toEqual({
+      type: 'tool_use',
+      id: 'call_1',
+      name: 'weather',
+      input: { city: 'Oslo' },
+    });
+    expect(getContentBlocks(second, 2)[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'call_1',
+      content: '4°C',
+    });
+  });
+});
+
+function getFirstBlock(result: AnthropicPayload, messageIndex: number): unknown {
+  const content = result.messages[messageIndex].content;
+  return Array.isArray(content) ? content[0] : undefined;
+}
+
+describe('AnthropicAdapter — turn-scoped system messages', () => {
+  const CLEAR_AT_BETA = 'mid-conversation-system-clear-at-2026-08-21';
+  const reminder = 'Request independent reads in one turn.';
+
+  it('sends clear_at on a positional system message marked _clear_at, with its beta', () => {
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'Fix the failing test.' },
+      { role: 'system', content: reminder, _positional: true, _clear_at: 'next_user_message' },
+    ]);
+
+    expect(result.messages[1]).toEqual({
+      role: 'system',
+      clear_at: 'next_user_message',
+      content: [{ type: 'text', text: reminder }],
+    });
+    expect(result.betas).toEqual([CLEAR_AT_BETA]);
+  });
+
+  it('asks for no beta when no message is turn-scoped', () => {
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'Fix the failing test.' },
+      { role: 'system', content: reminder, _positional: true },
+    ]);
+
+    expect(result).not.toHaveProperty('betas');
+    expect(JSON.stringify(result)).not.toContain('clear_at');
+  });
+
+  it('puts a breakpoint meant for a turn-scoped message on the turn before it', () => {
+    // A cleared message is in no cache key, and the API rejects cache_control on one.
+    const result = new AnthropicAdapter().compile([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }],
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'c1' },
+      { role: 'system', content: 'Exit 137.', _positional: true, _clear_at: 'next_user_message' },
+      {
+        role: 'system',
+        content: reminder,
+        _positional: true,
+        _clear_at: 'next_user_message',
+        _cache_breakpoint: true,
+      },
+    ]);
+
+    expect(getContentBlocks(result, 2)).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'c1',
+        content: 'result',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+    expect(getContentBlocks(result, 3)).toEqual([{ type: 'text', text: 'Exit 137.' }]);
+    expect(getContentBlocks(result, 4)).toEqual([{ type: 'text', text: reminder }]);
+  });
+
+  it('drops clear_at from a turn-scoped message it has to hoist', () => {
+    const result = new AnthropicAdapter({ logger: { warn: vi.fn() } }).compile([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+      { role: 'system', content: reminder, _positional: true, _clear_at: 'next_user_message' },
+    ]);
+
+    expect(result.system).toEqual([{ type: 'text', text: reminder }]);
+    expect(result).not.toHaveProperty('betas');
+  });
+});
+
+describe('fromAnthropic — keepPositionalSystem', () => {
+  const sent = [
+    { role: 'system', content: 'You are helpful.' },
+    { role: 'user', content: 'Fix the failing test.' },
+    { role: 'system', content: [{ type: 'text', text: 'The repo uses pnpm.' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'Running the tests.' }] },
+    { role: 'user', content: 'Go on.' },
+    {
+      role: 'system',
+      clear_at: 'next_user_message',
+      content: [{ type: 'text', text: 'Request independent reads in one turn.' }],
+    },
+  ] as unknown as MessageParam[];
+
+  const withoutOrigin = (history: Message[]) =>
+    history.map(({ _anthropic_origin: _origin, ...message }) => message);
+
+  it("keeps the host's own mid-stream system messages where they were", () => {
+    const { system, history } = fromAnthropic(sent, undefined, { keepPositionalSystem: true });
+
+    expect(system).toEqual([{ role: 'system', content: 'You are helpful.' }]);
+    expect(withoutOrigin(history)).toEqual([
+      { role: 'user', content: 'Fix the failing test.' },
+      { role: 'system', content: 'The repo uses pnpm.', _positional: true },
+      { role: 'assistant', content: 'Running the tests.' },
+      { role: 'user', content: 'Go on.' },
+      {
+        role: 'system',
+        content: 'Request independent reads in one turn.',
+        _positional: true,
+        _clear_at: 'next_user_message',
+      },
+    ]);
+  });
+
+  it('reads clear_at "never" as a system message that stays', () => {
+    const { history } = fromAnthropic(
+      [
+        { role: 'user', content: 'q' },
+        { role: 'system', clear_at: 'never', content: 'Keep answers short.' },
+      ] as unknown as MessageParam[],
+      undefined,
+      { keepPositionalSystem: true },
+    );
+
+    expect(history[1]).toEqual({
+      role: 'system',
+      content: 'Keep answers short.',
+      _positional: true,
+    });
+  });
+
+  it('round-trips a payload with positional and turn-scoped system messages', () => {
+    const anthropic = new AnthropicAdapter();
+    const payload = anthropic.compile([
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'user', content: 'q' },
+      { role: 'system', content: 'The repo uses pnpm.', _positional: true },
+      { role: 'assistant', content: 'a' },
+      { role: 'user', content: 'Go on.' },
+      { role: 'system', content: 'Exit 137.', _positional: true, _clear_at: 'next_user_message' },
+    ]);
+
+    const back = fromAnthropic(payload.messages, payload.system, { keepPositionalSystem: true });
+
+    expect(anthropic.compile([...back.system, ...back.history])).toEqual(payload);
+  });
+
+  it('skips them by default, as 4.x does', () => {
+    const { history } = fromAnthropic(sent);
+
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+  });
+});
+
+describe('anthropicCompactionMessage', () => {
+  const block: AnthropicCompactionBlock = {
+    type: 'compaction',
+    content: 'Summary so far.',
+    signature: 'SIG_C',
+    tool_changes: [{ type: 'tool_removal', name: 'grep' }],
+  };
+
+  it('replays the signed block verbatim, first in messages', () => {
+    const result = new AnthropicAdapter().compile([
+      anthropicCompactionMessage(block),
+      {
+        role: 'assistant',
+        content: 'Kept.',
+        thinking: { thinking: 'Kept reasoning.', signature: 'SIG_K' },
+      },
+      { role: 'user', content: 'Now do the same for Ingredient.' },
+    ]);
+
+    expect(result.messages[0]).toEqual({ role: 'assistant', content: [block] });
+    expect(getContentBlocks(result, 1)).toEqual([
+      { type: 'thinking', thinking: 'Kept reasoning.', signature: 'SIG_K' },
+      { type: 'text', text: 'Kept.' },
+    ]);
+  });
+
+  it('is the message fromAnthropic parses the block into', () => {
+    const { history } = fromAnthropic([
+      { role: 'assistant', content: [block] },
+      { role: 'user', content: 'next' },
+    ] as unknown as MessageParam[]);
+
+    // history[0] is the placeholder user turn ensureValidHistory opens with.
+    expect(anthropicCompactionMessage(block)).toEqual(history[1]);
+    expect(anthropicCompactionMessage(block)).toMatchObject({
+      role: 'assistant',
+      content: '',
+      _anthropic_compaction: 'Summary so far.',
+      pinned: true,
+      _anthropic_origin: { blocks: [block], part: 0, parts: 1 },
+    });
+  });
+
+  it("does not share the caller's block", () => {
+    const own = structuredClone(block);
+    const message = anthropicCompactionMessage(own);
+    own.content = 'Changed afterwards.';
+
+    const result = new AnthropicAdapter().compile([message, { role: 'user', content: 'next' }]);
+    expect(result.messages[0]).toEqual({ role: 'assistant', content: [block] });
+  });
+
+  it('needs the on-demand beta in every payload that replays a signed block, and only then', () => {
+    const adapter = new AnthropicAdapter();
+    const next: Message = { role: 'user', content: 'next' };
+    // As fromAnthropic resumes it: the placeholder user turn first, which the target skips.
+    const { history: resumed } = fromAnthropic([
+      { role: 'assistant', content: [block] },
+    ] as unknown as MessageParam[]);
+    const unsigned: Message = { role: 'assistant', content: '', _anthropic_compaction: 'Earlier.' };
+
+    expect(
+      replayedCompactionBetas(adapter.compile([anthropicCompactionMessage(block), next])),
+    ).toEqual([ON_DEMAND_COMPACTION_BETA]);
+    expect(replayedCompactionBetas(adapter.compile([...resumed, next]))).toEqual([
+      ON_DEMAND_COMPACTION_BETA,
+    ]);
+    expect(replayedCompactionBetas(adapter.compile([unsigned, next]))).toEqual([]);
+    expect(replayedCompactionBetas(adapter.compile([next]))).toEqual([]);
+  });
+
+  it('inlines the summary on targets without compaction blocks', () => {
+    const payload = new OpenAIAdapter().compile([
+      anthropicCompactionMessage(block),
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(JSON.stringify(payload)).toContain('Summary so far.');
+    expect(JSON.stringify(payload)).not.toContain('SIG_C');
   });
 });

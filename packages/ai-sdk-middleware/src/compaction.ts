@@ -5,10 +5,28 @@ import {
 } from '@context-chef/core';
 import type { LanguageModel, ModelMessage } from 'ai';
 
+import { isSignedReasoning } from './adapter';
 import { createCompressionAdapter, type SummarizeMessagesOptions } from './middleware';
 import { fromModelMessages, toModelMessages } from './modelMessageAdapter';
 
 export type { PlanCompactionOptions } from '@context-chef/core';
+
+/** What the durable helpers do with the reasoning of the messages they keep. */
+export interface KeptReasoningOptions {
+  /**
+   * The signed reasoning of the messages kept after the summary:
+   * - `'keep'` (default): kept as it is.
+   * - `'strip'`: removed, and with it a reply that held nothing else. A
+   *   summary you write yourself is a checkpoint nobody signed: on a model
+   *   that signs its reasoning over everything before it (Claude Fable 5.1 /
+   *   Opus 5.5 / Sonnet 5.5 / Haiku 5.5), reasoning kept behind a new summary
+   *   no longer verifies. Only reasoning signed that way is removed: through
+   *   `@ai-sdk/anthropic` or `@ai-sdk/amazon-bedrock`, whose signature rides
+   *   on the reasoning part. Other providers' reasoning carries no such
+   *   signature, and stays. `'strip'` returns a history you can send as it is.
+   */
+  keptReasoning?: 'keep' | 'strip';
+}
 
 export interface CompactionPlanModelMessages {
   /** System messages, preserved verbatim — standing instructions are never summarized. */
@@ -25,6 +43,8 @@ export interface CompactionPlanModelMessages {
  * {@link fromModelMessages}, splits on turn boundaries via core's
  * `planCompaction`, and converts each slice back via {@link toModelMessages}.
  * Summarize `toSummarize`, then persist `[...system, <summary>, ...toKeep]`.
+ * With `keptReasoning: 'strip'`, `toKeep` comes without signed reasoning
+ * ({@link KeptReasoningOptions}).
  *
  * `keepRecentTurns` counts **message-level turns, not `ToolLoopAgent` steps**: a
  * turn is one user/assistant message, or an assistant with its tool-calls plus
@@ -35,13 +55,14 @@ export interface CompactionPlanModelMessages {
  */
 export function planCompactionModelMessages(
   messages: ModelMessage[],
-  options: PlanCompactionOptions,
+  options: PlanCompactionOptions & KeptReasoningOptions,
 ): CompactionPlanModelMessages {
   const plan = corePlanCompaction(fromModelMessages(messages), options);
+  const toKeep = toModelMessages(plan.toKeep);
   return {
     system: toModelMessages(plan.system),
     toSummarize: toModelMessages(plan.toSummarize),
-    toKeep: toModelMessages(plan.toKeep),
+    toKeep: options.keptReasoning === 'strip' ? withoutSignedReasoning(toKeep) : toKeep,
   };
 }
 
@@ -59,7 +80,9 @@ export function planCompactionModelMessages(
  * Returns the **input `messages` reference unchanged** when there is nothing old
  * enough to compact or the summarizer yields no text, so callers can skip
  * persistence on a no-op via `result === messages`. Throws only if the model call
- * throws.
+ * throws. With `keptReasoning: 'strip'` the kept messages come without signed
+ * reasoning ({@link KeptReasoningOptions}); a no-op keeps it, since nothing was
+ * summarized.
  *
  * `keepRecentTurns` counts **message-level turns, not `ToolLoopAgent` steps** — a
  * turn is one user/assistant message, or an assistant with its tool-calls plus
@@ -78,11 +101,24 @@ export function planCompactionModelMessages(
 export async function compactModelMessages(
   messages: ModelMessage[],
   model: LanguageModel,
-  options: PlanCompactionOptions & SummarizeMessagesOptions,
+  options: PlanCompactionOptions & SummarizeMessagesOptions & KeptReasoningOptions,
 ): Promise<ModelMessage[]> {
   const ir = fromModelMessages(messages);
   const result = await coreCompactHistory(ir, createCompressionAdapter(model), options);
   // core returns the input IR reference on a no-op — preserve the original
   // `messages` reference so callers can skip persistence via `result === messages`.
-  return result === ir ? messages : toModelMessages(result);
+  if (result === ir) return messages;
+  const compacted = toModelMessages(result);
+  // Only the kept turns hold reasoning: the system messages and the summary have none.
+  return options.keptReasoning === 'strip' ? withoutSignedReasoning(compacted) : compacted;
+}
+
+/** `messages` without signed reasoning parts, and without a reply that held nothing else. */
+function withoutSignedReasoning(messages: ModelMessage[]): ModelMessage[] {
+  return messages.flatMap((message): ModelMessage[] => {
+    if (message.role !== 'assistant' || typeof message.content === 'string') return [message];
+    const content = message.content.filter((part) => !isSignedReasoning(part));
+    if (content.length === message.content.length) return [message];
+    return content.length > 0 ? [{ ...message, content }] : [];
+  });
 }

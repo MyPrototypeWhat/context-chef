@@ -1,0 +1,66 @@
+[
+  {
+    "payload": {
+      "messages": [
+        { "content": "You are a careful agent.", "role": "system" },
+        { "content": "[Conversation continues]", "role": "user" },
+        {
+          "content": "[Summary of earlier conversation (compacted server-side)]\nSUMMARY 0\n\n",
+          "role": "assistant"
+        },
+        { "content": "question 1", "role": "user" }
+      ]
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "from": 4,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 1\"}", "name": "search" },
+            "id": "call_1",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 1", "role": "tool", "tool_call_id": "call_1" }
+    ],
+    "prefix": { "stable": 3 }
+  },
+  {
+    "from": 3,
+    "messages": [
+      {
+        "content": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSUMMARY 1\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
+        "role": "user"
+      },
+      { "content": "question 2", "role": "user" }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "compaction", "signed": false, "strippedThinking": 0 },
+      "stable": 0
+    }
+  },
+  {
+    "from": 5,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 2\"}", "name": "search" },
+            "id": "call_2",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 2", "role": "tool", "tool_call_id": "call_2" }
+    ],
+    "prefix": { "stable": 4 }
+  }
+]

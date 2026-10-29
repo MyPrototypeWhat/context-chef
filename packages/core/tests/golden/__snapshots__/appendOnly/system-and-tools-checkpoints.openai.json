@@ -1,0 +1,96 @@
+[
+  {
+    "payload": {
+      "messages": [
+        { "content": "You are a careful agent.", "role": "system" },
+        { "content": "question 1", "role": "user" }
+      ],
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": { "q": { "type": "string" } },
+            "required": ["q"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "from": 0,
+    "messages": [
+      { "content": "You are a careful agent. Be brief.", "role": "system" },
+      { "content": "question 1", "role": "user" },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 1\"}", "name": "search" },
+            "id": "call_1",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 1", "role": "tool", "tool_call_id": "call_1" }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "system", "signed": false, "strippedThinking": 0 },
+      "stable": 0
+    }
+  },
+  {
+    "changed": {
+      "tools": [
+        {
+          "description": "Search the knowledge base.",
+          "name": "search",
+          "parameters": {
+            "properties": { "q": { "type": "string" } },
+            "required": ["q"],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch a document by id.",
+          "name": "fetch",
+          "parameters": {
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "from": 4,
+    "messages": [
+      { "content": "answer 1", "role": "assistant" },
+      { "content": "question 2", "role": "user" }
+    ],
+    "prefix": {
+      "break": { "at": 0, "reason": "tools", "signed": false, "strippedThinking": 0 },
+      "stable": 0
+    }
+  },
+  {
+    "from": 6,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 2\"}", "name": "search" },
+            "id": "call_2",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 2", "role": "tool", "tool_call_id": "call_2" }
+    ],
+    "prefix": { "stable": 5 }
+  }
+]

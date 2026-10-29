@@ -1,11 +1,12 @@
 import { readAnchorDoc } from '../../overflow/anchored';
 import type { BackgroundOverflowStrategy } from '../../overflow/background';
 import { resolveOverflowStrategy } from '../../overflow/resolve';
-import { renderSummaryMessage } from '../../overflow/summary';
+import { renderSummaryMessage, summaryIndex } from '../../overflow/summary';
 import {
   buildToolNameMap,
   collectPinnedTurnIndices,
   extractPinnedMessages,
+  messagesEquivalent,
 } from '../../overflow/turns';
 import {
   advanceWindow,
@@ -16,6 +17,7 @@ import {
   type OverflowResult,
   type OverflowRunner,
   type OverflowStrategy,
+  type OverflowWire,
   type WindowLineage,
 } from '../../overflow/types';
 import { Prompts } from '../../prompts';
@@ -148,6 +150,20 @@ export interface CompressionDetails {
    * persistence layers should still record the boundary.
    */
   compressedMessages: Message[];
+  /**
+   * `appendOnly` only: what to write back, in this order, where
+   * `compressedMessages` were, to persist the compaction — the summary (or
+   * the signed compaction block), the pinned messages put back after it, and
+   * whatever it kept of an earlier head. The next compile then reads the
+   * history as one that took the compaction in, with nothing to report; from
+   * then on they are the host's messages, sent with their thinking stripped
+   * as it was in the head. Under `appendOnly`, `compressedMessages` and the
+   * count leave out the chef's own events, which the host never had — but a
+   * summary the host did not write back is summarized again by a later
+   * compaction, and shows up in that one's `compressedMessages`. A copy:
+   * editing it changes nothing the chef sends.
+   */
+  replacement?: Message[];
 }
 
 /**
@@ -340,6 +356,14 @@ interface JanitorConfigBase {
    * @param details - Boundary metadata: the exact messages that were replaced,
    *   useful for persistence layers that need to map the summary back to their store.
    *
+   * To keep the summary in your own history, store `summaryMessage` exactly
+   * as handed to you, same role and same content (under `appendOnly`, write
+   * back `details.replacement` as given): a usage you report afterwards counts
+   * only while the history holds that message, and stored any other way (as
+   * a system message, behind a prefix of your own) the report is ignored and
+   * the window is judged by its own count, an estimate unless a `tokenizer`
+   * is configured.
+   *
    * Contract: should not throw or reject. As a safety net, a throwing hook is
    * caught and logged via `logger` — the compression result is kept and
    * compile() continues, but your sink may have missed the summary.
@@ -373,6 +397,15 @@ interface JanitorConfigBase {
    * @internal
    */
   vocabulary?: Vocabulary;
+
+  /**
+   * The count the runner falls back to without a `tokenizer`, for every
+   * reading. `ContextChef` passes `estimateMessages` under `appendOnly`
+   * (attachments at a flat cost); unset, the 4.x `estimateObject`.
+   *
+   * @internal
+   */
+  estimate?: (messages: Message[]) => number;
 }
 
 /**
@@ -419,7 +452,20 @@ export type JanitorConfig = JanitorConfigWithTokenizer | JanitorConfigWithoutTok
 
 export interface JanitorSnapshot {
   externalTokenUsage: number | null;
+  /**
+   * True from a successful compression until the next budget check, which
+   * reads a usage reported since only while the history still holds
+   * {@link landedSummary}. Named for its pre-4.3 meaning (the next check was
+   * skipped outright); the key is kept so stored snapshots still restore.
+   */
   suppressNextCompression: boolean;
+  /**
+   * The message that compression left in place of what it replaced — its
+   * summary, or the compaction block it landed — while
+   * {@link suppressNextCompression} is true. Absent when it left none, and in
+   * snapshots taken before 4.3; a usage reported since is then ignored.
+   */
+  landedSummary?: Message;
   consecutiveFailures: number;
   /**
    * Persistent anchor document ('incremental-anchored' mode). Null when absent.
@@ -440,6 +486,17 @@ export interface JanitorSnapshot {
    * 4.2 — those restore onto a fresh lineage.
    */
   window?: WindowLineage;
+}
+
+/**
+ * Whether `history` still holds `message`, by content: a host may store and
+ * reload its messages, so identity proves nothing.
+ */
+function holdsMessage(history: readonly Message[], message: Message): boolean {
+  return history.some(
+    (m) =>
+      messagesEquivalent(m, message) && m._anthropic_compaction === message._anthropic_compaction,
+  );
 }
 
 /**
@@ -546,8 +603,16 @@ export function compactMessages(history: Message[], options: CompactOptions): Me
 export class Janitor {
   /** Externally reported token count from the last API response. */
   private _externalTokenUsage: number | null = null;
-  /** Suppresses the next compression check after a successful compression (E10). */
-  private _suppressNextCompression = false;
+  /**
+   * Set when a compression lands, cleared by the next budget check (E10). A
+   * usage held at the landing was fed before it and is dropped then; one fed
+   * after it counted the compressed request, and that check reads it only
+   * while the history still holds {@link _landedSummary} — a host that passes
+   * its full history again is sending another request.
+   */
+  private _reportedUsageStale = false;
+  /** What the last landing left in place of what it replaced, until that check. */
+  private _landedSummary: Message | null = null;
   /**
    * Circuit breaker counter — incremented when the strategy rejects a
    * compression, reset when it produces a usable one. At
@@ -596,6 +661,16 @@ export class Janitor {
     return this._window;
   }
 
+  /** The raw context window every budget reading is measured against. */
+  public get contextWindow(): number {
+    return this.config.contextWindow;
+  }
+
+  /** Whether the installed strategy is signed (`OverflowStrategy.signed`). */
+  public get signedOverflow(): boolean {
+    return this._strategy.signed === true;
+  }
+
   /** Resolved archive config — the 'vfs' shorthand is only usable via ContextChef wiring. */
   private get _archive(): CompressionArchiveConfig | undefined {
     return typeof this.config.archive === 'object' ? this.config.archive : undefined;
@@ -603,6 +678,11 @@ export class Janitor {
 
   private get _logger(): ChefLogger {
     return this.config.logger ?? console;
+  }
+
+  /** The count every reading falls back to without a tokenizer. */
+  private get _estimate(): (messages: Message[]) => number {
+    return this.config.estimate ?? estimateObject;
   }
 
   /**
@@ -644,7 +724,8 @@ export class Janitor {
     const strategy = this._strategy.snapshot?.();
     const snapshot: JanitorSnapshot = {
       externalTokenUsage: this._externalTokenUsage,
-      suppressNextCompression: this._suppressNextCompression,
+      suppressNextCompression: this._reportedUsageStale,
+      ...(this._landedSummary ? { landedSummary: structuredClone(this._landedSummary) } : {}),
       consecutiveFailures: this._consecutiveFailures,
       anchorDoc: readAnchorDoc(strategy),
       // Copied: the lineage keeps moving after the snapshot is taken, and a
@@ -657,7 +738,8 @@ export class Janitor {
 
   public restoreState(state: JanitorSnapshot): void {
     this._externalTokenUsage = state.externalTokenUsage;
-    this._suppressNextCompression = state.suppressNextCompression;
+    this._reportedUsageStale = state.suppressNextCompression;
+    this._landedSummary = state.landedSummary ?? null;
     this._consecutiveFailures = state.consecutiveFailures ?? 0;
     // A snapshot taken before 4.2 has no lineage. Restoring one starts a fresh
     // one rather than keeping this runner's: the restored history is not the
@@ -677,7 +759,8 @@ export class Janitor {
    */
   public reset(): void {
     this._externalTokenUsage = null;
-    this._suppressNextCompression = false;
+    this._reportedUsageStale = false;
+    this._landedSummary = null;
     this._consecutiveFailures = 0;
     // A cleared history is a new conversation, not a continuation of the old
     // window chain — the lineage starts over with it.
@@ -731,10 +814,66 @@ export class Janitor {
           current = Math.max(tokenizerTokens, fedTokens ?? 0);
       }
     } else {
-      current = fedTokens ?? estimateObject(history);
+      current = fedTokens ?? this._estimate(history);
     }
 
     return { limit, current, trigger, remaining: trigger - current };
+  }
+
+  /**
+   * The budget of the request about to be sent, read before the usage report
+   * that will describe it: for a caller deciding whether the window still
+   * fits (`appendOnly`, while a compaction waits for a tool turn to end).
+   *
+   * `current` is the last reported usage plus a local count of `appended`,
+   * the messages that report does not cover yet; with no report, or with
+   * `appended` null — the report describes none of `history` — a local count
+   * of the whole `history`. The local count is the tokenizer, or the built-in
+   * heuristic (`estimateMessages` under `appendOnly`: each attachment at a
+   * flat `ATTACHMENT_TOKENS`).
+   * `usagePreference` applies as in {@link readBudget}: `'tokenizerFirst'`
+   * ignores the report, and under `'max'` a tokenizer's count of the whole
+   * history wins when it is larger. Consumes nothing.
+   */
+  public readRequestBudget(history: Message[], appended: Message[] | null): BudgetInfo {
+    const limit = this.config.contextWindow;
+    const trigger = limit * (this.config.triggerRatio ?? DEFAULT_TRIGGER_RATIO);
+    const { tokenizer, usagePreference = 'max' } = this.config;
+    const count = tokenizer ?? this._estimate;
+    const fed = usagePreference === 'tokenizerFirst' ? null : this._externalTokenUsage;
+
+    let current: number;
+    if (fed === null || appended === null) {
+      current = count(history);
+    } else if (tokenizer && usagePreference === 'max') {
+      // A tokenizer's count of the whole history is a second opinion; the larger wins.
+      current = Math.max(tokenizer(history), fed + tokenizer(appended));
+    } else {
+      current = fed + count(appended);
+    }
+
+    return { limit, current, trigger, remaining: trigger - current };
+  }
+
+  /**
+   * E10: the first budget check of `history` after a compression landed — the
+   * overflow's own, or a caller that reads the budget without running the
+   * overflow (`appendOnly`, while a compaction waits for a tool turn to end).
+   * A usage fed since counted the compressed request: it stays while
+   * `history` still holds what the compression left, the host having kept the
+   * compressed history, and is dropped otherwise, since this is then another
+   * request and the window is judged by its own count. (A usage fed before
+   * the landing was dropped there.) Does nothing at any other time.
+   *
+   * @internal
+   */
+  public dropStaleUsage(history: readonly Message[]): void {
+    if (!this._reportedUsageStale) return;
+    this._reportedUsageStale = false;
+    const landed = this._landedSummary;
+    this._landedSummary = null;
+    if (landed && holdsMessage(history, landed)) return;
+    this._externalTokenUsage = null;
   }
 
   /**
@@ -760,24 +899,64 @@ export class Janitor {
    * - A rejected compression leaves history UNCHANGED and counts toward the
    *   circuit breaker; after MAX_CONSECUTIVE_COMPRESSION_FAILURES consecutive
    *   failures this becomes a no-op until an explicit reset()/restoreState(),
-   *   or a finished background job landing — the one path that bypasses an
+   *   or a finished background job landing — the one result that gets past an
    *   open breaker, since a blocking strategy is never applied while it is
-   *   open and so can never earn its way out. The breaker counts the overflow,
-   *   not the step: a chain whose fallback rescues the window has succeeded,
-   *   however loudly its first strategy failed.
+   *   open and so can never earn its way out. A request past the raw context
+   *   window (`pastLimit`) is the one call it never holds back: that request
+   *   can't go out as it is, so another attempt beats a certain rejection.
+   *   The breaker counts the overflow, not the step: a chain whose fallback
+   *   rescues the window has succeeded, however loudly its first strategy
+   *   failed — unless a step landed `partial`, whose own failure stays counted.
    * - The window lineage moves forward exactly when a result lands, so
    *   `windowId` identifies a window that really existed.
    *
-   * @param options `force: true` skips the budget test (and the one-shot
-   *   post-compression suppression) and applies the strategy regardless — the
-   *   `new_context` path. The circuit breaker still applies: a strategy that
-   *   just failed three times in a row does not get hammered on request.
+   * @param options `force: true` skips the budget test and applies the
+   *   strategy regardless — the `new_context` path. The circuit breaker still
+   *   applies: a strategy that just failed three times in a row does not get
+   *   hammered on request.
+   *   `appendOnly`, `midToolTurn`, `pastLimit`, `collapse` and `wire` go to
+   *   the strategy as they are ({@link OverflowInput}); the compile pipeline
+   *   sets them under `appendOnly`. `pastLimit` and `collapse` skip the budget
+   *   test too: the caller read the request about to be sent and found that
+   *   it cannot wait. `pastLimit` also goes through an open circuit breaker; a
+   *   `collapse` the model asked for (`force`) does not. `replacementOf` maps
+   *   a landed result to what the window now opens with in place of the
+   *   compressed messages, for `onCompress` (`CompressionDetails.replacement`);
+   *   under `appendOnly` the events are left out of what `onCompress` is told
+   *   was compressed.
+   *   `signal` goes to the strategy too (a `background()` job it starts runs
+   *   under a signal of its own). A call that would run the strategy
+   *   throws the signal's reason once it is aborted, before the strategy runs
+   *   or while it runs (an `AbortError` unless it was aborted with a reason of
+   *   its own), and lands nothing: no `onCompress`, no archive, the circuit
+   *   breaker is not cleared and the window lineage does not move. Aborted
+   *   before the strategy runs, the strategy is not called, so a finished
+   *   `background()` job is still waiting. A call that never reaches the
+   *   strategy (within budget, or held by an open breaker) resolves as usual.
    */
   public async overflow(
     history: Message[],
-    options: { signal?: AbortSignal; force?: boolean } = {},
+    options: {
+      signal?: AbortSignal;
+      force?: boolean;
+      appendOnly?: boolean;
+      midToolTurn?: boolean;
+      pastLimit?: boolean;
+      collapse?: boolean;
+      wire?: OverflowWire;
+      replacementOf?: (result: OverflowResult) => Message[];
+    } = {},
   ): Promise<OverflowResult> {
-    const { signal, force = false } = options;
+    const {
+      signal,
+      force = false,
+      appendOnly = false,
+      midToolTurn = false,
+      pastLimit = false,
+      collapse = false,
+      wire,
+      replacementOf,
+    } = options;
     const idle = (reason: string, current: Message[] = history): OverflowResult => ({
       history: current,
       evicted: [],
@@ -795,44 +974,70 @@ export class Janitor {
     // paid for, and holding it means the model keeps paying for the span it
     // replaces. Asked before the circuit breaker, as it was before 4.2 — the
     // breaker is there to stop a broken model being hammered, not to hold back
-    // a result that already succeeded.
+    // a result that already succeeded — so past an open breaker, nothing but
+    // that result may act (`pendingOnly`). Nor does it hold back a request past
+    // the raw context window (`pastLimit`): that one can't go out as it is, and
+    // another attempt beats a certain rejection.
     const pendingSwap = history.length > 0 && this._strategy.pending?.() === true;
+    const breakerOpen =
+      !pastLimit && this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES;
 
     // Circuit breaker: bail out if compression is consistently failing.
-    if (!pendingSwap && this._consecutiveFailures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES) {
+    if (!pendingSwap && breakerOpen) {
       return idle(
         `circuit breaker open after ${MAX_CONSECUTIVE_COMPRESSION_FAILURES} consecutive compression failures`,
       );
     }
 
-    const prepared = await this._prepareOverflow(history, force);
+    const regardless = force || pastLimit || collapse;
+    const prepared = await this._prepareOverflow(history, regardless);
     // The swap-in path runs under a plain reading: `_prepareOverflow` declined
     // to overflow, and the strategy is being called only to let the finished
     // job in.
     const budget = prepared.budget ?? (pendingSwap ? this.readBudget(prepared.history) : null);
     if (!budget) {
       return idle(
-        force ? 'nothing to overflow — history is empty' : 'within budget',
+        regardless ? 'nothing to overflow — history is empty' : 'within budget',
         prepared.history,
       );
     }
+    // Called only so the finished result can land: within budget, or past an
+    // open breaker, which nothing new may get through.
+    const pendingOnly = pendingSwap && (breakerOpen || prepared.budget === null);
 
+    // Aborted before the strategy runs (in a `compress:start` handler, say): a
+    // finished background job is taken by the strategy that lands it, so it
+    // must not run for a compile that sends nothing.
+    signal?.throwIfAborted();
     const result = await this._strategy.apply({
       history: prepared.history,
       budget,
-      tokenizer: this.config.tokenizer ?? estimateObject,
+      tokenizer: this.config.tokenizer ?? this._estimate,
       pinned: extractPinnedMessages(prepared.history),
       window: this._window,
       forced: force,
+      ...(pendingOnly ? { pendingOnly: true as const } : {}),
+      ...(appendOnly ? { appendOnly: true as const } : {}),
+      ...(midToolTurn ? { midToolTurn: true as const } : {}),
+      ...(pastLimit ? { pastLimit: true as const } : {}),
+      ...(collapse ? { collapse: true as const } : {}),
+      ...(wire ? { wire } : {}),
       signal,
     });
+    // An aborted compile sends nothing, so nothing computed for it lands: no
+    // `onCompress`, no archive, the lineage and the breaker as they were.
+    signal?.throwIfAborted();
     if (!result.meta.changed) return result;
 
     // The overflow as a whole succeeded, so the breaker's count goes back to
     // zero — whichever step of a chain did the work. A summarize() that threw
     // still warns and still counted, but a reset() that rescued the window
-    // behind it must not be locked out three failures later.
-    this._consecutiveFailures = 0;
+    // behind it must not be locked out three failures later. A partial result
+    // landed without a step it needed, so what that step counted stays — even
+    // when a later step, a reset() say, rescued the window. `background()`
+    // credits its job before that step runs, so the job's earlier failures
+    // don't stay.
+    if (!result.meta.partial) this._consecutiveFailures = 0;
 
     // This result is entering the window: it closes the window the strategy
     // worked on and opens the next one. Advanced before `commit` so state the
@@ -849,16 +1054,29 @@ export class Janitor {
     // `span` over `evicted`: the boundary the hook is told about is the span
     // the summary replaced, pinned messages included. They stayed in the
     // window, but they are part of what the summary now stands for, and a sink
-    // persisting `compressedMessages` must not lose them.
-    const span = archived.span;
+    // persisting `compressedMessages` must not lose them. A signed result has
+    // no summary text, but its first message is the block that stands for it.
+    // Under `appendOnly` the span also holds the chef's own events, which the
+    // host's store never had: a host slicing it by the count must not lose more.
+    const span = appendOnly ? archived.span.filter((m) => !m._chef_event) : archived.span;
+    const replacement = replacementOf?.(archived);
+    const standsFor =
+      archived.summary !== undefined
+        ? archived.history[summaryIndex(archived.history)]
+        : archived.meta.signed
+          ? archived.history[0]
+          : null;
     await this._fireOnCompress(
-      archived.summary === undefined
-        ? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) }
-        : archived.history[0],
+      standsFor ?? { role: 'system', content: Prompts.getFallbackCompressionSummary(span.length) },
       span.length,
-      { compressedMessages: span },
+      { compressedMessages: span, ...(replacement ? { replacement } : {}) },
     );
-    this._suppressNextCompression = true;
+    // E10: a usage held now was fed before the landing and may describe the
+    // payload from before it. One fed from now on is read while the history
+    // holds what this landing left (`dropStaleUsage`).
+    this._externalTokenUsage = null;
+    this._landedSummary = standsFor;
+    this._reportedUsageStale = true;
     return archived;
   }
 
@@ -900,7 +1118,7 @@ export class Janitor {
 
   /**
    * Decides whether the window is over budget, consuming the one-shot state
-   * that decision depends on (the fed usage value, the E10 suppression flag).
+   * that decision depends on (the fed usage value, the E10 staleness flag).
    * Returns the reading when compression should run, null otherwise.
    *
    * The effective trigger threshold is `contextWindow * triggerRatio`
@@ -915,13 +1133,10 @@ export class Janitor {
   private _evaluateBudget(history: Message[], force: boolean): BudgetInfo | null {
     if (history.length === 0) return null;
 
-    // E10: Skip check once after a successful compression to avoid cascading
-    // re-compression. The one-shot flag is consumed either way — a forced
-    // overflow answers for this turn, so the suppression has done its job.
-    const suppressed = this._suppressNextCompression;
-    this._suppressNextCompression = false;
-    if (suppressed && !force) return null;
-
+    // Still check after a landing: a host that kept the compressed history is
+    // judged by the report of the compressed request (or its own count), and a
+    // host that passes its full history again gets it compressed again.
+    this.dropStaleUsage(history);
     const budget = this.readBudget(history);
     this._externalTokenUsage = null;
     return force || budget.remaining < 0 ? budget : null;
@@ -943,7 +1158,12 @@ export class Janitor {
     if (citation === '' && this._vocabulary.mode === 'legacy') return result;
 
     const history = [...result.history];
-    history[0] = renderSummaryMessage(result.summary, citation, this._vocabulary, this._window);
+    history[summaryIndex(history)] = renderSummaryMessage(
+      result.summary,
+      citation,
+      this._vocabulary,
+      this._window,
+    );
     return { ...result, history };
   }
 

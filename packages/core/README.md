@@ -69,6 +69,7 @@ Overflow is not a feature of its own: it is information moving from ① to ③, 
 - **Output format drifting?** — Guardrail: `withGuardrails` enforces an XML output contract and sets an assistant prefill, auto-degraded on providers without native prefill
 - **Mode-based behavior?** — `Skill` primitive bundles instructions and tool annotations per phase; loadable from `SKILL.md` files (compatible with Claude Code / Mastra / OpenCode formats)
 - **Cache invalidated every turn?** — `memoryPlacement` / `skillPlacement` move volatile blocks out of the cached prefix into the tail channel; `cacheAudit: true` reports breakpoints that sit behind volatile content
+- **Claude rejecting replayed thinking?** — `appendOnly` (4.3): every payload repeats the one before and only appends. Injections become events appended once, a compaction lands once (signed by Anthropic with `onDemandCompaction()`), and anything that rewrites what was sent is a reported checkpoint
 - **Window about to be cut?** — Handoff budget (4.2): `overflow.handoff` reserves tokens above the trigger and delivers one tail notice per window, so the model can persist what matters before the library evicts mechanically
 
 **③ Persistence — where it lives once it is out of the window**
@@ -256,10 +257,21 @@ Applies output format guardrails and optional prefill.
 chef.withGuardrails({
   enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
   prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
+  prefillMode: "native", // default; "instruction" never sends a trailing assistant message
 });
 ```
 
 **v4 semantics.** Options are now *stored* and applied at `compile()`, so call order relative to `setDynamicState` no longer matters (pre-4.0, calling `setDynamicState` after `withGuardrails` silently discarded the guardrail). Each call **replaces** the previous options (no accumulation); `withGuardrails(null)` clears them. The stored options are persisted in `ChefSnapshot` (`guardrailOptions`), and the guardrail message lands at the very end of the sandwich as its own message — closest to generation, no longer merged into the dynamic-state message.
+
+**Prefill mode (4.3).** Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a request that ends with a prefilled assistant turn (400: "This model does not support assistant message prefill"). With `prefillMode: 'instruction'`, no target gets a trailing assistant message. Instead, an instruction to start the reply with the prefill text goes out with the enforce-XML instruction, wherever `placement` puts it (a system message by default, the last user turn with `placement: 'last_user'`). The default `'native'` keeps the trailing assistant message. ContextChef doesn't know which model a payload is for, so the mode is yours to set:
+
+```typescript
+chef.withGuardrails({
+  enforceXML: { outputTag: "answer" },
+  prefill: "<answer>",
+  prefillMode: "instruction",
+});
+```
 
 #### `chef.compile(options?): Promise<TargetPayload>`
 
@@ -542,7 +554,7 @@ chef.reportTokenUsage(response.usage.prompt_tokens);
 | `archive`                       | `CompressionArchiveConfig \| 'vfs'`         | —          | **Deprecated in 4.2 → `overflow.archive`.** Reversible overflow: store the full evicted span, cite its URI in the summary. Strategy-agnostic now. See [Compression pipeline v2](#compression-pipeline-v2-v4). |
 | `compressionMode`               | `'rewrite' \| 'incremental-anchored'`       | `'rewrite'`| **Deprecated in 4.2 → `overflow.strategy: summarize(opts)` / `anchored(opts)`.** Anchored mode keeps a persistent anchor document and merges only the newly evicted span into it on each compression. |
 | `compressionScheduling`         | `'blocking' \| 'background'`                | `'blocking'` | **Deprecated in 4.2 → `overflow.strategy: background(<strategy>)`.** Background mode runs summarization off-turn; the over-budget compile returns history unchanged and the result is swapped in later if still valid. |
-| `onCompress`                    | `(summary, count, details) => void \| Promise<void>` | —  | Fires after compression. `details.compressedMessages` is the exact prefix slice of history that the summary replaced (the first `truncatedCount` messages). |
+| `onCompress`                    | `(summary, count, details) => void \| Promise<void>` | —  | Fires after compression. `details.compressedMessages` is the exact prefix slice of history that the summary replaced (the first `truncatedCount` messages). To keep the summary in your own history, store it exactly as handed to you, same role and same content (under `appendOnly`, write back `details.replacement` as given): a usage you report afterwards counts only while the history holds that message, and stored any other way (as a system message, behind a prefix of your own) the report is ignored and the window is judged by its own count, an estimate unless a `tokenizer` is configured. |
 | `logger`                        | `ChefLogger`                                | —          | Sink for degradation warnings (storage write failures, missing tokenizer, etc.); defaults to `console`. |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —          | Fires before compression. Return modified history to intervene, or null to proceed normally. See [`onBeforeCompress` hook](#onbeforecompress-hook) below. |
 
@@ -852,7 +864,7 @@ const payload = await chef.compile({ target: "anthropic" });
 - On any other target `server()` has nothing to delegate to, so it runs the `fallback` strategy if one was given, and otherwise leaves history alone. That is what makes one configuration portable across providers.
 - `ChefConfig.contextManagement` is the **deprecated alias** (removed in 5.0): `{ strategy: 'server', server: config }` builds `server(config, { fallback: <the default client strategy> })`, which is why v4 behavior is preserved exactly. `{ strategy: 'client' }` is the default and needs no configuration.
 - The first argument is a provider-shaped edits config passed through verbatim, e.g. `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` or `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`. `payload.betas` is auto-derived: `'compact-2026-01-12'` for compaction edits, `'context-management-2025-06-27'` for the clear-tool-uses / clear-thinking edits. `AnthropicPayload` gains `context_management?` and `betas?` fields.
-- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched.
+- **Compaction block round-trip**: `fromAnthropic` maps the API's `{ type: 'compaction', content }` blocks to passthrough messages marked `pinned: true`, and the Anthropic adapter re-emits the block first, verbatim, on the next compile — server-produced summaries survive the client pipeline untouched. While the parsed message is unmodified, the whole original message is replayed, so fields the IR doesn't carry, such as the block's signature, survive too.
 
 This is a hybrid positioning, not an either/or: LLM compression can be delegated to the provider while ContextChef keeps doing the parts servers don't — pruning, skills, memory, the context store, and dynamic state.
 
@@ -1404,6 +1416,30 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 
 ---
 
+### Append-only prefix (4.3)
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign every thinking block over everything before it, and reject a request (400) that replays one after an earlier turn changed. By default the chef renders its injections at the tail of every compile, so the turn they sat in last time changes, and an in-flight summary is recomputed. With `appendOnly`, each payload repeats the one before it and only appends:
+
+```typescript
+const chef = new ContextChef({
+  appendOnly: true,
+  janitor: { contextWindow: 200_000, compressionModel },
+});
+
+chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
+  // something rewrote what was already sent: a reported checkpoint
+});
+```
+
+- Dynamic state, announcements, skill instructions, memory, the guardrail and the handoff notice become events: appended once, after the turn they changed in, and sent there unchanged from then on. Your history is never written to.
+- A compaction lands once, and an unsigned one waits for a user-turn boundary. `onDemandCompaction({ compact, fallback })` asks Anthropic for a compaction it signs, which keeps the thinking of the turns after it.
+- Anything that rewrites what was sent (an edited history, a new system prompt or tool list, a compaction) is a checkpoint, reported through `prefix:break` and `meta.prefix`. On Anthropic the thinking it invalidated is left out of the request.
+- A chef created per request must save `snapshot()` after each compile and again after the request's tool calls, and restore it on the next request, or every request starts with a `ledger` checkpoint. With memory in a shared store, restore it without its memory part (restoring memory would roll the store back): `chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })`. Either way, set the system prompt, tools and state after `restore()`, which replaces them with the saved ones.
+
+Off by default, and off `appendOnly` changes nothing. The AI SDK and TanStack AI middlewares take `appendOnly` too. Full guide: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only).
+
+---
+
 ### Lifecycle Events
 
 Unified event system for observability across all internal modules. Subscribe via `chef.on()`, unsubscribe via `chef.off()`.
@@ -1490,7 +1526,7 @@ Sharing one chef across concurrent `compile()` calls is **single-threaded by des
 
 ### Pipeline slots (4.2)
 
-`compile()` is a fixed, ordered list of phases — `start`, `transform-tool-results`, `handoff`, `overflow`, `inject`, `memory`, `skill`, `assemble`, `tail`, `adapt`, `audit`, `done`. Slots are the public composition surface at those boundaries: unlike an event handler, a slot handler *participates* in the compile — it can inject context, transform the assembled messages, or skip overflow entirely.
+`compile()` is a fixed, ordered list of phases — `start`, `transform-tool-results`, `prefix` (`appendOnly` only), `handoff`, `overflow`, `inject`, `memory`, `skill`, `assemble`, `tail`, `adapt`, `audit`, `done`. Slots are the public composition surface at those boundaries: unlike an event handler, a slot handler *participates* in the compile — it can inject context, transform the assembled messages, or skip overflow entirely.
 
 #### `chef.use(slot, handler): this`
 
@@ -1586,9 +1622,13 @@ chef.on("pipeline:invariant", ({ phase, message }) => {
 | ---------------------------- | --------------------------- | -------------------------------------- | ------------------------------------------ |
 | Format                       | Chat Completions            | Messages API                           | generateContent                            |
 | Cache breakpoints            | Stripped                    | `cache_control: { type: 'ephemeral' }` | Stripped (uses separate CachedContent API) |
-| Prefill (trailing assistant) | Degraded to `[System Note]` | Native support                         | Degraded to `[System Note]`                |
+| Prefill (trailing assistant) | Degraded to an instruction  | Native support                         | Degraded to an instruction                 |
 | `thinking` field             | Stripped                    | Mapped to `ThinkingBlockParam`         | Stripped                                   |
 | Tool calls                   | `tool_calls` array          | `tool_use` blocks                      | `functionCall` parts                       |
+
+Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a native prefill; set `prefillMode: 'instruction'` on `withGuardrails` for them.
+
+History parsed with `fromAnthropic` goes back to Anthropic byte-for-byte as long as nothing has changed it: all thinking blocks, separate text blocks, parallel tool results in one user message, and blocks the IR doesn't model (server tool use, web search results) come out as they came in. Only cache breakpoints are swapped for the chef's own. Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. Once a parsed message is modified (a cleared tool result, stripped thinking), it is rebuilt from IR fields as before; under `appendOnly`, a message whose thinking a checkpoint stripped keeps its other blocks as they came in. By default, tail injections and client-side overflow still change earlier turns. [`appendOnly`](https://myprototypewhat.github.io/context-chef/guide/append-only) keeps what was sent where it was sent, and a request can set `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` (beta `thinking-binding-controls-2026-08-01`) to drop mismatched thinking instead of failing — see [Claude Thinking Prefix Check](https://myprototypewhat.github.io/context-chef/guide/thinking-prefix).
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 

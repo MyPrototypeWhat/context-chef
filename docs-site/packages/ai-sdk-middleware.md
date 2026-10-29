@@ -130,7 +130,7 @@ const model = withContextChef(openai('gpt-4o'), {
 
 ## Session Isolation (Multi-User Servers)
 
-A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
+A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, the post-compression flag, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
 
 ```typescript
 const model = withContextChef(openai('gpt-4o'), {
@@ -147,6 +147,23 @@ const result = await generateText({
 ```
 
 Calls without a `sessionId` share one default session — fine for single-conversation processes, wrong for multi-user servers. Up to `maxSessions` sessions are tracked concurrently (default 256, LRU-evicted).
+
+## Append-Only Mode
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 reject a request that replays reasoning after anything before it changed, and every provider's prompt cache misses from the first changed message. By default the middleware rewrites earlier messages on each call: dynamic state moves with the last user message, and a compression summary is recomputed on every call over budget. With `appendOnly: true`, each call's prompt repeats the one the session sent before and only appends; anything that still rewrites it is a checkpoint, reported to `onPrefixBreak`.
+
+```typescript
+const model = withContextChef(baseModel, {
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { model: summarizerModel },
+  onPrefixBreak: ({ sessionId, reason, at, strippedThinking }) => {
+    console.info(`[${sessionId}] checkpoint (${reason}) at message ${at}`, { strippedThinking });
+  },
+});
+```
+
+Create the wrapped model once and pass a `sessionId` per conversation: sessions live in the middleware instance, and one created per request starts every session empty. `dynamicState` becomes its own user message, appended once per change; a compression lands once; only reasoning an Anthropic-family provider signed is stripped at a checkpoint. Settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`) and `transformContext` are warned. See [Append-Only Prefix](/guide/append-only#ai-sdk-and-tanstack-ai) for the full rules.
 
 ## Compact (Mechanical Pruning)
 
@@ -166,15 +183,15 @@ const model = withContextChef(openai('gpt-4o'), {
 
 | Export | What it does |
 |---|---|
-| `withContextChef(model, options)` | Wraps an AI SDK model; returns a `LanguageModelV3` usable anywhere the original was |
+| `withContextChef(model, options)` | Wraps an AI SDK model; returns a `LanguageModelV4` usable anywhere the original was |
 | `createMiddleware(options)` | Raw `LanguageModelMiddleware` for `wrapLanguageModel` |
-| `fromAISDK(prompt)` / `toAISDK(messages)` | Converters between `LanguageModelV3Prompt` and ContextChef IR |
+| `fromAISDK(prompt)` / `toAISDK(messages)` | Converters between `LanguageModelV4Prompt` and ContextChef IR |
 | `summarizeMessages(prompt, model, opts?)` | Summarize an AI-SDK prompt slice (role-flattening included) |
 | `compactModelMessages(messages, model, opts)` | Durable compaction in one call at the `ModelMessage` altitude |
 | `planCompactionModelMessages(messages, opts)` | The synchronous turn-safe split behind it |
 | `summarizeModelMessages(messages, model, opts?)` | `ModelMessage`-altitude summarizer |
 
-Key `withContextChef` options: `contextWindow` (required), `compress` (`model`, `preserveRatio`, `toolResultStubThreshold`, `usagePreference`), `allowDoubleCompression`, `truncate` (`threshold`, `headChars`, `tailChars`, `storage`, `perTool`), `compact`, `clear`, `tokenizer`, `onCompress`, `logger`. See the [full README on GitHub](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/ai-sdk-middleware) for the complete option tables.
+Key `withContextChef` options: `contextWindow` (required), `compress` (`model`, `preserveRatio`, `toolResultStubThreshold`, `usagePreference`), `allowDoubleCompression`, `truncate` (`threshold`, `headChars`, `tailChars`, `storage`, `perTool`), `compact`, `clear`, `tokenizer`, `onCompress`, `logger`, `appendOnly`, `onPrefixBreak`. `compactModelMessages` / `planCompactionModelMessages` also take `keptReasoning: 'strip'` ([why](/guide/durable-compaction#kept-reasoning)). See the [full README on GitHub](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/ai-sdk-middleware) for the complete option tables.
 
 ## How It Works
 

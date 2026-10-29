@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { auditAnthropicCachePlacement } from '../src/adapters/anthropicCacheAudit';
-import { ContextChef, InMemoryStore } from '../src/index';
+import { ContextChef, fromAnthropic, InMemoryStore } from '../src/index';
 import type { AnthropicPayload, Message } from '../src/types';
 
 // ═══════════════════════════════════════════════════════
@@ -245,6 +245,42 @@ describe('auditAnthropicCachePlacement', () => {
     expect(issues.every((i) => i.message.includes('move the cache breakpoint'))).toBe(true);
   });
 
+  it('under appendOnly, reads what the chef put in messages as events sent once, not volatile', () => {
+    const payload = {
+      system: [
+        sys('You recall the following from previous conversations:\n<memory>a</memory>'),
+        sys('stable'),
+      ],
+      messages: [
+        { role: 'user', content: 'q1' },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: '<skill_instructions rev="1" skill="t">x</skill_instructions>' },
+          ],
+        },
+        {
+          role: 'user',
+          content: 'You recall the following from previous conversations:\n<memory>b</memory>',
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok', cache_control: { type: 'ephemeral' } }],
+        },
+      ],
+    } as unknown as AnthropicPayload;
+
+    // The system prompt still changes with what it holds (explicit 'after_system' memory).
+    expect(auditAnthropicCachePlacement(payload, { appendOnly: true })).toEqual([
+      expect.objectContaining({ location: 'system[0]', dedupeKey: 'memory data block@prefix' }),
+    ]);
+    expect(auditAnthropicCachePlacement(payload).map((i) => i.location)).toEqual([
+      'system[0]',
+      'messages[1]',
+      'messages[2]',
+    ]);
+  });
+
   it("breakpoint-tail diagnosis keeps the skill marker's alternative remedy", () => {
     const payload = {
       system: [sys('stable')],
@@ -478,5 +514,90 @@ describe('ChefConfig.cacheAudit', () => {
       String(c[0]).includes('cache audit'),
     );
     expect(auditWarns).toHaveLength(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// withGuardrails prefillMode: 'instruction'
+// ═══════════════════════════════════════════════════════
+
+// Claude Sonnet 4.6 / Sonnet 5 / Sonnet 5.5 / Haiku 5.5 reject a prefilled
+// last assistant turn with a 400.
+describe("withGuardrails prefillMode: 'instruction'", () => {
+  const history: Message[] = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'a1' },
+    { role: 'user', content: 'q2' },
+  ];
+
+  it('ends the Anthropic payload on the user turn and asks for the prefix in system', async () => {
+    const chef = new ContextChef().setHistory(structuredClone(history));
+    chef.withGuardrails({ prefill: 'ANSWER:', prefillMode: 'instruction' });
+
+    const payload = (await chef.compile({ target: 'anthropic' })) as AnthropicPayload;
+
+    expect(payload.messages[payload.messages.length - 1].role).toBe('user');
+    expect(JSON.stringify(payload.system)).toContain('ANSWER:');
+  });
+
+  it("with placement 'last_user', asks in the last user turn and leaves system alone", async () => {
+    const chef = new ContextChef().setHistory(structuredClone(history));
+    chef.withGuardrails({ prefill: 'ANSWER:', prefillMode: 'instruction', placement: 'last_user' });
+
+    const payload = (await chef.compile({ target: 'anthropic' })) as AnthropicPayload;
+
+    const last = payload.messages[payload.messages.length - 1];
+    expect(last.role).toBe('user');
+    expect(JSON.stringify(last)).toContain('ANSWER:');
+    expect(JSON.stringify(payload.system ?? [])).not.toContain('ANSWER:');
+  });
+
+  it('leaves the turns already sent unchanged when the next turn compiles', async () => {
+    const chef = new ContextChef().setHistory(structuredClone(history));
+    chef.withGuardrails({ prefill: 'ANSWER:', prefillMode: 'instruction' });
+    const first = (await chef.compile({ target: 'anthropic' })) as AnthropicPayload;
+
+    chef.setHistory([
+      ...structuredClone(history),
+      { role: 'assistant', content: 'ANSWER: a2' },
+      { role: 'user', content: 'q3' },
+    ]);
+    const second = (await chef.compile({ target: 'anthropic' })) as AnthropicPayload;
+
+    expect(second.system).toEqual(first.system);
+    expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages);
+  });
+
+  it('asks OpenAI models once', async () => {
+    const chef = new ContextChef().setHistory(structuredClone(history));
+    chef.withGuardrails({ prefill: 'ANSWER:', prefillMode: 'instruction' });
+
+    const payload = await chef.compile({ target: 'openai' });
+
+    expect(JSON.stringify(payload).split('ANSWER:')).toHaveLength(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// fromAnthropic history replays verbatim through compile()
+// ═══════════════════════════════════════════════════════
+
+describe('fromAnthropic history through compile()', () => {
+  it('reaches the payload with every thinking block of an earlier turn intact', async () => {
+    const assistantTurn = [
+      { type: 'thinking', thinking: '', signature: 'SIG_A' },
+      { type: 'thinking', thinking: '', signature: 'SIG_B' },
+      { type: 'text', text: 'Answer.' },
+    ];
+    const { history } = fromAnthropic([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: assistantTurn },
+      { role: 'user', content: 'q2' },
+    ] as never);
+
+    const chef = new ContextChef().setHistory(history);
+    const payload = (await chef.compile({ target: 'anthropic' })) as AnthropicPayload;
+
+    expect(payload.messages[1].content).toEqual(assistantTurn);
   });
 });

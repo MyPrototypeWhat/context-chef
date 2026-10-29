@@ -1,0 +1,95 @@
+[
+  {
+    "payload": {
+      "messages": [
+        { "content": "You are a careful agent.", "role": "system" },
+        { "content": "question 1", "role": "user" },
+        {
+          "content": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"1\">\ndocs: v1\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+          "role": "user"
+        }
+      ]
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "from": 3,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 1\"}", "name": "search" },
+            "id": "call_1",
+            "type": "function"
+          }
+        ]
+      },
+      { "content": "found 1", "role": "tool", "tool_call_id": "call_1" },
+      {
+        "content": "<implicit_context rev=\"2\">\ndocs: v2\n</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 2 }
+  },
+  {
+    "from": 6,
+    "messages": [
+      { "content": "answer 1", "role": "assistant" },
+      { "content": "question 2", "role": "user" },
+      {
+        "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 5 }
+  },
+  {
+    "from": 8,
+    "messages": [
+      {
+        "content": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\n<implicit_context rev=\"3\" withdrawn=\"true\">No implicit context is attached any more.</implicit_context>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.\n\n<dynamic_state rev=\"3\">\n  <step>3</step>\n  <file>c.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 7 }
+  },
+  {
+    "from": 9,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": { "arguments": "{\"q\":\"topic 2\"}", "name": "search" },
+            "id": "call_2",
+            "type": "function"
+          }
+        ]
+      }
+    ],
+    "prefix": { "stable": 8 }
+  },
+  {
+    "from": 10,
+    "messages": [
+      { "content": "found 2", "role": "tool", "tool_call_id": "call_2" },
+      {
+        "content": "<dynamic_state rev=\"4\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 9 }
+  },
+  {
+    "from": 12,
+    "messages": [
+      { "content": "answer 2", "role": "assistant" },
+      { "content": "question 3", "role": "user" }
+    ],
+    "prefix": { "stable": 11 }
+  }
+]

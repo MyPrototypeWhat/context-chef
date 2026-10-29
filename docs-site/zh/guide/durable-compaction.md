@@ -6,6 +6,8 @@
 
 三个 helper 都在原子轮次边界处切分（assistant 消息和它的 tool result 永不分离），摘要旧切片，返回 `[...system, <summary>, ...recent turns]`；no-op 时原样返回输入引用，因此可用 `result === input` 跳过持久化。
 
+**以 Anthropic compaction 块开头的 history**（用 `fromAnthropic` 恢复的会话）会把这个块保持在最前面，因为块前面只要有任何内容，API 就会拒绝请求（`compaction_block_misplaced`）。`compactHistory()` 返回 `[...system, placeholder, block, <summary>, ...rest]`：`fromAnthropic` 放在块前面的占位 user 轮跟块待在一起，这样 OpenAI 和 Gemini 收到的第一条仍然是 user 轮。如果你自己持久化 `planCompaction()` 的切分结果，也要这样做：`toKeep` 以 compaction 消息开头时，把它放在摘要之前，再把 `toSummarize` 开头的占位放在它前面。
+
 ## Core —— 与 provider 无关，作用于 IR `Message[]`
 
 ```typescript
@@ -105,6 +107,17 @@ if (toSummarize.length > 0) {
 }
 ```
 
+## 保留轮次的推理
+
+你自己写的摘要，是对之前轮次的一次没有任何 provider 签名的改写。在 Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 上，摘要之后保留下来的轮次，它们的推理签名覆盖了被摘要替换掉的那些消息，所以已经无法通过验证（见 [Claude thinking 前缀校验](/zh/guide/thinking-prefix)）。`compactModelMessages`、`compactTanStackMessages` 和对应的 `planCompaction…` 都接受 `keptReasoning: 'strip'`：它去掉保留消息里这些签名过的推理，只剩推理的回复整条去掉，结果可以直接发送。只去掉 Anthropic 系 provider 签名的推理：经 `@ai-sdk/anthropic` 或 `@ai-sdk/amazon-bedrock` 签名的 reasoning part，以及带签名的 TanStack thinking 块（`@tanstack/ai-anthropic`）。其他 provider 的推理没有这种签名，会保留。默认是 `'keep'`。
+
+```typescript
+messages = await compactModelMessages(messages, summarizerModel, {
+  keepRecentTurns: 4,
+  keptReasoning: 'strip',
+});
+```
+
 ## 不要双重压缩
 
-不要在同一段对话上同时使用持久化压缩和在途溢出（[Janitor runner 及其策略](/zh/guide/history-compression) 或 middleware `compress`）—— 那会把同一段历史压缩两次。每段对话选一种策略。完整契约见 [core](/zh/packages/core)、[ai-sdk-middleware](/zh/packages/ai-sdk-middleware) 和 [tanstack-ai](/zh/packages/tanstack-ai) 的包页面。
+不要在同一段对话上同时使用持久化压缩和在途溢出（[Janitor runner 及其策略](/zh/guide/history-compression) 或 middleware `compress`）—— 那会把同一段历史压缩两次。每段对话选一种策略。打开 [`appendOnly`](/zh/guide/append-only#持久化对话) 时，在途压缩本来就只落地一次，把它的结果写回就是持久化的办法：写回 `details.replacement`，而不是你自己的摘要，后者会成为一次 `history` 检查点。完整契约见 [core](/zh/packages/core)、[ai-sdk-middleware](/zh/packages/ai-sdk-middleware) 和 [tanstack-ai](/zh/packages/tanstack-ai) 的包页面。

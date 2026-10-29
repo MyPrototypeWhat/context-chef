@@ -47,7 +47,7 @@ The same compiled IR becomes an OpenAI, Anthropic, Gemini or OpenAI-Responses pa
 `compile()` runs a fixed, ordered list of phases. Each one has a declared contract, and slots fire at the boundaries between them.
 
 ```
-start → transform-tool-results → handoff → overflow → inject
+start → transform-tool-results → prefix → handoff → overflow → inject
       → memory → skill → assemble → tail → adapt → audit → done
 ```
 
@@ -55,6 +55,7 @@ start → transform-tool-results → handoff → overflow → inject
 |---|---|
 | `start` | `compile:start` event, abort check, target resolution |
 | `transform-tool-results` | `transformToolResult` over every `role: 'tool'` message — before overflow, so the summarizer sees transformed content |
+| `prefix` | `appendOnly` only: replay the ledger over the history and report any checkpoint ([Append-Only Prefix](/guide/append-only)) |
 | `handoff` | when the headroom falls into the handoff band, render the notice once per window |
 | `overflow` | budget check, then the installed strategy; archive whatever was evicted |
 | `inject` | `before-assemble` handlers → `<implicit_context>` |
@@ -63,7 +64,7 @@ start → transform-tool-results → handoff → overflow → inject
 | `assemble` | sandwich assembly — system layers, history, guardrails, placements |
 | `tail` | tail stitch: skill, memory data, dynamic state, implicit context, announcements, anchor |
 | `adapt` | target adapter, tools, server-managed payload fields |
-| `audit` | `cacheAudit` on the Anthropic target, plus the optional `pipelineChecks` invariants |
+| `audit` | `cacheAudit` on the Anthropic target, plus the optional `pipelineChecks` invariants (with `appendOnly`, the comparison with the previous payload) |
 | `done` | `compile:done` event |
 
 Abort checks (`compile({ signal })`) sit after `overflow`, `inject`, `memory`, `assemble` and `adapt` — every boundary that follows an await which can take arbitrarily long.

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Memory, type MemoryConfig } from '../modules/memory';
+import { Memory, type MemoryConfig, type MemoryEntry } from '../modules/memory';
 import { Offloader } from '../modules/offloader';
 import { FileSystemBackend } from '../store/backends/fileSystem';
 import { InMemoryBackend } from '../store/backends/inMemory';
@@ -33,6 +33,8 @@ interface Harness {
   memory: Memory | null;
   offloader: Offloader;
   newContextCalls: number;
+  /** What `memoryWritten` reported, in order. */
+  written: Array<[key: string, entry: MemoryEntry | null]>;
   run(call: ContextToolCall): Promise<string>;
   context(args: Record<string, unknown>): Promise<string>;
 }
@@ -52,6 +54,7 @@ function harness(
   const memory = options.memory === null ? null : new Memory({ store, ...(options.memory ?? {}) });
 
   const state = { newContextCalls: 0 };
+  const written: Harness['written'] = [];
   const host: ContextToolHost = {
     memory,
     offloader,
@@ -59,6 +62,9 @@ function harness(
     policy: resolveContextToolPolicy(options.policy),
     requestNewContext: () => {
       state.newContextCalls++;
+    },
+    memoryWritten: (key, entry) => {
+      written.push([key, entry]);
     },
   };
 
@@ -71,6 +77,7 @@ function harness(
     get newContextCalls() {
       return state.newContextCalls;
     },
+    written,
     run: (call) => dispatchContextTool(host, call),
     context: (args) => dispatchContextTool(host, { name: 'context', arguments: args }),
   };
@@ -516,6 +523,78 @@ describe('dispatchContextTool — memory/', () => {
     const h = harness();
     const result = await h.context({ command: 'create', path: 'memory/', file_text: 'v' });
     expect(result).toBe('Error: context://memory/ is a directory. Name the memory key to create.');
+  });
+});
+
+describe('dispatchContextTool — memoryWritten', () => {
+  /** The entry a write left, as the store holds it now. */
+  const stored = async (h: Harness, key: string) => h.memory?.getEntry(key);
+
+  it('reports each memory write a call makes, with the entry it left', async () => {
+    const h = harness();
+
+    await h.context({ command: 'create', path: 'memory/a', file_text: 'one' });
+    await h.run({ name: 'create_memory', arguments: { key: 'b', value: 'two' } });
+    await h.context({
+      command: 'str_replace',
+      path: 'memory/a',
+      old_str: 'one',
+      new_str: 'uno',
+    });
+    await h.context({ command: 'insert', path: 'memory/a', insert_line: 1, insert_text: 'dos' });
+    await h.run({
+      name: 'modify_memory',
+      arguments: { action: 'update', key: 'b', value: 'tres' },
+    });
+
+    expect(h.written.map(([key, entry]) => [key, entry?.value])).toEqual([
+      ['a', 'one'],
+      ['b', 'two'],
+      ['a', 'uno'],
+      ['a', 'uno\ndos'],
+      ['b', 'tres'],
+    ]);
+    expect(h.written.at(-2)?.[1]).toEqual(await stored(h, 'a'));
+    expect(h.written.at(-1)?.[1]).toEqual(await stored(h, 'b'));
+  });
+
+  it('reports a delete as null, and a rename as the new key and the old one gone', async () => {
+    const h = harness();
+    for (const key of ['a', 'b', 'c']) await h.memory?.set(key, key);
+
+    await h.context({ command: 'delete', path: 'memory/a' });
+    await h.run({ name: 'modify_memory', arguments: { action: 'delete', key: 'b' } });
+    await h.context({ command: 'rename', path: 'memory/c', new_path: 'memory/d' });
+
+    expect(h.written).toEqual([
+      ['a', null],
+      ['b', null],
+      ['d', await stored(h, 'd')],
+      ['c', null],
+    ]);
+  });
+
+  it('reports only the copy when a rename could not remove the original', async () => {
+    const h = harness({ memory: { onMemoryUpdate: (key, value) => !(key === 'c' && !value) } });
+    await h.memory?.set('c', 'v');
+
+    await h.context({ command: 'rename', path: 'memory/c', new_path: 'memory/d' });
+
+    expect(h.written).toEqual([['d', await stored(h, 'd')]]);
+  });
+
+  it('reports nothing for a read, a write that failed, or a write the host made itself', async () => {
+    const h = harness({ memory: { onMemoryUpdate: (key) => key !== 'vetoed' } });
+    await h.memory?.set('a', 'v');
+    await h.memory?.createMemory('host', 'v');
+
+    await h.context({ command: 'view', path: 'memory/a' });
+    await h.context({ command: 'search', path: 'memory/', query: 'v' });
+    await h.context({ command: 'create', path: 'memory/a', file_text: 'w' });
+    await h.context({ command: 'create', path: 'memory/vetoed', file_text: 'w' });
+    await h.context({ command: 'delete', path: 'memory/missing' });
+
+    expect(h.written).toEqual([]);
   });
 });
 

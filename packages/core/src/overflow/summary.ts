@@ -6,6 +6,7 @@
 
 import { Prompts } from '../prompts';
 import type { Message } from '../types';
+import { isOpeningPlaceholder } from '../utils/ensureValidHistory';
 import { LEGACY_VOCABULARY, type SummaryLineage, type Vocabulary } from '../vocabulary';
 import { buildToolNameMap } from './turns';
 
@@ -158,4 +159,72 @@ export function renderSummaryMessage(
   lineage?: SummaryLineage,
 ): Message {
   return { role: 'user', content: vocabulary.summaryWrapper(summary + citation, lineage) };
+}
+
+const isCompaction = (message: Message | undefined): boolean =>
+  message?._anthropic_compaction !== undefined;
+
+/**
+ * Whether `messages[i]` goes ahead of the summary of a rebuilt window: a
+ * compaction block, or the opening placeholder (`isOpeningPlaceholder`) right
+ * before one — the user turn `fromAnthropic` opens a resumed history with,
+ * which text targets need first and the Anthropic target skips.
+ */
+const leadsSummary = (messages: readonly Message[], i: number): boolean =>
+  isCompaction(messages[i]) || (isOpeningPlaceholder(messages[i]) && isCompaction(messages[i + 1]));
+
+/**
+ * Where the compaction block a history opens with ends: past the system
+ * messages ahead of it and the opening placeholder right before it; 0 when it
+ * opens with none. Placeholder and block are one unit, and only what follows
+ * them is anything to compress: a split or a cut at or before this index
+ * compresses nothing, and one between the two would put the block behind
+ * what replaced the placeholder (`compaction_block_misplaced`).
+ */
+export function openingBlockEnd(history: readonly Message[]): number {
+  let i = 0;
+  while (i < history.length && history[i].role === 'system') i++;
+  if (i < history.length && isOpeningPlaceholder(history[i]) && isCompaction(history[i + 1])) i++;
+  return isCompaction(history[i]) ? i + 1 : 0;
+}
+
+/**
+ * The opening placeholder `history` holds right before the pinned compaction
+ * block it opens with, if any: a summary that rebuilds the window keeps it
+ * with the block, as it keeps the block.
+ */
+export function openingPlaceholder(history: readonly Message[]): Message | undefined {
+  const start = history.findIndex((message) => message.role !== 'system');
+  const [first, block] = start === -1 ? [] : [history[start], history[start + 1]];
+  return first && isOpeningPlaceholder(first) && isCompaction(block) && block?.pinned
+    ? first
+    : undefined;
+}
+
+/**
+ * A window a summary rebuilds: the summary (or notice) message, then `kept`,
+ * the messages it keeps after it — the pinned ones put back, the recent turns
+ * — except a compaction block among them (`_anthropic_compaction`, pinned as
+ * `fromAnthropic` parses it), which goes first, behind the opening placeholder
+ * kept before it if there is one. The API reads nothing before the block and
+ * rejects a request with a message ahead of it (`compaction_block_misplaced`);
+ * a text target needs the conversation to open with a user turn.
+ */
+export function summaryHead(summary: Message, kept: readonly Message[]): Message[] {
+  if (!kept.some(isCompaction)) return [summary, ...kept];
+  return [
+    ...kept.filter((_, i) => leadsSummary(kept, i)),
+    summary,
+    ...kept.filter((_, i) => !leadsSummary(kept, i)),
+  ];
+}
+
+/**
+ * Where the summary message of a rebuilt window sits: after the compaction
+ * blocks kept first, and the opening placeholder before them.
+ */
+export function summaryIndex(history: readonly Message[]): number {
+  let index = 0;
+  while (index < history.length && leadsSummary(history, index)) index++;
+  return index;
 }

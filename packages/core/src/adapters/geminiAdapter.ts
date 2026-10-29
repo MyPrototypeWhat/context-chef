@@ -186,6 +186,8 @@ export interface GeminiAdapterOptions {
 }
 
 export class GeminiAdapter implements ITargetAdapter {
+  /** A trailing model message becomes an instruction on the last user turn. */
+  readonly nativePrefill = false;
   private readonly textifyThinking: ThinkingTextifier;
 
   constructor(private readonly options: GeminiAdapterOptions = {}) {

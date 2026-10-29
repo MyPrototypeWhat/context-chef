@@ -22,6 +22,10 @@ const { system, history } = fromGemini(geminiContents, systemInstruction);
 chef.setSystemPrompt(system).setHistory(history);
 ```
 
+**`fromAnthropic` history replays verbatim.** History parsed with `fromAnthropic` compiles back to the Anthropic target byte-for-byte while nothing has modified it: every thinking block, separate text blocks, parallel tool results plus the user text after them as one user message, and blocks the IR does not model (server tool use, web search results, compaction block signatures). Each parsed message records where it came from in `Message._anthropic_origin`, which keeps a copy of the original blocks: an image or document is stored twice, in `attachments` and in that copy, in the parsed history and in every snapshot of it. This matters because Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign each thinking block over everything before it, and on accounts created on or after 2026-08-31 the API returns 400 when an earlier turn differs from what the model saw. A message you modify (a cleared tool result, stripped thinking) is rebuilt from IR fields as before, and `cache_control` markers in the original are replaced by the chef's own breakpoints. What else can still change an earlier turn, and the `drop_block` safety net, are on [Claude Thinking Prefix Check](/guide/thinking-prefix).
+
+**Mid-conversation system messages** <Badge type="tip" text="4.3" />**.** `fromAnthropic` skips the `role: "system"` messages a parsed request holds mid-conversation, so a history that had one changes where it was. `fromAnthropic(messages, system, { keepPositionalSystem: true })` keeps them in place as positional system messages, sent back unchanged. Use it for the system messages your own code wrote: a payload the chef compiled also holds the chef's own announcements and events, which it adds again by itself. Under [`appendOnly`](/guide/append-only), a parsed message whose thinking a checkpoint stripped keeps every other block as it came in.
+
 Multimodal content (images, files) is automatically converted to IR `attachments`:
 
 | Provider Format | IR Field |
@@ -34,14 +38,16 @@ Multimodal content (images, files) is automatically converted to IR `attachments
 
 ## Target Adapters
 
-| Feature                      | OpenAI                      | Anthropic                              | Gemini                                     |
-| ---------------------------- | --------------------------- | -------------------------------------- | ------------------------------------------ |
-| Format                       | Chat Completions            | Messages API                           | generateContent                            |
-| Cache breakpoints            | Stripped                    | `cache_control: { type: 'ephemeral' }` | Stripped (uses separate CachedContent API) |
-| Prefill (trailing assistant) | Degraded to `[System Note]` | Native support                         | Degraded to `[System Note]`                |
-| `thinking` field             | Stripped                    | Mapped to `ThinkingBlockParam`         | Stripped                                   |
-| Tool calls                   | `tool_calls` array          | `tool_use` blocks                      | `functionCall` parts                       |
-| `attachments`                | `image_url` / `file` content parts | `image` / `document` blocks   | `inlineData` / `fileData` parts            |
+| Feature                      | OpenAI                             | Anthropic                                                      | Gemini                                     |
+| ---------------------------- | ---------------------------------- | -------------------------------------------------------------- | ------------------------------------------ |
+| Format                       | Chat Completions                   | Messages API                                                   | generateContent                            |
+| Cache breakpoints            | Stripped                           | `cache_control: { type: 'ephemeral' }`                         | Stripped (uses separate CachedContent API) |
+| Prefill (trailing assistant) | Degraded to an instruction         | Native; `prefillMode: 'instruction'` for models that reject it | Degraded to an instruction                 |
+| `thinking` field             | Stripped                           | Mapped to `ThinkingBlockParam`; not sent without a signature   | Stripped                                   |
+| Tool calls                   | `tool_calls` array                 | `tool_use` blocks                                              | `functionCall` parts                       |
+| `attachments`                | `image_url` / `file` content parts | `image` / `document` blocks                                    | `inlineData` / `fileData` parts            |
+
+Claude Sonnet 4.6, Sonnet 5, Sonnet 5.5 and Haiku 5.5 reject a request whose last message is a prefilled assistant turn (400). For those, set `withGuardrails({ prefill, prefillMode: 'instruction' })`: no target gets a trailing assistant message, and the prefill becomes an instruction, delivered with the other guardrail instructions wherever `placement` puts them. The chef never sees your model id, so the mode is yours to set. See [Guardrail](/guide/guardrail).
 
 Adapters are selected automatically by `compile({ target })`. You can also use them standalone:
 
@@ -117,3 +123,7 @@ adapterRegistry.unregisterBySource("my-plugin");
 ```
 
 > **Replacing a built-in name** (e.g. `register('openai', myFork)`) keeps the strict overload's payload return type — `compile({ target: 'openai' })` is still typed `Promise<OpenAIPayload>`, so your replacement must honor that shape at runtime. TypeScript can't enforce this for you.
+
+An adapter that can't end a request on an assistant message and turns a prefill into an instruction should say so with `nativePrefill: false` (a wrapper passes on the value of the adapter it wraps). Under [`appendOnly`](/guide/append-only) the chef then sends a guardrail prefill as an instruction, once, instead of letting the adapter fold it into a different user message every turn.
+
+An adapter that wraps the Anthropic one (to log, or to add request fields) should pass on its `anthropicWire` too: `anthropicWire = inner.anthropicWire`. The chef treats a target as Anthropic only by the `'anthropic'` name or by that flag. Without it, server-side context management is skipped. Under [`appendOnly`](/guide/append-only) the thinking a checkpoint invalidated is sent anyway, which the API rejects, and [`onDemandCompaction()`](/guide/append-only#signed-compaction-ondemandcompaction) runs its `fallback` instead of asking for a compaction.

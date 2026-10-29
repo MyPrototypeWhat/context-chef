@@ -1,8 +1,15 @@
 import type { Announcement, ChefConfig, ChefEvents, SkillPlacement, ToolsMode } from '../chef';
 import type { Assembler, DynamicStatePlacement } from '../modules/assembler';
 import type { Guardrail, GuardrailOptions } from '../modules/guardrail';
-import type { Memory } from '../modules/memory';
-import type { BudgetInfo, HandoffConfig, OverflowResult, WindowLineage } from '../overflow/types';
+import type { Memory, MemoryEntry } from '../modules/memory';
+import type {
+  BudgetInfo,
+  HandoffConfig,
+  OverflowResult,
+  OverflowWire,
+  WindowLineage,
+} from '../overflow/types';
+import type { PrefixCandidate, PrefixLedger, PrefixMeta, PrefixSent } from '../prefix';
 import type {
   CompileMeta,
   CompileOptions,
@@ -11,6 +18,8 @@ import type {
   TargetPayload,
   ToolDefinition,
 } from '../types';
+import type { Vocabulary } from '../vocabulary';
+import type { SentPayload } from './checks';
 import type { SlotRegistry } from './slots';
 
 /**
@@ -20,6 +29,7 @@ import type { SlotRegistry } from './slots';
 export type PhaseName =
   | 'start'
   | 'transform-tool-results'
+  | 'prefix'
   | 'handoff'
   | 'overflow'
   | 'inject'
@@ -42,8 +52,41 @@ export interface ResolvedTarget {
   adapter: ITargetAdapter;
   /** The Anthropic target — the one provider with server-side context management and cache breakpoints. */
   isAnthropicTarget: boolean;
+  /** The model continues a trailing assistant message: the adapter's `nativePrefill`, unset meaning yes. */
+  nativePrefill: boolean;
   /** `contextManagement.strategy: 'server'` AND a target that implements it. */
   serverManaged: boolean;
+}
+
+/**
+ * @internal
+ *
+ * `appendOnly`: what one compile did with the ledger. The `prefix` phase
+ * creates it; it is absent when the mode is off.
+ */
+export interface PrefixCompile {
+  /** The chef's ledger as this compile found it; every phase of the compile works on this one. */
+  readonly ledger: PrefixLedger;
+  /**
+   * The host history the ledger reconciled (after `transform-tool-results`):
+   * the ledger's host indices point into it, and the commit records it.
+   * `CompileContext.history` is the window rendered over it.
+   */
+  readonly history: Message[];
+  /** The checkpoints this compile applied, in order, as `prefix:break` reported them. */
+  readonly breaks: NonNullable<PrefixMeta['break']>[];
+  /**
+   * `appendOnly: { clearAt: true }` on the Anthropic target: system-channel
+   * sources are turn-scoped reminders in every request.
+   */
+  readonly clearAt: boolean;
+  /** What the payload sends ahead of the window, read once `adapt` built it. */
+  sent?: PrefixSent;
+  /**
+   * `pipelineChecks`: the payload as the next compile's cross-turn check
+   * compares with it, staged by `audit` and kept once `done` committed it.
+   */
+  sentForCheck?: SentPayload;
 }
 
 /**
@@ -60,14 +103,24 @@ export class CompileContext {
   readonly options: CompileOptions;
   readonly signal?: AbortSignal;
   /**
+   * Started from a hook while another compile runs. Its payload is not the
+   * conversation's next request, so it leaves the append-only ledger alone.
+   */
+  readonly nested: boolean;
+  /**
    * The runner's live window lineage — the same object the Janitor advances,
    * so `current` read late in the pipeline is the window this payload belongs
    * to, not the one the compile started in.
    */
   readonly window: WindowLineage;
 
-  /** Working history: chef history → transformed tool results → post-overflow. */
+  /**
+   * Working history: chef history → transformed tool results → the
+   * append-only window, when that mode is on → post-overflow.
+   */
   history: Message[];
+  /** `appendOnly` only: the ledger's side of this compile. */
+  prefix?: PrefixCompile;
   /** `<implicit_context>` block built from `before-assemble` injections. */
   implicitContextXml = '';
   /** Dynamic state messages, with implicit context folded in under `'system'` placement. */
@@ -76,12 +129,18 @@ export class CompileContext {
   memoryMessages: Message[] = [];
   memoryTailDataXml = '';
   memoryTools: ToolDefinition[] = [];
+  /** `appendOnly`: the memory snapshot or delta for `tail` to append. */
+  memoryEvents: PrefixCandidate[] = [];
 
   skillMessages: Message[] = [];
   skillTailXml = '';
+  /** `appendOnly`: the skill instructions or their tombstone, for `tail` to append. */
+  skillEvents: PrefixCandidate[] = [];
 
   guardrailMessages: Message[] = [];
   guardrailTailXml = '';
+  /** `appendOnly`: the guardrail's instructions are the last system layer ('system' placement). */
+  guardrailInSystemLayers = false;
 
   /** System layers of the sandwich: user system prompt + skill + memory. */
   systemLayers: Message[] = [];
@@ -95,7 +154,8 @@ export class CompileContext {
    * delivered by `tail` through the announcement channel. It lives on the
    * compile rather than on the chef so it cannot outlive the payload it was
    * written for: no leakage into `getAnnouncements()`, into a snapshot, or
-   * into the next compile.
+   * into the next compile. Under `appendOnly`, `tail` appends it to the
+   * ledger as an event, sent where it was appended from then on.
    */
   handoffNotice?: Announcement;
 
@@ -107,11 +167,13 @@ export class CompileContext {
   constructor(init: {
     options: CompileOptions;
     signal?: AbortSignal;
+    nested?: boolean;
     history: Message[];
     window: WindowLineage;
   }) {
     this.options = init.options;
     this.signal = init.signal;
+    this.nested = init.nested ?? false;
     this.history = init.history;
     this.window = init.window;
     // Key order is part of the compile output (`payload.meta`), so both memory
@@ -163,13 +225,35 @@ export interface PipelineHost {
 
   readonly cacheAudit: boolean;
   readonly pipelineChecks: boolean;
+  /**
+   * The chef's append-only prefix ledger; `undefined` when `appendOnly` is
+   * off. The `prefix` phase takes it for the compile: later phases read
+   * `ctx.prefix.ledger`, which is absent for a nested compile too.
+   */
+  readonly ledger?: PrefixLedger;
+  /** `appendOnly: { clearAt: true }`. */
+  readonly clearAt: boolean;
 
   readonly slots: SlotRegistry;
   readonly assembler: Assembler;
   readonly guardrail: Guardrail;
   readonly guardrailOptions?: GuardrailOptions;
   readonly memory: Memory | null;
+  /**
+   * `appendOnly`: the memory entries the model wrote through `handleTool`,
+   * each as its last write left it (`null`: deleted). The tool result told
+   * the model, so the `memory` phase does not push them back.
+   */
+  readonly modelMemoryWrites: ReadonlyMap<string, MemoryEntry | null>;
+  /**
+   * Stops counting the model's writes to `keys` — all of them when omitted —
+   * as told: an event states those keys now, or a checkpoint may have dropped
+   * the turns that made them.
+   */
+  forgetModelMemoryWrites(keys?: readonly string[]): void;
   readonly skill: { name?: string; instructions: string; placement: SkillPlacement };
+  /** The session's model-facing wording. */
+  readonly vocabulary: Vocabulary;
 
   emit<K extends keyof ChefEvents>(
     event: K,
@@ -183,11 +267,45 @@ export interface PipelineHost {
 
   /**
    * One overflow pass through the Janitor runner (client-side overflow).
-   * `force` applies the strategy whatever the budget says.
+   * `force` applies the strategy whatever the budget says; `appendOnly`,
+   * `midToolTurn`, `pastLimit`, `collapse` and `wire` are handed to it
+   * (`OverflowInput`).
    */
-  overflow(history: Message[], signal?: AbortSignal, force?: boolean): Promise<OverflowResult>;
+  overflow(
+    history: Message[],
+    options: {
+      signal?: AbortSignal;
+      force?: boolean;
+      appendOnly?: boolean;
+      midToolTurn?: boolean;
+      pastLimit?: boolean;
+      collapse?: boolean;
+      wire?: OverflowWire;
+      replacementOf?: (result: OverflowResult) => Message[];
+    },
+  ): Promise<OverflowResult>;
+  /**
+   * The installed strategy is signed (`OverflowStrategy.signed`): handed a
+   * wire, it never needs to wait for a tool turn to end.
+   */
+  readonly signedOverflow: boolean;
   /** The runner's budget reading for the `before-overflow` slot. Consumes nothing. */
   readBudget(history: Message[]): BudgetInfo;
+  /**
+   * The runner's reading of the request about to be sent: the last reported
+   * usage plus a local count of `appended`, what that report does not cover;
+   * `appended` null when the report describes none of `history`, which is
+   * then counted locally. Consumes nothing.
+   */
+  readRequestBudget(history: Message[], appended: Message[] | null): BudgetInfo;
+  /** The runner's raw context window (`janitor.contextWindow`). */
+  readonly contextWindow: number;
+  /**
+   * The first reading of `history` after a landed compression: drops a
+   * reported usage that doesn't describe it, once (E10), as the runner's own
+   * budget check does.
+   */
+  dropStaleUsage(history: readonly Message[]): void;
   /**
    * Reads and clears the pending `requestNewContext()` flag. Read-and-clear
    * because the request belongs to exactly one compile, whatever that compile
@@ -202,6 +320,8 @@ export interface PipelineHost {
     dataXml: string,
     injectedMemoryKeys: string[],
   ): { topMessages: Message[]; tailDataXml: string };
+  /** The standing announcements, in insertion order. */
+  readonly announcements: readonly Announcement[];
   /**
    * Standing announcements split by channel, with `extra` (the handoff notice)
    * appended for this compile only.

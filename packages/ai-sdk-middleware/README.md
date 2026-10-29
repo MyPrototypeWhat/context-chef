@@ -74,7 +74,7 @@ const model = withContextChef(openai('gpt-4o'), {
 });
 ```
 
-> **In-flight vs durable.** Middleware `compress` is *in-flight*: it rewrites each outgoing request but does **not** mutate your message store. So for a *sustained* over-budget conversation (a long chat, or a long multi-step loop) the summary is discarded each call and the history re-expands — compression then effectively fires only every other call and the payload keeps growing. For a one-off spike that's fine; for sustained use, **persist** the summary via `onCompress`, or compact your own store with [`compactModelMessages`](#compactmodelmessagesmessages-model-options) (recommended). The middleware logs a one-time warning if `compress` keeps firing without `onCompress`.
+> **In-flight vs durable.** Middleware `compress` is *in-flight*: it rewrites each outgoing request but does **not** mutate your message store. So for a *sustained* over-budget conversation (a long chat, or a long multi-step loop) the summary is discarded each call and the history re-expands, so every call summarizes all of it again. For a one-off spike that's fine; for sustained use, **persist** the summary via `onCompress`, or compact your own store with [`compactModelMessages`](#compactmodelmessagesmessages-model-options) (recommended). The middleware logs a one-time warning if `compress` keeps firing without `onCompress`.
 
 ### Overflow Strategies
 
@@ -186,7 +186,7 @@ The middleware automatically extracts token usage from `generateText` and `strea
 
 ### Session Isolation (Multi-User Servers)
 
-A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, compression suppression, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
+A wrapped model is usually created once at module scope and reused across requests. Compression state (fed token usage, the post-compression flag, the failure circuit breaker) is tracked per **session** — pass a `sessionId` through `providerOptions` on each call so concurrent conversations never share state:
 
 ```typescript
 const model = withContextChef(openai('gpt-4o'), {
@@ -228,6 +228,31 @@ compact: {
 }
 ```
 
+### Append-Only Mode
+
+Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 sign their reasoning over everything before it, and reject a request that replays it after an earlier message changed. Every provider's prompt cache also misses from the first changed message on. By default the middleware rewrites earlier messages: dynamic state moves with the last user message, and a compression summary is recomputed on every call over budget. With `appendOnly: true`, each call's prompt repeats the one the session sent before and only appends:
+
+```typescript
+const model = withContextChef(baseModel, {
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { model: summarizerModel },
+  onPrefixBreak: ({ sessionId, reason, at, strippedThinking }) => {
+    console.info(`[${sessionId}] checkpoint (${reason}) at message ${at}`, { strippedThinking });
+  },
+});
+
+await generateText({ model, messages, providerOptions: { contextChef: { sessionId: conversationId } } });
+```
+
+- `dynamicState` becomes its own user message, appended once after the turn it changed in, with either placement. A compression lands once: later calls send its summary in place of what it covers.
+- Anything that rewrites what an earlier call sent (an edited history, a new system prompt or tool list, a compression) is a checkpoint, reported to `onPrefixBreak`. Reasoning an Anthropic-family provider signed (`@ai-sdk/anthropic`, `@ai-sdk/amazon-bedrock`) is removed from that point on; other reasoning stays.
+- Create the wrapped model once and give each conversation its own `sessionId`. Sessions live in the middleware instance: one created per request starts every session empty, and calls in one session run one at a time.
+- `compact` / `clear` settings that move with the conversation (`compact.toolCalls: 'before-last-…'`, `keepRecent`) and `transformContext` are warned when the middleware is created. `clearAt` is ignored here.
+- To persist a compression, write `details.replacement` back in place of `details.compressedMessages` in `onCompress`.
+
+Full rules: [Append-Only Prefix](https://myprototypewhat.github.io/context-chef/guide/append-only#ai-sdk-and-tanstack-ai).
+
 ## API
 
 ### `withContextChef(model, options)`
@@ -246,7 +271,7 @@ const wrappedModel = withContextChef(model, options);
 |---|---|---|---|
 | `contextWindow` | `number` | Yes | Model's context window size in tokens |
 | `compress` | `CompressOptions` | No | Enable LLM-based compression |
-| `compress.model` | `LanguageModelV3` | Yes (if compress) | Cheap model for summarization |
+| `compress.model` | `LanguageModelV4` | Yes (if compress) | Cheap model for summarization. Pass the model itself, not one wrapped with this middleware: with `appendOnly`, its call would wait behind the very call that is waiting for its summary, and neither would return |
 | `compress.preserveRatio` | `number` | No | Ratio of context to preserve (default: `0.8`) |
 | `compress.triggerRatio` | `number` | No | Fraction of `contextWindow` at which compression triggers (0–1]. Default `0.7` ("pre-rot" — model quality degrades well before the hard window limit, so compress early). Set to `1` to restore the pre-4.0 trigger-at-window behavior. With a `tokenizer`, `preserveRatio` applies to `contextWindow * triggerRatio`, not the raw window. |
 | `compress.minShrinkRatio` | `number` | No | A compression result must shrink the compressed span's character length by at least this ratio (0–1, default `0.5`). A failing summary is treated as a failed compression: history left unchanged, counts toward the circuit breaker. Set to `0` to disable the check. |
@@ -262,14 +287,16 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | No | Per-tool overrides. Bare string = preserve (and bypass storage); object = override params for that tool. Last entry wins on duplicates. |
 | `compact` | `CompactConfig` | No | Mechanical message pruning (reasoning, tool calls). Delegates to AI SDK's `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
-| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the AI-SDK-format (`LanguageModelV3Prompt`) slice the summary replaced — use it to persist the summary boundary in your store. |
+| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the AI-SDK-format (`LanguageModelV4Prompt`) slice the summary replaced — use it to persist the summary boundary in your store. Store the summary as a user message with exactly the `summary` text: after a compression, the usage the provider reports is trusted only while your history still holds that message; stored any other way (as a system message, behind a prefix of your own), the usage is ignored and the window is judged by its own count, an estimate unless you pass a `tokenizer`. |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings (storage write failures, missing usage data, misconfiguration); defaults to `console`. Forwarded to the underlying Janitor and Offloader. |
+| `appendOnly` | `boolean \| { clearAt?: boolean }` | No | Keep what was sent: each call's prompt repeats the session's previous one and only appends. See [Append-Only Mode](#append-only-mode). `clearAt` is ignored here. |
+| `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | No | `appendOnly`: called for each checkpoint a call applies — `{ sessionId, reason, at, signed, strippedThinking }`. |
 | `overflow` | `{ strategy?, archive? }` | No | The overflow axis — see [Overflow Strategies](#overflow-strategies). |
 | `overflow.strategy` | `OverflowStrategy` | No | `summarize()` / `anchored()` / `reset()` / `chain()` / `background()` from `@context-chef/core`, or your own. Supersedes the `compress` tuning options (`compress.model` included); the runner concerns still apply. Configuring one makes `contextWindow` required. |
 | `overflow.archive` | `CompressionArchiveConfig` | No | `{ store: (serialized, { messageCount }) => uri }` — keeps the evicted span retrievable behind the URI the summary cites. The `'vfs'` shorthand is core-only. |
 | `clear` | `ClearTarget[]` | No | Placeholder-style **tool-result** clearing. Cleared tool results become `'[Old tool result content cleared]'` — message structure stays intact, unlike `compact` which deletes. Runs AFTER compression. When tool results are targeted, an explainer system message is auto-injected. Only `'tool-result'` targets take effect; a `'thinking'` target is a no-op (logs a warning) — use `compact: { reasoning: ... }` to drop reasoning. `ClearTarget` is exported from `@context-chef/core`. |
 
-**Returns:** `LanguageModelV3` — a wrapped model that can be used anywhere the original model was used.
+**Returns:** `LanguageModelV4` — a wrapped model that can be used anywhere the original model was used.
 
 ### `createMiddleware(options)`
 
@@ -285,7 +312,7 @@ const model = wrapLanguageModel({ model: openai('gpt-4o'), middleware });
 
 ### `fromAISDK(prompt)` / `toAISDK(messages)`
 
-Low-level converters between AI SDK `LanguageModelV3Prompt` and context-chef `Message[]` IR. Useful if you want to use context-chef modules directly with AI SDK message formats.
+Low-level converters between AI SDK `LanguageModelV4Prompt` and context-chef `Message[]` IR. Useful if you want to use context-chef modules directly with AI SDK message formats.
 
 ```typescript
 import { fromAISDK, toAISDK } from '@context-chef/ai-sdk-middleware';
@@ -340,11 +367,12 @@ const next = await compactModelMessages(messages, summarizerModel, {
 if (next !== messages) await save(next); // skip persistence on a no-op
 ```
 
-- `model` is `ai`'s `LanguageModel` (`string id | V3 | V2`) — exactly what `prepareStep` / `generateText` give you.
+- `model` is `ai`'s `LanguageModel` (`string id | V4 | V3 | V2`) — exactly what `prepareStep` / `generateText` give you.
 - The cut lands only on **turn boundaries** (an assistant + its tool results stay together), so it never orphans a tool result or splits a multi-block assistant message.
 - System messages are preserved verbatim and never summarized.
 - Returns the **same `messages` reference** when there is nothing old enough to compact (no more turns than `keepRecentTurns`) or the summarizer yields no text — so you can skip persistence on a no-op via `next !== messages`. Safe to call unconditionally; throws only if the model call throws.
 - Accepts the same `SummarizeMessagesOptions` (`customCompressionInstructions`, `toolResultStubThreshold`) as `summarizeMessages`.
+- `keptReasoning: 'strip'` removes the signed reasoning (`@ai-sdk/anthropic`, `@ai-sdk/amazon-bedrock`) from the kept messages, and drops a reply that held nothing else; other providers' reasoning stays. A summary you write yourself is a checkpoint nobody signed, so on Claude Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 reasoning kept after it no longer verifies; `'strip'` returns a history you can send as it is. Default `'keep'`. `planCompactionModelMessages` takes it too.
 
 > Use this **or** in-flight `compress` for a given conversation — not both (that double-compresses).
 

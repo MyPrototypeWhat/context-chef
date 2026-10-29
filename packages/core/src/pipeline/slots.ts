@@ -34,7 +34,17 @@ export interface SlotHandlers {
     budget: BudgetInfo;
     // biome-ignore lint/suspicious/noConfusingVoidType: `void | false` is the veto contract — a handler returns nothing, or false to skip overflow.
   }) => void | false | Promise<void | false>;
-  /** Runs after the overflow phase. `result` is null when the phase was skipped. */
+  /**
+   * Runs after the overflow phase. `result` is null when the phase was
+   * skipped, or under `appendOnly` while a compaction waits for a tool turn
+   * to end.
+   *
+   * Under `appendOnly`, `history` is the window being sent and
+   * `result.history` may not be: a result that landed is re-rendered from the
+   * ledger (events at the start of what it kept go with the summary), and one
+   * that did not land leaves the window as it was, whatever history the
+   * strategy or an `onBeforeCompress` hook produced.
+   */
   'after-overflow': (ctx: {
     history: Message[];
     result: OverflowResult | null;

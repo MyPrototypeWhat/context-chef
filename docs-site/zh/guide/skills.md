@@ -48,6 +48,10 @@ const b = await chef.compile({ target: "anthropic" });
 
 位置只影响投递方式 —— `meta.activeSkillName`、`getActiveSkill()`、snapshot/restore 的行为完全不变。在 tail 里，skill 块位于固定拼接顺序的最前面（`<skill_instructions>` → `<memory>` → `<dynamic_state>` → `<implicit_context>` → `<announcements>` → anchor），让模型先读"你现在是谁"，再读它要作用的状态；它**不会**单独触发 anchor 那行文案 —— 它在自己的标签里已经自说明了。如果 `cacheAudit` 在你最后一个 `cache_control` 断点处或之前抓到 `<skill_instructions` 块，说明断点放晚了，不是 placement 的问题。
 
+::: tip `appendOnly` 下 <Badge type="tip" text="4.3" />
+打开 [`appendOnly`](/zh/guide/append-only) 后，没设置 `skillPlacement` 时等于 `'tail'`，上面的取舍也就不存在了：instructions 是一个事件，每次激活或切换时，作为最新一轮之后的一条 system 消息只发一次（`<skill_instructions rev="1" skill="NAME">`），之后留在原处。切换时追加下一个修订，并说明它取代之前的那个；`activateSkill(null)` 追加一条墓碑。显式设置的 `'after_system'` 会照办，这时每次变化都是一次 `system` 检查点。
+:::
+
 ## 从 `SKILL.md` 加载
 
 ```typescript

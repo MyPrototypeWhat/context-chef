@@ -1,9 +1,29 @@
-import { anthropicServerContextManagement } from '../../adapters/anthropicAdapter';
+import {
+  anthropicServerContextManagement,
+  replayedCompactionBetas,
+} from '../../adapters/anthropicAdapter';
 import type { AnthropicPayload, TargetPayload } from '../../types';
 import type { Phase } from '../context';
+import { reconcilePrefixSent, withoutStrippedThinking } from './prefix';
+
+/** Whether two lists of host ranges hold the same ranges. */
+const sameRanges = (
+  a: ReadonlyArray<readonly [number, number]>,
+  b: ReadonlyArray<readonly [number, number]>,
+): boolean =>
+  a.length === b.length && a.every(([from, until], i) => from === b[i][0] && until === b[i][1]);
+
+/** `betas` with `more` added, each once. */
+const withBetas = (betas: string[] | undefined, more: readonly string[]): string[] => [
+  ...new Set([...(betas ?? []), ...more]),
+];
 
 /**
  * Target adapter + tools + server-managed payload fields.
+ *
+ * Under `appendOnly` on Anthropic, the adapter renders the messages without
+ * the thinking unsigned checkpoints stripped, and a payload that replays a
+ * signed compaction block gets the beta it needs.
  */
 export const adaptPhase: Phase = {
   name: 'adapt',
@@ -12,7 +32,8 @@ export const adaptPhase: Phase = {
       await handler(ctx.messages);
     }
 
-    const adapterPayload = ctx.target.adapter.compile(ctx.messages);
+    const render = () => ctx.target.adapter.compile(withoutStrippedThinking(ctx, ctx.messages));
+    const adapterPayload = render();
     // The two library-owned tool sets never co-exist in one payload: they
     // describe the same operations in two vocabularies, and a model handed
     // both has to guess which one the host actually dispatches.
@@ -36,10 +57,29 @@ export const adaptPhase: Phase = {
         host.contextManagement?.server,
       );
       anthropicPayload.context_management = context_management;
-      anthropicPayload.betas = betas;
+      anthropicPayload.betas = withBetas(anthropicPayload.betas, betas);
+    }
+    // A signed compaction block leads the window — this compile's, one an unsigned compaction
+    // kept first since, or one a resumed history opens with: replaying it needs its beta.
+    if (ctx.target.isAnthropicTarget && ctx.prefix) {
+      const anthropicPayload = payload as AnthropicPayload;
+      const needed = replayedCompactionBetas(anthropicPayload);
+      if (needed.length > 0) anthropicPayload.betas = withBetas(anthropicPayload.betas, needed);
     }
 
     ctx.payload = payload;
+    // appendOnly: a changed system prompt or tool list is a checkpoint; then meta.prefix.
+    const strippedBefore = ctx.prefix?.ledger.stripped ?? [];
+    await reconcilePrefixSent(ctx, host);
+    const prefix = ctx.prefix;
+    if (
+      prefix &&
+      ctx.target.isAnthropicTarget &&
+      !sameRanges(strippedBefore, prefix.ledger.stripped)
+    ) {
+      // That checkpoint stripped thinking signed over what was sent before: render without it.
+      payload.messages = render().messages;
+    }
 
     for (const handler of host.slots.get('after-adapt')) {
       await handler(payload);

@@ -127,6 +127,7 @@ ContextChef 把无界的信息编译进有界的窗口。本 README 里的每一
 - **长程任务跑偏？** — Zod schema 强类型状态注入，每次调用前强制对齐当前任务焦点
 - **输出格式跑偏？** — Guardrail：`withGuardrails` 强制 XML 输出契约并设置 assistant prefill，在不支持原生 prefill 的 provider 上自动降级
 - **每轮都在击穿 prompt cache？** — `memoryPlacement: 'before_history_tail'` 和 `skillPlacement: 'tail'` 把易变文本移出可缓存前缀；`cacheAudit` 会点名仍然留在里面的内容
+- **Claude 拒绝回放的 thinking？** — `appendOnly`（4.3）：每次的 payload 都完整重复上一次，只在末尾追加。注入变成只追加一次的事件，压缩只落地一次（`onDemandCompaction()` 让 Anthropic 签名），任何改写已发送内容的操作都是被报告的检查点
 
 **③ 持久化 —— 离开窗口后住在哪**
 
@@ -271,12 +272,23 @@ chef.setDynamicState(TaskSchema, { activeFile: "auth.ts", todo: ["Fix bug"] });
 chef.withGuardrails({
   enforceXML: { outputTag: "final_code" }, // wraps output rules in EPHEMERAL_MESSAGE
   prefill: "<thinking>\n1.", // trailing assistant message (auto-degraded for OpenAI/Gemini)
+  prefillMode: "native", // default; "instruction" never sends a trailing assistant message
 });
 ```
 
 **v4 语义。** options 现在会被*存储*并在 `compile()` 时应用，因此与 `setDynamicState` 的调用顺序不再重要（4.0 之前，在 `withGuardrails` 之后调用 `setDynamicState` 会静默丢弃护栏）。每次调用会**替换**上一次的 options（不累积）；`withGuardrails(null)` 清除。存储的 options 会随 `ChefSnapshot` 持久化（`guardrailOptions`），护栏消息作为独立消息落在三明治最末端 —— 离生成最近，不再合并进动态状态消息。
 
-**缓存安全落点（4.1）。** `placement: 'last_user'` 会把 enforce-XML 指令通过最后一条 user 消息的尾部注入送达（与动态状态同一通道），而不是走 system message。这在 Anthropic 上很关键：每条 `role: 'system'` 消息都会被提取进 top-level `system` 前缀，因此在默认的 `placement: 'system'` 下，护栏一有改动就会击穿其下游的所有 cache breakpoint。`prefill` 在两种落点下均不受影响。
+**缓存安全落点（4.1）。** `placement: 'last_user'` 会把 enforce-XML 指令通过最后一条 user 消息的尾部注入送达（与动态状态同一通道），而不是走 system message。这在 Anthropic 上很关键：每条 `role: 'system'` 消息都会被提取进 top-level `system` 前缀，因此在默认的 `placement: 'system'` 下，护栏一有改动就会击穿其下游的所有 cache breakpoint。原生 `prefill` 在两种落点下均不受影响。
+
+**Prefill 模式（4.3）。** Claude Sonnet 4.6、Sonnet 5、Sonnet 5.5 和 Haiku 5.5 会拒绝最后一轮是 assistant prefill 的请求（400："This model does not support assistant message prefill"）。设置 `prefillMode: 'instruction'` 后，任何 target 都不会出现尾部 assistant 消息，改为发送一条「回复必须以 prefill 文本开头」的指令，和 enforce-XML 指令一起送到 `placement` 指定的位置。在 Anthropic 上，默认的 `placement: 'system'` 对应 top-level `system`，只在 options 变化时才会改变。默认的 `'native'` 保留尾部 assistant 消息。ContextChef 不知道 payload 是发给哪个模型的，所以模式由你来设：
+
+```typescript
+chef.withGuardrails({
+  enforceXML: { outputTag: "answer" },
+  prefill: "<answer>",
+  prefillMode: "instruction",
+});
+```
 
 #### `chef.compile(options?): Promise<TargetPayload>`
 
@@ -357,7 +369,7 @@ Runner 选项 —— 什么时候触发压缩、拿什么去量、压缩前后�
 | `triggerRatio`                  | `number`                                    | `0.7`  | 触发压缩的 `contextWindow` 占比（"腐烂前"提前压缩）。设为 `1` 可恢复 4.0 之前打满窗口才触发的行为。 |
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                       |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`| 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。无 `tokenizer` 时取值范围收窄为 `'max' \| 'feedFirst'`，TypeScript 在编译期拒绝 `'tokenizerFirst'`。完整说明见 [core 包 README](./packages/core)。 |
-| `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
+| `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。要把摘要留在你自己的历史里，就原样保存它，角色和内容都不变（`appendOnly` 下按原样写回 `details.replacement`）：之后上报的用量只在历史里还有这条消息时才算数；换一种方式保存（存成 system 消息、加上你自己的前缀），这份用量就被忽略，窗口按它自己的计数来判断，没有配置 `tokenizer` 时这个计数只是估算。 |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | 预算判定认为要执行溢出之后、策略运行之前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。它没有被废弃，也不是 `before-overflow` 插槽 —— 那个在 chef 这一层，每次 compile 都会触发。 |
 | `logger`                        | `ChefLogger`                                | —      | 降级警告的日志接收器（存储/压缩），默认使用 `console`。 |
 | `strategy`                      | `OverflowStrategy`                          | —      | runner 应用的策略。直接构造 `Janitor` 时用它；经 `ContextChef` 请用 `overflow.strategy`。 |
@@ -528,6 +540,8 @@ chef.setHistory(safeHistory);
 ```
 
 > **边界契约**：所有 input adapter（`fromOpenAI` / `fromAnthropic` / `fromGemini`，以及 middleware 内部的 `fromAISDK` / `fromTanStackAI`）都会在出口自动跑一次 `ensureValidHistory` —— 它们是外部 SDK 格式与 ContextChef IR 之间的系统边界。`chef.setHistory(IR)` **不**做 sanitize：IR 是内部协议，直接构造或 mutate 出来的 history 视为已满足契约。如果不确定，显式用 `ensureValidHistory(...)` 包一下。
+>
+> 用 `fromAnthropic` 解析的 history，只要没被改动，就会逐字节原样发回 Anthropic：所有 thinking 块、分开的 text 块、同一条 user 消息里的并行 tool result，以及 IR 不建模的块（server tool use、web search 结果）都保持进来时的样子，只有 cache breakpoint 会换成 chef 自己的。Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会对每个 thinking 块连同它之前的全部内容签名，2026-08-31 及之后创建的账号上，只要较早的某一轮和模型当时看到的不一致，API 就返回 400。解析出的消息一旦被改动（tool result 被清除、thinking 被剥离），就会像以前一样从 IR 字段重建；打开 `appendOnly` 时，被检查点剥掉 thinking 的消息，其余的块保持进来时的样子。默认情况下，尾部注入和客户端 overflow 仍会改动之前的轮次。[`appendOnly`](https://myprototypewhat.github.io/context-chef/zh/guide/append-only) 让已发送的内容留在原处；也可以在请求里设置 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`（beta `thinking-binding-controls-2026-08-01`），让对不上的 thinking 被丢掉而不是整个请求失败——见 [Claude thinking 前缀校验](https://myprototypewhat.github.io/context-chef/zh/guide/thinking-prefix)。
 
 #### `chef.clearHistory(): this`
 
@@ -712,7 +726,7 @@ const payload = await chef.compile({ target: "anthropic" });
 
 - 在服务端托管的 target 上，客户端的 overflow 阶段被完全跳过；机械 `compact()` 和其他模块照常运行。
 - 第一个参数是按 provider 形状原样透传的 edits 配置，例如 `{ edits: [{ type: 'compact_20260112', trigger: { ... } }] }` 或 `{ edits: [{ type: 'clear_tool_uses_20250919' }] }`。`payload.betas` 自动推导：compaction 类 edit 对应 `'compact-2026-01-12'`，clear-tool-uses / clear-thinking 类 edit 对应 `'context-management-2025-06-27'`。
-- **compaction 块往返**：`fromAnthropic` 把 API 的 `{ type: 'compaction', content }` 块映射为标记 `pinned: true` 的透传消息，Anthropic adapter 在下次编译时把该块原文重新放在最前面 —— 服务端产出的摘要原样穿过客户端管道。
+- **compaction 块往返**：`fromAnthropic` 把 API 的 `{ type: 'compaction', content }` 块映射为标记 `pinned: true` 的透传消息，Anthropic adapter 在下次编译时把该块原文重新放在最前面 —— 服务端产出的摘要原样穿过客户端管道。解析出的消息未被改动时，会整条重放原始消息，因此 IR 不携带的字段（比如该块的 signature）也会保留。
 
 这是混合定位，不是二选一：LLM 压缩可以交给 provider，同时 ContextChef 继续做服务端不做的部分 —— 裁剪、skills、记忆、VFS 和动态状态。AI SDK 用户有配套防护：middleware 检测到某次调用带 `providerOptions.anthropic.contextManagement` 时，会为该次调用跳过自己的压缩（见 [ai-sdk-middleware README](./packages/ai-sdk-middleware/README.md#anthropic-server-side-context-management)）。
 
@@ -1386,9 +1400,33 @@ chef.restore(snap); // rolls back everything: history, dynamic state, janitor st
 
 ---
 
+### Append-only 前缀（4.3）
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 的每个 thinking 块，签名都覆盖它前面的全部内容；之前某一轮变了还回放这段 thinking，请求就会被拒（400）。默认情况下，chef 每次 compile 都把注入渲染在末尾，上一轮它们所在的位置因此改变，在途摘要也会重算。打开 `appendOnly` 后，每次的 payload 都完整重复上一次，只在末尾追加：
+
+```typescript
+const chef = new ContextChef({
+  appendOnly: true,
+  janitor: { contextWindow: 200_000, compressionModel },
+});
+
+chef.on("prefix:break", ({ reason, at, strippedThinking }) => {
+  // something rewrote what was already sent: a reported checkpoint
+});
+```
+
+- dynamic state、announcement、skill 指令、memory、guardrail 和 handoff 提醒都变成事件：在它们变化的那一轮之后追加一次，之后原样留在那里。chef 从不改写你的 history。
+- 压缩只落地一次，没签名的压缩会等到 user 轮边界。`onDemandCompaction({ compact, fallback })` 请 Anthropic 做一次由它签名的压缩，后面轮次的 thinking 得以保留。
+- 任何改写已发送内容的操作（改了 history、换了 system prompt 或工具列表、一次压缩）都是检查点，通过 `prefix:break` 和 `meta.prefix` 报告。在 Anthropic 上，失效的 thinking 不会再放进请求。
+- 每个请求新建一个 chef 时，必须在每次 compile 之后保存 `snapshot()`，在请求的 tool call 执行完后再保存一次，并在下一个请求里恢复，否则每个请求一开始都是一次 `ledger` 检查点。memory 放在共享存储里时，恢复时跳过 memory 部分（恢复 memory 会把存储回滚）：`chef.restore({ ...saved, modules: { ...saved.modules, memory: null } })`。无论哪种情况，都要在 `restore()` 之后再设置 system prompt、tools 和状态，因为它会用保存的值替换它们。
+
+默认关闭，关闭时 `appendOnly` 不改变任何行为。AI SDK 和 TanStack AI 的 middleware 同样支持 `appendOnly`。完整指南：[Append-only 前缀](https://myprototypewhat.github.io/context-chef/zh/guide/append-only)。
+
+---
+
 ### 管道插槽（4.2）
 
-`compile()` 是一串有名字的阶段 —— `start` → `transform-tool-results` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`。插槽就是在这些阶段边界上触发的组合点。和事件不同，插槽 handler **参与**编译：它可以否决溢出、注入上下文、改写已装配的消息。
+`compile()` 是一串有名字的阶段 —— `start` → `transform-tool-results` → `prefix` → `handoff` → `overflow` → `inject` → `memory` → `skill` → `assemble` → `tail` → `adapt` → `audit` → `done`。插槽就是在这些阶段边界上触发的组合点。和事件不同，插槽 handler **参与**编译：它可以否决溢出、注入上下文、改写已装配的消息。
 
 ```typescript
 chef

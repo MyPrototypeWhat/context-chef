@@ -7,7 +7,7 @@
  * events stay with the runner ({@link Janitor}) — a strategy is pure policy.
  */
 
-import type { ChefLogger, Message } from '../types';
+import type { ChefLogger, Message, TargetPayload } from '../types';
 
 /**
  * Token budget of one compile, as read by the overflow runner.
@@ -98,7 +98,87 @@ export interface OverflowInput {
    * leaving only what the pending request needs.
    */
   forced?: boolean;
+  /**
+   * The runner called only so a result computed earlier can land
+   * ({@link OverflowStrategy.pending}): the window is within budget and
+   * nothing — `forced`, `pastLimit`, `collapse` — asks for a compaction, or
+   * the circuit breaker is open and the request is not past the raw context
+   * window (`pastLimit`). Only the parts that have a result waiting act on
+   * it; nothing new is computed.
+   */
+  pendingOnly?: true;
+  /**
+   * `appendOnly`: `history` is the chef's window — the head of the last
+   * compaction, the host's messages after it, and the chef's events among
+   * them (`_chef_event`). Between compactions it only grows at its end;
+   * anything else is a checkpoint that rewrote it. A strategy is applied to
+   * it only between turns, or to collapse it (`collapse`) — a signed one
+   * handed a `wire` in a tool turn as well.
+   */
+  appendOnly?: true;
+  /**
+   * `appendOnly`: the request about to be sent is past the raw context
+   * window (`budget.limit`), by the pipeline's reading of it — the last usage
+   * report plus what that report does not cover. Nothing may wait for a later
+   * compile: a strategy that would (`background()`) acts on this one, and in
+   * a tool turn the window collapses (`collapse`) unless the strategy is
+   * signed and handed a `wire`. The runner skips its own budget verdict, and
+   * an open circuit breaker does not hold the call back.
+   */
+  pastLimit?: true;
+  /**
+   * `appendOnly`: a tool turn is in progress — the history ends in tool
+   * results or tool calls still waiting for theirs — so this compile is not
+   * at a user-turn boundary. An unsigned result would strip the thinking the
+   * turn still needs: a strategy is applied here only to collapse the window
+   * (`collapse`), or when it is signed and handed a `wire`, and then a
+   * fallback it runs instead must respect the same rule.
+   */
+  midToolTurn?: true;
+  /**
+   * `appendOnly`: the window cannot wait for the turn in progress to end — a
+   * tool turn is still going, and the model asked for a new window or the
+   * window outgrew the raw context window. Keep no turn: summarize every one,
+   * the turn in progress included, into the summary message (pinned messages
+   * still go back after it) — but a tool call still waiting for its result,
+   * which the result must follow. Read by the built-in strategies.
+   */
+  collapse?: true;
+  /**
+   * `appendOnly`, on a target whose provider signs a compaction over what was
+   * sent: `history` as the previous requests sent it. Absent before anything
+   * was sent, and on other targets. Read by signed strategies.
+   */
+  wire?: OverflowWire;
+  /**
+   * The compile's signal, or inside `background()` the job's own, aborted
+   * when the job is dropped. Once it is aborted, a failure is no failed
+   * compression: reject with its reason and report nothing.
+   */
   signal?: AbortSignal;
+}
+
+/**
+ * The window as it went over the wire, for a strategy whose checkpoint the
+ * provider signs over those bytes (an on-demand compaction).
+ */
+export interface OverflowWire {
+  /** The compile target the bytes are for (`'anthropic'`). */
+  readonly target: string;
+  /**
+   * The window it renders: the `history` the overflow phase handed the
+   * runner. A strategy handed another array — an `onBeforeCompress` hook
+   * rewrote the window, an earlier `chain()` step changed it — holds
+   * messages this wire cannot vouch for.
+   */
+  readonly history: readonly Message[];
+  /**
+   * `history[0, end)` as the target payload sent it — same messages, the
+   * thinking unsigned checkpoints stripped left out — with the system prompt
+   * and tools the last payload carried. Request-level betas the strategy
+   * adds itself; the payload carries only the ones its messages need.
+   */
+  renderPrefix(end: number): TargetPayload;
 }
 
 /** What a strategy did to the window. */
@@ -127,9 +207,12 @@ export interface OverflowResult {
    * The summary text the strategy produced, WITHOUT the continuation wrapper.
    *
    * When set, `history[0]` is that text rendered through
-   * {@link renderSummaryMessage}: the runner re-renders it in place when the
-   * archive post-step has a citation to append, which is why the raw text
-   * travels alongside the message instead of only inside it.
+   * {@link renderSummaryMessage} — or the message after the compaction blocks
+   * (`_anthropic_compaction`) the result keeps first, since nothing may come
+   * before one, and after the opening placeholder kept before them, which
+   * text targets need first (`summaryHead`): the runner re-renders it in
+   * place when the archive post-step has a citation to append, which is why
+   * the raw text travels alongside the message instead of only inside it.
    */
   summary?: string;
   meta: {
@@ -146,6 +229,23 @@ export interface OverflowResult {
     changed: boolean;
     /** Why nothing changed, or how the change was produced. */
     reason?: string;
+    /**
+     * The window changed, but a step the result needed changed nothing:
+     * `background()` landed a job whose window is still past the raw context
+     * window, and summarizing that failed. The runner does not clear the
+     * circuit breaker for it, so a failure that step counted stays counted;
+     * `chain()` passes it on from any step.
+     */
+    partial?: true;
+    /**
+     * The provider signed this result over `request` — the start of the
+     * window it replaces, as `wire.renderPrefix()` rendered it when the
+     * strategy ran (`onDemandCompaction`). It lands as a signed checkpoint:
+     * nothing is stripped, and the turns it keeps keep their thinking. A
+     * result computed earlier lands only while the window still renders
+     * `request` the same.
+     */
+    signed?: { readonly request: TargetPayload };
   };
 }
 
@@ -163,17 +263,18 @@ export interface OverflowRunner {
    *
    * The count is provisional. A later step of a chain may still change the
    * window, and the runner then clears it — the breaker only advances when the
-   * whole overflow leaves history unchanged, so a warning is a report on one
-   * step, not a verdict on the overflow it belongs to.
+   * whole overflow leaves history unchanged or lands `partial`, so a warning is
+   * a report on one step, not a verdict on the overflow it belongs to.
    */
   fail(reason: string, ...details: unknown[]): void;
   /**
    * Resets the circuit breaker.
    *
    * Rarely needed: the runner already clears the count whenever an overflow
-   * returns `changed: true`, so a strategy that lands a result is credited
-   * without asking. Call it for a success that never reaches the window —
-   * and note that a detached strategy has no breaker to reset.
+   * returns `changed: true` and not `partial`, so a strategy that lands a
+   * result is credited without asking. Call it for a success that never
+   * reaches the window, or one that lands `partial`, before the step that
+   * failed — and note that a detached strategy has no breaker to reset.
    */
   succeed(): void;
   readonly logger: ChefLogger;
@@ -214,15 +315,34 @@ export interface OverflowStrategy {
    * off-turn strategies (`background()`) only. The runner asks before it
    * evaluates the budget: a summary that is already paid for lands on the next
    * compile whatever the window currently costs, because holding it means the
-   * model keeps paying for the span it replaces.
+   * model keeps paying for the span it replaces. A call made for that alone
+   * comes with `pendingOnly`.
    */
   pending?(): boolean;
+  /**
+   * Drops a result computed earlier that is waiting to land, or the work
+   * still computing it: the window it was meant for is gone. Nothing lands
+   * and nothing is counted. Combinators pass it on.
+   */
+  discard?(): void;
   /** Serializable state, for `Janitor.snapshotState()`. Stateless strategies omit it. */
   snapshot?(): unknown;
   /** Restores {@link snapshot} output. `restore(undefined)` resets to the initial state. */
   restore?(state: unknown): void;
   /** @internal The runner installs its circuit breaker and logger here. */
   attach?(runner: OverflowRunner): void;
+  /**
+   * Whenever it is handed a `wire`, the provider signs what it returns
+   * (`onDemandCompaction`): under `appendOnly` its result keeps the thinking
+   * of the turns it keeps, so it does not wait for a tool turn to end. A
+   * combinator is signed when every strategy it may run is.
+   */
+  readonly signed?: true;
+  /**
+   * @internal The strategies it may run in its place — a combinator's steps,
+   * a fallback — so a check of the configuration as a whole sees inside it.
+   */
+  readonly parts?: readonly OverflowStrategy[];
 }
 
 /**

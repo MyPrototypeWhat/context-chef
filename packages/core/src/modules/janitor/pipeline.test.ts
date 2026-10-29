@@ -3,6 +3,7 @@ import {
   background,
   ContextChef,
   chain,
+  type OverflowInput,
   type OverflowStrategy,
   reset,
   summarize,
@@ -546,9 +547,6 @@ describe('Janitor — incremental-anchored mode', () => {
     expect(janitor.getAnchorDoc()).toBe('ANCHOR-v1');
     expect(r1[0].content).toContain('ANCHOR-v1');
 
-    // E10 suppression consumes the call right after a successful compression.
-    await janitor.compress(buildHistory(7));
-
     // Second compression: instruction embeds the current anchor
     const r2 = await janitor.compress(buildHistory(7));
     const instruction2 = captured[1][captured[1].length - 1].content;
@@ -906,9 +904,6 @@ describe('Janitor — review fixes', () => {
     await janitor.compress(buildLongHistory(5, 5000));
     expect(janitor.getAnchorDoc()).toBe(bigAnchor);
 
-    // E10 suppression consumes the call right after a successful compression.
-    await janitor.compress(buildLongHistory(6, 5000));
-
     // Next compression over a long span: absolute anchor size (9k) far
     // exceeds naive shrink limits, but GROWTH (8 chars) passes easily.
     const r2 = await janitor.compress(buildLongHistory(6, 5000));
@@ -958,9 +953,6 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
     });
 
     for (let round = 0; round < 4; round++) {
-      // E10 suppression consumes the call right after a successful overflow.
-      if (round > 0) await janitor.overflow(buildLongHistory(5));
-
       const result = await janitor.overflow(buildLongHistory(5));
 
       expect(result.meta.changed).toBe(true);
@@ -1021,6 +1013,114 @@ describe('Janitor — the breaker counts the overflow, not the step', () => {
 
     expect(result.meta.changed).toBe(true);
     expect(janitor['_consecutiveFailures']).toBe(0);
+  });
+
+  describe('a call made only so a waiting result can land', () => {
+    /** Always has a result waiting, and records what it is handed. */
+    const waiting = () => {
+      const inputs: OverflowInput[] = [];
+      const strategy: OverflowStrategy = {
+        name: 'waiting',
+        pending: () => true,
+        async apply(input) {
+          inputs.push(input);
+          return {
+            history: input.history,
+            evicted: [],
+            span: [],
+            meta: { strategy: 'waiting', windowId: input.window.current, changed: false },
+          };
+        },
+      };
+      return { strategy, inputs };
+    };
+
+    it.each([
+      ['within budget', 2, 0, {}, true],
+      ['over budget', 5, 0, {}, undefined],
+      ['over budget, past an open breaker', 5, 3, {}, true],
+      ['forced, past an open breaker', 2, 3, { force: true }, true],
+      // Past the raw window the call is a whole one, open breaker or not.
+      ['past the raw window, past an open breaker', 2, 3, { pastLimit: true }, undefined],
+    ])('%s', async (_, length, failures, options, pendingOnly) => {
+      const { strategy, inputs } = waiting();
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        strategy,
+      });
+      seedFailures(janitor, failures);
+
+      await janitor.overflow(buildLongHistory(length), options);
+
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0].pendingOnly).toBe(pendingOnly);
+    });
+  });
+
+  it('lands nothing for an aborted overflow: no onCompress, the lineage and the count stay', async () => {
+    const controller = new AbortController();
+    const onCompress = vi.fn();
+    const janitor = new Janitor({
+      contextWindow: 30,
+      triggerRatio: 1,
+      tokenizer: makeTokenizer(10),
+      preserveRatio: 0.3,
+      onCompress,
+      // The compile is aborted while the summary is written.
+      compressionModel: async () => {
+        controller.abort();
+        return '<summary>S</summary>';
+      },
+    });
+    seedFailures(janitor, 2);
+    const window = { ...janitor.window };
+
+    await expect(
+      janitor.overflow(buildLongHistory(5), { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(onCompress).not.toHaveBeenCalled();
+    expect(janitor.window).toEqual(window);
+    expect(janitor['_consecutiveFailures']).toBe(2);
+  });
+
+  describe('an open breaker and the raw context window', () => {
+    it.each([
+      ['runs the strategy between turns past the raw window', { pastLimit: true }, true],
+      [
+        'runs the strategy collapsing a tool turn past the raw window',
+        { pastLimit: true, collapse: true, midToolTurn: true },
+        true,
+      ],
+      [
+        'idles collapsing a tool turn the model asked to end',
+        { force: true, collapse: true, midToolTurn: true },
+        false,
+      ],
+      ['idles on a forced call', { force: true }, false],
+      ['idles over budget', {}, false],
+    ])('%s', async (_, options, runs) => {
+      const apply = vi.fn(async (input: OverflowInput) => ({
+        history: input.history,
+        evicted: [],
+        span: [],
+        meta: { strategy: 'declines', windowId: input.window.current, changed: false },
+      }));
+      const janitor = new Janitor({
+        contextWindow: 30,
+        triggerRatio: 1,
+        tokenizer: makeTokenizer(10),
+        strategy: { name: 'declines', apply },
+      });
+      seedFailures(janitor, 3);
+
+      const result = await janitor.overflow(buildLongHistory(5), options);
+
+      expect(apply).toHaveBeenCalledTimes(runs ? 1 : 0);
+      if (!runs) expect(result.meta.reason).toContain('circuit breaker open');
+    });
   });
 
   describe('background()', () => {

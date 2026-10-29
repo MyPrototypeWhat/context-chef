@@ -5,9 +5,11 @@ import {
   type UsagePreferenceWithoutTokenizer,
   type UsagePreferenceWithTokenizer,
 } from '../modules/janitor';
+import { combinesServerAndOnDemand } from '../overflow/onDemand';
 import type { CompressionArchiveConfig, OverflowStrategy } from '../overflow/types';
 import type { ChefLogger, Message } from '../types';
 import { dedupeConstructionWarnings, SessionPool } from '../utils/sessionPool';
+import { estimateMessages } from '../utils/tokenUtils';
 
 /**
  * After this many compressions fire without a persistence hook, warn once.
@@ -46,11 +48,15 @@ export interface JanitorPoolConfig<THostMessages> {
   /** Resolved summarizer callback, built from the integration's model type. */
   compressionModel?: (messages: Message[]) => Promise<string>;
   tokenizer?: (messages: Message[]) => number;
-  /** The host's post-compression hook, reported in host message shape. */
+  /**
+   * The host's post-compression hook, reported in host message shape. With
+   * `appendOnly`, `details.replacement` is what to write back in place of the
+   * compressed messages to persist the compaction (`CompressionDetails`).
+   */
   onCompress?: (
     summary: string,
     truncatedCount: number,
-    details: { compressedMessages: THostMessages },
+    details: { compressedMessages: THostMessages; replacement?: THostMessages },
   ) => void;
   onBeforeCompress?: JanitorConfig['onBeforeCompress'];
   /** Converts the compressed IR slice into the host's message format. */
@@ -107,6 +113,28 @@ export interface IntegrationOverflowOptions {
 export function createJanitorPool<THostMessages>(
   config: JanitorPoolConfig<THostMessages>,
 ): SessionPool<Janitor> | null {
+  const build = janitorFactory(config, createPersistenceWarner(config));
+  return build && new SessionPool(build, { maxSize: config.maxSessions });
+}
+
+/**
+ * What builds one session's Janitor from an integration's config: the
+ * Janitor half of {@link createJanitorPool}, which the `appendOnly` session
+ * pool shares. `null` when no option signals compression intent; throws when
+ * one does without a `contextWindow`.
+ *
+ * `onCompressionFired` is told of every compression that lands. With
+ * `appendOnly` the session's ledger owns the window: each Janitor counts
+ * attachments at a flat cost in every reading, as the session's own check
+ * does.
+ *
+ * @internal
+ */
+export function janitorFactory<THostMessages>(
+  config: Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'>,
+  onCompressionFired: () => void,
+  appendOnly = false,
+): (() => Janitor) | null {
   const budgeting = Boolean(
     config.compress || config.onCompress || config.onBeforeCompress || config.overflow?.strategy,
   );
@@ -121,20 +149,26 @@ export function createJanitorPool<THostMessages>(
     );
   }
 
-  const onCompressionFired = createPersistenceWarner(config);
+  const strategy = config.overflow?.strategy;
+  if (strategy && combinesServerAndOnDemand(strategy)) {
+    config.logger.warn(
+      '[context-chef] server() and onDemandCompaction() are configured together, and neither ' +
+        'reaches the provider here: an integration sends no server-side context_management and ' +
+        'has no compiled request for an on-demand compaction, so each one only runs its ' +
+        'fallback. Keep one of the two.',
+    );
+  }
 
-  return new SessionPool(
-    dedupeConstructionWarnings(config.logger, (constructionLogger) =>
-      buildJanitor(config, contextWindow, constructionLogger, onCompressionFired),
-    ),
-    { maxSize: config.maxSessions },
+  return dedupeConstructionWarnings(config.logger, (constructionLogger) =>
+    buildJanitor(config, contextWindow, constructionLogger, onCompressionFired, appendOnly),
   );
 }
 
 /**
  * Surfaces the in-flight-without-persistence footgun: if compression keeps
  * firing but no `onCompress` is configured, the summary is discarded each
- * call and history re-expands, so the payload grows unbounded.
+ * call and history re-expands, so every call over budget summarizes the whole
+ * growing history again.
  *
  * Shared by every pooled Janitor so the fire count is per middleware
  * instance, not per session.
@@ -167,10 +201,11 @@ function createPersistenceWarner<THostMessages>(
  * narrow to either branch.
  */
 function buildJanitor<THostMessages>(
-  config: JanitorPoolConfig<THostMessages>,
+  config: Omit<JanitorPoolConfig<THostMessages>, 'persistenceWarning'>,
   contextWindow: number,
   logger: ChefLogger,
   onCompressionFired: () => void,
+  appendOnly: boolean,
 ): Janitor {
   const { onCompress, toHostMessages } = config;
   const sharedJanitorConfig = {
@@ -187,10 +222,12 @@ function buildJanitor<THostMessages>(
       onCompressionFired();
       onCompress?.(summary.content, count, {
         compressedMessages: toHostMessages(details.compressedMessages),
+        ...(details.replacement ? { replacement: toHostMessages(details.replacement) } : {}),
       });
     },
     onBeforeCompress: config.onBeforeCompress,
     logger,
+    ...(appendOnly ? { estimate: estimateMessages } : {}),
   };
 
   let usagePreference = config.compress?.usagePreference;

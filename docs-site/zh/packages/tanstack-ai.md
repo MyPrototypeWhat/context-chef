@@ -71,7 +71,7 @@ contextChefMiddleware({
 
 ### 会话隔离
 
-压缩状态（fed token 用量、压缩抑制、失败熔断器）按 `ctx.threadId` 跟踪，一个 middleware 实例可以安全服务多段对话。给 `chat()` 传 `threadId`（`conversationId` 是仍可用的废弃别名）；不传的调用会拿到按 run 自动生成的 id —— run 内隔离，但跨调用无连续性。最多并发跟踪 `maxSessions` 段对话（默认 256，LRU 淘汰）。
+压缩状态（fed token 用量、压缩后标记、失败熔断器）按 `ctx.threadId` 跟踪，一个 middleware 实例可以安全服务多段对话。给 `chat()` 传 `threadId`（`conversationId` 是仍可用的废弃别名）；不传的调用会拿到按 run 自动生成的 id —— run 内隔离，但跨调用无连续性。最多并发跟踪 `maxSessions` 段对话（默认 256，LRU 淘汰）。
 
 ### Compact（机械裁剪）
 
@@ -115,7 +115,7 @@ contextChefMiddleware({
 })
 ```
 
-状态序列化为 XML 后注入最后一条 user 消息（利用近因偏置）或作为 system prompt。`getState` 在初始化和每次 agent 迭代时调用；之前注入的块会被**替换**，永不重复。
+状态序列化为 XML 后注入最后一条 user 消息（利用近因偏置）或作为 system prompt。`getState` 在初始化和每次 agent 迭代时调用；之前注入的块会被**替换**，永不重复。打开 `appendOnly` 时，`getState` 只在每次模型调用的触发里运行，初始化时不调用，也不再替换：状态变化时追加一条新的 user 消息，之前的留在发送时的位置。
 
 ### Skill 注入
 
@@ -136,11 +136,29 @@ contextChefMiddleware({
 })
 ```
 
-`transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。
+`transformContext` 在每次 `onConfig` 触发时运行（初始化 + 每次 agent 迭代），其输出会带入下一次触发 —— 请保证幂等，或用 `ctx.phase === 'init'` 做闸门。打开 `appendOnly` 时，`init` 原样放行，所以用 `ctx.phase === 'init'` 做闸门的 hook 永远不会运行。它只在每次模型调用的触发里、在对话被记录之后运行，添加的内容也不会被带入下一次：它添加或改动的内容，每次调用都必须完全一样、位置也一样。每次调用都会变的内容请放进 `dynamicState`。
+
+### Append-only 模式
+
+Claude Fable 5.1、Opus 5.5、Sonnet 5.5 和 Haiku 5.5 会拒绝这样的请求：回放的 thinking 前面有任何内容发生了变化；所有 provider 的提示缓存也会从第一条被改动的消息开始失效。默认情况下，middleware 每轮迭代都会替换它的 dynamic state 块，超出预算时每次调用都重新计算压缩摘要。打开 `appendOnly: true` 后，每次模型调用的请求都重复这个对话上一次发出的内容，只在末尾追加；仍然会改写它的操作都是检查点，报告给 `onPrefixBreak`。
+
+```typescript
+// 只创建一次，每次 chat() 调用都复用
+const contextChef = contextChefMiddleware({
+  appendOnly: true,
+  contextWindow: 200_000,
+  compress: { adapter: summarizerAdapter },
+  onPrefixBreak: (event) => console.info(event),
+});
+
+const stream = chat({ adapter, messages, threadId: conversationId, middleware: [contextChef] });
+```
+
+每个对话传自己的 `threadId`（不传的话每次 run 都从空白开始），middleware 只创建一次。`dynamicState` 变成独立的 user 消息，每次变化只追加一次；压缩只落地一次；检查点只剥带签名的 thinking。其他 middleware 不能修改本 middleware 返回的消息；持久化时保存客户端的对话，而不是引擎的消息。完整规则见 [Append-only 前缀](/zh/guide/append-only#tanstack-ai-的细节)。
 
 ### 永不打断 host run
 
-在 `@tanstack/ai` 0.44 中，middleware 钩子抛异常会让整个 `chat()` run 失败。本 middleware 包裹每个钩子体：遇到意外错误时通过配置的 `logger` 记录，并原样透传请求，而不是打断你的调用。
+在 `@tanstack/ai` 0.44 中，middleware 钩子抛异常会让整个 `chat()` run 失败。本 middleware 包裹每个钩子体：遇到意外错误时通过配置的 `logger` 记录，并原样透传请求，而不是打断你的调用。已经被 abort 的 run 也原样透传，但不记录告警，因为它什么都不会发出去。
 
 ## 持久化压缩
 
@@ -174,7 +192,7 @@ if (compacted !== storedMessages) {
 | `createCompressionAdapter(adapter)` | 把任意 TanStack text adapter 适配成 core 期望的 `(messages) => Promise<string>` 回调 |
 | `compactTanStackMessages` / `planCompactionTanStackMessages` / `summarizeTanStackMessages` | 持久化压缩 helper |
 
-`contextChefMiddleware` 关键选项：`contextWindow`（仅压缩时必填）、`compress`（`adapter`、`preserveRatio`、`toolResultStubThreshold`、`usagePreference`）、`truncate`、`compact`、`clear`、`dynamicState`、`skill`、`tokenizer`、`maxSessions`、`onCompress`、`onBeforeCompress`、`transformContext`、`logger`。完整选项表见 [GitHub 上的完整 README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai)。
+`contextChefMiddleware` 关键选项：`contextWindow`（仅压缩时必填）、`compress`（`adapter`、`preserveRatio`、`toolResultStubThreshold`、`usagePreference`）、`truncate`、`compact`、`clear`、`dynamicState`、`skill`、`tokenizer`、`maxSessions`、`onCompress`、`onBeforeCompress`、`transformContext`、`logger`、`appendOnly`、`onPrefixBreak`。`compactTanStackMessages` / `planCompactionTanStackMessages` 还接受 `keptReasoning: 'strip'`（[原因](/zh/guide/durable-compaction#保留轮次的推理)）。完整选项表见 [GitHub 上的完整 README](https://github.com/MyPrototypeWhat/context-chef/tree/main/packages/tanstack-ai)。
 
 ## 工作原理
 
@@ -202,6 +220,8 @@ onUsage (after each model iteration)
   10. Extract promptTokens from usage
   11. Feed back to the conversation's Janitor for the next budget check
 ```
+
+**打开 `appendOnly` 时**流程不同。`init` 触发原样放行，工作发生在每次模型调用的触发里（`beforeModel`、`structuredOutput`）。middleware 先读回引擎从它上一次触发带过来的内容，`clear` 在压缩之前运行，对话的 ledger 会重放之前调用发出的内容：压缩只落地一次，不再重算；dynamic state 在变化时作为一条 user 消息事件追加，不会被替换，也不会放进 `systemPrompts`。ledger 没有保留的请求不计入用量：带 tools 的 run 里结构化输出那次调用，以及 middleware 的 config 步骤失败后原样放行的请求。见 [Append-only 前缀](/zh/guide/append-only#tanstack-ai-的细节)。
 
 ## 需要更多控制？
 

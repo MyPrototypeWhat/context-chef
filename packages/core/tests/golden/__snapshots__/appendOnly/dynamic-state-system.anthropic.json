@@ -1,0 +1,86 @@
+[
+  {
+    "payload": {
+      "messages": [
+        { "content": [{ "text": "question 1", "type": "text" }], "role": "user" },
+        {
+          "content": [
+            {
+              "text": "<dynamic_state rev=\"1\">\n  <step>1</step>\n  <file>a.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+              "type": "text"
+            }
+          ],
+          "role": "system"
+        }
+      ],
+      "system": [{ "text": "You are a careful agent.", "type": "text" }]
+    },
+    "prefix": { "stable": 0 }
+  },
+  {
+    "from": 2,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_1", "thinking": "Look up 1.", "type": "thinking" },
+          { "id": "call_1", "input": { "q": "topic 1" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 1", "tool_use_id": "call_1", "type": "tool_result" }],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "<dynamic_state rev=\"2\">\n  <step>2</step>\n  <file>b.ts</file>\n</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      }
+    ],
+    "prefix": { "stable": 2 }
+  },
+  {
+    "from": 5,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_1", "thinking": "Answer 1 from what was found.", "type": "thinking" },
+          { "text": "answer 1", "type": "text" }
+        ],
+        "role": "assistant"
+      },
+      { "content": [{ "text": "question 2", "type": "text" }], "role": "user" },
+      {
+        "content": [
+          {
+            "text": "<dynamic_state rev=\"3\" withdrawn=\"true\">The task state was cleared.</dynamic_state>\n\nAbove is the current system state. Each block supersedes any earlier block of its kind (same tag and id). Use it to guide your next action.",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      }
+    ],
+    "prefix": { "stable": 5 }
+  },
+  {
+    "from": 8,
+    "messages": [
+      {
+        "content": [
+          { "signature": "SIG_CALL_2", "thinking": "Look up 2.", "type": "thinking" },
+          { "id": "call_2", "input": { "q": "topic 2" }, "name": "search", "type": "tool_use" }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [{ "content": "found 2", "tool_use_id": "call_2", "type": "tool_result" }],
+        "role": "user"
+      }
+    ],
+    "prefix": { "stable": 8 }
+  }
+]
