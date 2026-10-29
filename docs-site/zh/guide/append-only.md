@@ -130,7 +130,7 @@ const chef = new ContextChef({
 - `compact` 拿到的是可以直接发送的请求。`payload` 是切点之前的窗口，和当初发送的字节完全一致，system prompt 和 tools 取自上一次的 payload；`betas` 已经包含 `compact-2026-09-04`。像发送编译出的 payload 一样发送它，用对话本身的模型和 thinking 设置，然后返回响应。`stop_reason` 不是 `'compaction'` 的响应算一次失败的压缩，计入熔断器，窗口保持不变。
 - `keepRecentTurns`（默认 1）是块之后保留的回复数，每个回复连同它之后直到下一个回复的全部内容；`0` 表示整个窗口都摘要。`instructions` 替换 provider 默认的摘要 prompt，最多 16,384 个字符。
 - **一定要给 `fallback`。** 凡是无法签名的地方都由它来跑：其他 target、第一次请求（还没有发送过任何内容）、被 `onBeforeCompress` hook 改写过的窗口、轮次太少不够保留。超过原始上下文窗口时，签名尝试失败也由它接手。和任何没签名的策略一样，它只在 user 轮边界上运行，或者用来收拢一个等不了的工具轮。没有 fallback 时，一个超过原始上下文窗口又无法签名压缩的窗口，会算作一次失败的压缩，并按原样发出去。
-- 组合方式是 `onDemandCompaction({ fallback })`，而不是 `chain(onDemandCompaction(…), summarize(…))`：chain 不是签名策略，会像任何没签名的策略一样等工具轮结束。`background(onDemandCompaction(…))` 可以用：请求在任务开始时就渲染好，只有窗口渲染出的内容仍然一致时，任务结果才会落地。
+- 组合方式是 `onDemandCompaction({ fallback })`，而不是 `chain(onDemandCompaction(…), summarize(…))`：chain 不是签名策略，会像任何没签名的策略一样等工具轮结束。`background(onDemandCompaction(…))` 可以用：请求在任务开始时就渲染好，只有窗口渲染出的内容仍然一致时，任务结果才会落地。这时 `compact` 拿到的 `signal` 是任务自己的：中断启动这个任务的那次编译，不会让它停下。
 - 之后的每次请求都把这个块放在最前面，这些 payload 的 `payload.betas` 都带 `compact-2026-09-04`。不打开 `appendOnly` 时，如果你回放一个通过 `fromAnthropic` 恢复的块，需要自己加上这个 beta。
 - 被摘要范围里的 system 消息、图片和文档会丢失。chef 会在块之后重新声明自己的事件。被摘要范围里的 pinned 消息不能放回块和它保留的轮次之间，所以 chef 在窗口末尾用一条 `<pinned_messages>` 事件重新声明它们。
 - 它不能和 `server()` 组合：带服务端 `context_management` 的请求不能要求按需压缩，回放这个块的请求也不能被服务端压缩。两者同时配置时，chef 在构造时 warn 一次。

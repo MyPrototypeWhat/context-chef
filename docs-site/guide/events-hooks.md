@@ -155,7 +155,7 @@ Two effects:
 1. **Forwarded to handlers** — `chef.on(event, (payload, signal?) => ...)` receives the signal as the second argument. Handler can pass it to `fetch`, DB clients, or any cooperative API.
 2. **Checked at phase boundaries** — after `overflow`, `inject`, `memory`, `assemble` and `adapt`. Every one of them follows an await that can take arbitrarily long (compression model, memory store, your own handlers). Aborts throw via `signal.throwIfAborted()`.
 
-A compression that finishes after the abort doesn't land: `onCompress` and the `compress` event don't fire, nothing is archived, and the compile throws before `compress:end`. `onDemandCompaction()` hands the signal to its `compact` function, and an abort there counts no failure and runs no fallback.
+A compression that finishes after the abort doesn't land: `onCompress` and the `compress` event don't fire, nothing is archived, and the compile throws before `compress:end`. `onDemandCompaction()` hands the signal to its `compact` function, and an abort there counts no failure and runs no fallback. Nor do `summarize()` and `anchored()` count a failure when their model call ends after the abort. A `background()` job is not part of the compile that started it and doesn't get its signal: aborting that compile (a user stopping the reply, say) leaves the job running, and it lands on a later compile.
 
 `compile:start` fires before the first abort check, so observers may receive a `compile:start` for a compile that ultimately throws without firing `compile:done`. Memory events fired from external `memory().set()` / `delete()` calls (outside `compile()`) get `signal: undefined`.
 

@@ -31,6 +31,8 @@ interface BackgroundJob {
    * started — a host may change the very object afterwards.
    */
   read?: readonly MessageRead[];
+  /** Its signal is the one the inner strategy runs under; aborted when the job is dropped. */
+  readonly controller: AbortController;
 }
 
 /** What a job read of one message: its wire digest, and whether it was pinned. */
@@ -149,6 +151,14 @@ export interface BackgroundOverflowStrategy extends OverflowStrategy {
  * otherwise gets `inner` on the spot too, in place of a job starting, in
  * flight or gone stale.
  *
+ * A job is not part of the compile that started it: it does not get that
+ * compile's `signal`, so aborting the compile (a user stopping the reply)
+ * leaves it running, and it lands on a later compile. It runs under a signal
+ * of its own instead, aborted when the job is dropped — `discard()`,
+ * `restore()` (so `reset()` and `clearHistory()` as well), and a window that
+ * gets `inner` on the spot. A dropped job lands nothing and logs nothing,
+ * and the built-in strategies count no failure once their signal is aborted.
+ *
  * Background state does not survive `snapshot()` / `restore()`.
  */
 export function background(inner: OverflowStrategy): BackgroundOverflowStrategy {
@@ -158,6 +168,12 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
   /** A result this strategy returned → the inner results it was built from, for `commit`. */
   const built = new WeakMap<OverflowResult, OverflowResult[]>();
 
+  /** Drops the job, telling it to stop if it is still running. */
+  const drop = (): void => {
+    job?.controller.abort();
+    job = undefined;
+  };
+
   /**
    * `inner` applied on this compile, reported under this strategy's name, for
    * a window that cannot wait for a job. Any job is dropped; a finished one
@@ -165,7 +181,7 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
    */
   const now = async (input: OverflowInput): Promise<OverflowResult> => {
     if (job?.result?.meta.changed) runner.succeed();
-    job = undefined;
+    drop();
     const result = await inner.apply(input);
     const named: OverflowResult = { ...result, meta: { ...result.meta, strategy: name } };
     built.set(named, [result]);
@@ -230,22 +246,23 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
   };
 
   const start = (input: OverflowInput): void => {
+    const controller = new AbortController();
     const started: BackgroundJob = {
       settled: false,
       result: null,
       source: input.history,
       ...(input.appendOnly ? { read: readOf(input.history) } : {}),
+      controller,
     };
     job = started;
     void inner
-      .apply(input)
+      .apply({ ...input, signal: controller.signal })
       .then((result) => {
         started.result = result;
       })
       .catch((error) => {
-        // Aborted along with the compile that started it: nothing failed, and
-        // nothing is left to land.
-        if (input.signal?.aborted) return;
+        // Dropped while it ran: nothing failed, and nothing is left to land.
+        if (controller.signal.aborted) return;
         // The inner strategy handles its own failures; this is a
         // belt-and-braces net for one that throws instead.
         runner.logger.warn('[context-chef] background compression job crashed unexpectedly', error);
@@ -340,17 +357,14 @@ export function background(inner: OverflowStrategy): BackgroundOverflowStrategy 
     },
 
     discard() {
-      // Its promise keeps running and settles into an orphaned job nothing reads.
-      job = undefined;
+      drop();
     },
 
     snapshot: () => inner.snapshot?.(),
 
     restore(state) {
-      // A pending job belongs to the pre-restore timeline — drop it. Its
-      // promise keeps running and settles into an orphaned job object that
-      // nothing reads.
-      job = undefined;
+      // A pending job belongs to the pre-restore timeline — drop it.
+      drop();
       inner.restore?.(state);
     },
 

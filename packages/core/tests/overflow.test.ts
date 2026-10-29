@@ -454,6 +454,63 @@ describe('overflow runner', () => {
     expect(summarizer).toHaveBeenCalledTimes(1);
     expect(String(payload.messages[0].content)).toContain('ALIAS EQUIVALENCE');
   });
+
+  it('keeps a background job running when the compile that started it is aborted, and lands it next', async () => {
+    const warn = vi.fn();
+    const controller = new AbortController();
+    // The user presses stop while the job's summary is being written.
+    const summarizer = vi.fn(async () => {
+      controller.abort();
+      return SUMMARY;
+    });
+    const onCompress = vi.fn();
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: background(summarize({ compressionModel: summarizer, preserveRatio: 0.3 })),
+      },
+    });
+
+    await expect(
+      chef.setHistory(longHistory(9)).compile({ target: 'openai', signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    await flush();
+    const payload = await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+
+    expect(summarizer).toHaveBeenCalledTimes(1);
+    expect(onCompress).toHaveBeenCalledTimes(1);
+    expect(String(payload.messages[0].content)).toContain('ALIAS EQUIVALENCE');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('stops a running background job on clearHistory(): its model failing afterwards counts nothing', async () => {
+    const warn = vi.fn();
+    let fail: (error: Error) => void = () => {};
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: runnerConfig,
+      overflow: {
+        strategy: background(
+          summarize({
+            compressionModel: () =>
+              new Promise<string>((_, reject) => {
+                fail = reject;
+              }),
+            preserveRatio: 0.3,
+          }),
+        ),
+      },
+    });
+    await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+
+    chef.clearHistory();
+    fail(new Error('model down'));
+    await flush();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+  });
 });
 
 /**

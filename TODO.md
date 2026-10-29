@@ -763,7 +763,7 @@ Run `examples/verify-thinking-prefix.ts` for the Anthropic lines (its header say
 - **Budget readings**: `clear_at` reminders already cleared are still counted; attachments cost a flat 1,600 tokens (multi-page PDFs undercounted); system-prompt and tool growth since the last usage report isn't added; after an edit or checkpoint only messages are counted until the next report.
 - **Trigger reading**: the runner's trigger still reads a usage report the raw-window check already voided, so a compaction can trigger early or one compile late (the raw-window check itself holds).
 - **`background()` refit past the raw window**: a throw or abort inside it loses the finished job, and a custom inner strategy that throws leaves the breaker at 0; a second `anchored()` summarization in the same compile reads the previous anchor. An abort during a later `chain()` step, after an earlier `background()` step took its finished job, loses the job the same way.
-- **`onDemandCompaction`**: with too few turns past the raw window it goes straight to the fallback instead of retrying with fewer kept turns; a discarded in-flight fallback job still counts a failure when its model later rejects; `background().discard()` doesn't pass on to the inner strategy.
+- **`onDemandCompaction`**: with too few turns past the raw window it goes straight to the fallback instead of retrying with fewer kept turns; `background().discard()` stops its job but doesn't call the inner strategy's own `discard()`.
 - **Fresh ledger**: few-shot example replies ahead of the question are reported as a `ledger` checkpoint on a fresh chef's first compile.
 - **Compaction block not at the opening** (`[u0, block, …]`, kept by a host before a server-side block) can still get `[summary, block, …]`.
 - **`pipelineChecks`** can't detect a host message dropped from the window; consider checking that every host message from `head.cut` on is in it.
@@ -775,10 +775,6 @@ Run `examples/verify-thinking-prefix.ts` for the Anthropic lines (its header say
 - **Failure count in the log**: past the raw window a compactor that keeps failing logs "failure 4/3, 5/3…".
 - **Integrations DX**: `details.replacement` is typed `LanguageModelV4Prompt`, so a `generateText` host writing it back into a `ModelMessage` store needs a cast.
 - **Anthropic breakpoints**: a `_cache_breakpoint` on a tool-call turn or a tool result emits no `cache_control` on the Anthropic wire (pre-existing in 4.x); fixing it changes 4.x output.
-
-## Before release (append-only)
-
-- **Background job and its compile's signal** (decision needed): a job aborted by the signal of the compile that started it discards a compaction a client that ignores the signal returned anyway.
 
 ---
 

@@ -45,8 +45,9 @@ export interface OnDemandCompactionRequest {
 /**
  * Sends `request` and returns the response. One that stopped for a
  * compaction (`stop_reason: 'compaction'`) holds the signed block; any other
- * counts as a failed compression. `signal` is the compile's: a request it
- * aborted is no failed compression.
+ * counts as a failed compression. `signal` is the compile's, or under
+ * `background()` the job's own, which the compile that started the job does
+ * not abort: a request it aborted is no failed compression.
  */
 export type OnDemandCompactor = (
   request: OnDemandCompactionRequest,
@@ -283,9 +284,9 @@ export function onDemandCompaction(options: OnDemandCompactionOptions): Overflow
       try {
         response = await compact(request, input.signal);
       } catch (error) {
-        // An aborted compile is no failed compression: nothing is counted, and
-        // nothing runs in its place. It rejects as every other aborted compile
-        // does, with the signal's reason, not with the error the client threw.
+        // An aborted call is no failed compression: nothing is counted, and
+        // nothing runs in its place. It rejects as every aborted compile does,
+        // with the signal's reason, not with the error the client threw.
         input.signal?.throwIfAborted();
         return failed('on-demand compaction request failed', error);
       }

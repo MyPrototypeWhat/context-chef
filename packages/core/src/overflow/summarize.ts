@@ -314,7 +314,12 @@ export class SummarizingStrategy implements OverflowStrategy {
       };
     }
 
-    const summary = await this.summarizeSpan(toCompress, toKeep, input.window.current);
+    const summary = await this.summarizeSpan(
+      toCompress,
+      toKeep,
+      input.window.current,
+      input.signal,
+    );
     if (summary === null) {
       return unchanged(input, this.name, 'compression rejected — history left unchanged');
     }
@@ -406,11 +411,16 @@ export class SummarizingStrategy implements OverflowStrategy {
    * UNCHANGED (never a lossy placeholder truncation — the pre-4.0 behavior of
    * dropping the span with a bare notice applied only to the model-throw path
    * and made a bad situation worse).
+   *
+   * A call whose `signal` is aborted by the time the model call ends is no
+   * failed compression: it rejects with the signal's reason, as an aborted
+   * compile does, and reports nothing.
    */
   private async summarizeSpan(
     toCompress: Message[],
     toKeep: Message[],
     windowId: string,
+    signal: AbortSignal | undefined,
   ): Promise<string | null> {
     const compressionModel = this.options.compressionModel;
     if (!compressionModel) return null;
@@ -426,9 +436,11 @@ export class SummarizingStrategy implements OverflowStrategy {
         baseInstruction: this.anchor ? Prompts.getAnchoredCompactionInstruction(anchor) : undefined,
       });
     } catch (error) {
+      signal?.throwIfAborted();
       this.runner.fail('compression model failed', error);
       return null;
     }
+    signal?.throwIfAborted();
 
     // ── Shrink guard: a summary that doesn't shrink the span is a failure.
     //    Only applied to spans >= MIN_SHRINK_GUARD_SPAN_CHARS — tiny spans

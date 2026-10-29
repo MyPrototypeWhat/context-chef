@@ -924,7 +924,8 @@ export class Janitor {
    *   compressed messages, for `onCompress` (`CompressionDetails.replacement`);
    *   under `appendOnly` the events are left out of what `onCompress` is told
    *   was compressed.
-   *   `signal` goes to the strategy too. A call that would run the strategy
+   *   `signal` goes to the strategy too (a `background()` job it starts runs
+   *   under a signal of its own). A call that would run the strategy
    *   throws the signal's reason once it is aborted, before the strategy runs
    *   or while it runs (an `AbortError` unless it was aborted with a reason of
    *   its own), and lands nothing: no `onCompress`, no archive, the circuit

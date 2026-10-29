@@ -60,7 +60,7 @@ const fakeRunner = (): OverflowRunner & { failures: string[]; successes: number 
     succeed() {
       this.successes++;
     },
-    logger: { warn: () => {} },
+    logger: { warn: vi.fn() },
   };
 };
 
@@ -181,6 +181,39 @@ describe('summarize()', () => {
     expect((await thrown.apply(makeInput())).meta.changed).toBe(false);
     expect(rejectedRunner.failures[0]).toContain('validateCompression');
     expect(thrownRunner.failures[0]).toContain('compression model failed');
+  });
+
+  it.each([
+    [
+      'fails',
+      async (): Promise<string> => {
+        throw new Error('Request was aborted.');
+      },
+    ],
+    ['answers all the same', model],
+  ])('counts nothing for a call aborted while its model ran, which then %s', async (_, answer) => {
+    const controller = new AbortController();
+    const reason = new Error('the user pressed stop');
+    const validateCompression = vi.fn(() => true);
+    const [strategy, runner] = attached(
+      summarize({
+        compressionModel: async () => {
+          controller.abort(reason);
+          return answer();
+        },
+        split: 'recent-turns',
+        validateCompression,
+      }),
+    );
+
+    const rejected = await strategy
+      .apply(makeInput({ signal: controller.signal }))
+      .catch((error: unknown) => error);
+
+    // It rejects as an aborted compile does, with the signal's reason.
+    expect(rejected).toBe(reason);
+    expect(runner.failures).toEqual([]);
+    expect(validateCompression).not.toHaveBeenCalled();
   });
 
   it('spans the whole compressed range, pinned messages included', async () => {
@@ -811,6 +844,32 @@ describe('background()', () => {
       preserveRecentMessages: 1,
     });
 
+  /**
+   * An inner strategy that answers when told to, as a client honoring its
+   * signal does: aborted by then, it rejects with the signal's reason.
+   */
+  const answering = () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    let answer = () => {};
+    const strategy: OverflowStrategy = {
+      name: 'answering',
+      async apply(input) {
+        signals.push(input.signal);
+        await new Promise<void>((resolve) => {
+          answer = resolve;
+        });
+        input.signal?.throwIfAborted();
+        return {
+          history: [{ role: 'user', content: 'ANSWERED' }, ...input.history.slice(-1)],
+          evicted: input.history.slice(0, -1),
+          span: input.history.slice(0, -1),
+          meta: { strategy: 'answering', windowId: input.window.current, changed: true },
+        };
+      },
+    };
+    return { strategy, signals, answer: () => answer() };
+  };
+
   it('starts a job on the first call and swaps the result in on a later one', async () => {
     const [strategy] = attached(background(inner()));
     const messages = history(5);
@@ -825,6 +884,42 @@ describe('background()', () => {
     expect(second.meta.changed).toBe(true);
     expect(second.history[0].content).toContain('BG');
     expect(second.history.at(-1)?.content).toBe('msg-5');
+  });
+
+  it('keeps a job running when the compile that started it is aborted, and lands it later', async () => {
+    const { strategy: answers, signals, answer } = answering();
+    const [strategy, runner] = attached(background(answers));
+    const controller = new AbortController();
+    const messages = history(5);
+
+    await strategy.apply(makeInput({ history: messages, signal: controller.signal }));
+    controller.abort();
+    answer();
+    await settled(strategy);
+    const landed = await strategy.apply(makeInput({ history: messages }));
+
+    expect(signals[0]?.aborted).toBe(false);
+    expect(landed.meta.changed).toBe(true);
+    expect(landed.history[0].content).toBe('ANSWERED');
+    expect(runner.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['discard()', (strategy: OverflowStrategy) => strategy.discard?.()],
+    ['restore()', (strategy: OverflowStrategy) => strategy.restore?.(undefined)],
+  ])('%s stops a running job: the inner strategy sees the abort, and nothing is counted or warned', async (_, drop) => {
+    const { strategy: answers, signals, answer } = answering();
+    const [strategy, runner] = attached(background(answers));
+
+    await strategy.apply(makeInput());
+    drop(strategy);
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(strategy.pending?.()).toBe(false);
+    expect(runner.failures).toEqual([]);
+    expect(runner.logger.warn).not.toHaveBeenCalled();
   });
 
   it('discard() drops a finished job unlanded, crediting nothing', async () => {
@@ -1452,6 +1547,37 @@ describe("appendOnly: the chef's events in the window", () => {
       expect(collapsed.history[0].content).toContain('COLLAPSED');
       expect(collapsed.span).toEqual(current);
       expect(strategy.pendingJob).toBeUndefined();
+    });
+
+    it('stops the job it drops to collapse: that job failing afterwards counts nothing', async () => {
+      let fail: (error: Error) => void = () => {};
+      const compressionModel = vi
+        .fn<(messages: Message[]) => Promise<string>>()
+        .mockImplementationOnce(
+          () =>
+            new Promise<string>((_, reject) => {
+              fail = reject;
+            }),
+        )
+        .mockResolvedValue('<summary>COLLAPSED</summary>');
+      const [strategy, runner] = attached(
+        background(
+          summarize({ compressionModel, split: 'recent-turns', preserveRecentMessages: 1 }),
+        ),
+      );
+      await strategy.apply(makeInput({ history: source, appendOnly: true }));
+
+      const current = [...again(source), call('c1'), result('c1')];
+      const collapsed = await strategy.apply(
+        makeInput({ history: current, appendOnly: true, collapse: true }),
+      );
+      // The collapse landed, which clears the breaker; the job it dropped fails only now.
+      fail(new Error('model down'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(collapsed.meta.changed).toBe(true);
+      expect(runner.failures).toEqual([]);
+      expect(runner.logger.warn).not.toHaveBeenCalled();
     });
 
     it('collapses the window itself instead of landing a finished job, and commits the collapse', async () => {

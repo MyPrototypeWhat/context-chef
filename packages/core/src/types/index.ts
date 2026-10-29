@@ -403,7 +403,9 @@ export interface CompileOptions {
    *   and between `chain()` steps; a strategy already running gets the signal
    *   and may or may not stop. A compression that finishes after the abort
    *   doesn't land: `onCompress` and the `compress` event don't fire, and the
-   *   compile throws before `compress:end`.
+   *   compile throws before `compress:end`. A `background()` job is not part
+   *   of the compile and doesn't get the signal: it keeps running and lands
+   *   on a later compile.
    */
   signal?: AbortSignal;
 }

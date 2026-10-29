@@ -150,6 +150,11 @@ export interface OverflowInput {
    * was sent, and on other targets. Read by signed strategies.
    */
   wire?: OverflowWire;
+  /**
+   * The compile's signal, or inside `background()` the job's own, aborted
+   * when the job is dropped. Once it is aborted, a failure is no failed
+   * compression: reject with its reason and report nothing.
+   */
   signal?: AbortSignal;
 }
 

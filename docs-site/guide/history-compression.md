@@ -263,7 +263,7 @@ interface OverflowStrategy {
 }
 ```
 
-`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window`, `forced` and an optional `signal`. `OverflowResult` carries the new `history`, everything `evicted`, the `span` the summary covers, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
+`OverflowInput` carries `history`, `budget`, `tokenizer`, `pinned` (turn-scoped, by reference — compare with `===`, not by value), `window`, `forced` and an optional `signal` (the compile's, or inside `background()` the job's own, aborted when the job is dropped; once it is aborted, reject with its reason and count no failure). `OverflowResult` carries the new `history`, everything `evicted`, the `span` the summary covers, an optional `summary`, and `meta: { strategy, windowId, changed, reason? }`.
 
 `evicted` means "left the window". `span` is the range the summary covers — the same messages plus any pinned turn the strategy re-inserted verbatim, which never left. Both are required: a strategy that re-inserts nothing repeats `evicted`, and a result that changed nothing declares both empty. `span` is what `onCompress` gets as `details.compressedMessages`, what the archive stores, and what the citation counts.
 

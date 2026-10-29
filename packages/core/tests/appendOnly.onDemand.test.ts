@@ -466,7 +466,10 @@ describe('appendOnly onDemandCompaction(): a compile aborted while it asks', () 
     expect(retried.messages[0]).toEqual(compacted(1));
   });
 
-  it('drops a background job aborted with the compile that started it, counting nothing', async () => {
+  it.each([
+    ['honors', true],
+    ['ignores', false],
+  ])('keeps a background job running when the compile that started it is aborted, with a client that %s the signal', async (_, honors) => {
     const warn = vi.fn();
     const { chef, compact } = chefWith({ logger: { warn } }, (compact) =>
       background(onDemandCompaction({ compact })),
@@ -477,22 +480,22 @@ describe('appendOnly onDemandCompaction(): a compile aborted while it asks', () 
       await new Promise<void>((resolve) => {
         answer = resolve;
       });
-      signal?.throwIfAborted();
+      if (honors) signal?.throwIfAborted();
       return { stop_reason: 'compaction', content: [block(1)] };
     });
     await converse(chef, [1, 2, 3].map(asked));
 
-    // The job starts on asked(4); the host aborts that compile's signal before it is answered.
+    // The job starts on asked(4); the host aborts that compile's signal (the user stops the
+    // reply) before the job is answered.
     await chef.setHistory(asked(4)).compile({ target: 'anthropic', signal: controller.signal });
     controller.abort();
     answer();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    const [landed] = await converse(chef, [asked(5)]);
 
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(landed.messages[0]).toEqual(compacted(1));
     expect(warn).not.toHaveBeenCalled();
-    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
-    // Nothing waits to land: the next compile over the trigger starts another job.
-    await converse(chef, [asked(5)]);
-    expect(compact).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -853,6 +856,30 @@ describe('appendOnly onDemandCompaction({ fallback: background(...) }): a fallba
     expect(calls).toEqual([0, 1, 1, 2, 2]);
     expect(sizes).toEqual([7, 3, 5, 3, 5]);
     expect(compressionModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the job a signed compaction drops: its model failing afterwards counts nothing', async () => {
+    const warn = vi.fn();
+    const { chef, compressionModel } = chefWith({ logger: { warn } }, inBackground);
+    let fail: (error: Error) => void = () => {};
+    compressionModel.mockImplementationOnce(
+      () =>
+        new Promise<string>((_, reject) => {
+          fail = reject;
+        }),
+    );
+
+    // asked(4) is the first request: the fallback starts a job, and its model takes its time.
+    // asked(5) is over the trigger: block 1 lands and drops the job still running.
+    const [, landed] = await converse(chef, [asked(4), asked(5)]);
+    fail(new Error('model down'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(landed.messages[0]).toEqual(compacted(1));
+    // The one warning is of a conversation that starts with replies this chef never sent.
+    const warnings = warn.mock.calls.map(([message]) => String(message));
+    expect(warnings.filter((message) => !message.includes('prefix ledger is empty'))).toEqual([]);
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
   });
 
   it('lets nothing but the waiting job past an open breaker', async () => {
