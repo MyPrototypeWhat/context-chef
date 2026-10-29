@@ -356,6 +356,14 @@ interface JanitorConfigBase {
    * @param details - Boundary metadata: the exact messages that were replaced,
    *   useful for persistence layers that need to map the summary back to their store.
    *
+   * To keep the summary in your own history, store `summaryMessage` exactly
+   * as handed to you, same role and same content (under `appendOnly`, write
+   * back `details.replacement` as given): a usage you report afterwards counts
+   * only while the history holds that message, and stored any other way (as
+   * a system message, behind a prefix of your own) the report is ignored and
+   * the window is judged by its own count, an estimate unless a `tokenizer`
+   * is configured.
+   *
    * Contract: should not throw or reject. As a safety net, a throwing hook is
    * caught and logged via `logger` — the compression result is kept and
    * compile() continues, but your sink may have missed the summary.

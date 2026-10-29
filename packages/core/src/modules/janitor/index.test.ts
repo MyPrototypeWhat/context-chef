@@ -576,6 +576,25 @@ describe('Janitor — E10 after a compression', () => {
     expect(compressionModel).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    [
+      'behind a prefix',
+      (summary: Message): Message => ({ ...summary, content: `Earlier: ${summary.content}` }),
+    ],
+    ['as a system message', (summary: Message): Message => ({ ...summary, role: 'system' })],
+  ])('ignores a usage reported after a compression when the host stored its summary %s, and goes by the tokenizer', async (_, reshape) => {
+    const { compressionModel, janitor } = setup();
+    const [summary] = await janitor.compress(buildHistory(5));
+
+    // The host kept the compressed history, but not the summary as it was handed over: the
+    // report is read as one of another request, and the tokenizer's 2 × 10 tokens are under
+    // the 21-token trigger.
+    janitor.feedTokenUsage(999);
+    await janitor.compress([reshape(summary), { role: 'user', content: 'next' }]);
+
+    expect(compressionModel).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores a usage reported while a compression ran, then trusts the next one', async () => {
     const { compressionModel, janitor } = setup();
     // The report of the request before it comes back while the summary is being written.

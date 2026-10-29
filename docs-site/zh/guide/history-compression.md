@@ -318,7 +318,7 @@ const chef = new ContextChef({
 | `triggerRatio` | `number` | `0.7` | 触发溢出的 `contextWindow` 占比（「腐烂前」提前压缩）。设为 `1` 可恢复 4.0 之前打满窗口才触发的行为。 |
 | `tokenizer` | `(msgs: Message[]) => number` | — | 启用 tokenizer 路径，精确计算每条消息的 token 数。 |
 | `usagePreference` | `'max' \| 'feedFirst' \| 'tokenizerFirst'` | `'max'` | 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。 |
-| `onCompress` | `(summary, count, details) => void` | — | 一次溢出落地后触发。`details.compressedMessages` 是被摘要替换的那段消息切片。`appendOnly` 下，要持久化就把 `details.replacement` 写回它的位置（[做法](/zh/guide/append-only#持久化对话)）。 |
+| `onCompress` | `(summary, count, details) => void` | — | 一次溢出落地后触发。`details.compressedMessages` 是被摘要替换的那段消息切片。`appendOnly` 下，要持久化就把 `details.replacement` 写回它的位置（[做法](/zh/guide/append-only#持久化对话)）。其他情况下，摘要要原样留在你的历史里，角色和文本都不变：压缩之后上报的用量，只在历史里还有这条消息时才算数；换一种方式保存（存成 system 消息、加上你自己的前缀），这份用量就被忽略，窗口按它自己的计数来判断，没有 `tokenizer` 时这个计数只是估算。 |
 | `onBeforeCompress` | `(history, tokenInfo) => Message[] \| null` | — | 预算判定认为要执行溢出之后、策略运行之前触发。返回替换后的历史来介入，返回 `null` 则照常继续。未废弃。 |
 | `logger` | `ChefLogger` | — | 降级警告的日志接收器（存储 / 压缩），默认使用 `console`。 |
 

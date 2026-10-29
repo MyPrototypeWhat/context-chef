@@ -401,6 +401,13 @@ export interface ContextChefOptions {
    * (after truncate/compact): match tool messages back to your records by
    * `toolCallId`; user/assistant text is not modified by those steps.
    *
+   * Store the summary as a user message with exactly the `summary` text:
+   * after a compression, the usage the provider reports is trusted only while
+   * your history still holds that message. Stored any other way (as a system
+   * message, behind a prefix of your own), the usage is ignored and the
+   * window is judged by its own count, an estimate unless you pass a
+   * `tokenizer`.
+   *
    * With {@link appendOnly}, `details.replacement` is what to write back,
    * exactly and in order, where `compressedMessages` were, to persist the
    * compaction (the summary, as a user message): the next call reads your

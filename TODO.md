@@ -778,7 +778,6 @@ Run `examples/verify-thinking-prefix.ts` for the Anthropic lines (its header say
 
 ## Before release (append-only)
 
-- **A reshaped summary loses the usage report** (decision needed): a host without a tokenizer that stores the summary in another form (as a system message, with a prefix) no longer matches it, so its report is ignored and a history with an attachment is compressed every turn. The AI SDK middleware hands `onCompress` only the summary text and strips system messages. Either document "keep the summary as handed" or match more leniently.
 - **Background job and its compile's signal** (decision needed): a job aborted by the signal of the compile that started it discards a compaction a client that ignores the signal returned anyway.
 
 ---
