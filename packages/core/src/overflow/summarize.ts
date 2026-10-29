@@ -412,9 +412,9 @@ export class SummarizingStrategy implements OverflowStrategy {
    * dropping the span with a bare notice applied only to the model-throw path
    * and made a bad situation worse).
    *
-   * A call whose `signal` is aborted by the time the model call ends is no
-   * failed compression: it rejects with the signal's reason, as an aborted
-   * compile does, and reports nothing.
+   * A call whose `signal` is aborted by the time the model call or
+   * `validateCompression` ends is no failed compression: it rejects with the
+   * signal's reason, as an aborted compile does, and reports nothing.
    */
   private async summarizeSpan(
     toCompress: Message[],
@@ -484,12 +484,14 @@ export class SummarizingStrategy implements OverflowStrategy {
           kept: toKeep,
         });
       } catch (error) {
+        signal?.throwIfAborted();
         this.runner.logger.warn(
           '[context-chef] validateCompression threw — treating the summary as rejected',
           error,
         );
         valid = false;
       }
+      signal?.throwIfAborted();
       if (!valid) {
         this.runner.fail('compression summary rejected by validateCompression');
         return null;

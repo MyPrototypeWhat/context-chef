@@ -511,6 +511,74 @@ describe('overflow runner', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
   });
+
+  /** How a pending `validateCompression` call ends. */
+  interface Verdict {
+    resolve(valid: boolean): void;
+    reject(error: Error): void;
+  }
+
+  it.each([
+    ['rejects the summary', (verdict: Verdict) => verdict.resolve(false)],
+    ['throws', (verdict: Verdict) => verdict.reject(new Error('judge down'))],
+  ])('stops a background job on clearHistory() while validateCompression runs, which then %s: nothing is counted', async (_, end) => {
+    const warn = vi.fn();
+    const onCompress = vi.fn();
+    let verdict: Verdict = { resolve: () => {}, reject: () => {} };
+    const validateCompression = vi.fn(
+      () =>
+        new Promise<boolean>((resolve, reject) => {
+          verdict = { resolve, reject };
+        }),
+    );
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: background(
+          summarize({ compressionModel, preserveRatio: 0.3, validateCompression }),
+        ),
+      },
+    });
+    await chef.setHistory(longHistory(9)).compile({ target: 'openai' });
+    await vi.waitFor(() => expect(validateCompression).toHaveBeenCalled());
+
+    chef.clearHistory();
+    end(verdict);
+    await flush();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(onCompress).not.toHaveBeenCalled();
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+  });
+
+  it('counts nothing for a compile aborted while validateCompression runs', async () => {
+    const warn = vi.fn();
+    const onCompress = vi.fn();
+    const controller = new AbortController();
+    const chef = new ContextChef({
+      logger: { warn },
+      janitor: { ...runnerConfig, onCompress },
+      overflow: {
+        strategy: summarize({
+          compressionModel,
+          preserveRatio: 0.3,
+          validateCompression: async () => {
+            controller.abort();
+            return false;
+          },
+        }),
+      },
+    });
+
+    await expect(
+      chef.setHistory(longHistory(9)).compile({ target: 'openai', signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(onCompress).not.toHaveBeenCalled();
+    expect(chef.snapshot().modules.janitor.consecutiveFailures).toBe(0);
+  });
 });
 
 /**

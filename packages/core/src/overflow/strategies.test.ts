@@ -216,6 +216,37 @@ describe('summarize()', () => {
     expect(validateCompression).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['rejects the summary', async () => false],
+    [
+      'throws',
+      async (): Promise<boolean> => {
+        throw new Error('judge down');
+      },
+    ],
+  ])('counts nothing for a call aborted while validateCompression ran, which then %s', async (_, verdict) => {
+    const controller = new AbortController();
+    const reason = new Error('the user pressed stop');
+    const [strategy, runner] = attached(
+      summarize({
+        compressionModel: model,
+        split: 'recent-turns',
+        validateCompression: async () => {
+          controller.abort(reason);
+          return verdict();
+        },
+      }),
+    );
+
+    const rejected = await strategy
+      .apply(makeInput({ signal: controller.signal }))
+      .catch((error: unknown) => error);
+
+    expect(rejected).toBe(reason);
+    expect(runner.failures).toEqual([]);
+    expect(runner.logger.warn).not.toHaveBeenCalled();
+  });
+
   it('spans the whole compressed range, pinned messages included', async () => {
     const messages = history(5);
     messages[1] = { ...messages[1], pinned: true };
