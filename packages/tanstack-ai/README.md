@@ -318,7 +318,7 @@ Creates a `ChatMiddleware` that plugs into TanStack AI's `chat()` middleware arr
 | `skill` | `Skill \| () => Skill \| null \| undefined` | No | Inject the active skill's instructions as a system prompt (idempotent) |
 | `tokenizer` | `(msgs) => number` | No | Custom tokenizer for precise counting |
 | `maxSessions` | `number` | No | Cap on concurrently tracked conversations (default: 256, LRU-evicted) |
-| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the TanStack-format (`ModelMessage[]`) slice the summary replaced — use it to persist the summary boundary in your store. |
+| `onCompress` | `(summary, count, details) => void` | No | Hook called after compression. `details.compressedMessages` is the TanStack-format (`ModelMessage[]`) slice the summary replaced — use it to persist the summary boundary in your store. Store the summary as a user message with exactly the `summary` text: after a compression, the usage the provider reports is trusted only while your history still holds that message; stored any other way (as a system message, behind a prefix of your own), the usage is ignored and the window is judged by its own count, an estimate unless you pass a `tokenizer`. |
 | `onBeforeCompress` | `(history, tokenInfo) => msgs \| null` | No | Hook before compression with override capability |
 | `transformContext` | `(msgs, prompts, ctx) => { messages, systemPrompts }` | No | Post-compression transformation. Runs per iteration — must be idempotent. With `appendOnly`, not at init, and its output must be identical on every call. |
 | `logger` | `ChefLogger` | No | Sink for degradation warnings; defaults to `console`. |

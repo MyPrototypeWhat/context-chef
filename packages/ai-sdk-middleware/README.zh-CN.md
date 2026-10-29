@@ -236,7 +236,7 @@ const wrappedModel = withContextChef(model, options);
 | `truncate.perTool` | `Array<string \| { name; threshold?; headChars?; tailChars? }>` | 否 | 按工具覆写。字符串 = 保留（同时跳过存储）；对象 = 为该工具覆写参数。重复名称时后者胜出。 |
 | `compact` | `CompactConfig` | 否 | 机械消息裁剪（reasoning、工具调用）。委托给 AI SDK 的 `pruneMessages` |
 | `tokenizer` | `(msgs) => number` | 否 | 自定义分词器用于精确计数 |
-| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV4Prompt`）切片，可用于在自有存储中持久化摘要边界。 |
+| `onCompress` | `(summary, count, details) => void` | 否 | 压缩完成后的回调。`details.compressedMessages` 是被摘要替换掉的 AI SDK 格式（`LanguageModelV4Prompt`）切片，可用于在自有存储中持久化摘要边界。摘要要存成一条 user 消息，文本与 `summary` 完全一致：压缩之后，只有你的历史里还有这条消息时，provider 上报的用量才会被采信；换一种方式保存（存成 system 消息、加上你自己的前缀），这份用量就被忽略，窗口按它自己的计数来判断，不传 `tokenizer` 时这个计数只是估算。 |
 | `logger` | `ChefLogger` | 否 | 降级警告的输出目标（存储写入失败、缺少 usage 数据、配置异常等），默认 `console`。转发给底层 Janitor 和 Offloader。 |
 | `appendOnly` | `boolean \| { clearAt?: boolean }` | 否 | 保留已发送的内容：每次调用的 prompt 都重复这个 session 上一次的内容，只在末尾追加。见 [Append-only 模式](#append-only-模式)。这里忽略 `clearAt`。 |
 | `onPrefixBreak` | `(event: PrefixBreakEvent) => void` | 否 | `appendOnly`：每次调用应用一个检查点时调用 —— `{ sessionId, reason, at, signed, strippedThinking }`。 |

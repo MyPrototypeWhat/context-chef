@@ -369,7 +369,7 @@ Runner 选项 —— 什么时候触发压缩、拿什么去量、压缩前后�
 | `triggerRatio`                  | `number`                                    | `0.7`  | 触发压缩的 `contextWindow` 占比（"腐烂前"提前压缩）。设为 `1` 可恢复 4.0 之前打满窗口才触发的行为。 |
 | `tokenizer`                     | `(msgs: Message[]) => number`               | —      | 启用 tokenizer 路径，精确计算每条消息的 token 数。                       |
 | `usagePreference`               | `'max' \| 'feedFirst' \| 'tokenizerFirst'`  | `'max'`| 当 `tokenizer` 与 `reportTokenUsage` 同时存在时，决定触发判断使用哪个 token 来源。无 `tokenizer` 时取值范围收窄为 `'max' \| 'feedFirst'`，TypeScript 在编译期拒绝 `'tokenizerFirst'`。完整说明见 [core 包 README](./packages/core)。 |
-| `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。 |
+| `onCompress`                    | `(summary, count, details) => void`         | —      | 压缩完成后触发，传入摘要消息和被截断的消息数量。`details.compressedMessages` 是被摘要替换的那段消息切片。要把摘要留在你自己的历史里，就原样保存它，角色和内容都不变（`appendOnly` 下按原样写回 `details.replacement`）：之后上报的用量只在历史里还有这条消息时才算数；换一种方式保存（存成 system 消息、加上你自己的前缀），这份用量就被忽略，窗口按它自己的计数来判断，没有配置 `tokenizer` 时这个计数只是估算。 |
 | `onBeforeCompress`              | `(history, tokenInfo) => Message[] \| null` | —      | 预算判定认为要执行溢出之后、策略运行之前触发。返回修改后的历史来干预，或返回 null 让默认压缩继续执行。它没有被废弃，也不是 `before-overflow` 插槽 —— 那个在 chef 这一层，每次 compile 都会触发。 |
 | `logger`                        | `ChefLogger`                                | —      | 降级警告的日志接收器（存储/压缩），默认使用 `console`。 |
 | `strategy`                      | `OverflowStrategy`                          | —      | runner 应用的策略。直接构造 `Janitor` 时用它；经 `ContextChef` 请用 `overflow.strategy`。 |
